@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prism-api",
+  "main": "packages/runtime/src/worker.ts",
+  "compatibility_date": "2026-06-07",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prism",
+      "database_id": "replace-with-your-d1-database-id"
+    }
+  ],
+  "vars": {},
+  "observability": {
+    "enabled": true
+  }
+}

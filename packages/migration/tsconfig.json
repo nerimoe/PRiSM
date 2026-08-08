@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist-types",
+    "tsBuildInfoFile": "dist-types/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../storage-sql"
+    },
+    {
+      "path": "../adapter-sqlite"
+    },
+    {
+      "path": "../runtime"
+    }
+  ]
+}

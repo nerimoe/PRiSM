@@ -1,0 +1,21 @@
+{
+  "name": "@prism/runtime",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@prism/adapter-d1": "workspace:*",
+    "@prism/adapter-sqlite": "workspace:*",
+    "@prism/application": "workspace:*",
+    "@prism/core": "workspace:*",
+    "@prism/server-hono": "workspace:*",
+    "@prism/storage-sql": "workspace:*",
+    "hono": "^4.10.7"
+  }
+}

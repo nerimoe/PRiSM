@@ -1,0 +1,22 @@
+{
+  "name": "@prism/migration",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "export-sqlite": "bun run src/cli.ts export-sqlite",
+    "export-postgres": "bun run src/cli.ts export-postgres",
+    "export-postgres-dump": "bun run src/cli.ts export-postgres-dump",
+    "import-json": "bun run src/cli.ts import-json",
+    "test": "bun test test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@prism/adapter-sqlite": "workspace:*",
+    "@prism/core": "workspace:*",
+    "@prism/runtime": "workspace:*",
+    "@prism/storage-sql": "workspace:*"
+  }
+}

@@ -1,0 +1,874 @@
+import type {
+  AssetDefinitionRepository,
+  AssetDefinition,
+  AssetEffectProvider,
+  AssetHolding,
+  AssetLedgerEntry,
+  AssetRepository,
+  ChargeItem,
+  PricingCapHistoryEntry,
+  PricingCapHistoryRepository,
+  PricingHistoryEntry,
+  PricingHistoryRepository,
+  PreviewSessionSettlementResult,
+  PricingProvider,
+  PlayerCheckout,
+  SettlementAdjustment,
+  SettlementRecord,
+  SettlementRepository,
+  SettleSessionResult,
+  Session,
+  SessionRepository,
+  OperationLockRepository,
+  SystemRepository,
+  TimeCapPricingWindow,
+  TimeCapPricingProviderConfig,
+} from "@prism/core";
+import {
+  applyTimeCapPricing,
+  closeSession,
+  collectTimeCapPricingHistoryLookupKeys,
+  deductCurrency,
+  diffAssetHoldings,
+  explainTimeCapPricing,
+  isActiveInWindow,
+  previewSessionSettlement,
+  PrismDomainError,
+  settleSession,
+  sumCurrencyHoldings,
+} from "@prism/core";
+import { withOperationLease } from "./operation-lock";
+import { sumAvailableWalletBalance, type AvailableAssetReader } from "./available-assets";
+import {
+  assetDefinitionEffectSource,
+  calculateAssetEffectDiscount,
+  calendarDayAt,
+  isAssetEffectConfigAvailable,
+  resolveAssetDefinitionEffectConfig,
+} from "./asset-definition-effects";
+
+export type SettlementServiceDependencies = {
+  sessions: SessionRepository;
+  operationLocks?: OperationLockRepository;
+  assets: AssetRepository;
+  settlements: SettlementRepository;
+  assetDefinitions?: AssetDefinitionRepository;
+  availableAssets?: AvailableAssetReader;
+  system?: SystemRepository;
+  pricingHistory?: PricingHistoryRepository;
+  pricingCapHistory?: PricingCapHistoryRepository;
+  pricingProviders: readonly PricingProvider[];
+  pricingProviderResolver?: (context: PricingProviderResolverContext) => Promise<readonly PricingProvider[]>;
+  globalCapResolver?: (context: GlobalCapResolverContext) => Promise<readonly TimeCapPricingProviderConfig[]>;
+  assetEffectProviders: readonly AssetEffectProvider[];
+  id?: () => string;
+  now: () => Date;
+};
+
+export type PricingProviderResolverContext = {
+  playerId: string;
+  session: Session;
+  now: Date;
+};
+
+export type GlobalCapResolverContext = {
+  playerId: string;
+  sessions: readonly Session[];
+  chargeItems: readonly ChargeItem[];
+  now: Date;
+  timeZone: string;
+};
+
+export type PlayerCheckoutInput = {
+  playerId: string;
+  closeSessionsBeforeBalanceCheck?: boolean;
+};
+
+export type StaffCheckoutOverrideInput = {
+  playerId: string;
+  staffId: string;
+  total: number;
+  reason: string;
+  closeSessionsBeforeBalanceCheck?: boolean;
+};
+
+export type CheckoutWallet = {
+  balanceBefore: number;
+  balanceAfter: number;
+};
+
+export type PreviewPlayerCheckoutResult = {
+  settlementPreview: {
+    playerId: string;
+    sessionIds: string[];
+    subtotal: number;
+    total: number;
+    status: "preview";
+    previewedAt: Date;
+  };
+  sessionPreviews: Array<{
+    sessionId: string;
+    label: string | null;
+    startedAt: Date;
+    endedAt: Date | null;
+    status: Session["status"];
+    subtotal: number;
+    total: number;
+    chargeItems: ChargeItem[];
+    adjustments: SettlementAdjustment[];
+  }>;
+  chargeItems: ChargeItem[];
+  adjustments: SettlementAdjustment[];
+  checkoutAdjustments: SettlementAdjustment[];
+  pricingCapAdjustments: SettlementAdjustment[];
+  wallet: CheckoutWallet;
+  globalCapWindows: TimeCapPricingWindow[];
+};
+
+export type SettlePlayerCheckoutResult = {
+  playerSettlement: {
+    playerId: string;
+    sessionIds: string[];
+    subtotal: number;
+    total: number;
+    status: "settled";
+    settledAt: Date;
+  };
+  settlements: SettlementRecord[];
+  sessionDetails: Array<{
+    sessionId: string;
+    label: string | null;
+    startedAt: Date;
+    endedAt: Date | null;
+  }>;
+  chargeItems: ChargeItem[];
+  adjustments: SettlementAdjustment[];
+  checkoutAdjustments: SettlementAdjustment[];
+  pricingCapAdjustments: SettlementAdjustment[];
+  assetLedgerEntries: AssetLedgerEntry[];
+  wallet: CheckoutWallet;
+  globalCapWindows: TimeCapPricingWindow[];
+};
+
+export type SettlementService = {
+  previewCheckout(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
+  checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
+  stopSession(input: { playerId: string; sessionId: string }): Promise<Session & { status: "closed"; endedAt: Date }>;
+  checkoutWithOverride(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;
+};
+
+const playerLocks = new Map<string, Promise<any>>();
+
+async function acquireCheckoutLock<T>(dependencies: SettlementServiceDependencies, playerId: string, fn: () => Promise<T>): Promise<T> {
+  if (!dependencies.operationLocks) return acquireLock(playerId, fn);
+  return withOperationLease({ repository: dependencies.operationLocks, scope: "player.assets", resourceId: playerId, id: dependencies.id, now: dependencies.now }, fn);
+}
+
+async function acquireLock<T>(playerId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = playerLocks.get(playerId) ?? Promise.resolve();
+  const next = (async () => {
+    try {
+      await previous;
+    } catch {}
+    return fn();
+  })();
+  playerLocks.set(playerId, next);
+  const release = () => {
+    if (playerLocks.get(playerId) === next) {
+      playerLocks.delete(playerId);
+    }
+  };
+  void next.then(release, release);
+  return next;
+}
+
+export function createSettlementService(dependencies: SettlementServiceDependencies): SettlementService {
+  return {
+    async previewCheckout(input) {
+      const now = dependencies.now();
+      const [activeSessions, unpaidClosedSessions, assetHoldings] = await Promise.all([
+        dependencies.sessions.findActiveByPlayerId(input.playerId),
+        dependencies.sessions.findUnpaidClosedByPlayerId(input.playerId),
+        dependencies.assets.listAssetHoldings(input.playerId),
+      ]);
+      const closedSessions = sessionsForUnifiedCheckout(unpaidClosedSessions, activeSessions);
+      const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, closedSessions, assetHoldings, now);
+      return toPlayerCheckoutPreview(input.playerId, details, now);
+    },
+
+    async checkout(input) {
+      return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        const now = dependencies.now();
+        const [activeSessions, unpaidClosedSessions, assetHoldings] = await Promise.all([
+          dependencies.sessions.findActiveByPlayerId(input.playerId),
+          dependencies.sessions.findUnpaidClosedByPlayerId(input.playerId),
+          dependencies.assets.listAssetHoldings(input.playerId),
+        ]);
+        const closedActiveSessions = activeSessions.map((session) => closeSession({ session, now }));
+        const closedSessions = uniqueSessionsById([
+          ...unpaidClosedSessions.map((session) => ({
+            ...session,
+            status: "closed" as const,
+            endedAt: session.endedAt ?? now,
+            paymentStatus: session.paymentStatus ?? "unpaid",
+          })),
+          ...closedActiveSessions,
+        ]);
+        const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, closedSessions, assetHoldings, now);
+        if (input.closeSessionsBeforeBalanceCheck === false) assertCheckoutBalance(details.availableHoldings, details.total, now);
+        for (const session of closedActiveSessions) session.paymentStatus = "unpaid";
+        await saveSessions(dependencies.sessions, closedActiveSessions);
+        return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now);
+      });
+    },
+
+    async stopSession(input) {
+      return acquireLock(input.playerId, async () => {
+        const now = dependencies.now();
+        const session = await findSessionOrThrow(dependencies.sessions, input.playerId, input.sessionId);
+        const closedSession = closeSession({ session, now });
+        closedSession.paymentStatus = "unpaid";
+        await dependencies.sessions.save(closedSession);
+        return closedSession;
+      });
+    },
+
+    async checkoutWithOverride(input) {
+      return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        const now = dependencies.now();
+        const [activeSessions, unpaidClosedSessions, assetHoldings] = await Promise.all([
+          dependencies.sessions.findActiveByPlayerId(input.playerId),
+          dependencies.sessions.findUnpaidClosedByPlayerId(input.playerId),
+          dependencies.assets.listAssetHoldings(input.playerId),
+        ]);
+        const closedActiveSessions = activeSessions.map((session) => closeSession({ session, now }));
+        const closedSessions = uniqueSessionsById([
+          ...unpaidClosedSessions.map((session) => ({
+            ...session,
+            status: "closed" as const,
+            endedAt: session.endedAt ?? now,
+            paymentStatus: session.paymentStatus ?? "unpaid",
+          })),
+          ...closedActiveSessions,
+        ]);
+        const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, closedSessions, assetHoldings, now);
+        if (input.closeSessionsBeforeBalanceCheck === false) assertCheckoutBalance(details.availableHoldings, input.total, now);
+        for (const session of closedActiveSessions) session.paymentStatus = "unpaid";
+        await saveSessions(dependencies.sessions, closedActiveSessions);
+        return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now, {
+          total: input.total,
+          id: "staff.override",
+          source: `staff.override:${input.staffId}`,
+          label: `Staff override: ${input.reason}`,
+        });
+      });
+    },
+  };
+}
+
+function assertCheckoutBalance(holdings: readonly AssetHolding[], amount: number, now: Date): void {
+  deductCurrency(holdings.map((holding) => ({ ...holding })), {
+    amount,
+    reason: "checkout.balance-check",
+    refId: "preflight",
+    now,
+  });
+}
+
+async function calculateUnifiedCheckoutDetails(
+  dependencies: SettlementServiceDependencies,
+  playerId: string,
+  closedSessions: readonly Session[],
+  assetHoldings: readonly AssetHolding[],
+  now: Date,
+) {
+  if (closedSessions.length === 0) {
+    throw new PrismDomainError("Player has no sessions to settle.", "PLAYER_HAS_NO_UNSETTLED_SESSIONS");
+  }
+
+  const [operations, storeProfile] = dependencies.system
+    ? await Promise.all([
+        dependencies.system.getAppSetting<{ timeZone?: unknown }>("venue.operations"),
+        dependencies.system.getAppSetting<{ timeZone?: unknown }>("store.profile"),
+      ])
+    : [null, null];
+  const timeZone =
+    (typeof operations?.timeZone === "string" && operations.timeZone.trim() ? operations.timeZone.trim() : null) ??
+    (typeof storeProfile?.timeZone === "string" && storeProfile.timeZone.trim() ? storeProfile.timeZone.trim() : null) ??
+    "Asia/Shanghai";
+
+  const pastAppliedAdjustments = dependencies.settlements.listPastAppliedAdjustmentsByPlayerId
+    ? await dependencies.settlements.listPastAppliedAdjustmentsByPlayerId(playerId)
+    : [];
+
+  const orderedSessions = uniqueSessionsById(closedSessions).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+  const anchorSession = [...orderedSessions].sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
+  let currentHoldings = assetHoldings.map((h) => ({ ...h }));
+  const resolvedAvailableAssets = dependencies.availableAssets
+    ? await dependencies.availableAssets.resolveAvailableHoldings(currentHoldings, {
+        at: now,
+        includeHidden: true,
+      })
+    : null;
+  const definitionsForSettlement = resolvedAvailableAssets
+    ? resolvedAvailableAssets.map((asset) => asset.definition)
+    : dependencies.assetDefinitions
+      ? await dependencies.assetDefinitions.listAll()
+      : [];
+  const availableDefinitions = new Map(
+    definitionsForSettlement.map((definition) => [
+      `${definition.type}\u0000${definition.code}`,
+      definition,
+    ]),
+  );
+  const availableHoldings = resolvedAvailableAssets
+    ? resolvedAvailableAssets.map((asset) => asset.holding)
+    : currentHoldings.filter((holding) => holding.quantity > 0 && isActiveInWindow(holding, now));
+  const walletBalanceBefore = resolvedAvailableAssets
+    ? sumAvailableWalletBalance(resolvedAvailableAssets)
+    : sumCurrencyHoldings(availableHoldings);
+  let totalAmount = 0;
+  let overallSubtotal = 0;
+  const accumulatedAdjustments = [...pastAppliedAdjustments];
+  const sessionResults: Array<{
+    session: Session;
+    chargeItems: ChargeItem[];
+    adjustments: SettlementAdjustment[];
+    extraLedgerEntries: AssetLedgerEntry[];
+  }> = [];
+
+  for (const session of orderedSessions) {
+    const pricingProviders = await resolvePricingProviders(dependencies, {
+      playerId,
+      session,
+      now,
+    });
+    const preview = await previewSessionSettlement({
+      session,
+      pricingProviders,
+      assetEffectProviders: dependencies.assetEffectProviders,
+      assetHoldings: availableHoldings,
+      now,
+      timeZone,
+      pastAppliedAdjustments: accumulatedAdjustments,
+    });
+
+    const sessionRawSubtotal = preview.chargeItems.reduce((sum, item) => sum + item.amount, 0);
+    const sessionRawTotal = sessionRawSubtotal + preview.adjustments.reduce((sum, adj) => sum + adj.amount, 0);
+    overallSubtotal += sessionRawSubtotal;
+    totalAmount += sessionRawTotal;
+
+    const extraLedgerEntries: AssetLedgerEntry[] = [];
+    for (const adj of preview.adjustments) {
+      const match = adj.id.match(/:asset-definition:([^:]+):([^:]+):/);
+      if (match && dependencies.assetDefinitions) {
+        const assetType = match[1];
+        const assetCode = match[2];
+        const definition = availableDefinitions.get(`${assetType}\u0000${assetCode}`);
+        if (definition && definition.status !== "archived" && isActiveInWindow(definition, now)) {
+          const effectConfig = resolveAssetDefinitionEffectConfig(definition, now);
+          const consumable = effectConfig?.consumable === true;
+          if (consumable) {
+            const holding = availableHoldings.find(
+              (h) => h.assetType === assetType && h.assetCode === assetCode && h.quantity > 0,
+            );
+            if (holding) {
+              holding.quantity -= 1;
+              extraLedgerEntries.push({
+                assetType,
+                assetCode,
+                delta: -1,
+                reason: "session.settlement.coupon",
+                refId: session.id,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    for (const adj of preview.adjustments) {
+      accumulatedAdjustments.push({
+        source: adj.source,
+        sessionStartedAt: session.startedAt,
+      });
+    }
+
+    sessionResults.push({
+      session,
+      chargeItems: preview.chargeItems,
+      adjustments: preview.adjustments,
+      extraLedgerEntries,
+    });
+  }
+
+  const unifiedAdjustments: SettlementAdjustment[] = [];
+  const globalCapAdjustments: SettlementAdjustment[] = [];
+  const globalCapWindows: TimeCapPricingWindow[] = [];
+  const unifiedLedgerEntries: AssetLedgerEntry[] = [];
+
+  const chargeItemsBeforeUnifiedEffects = sessionResults.flatMap((result) => result.chargeItems);
+  const chargeItemsForGlobalCaps = sessionResults.flatMap((result) =>
+    result.chargeItems.map((item) => item.sessionId ? item : { ...item, sessionId: result.session.id }),
+  );
+  const globalCapConfigs = dependencies.globalCapResolver
+    ? await dependencies.globalCapResolver({
+        playerId,
+        sessions: orderedSessions,
+        chargeItems: chargeItemsBeforeUnifiedEffects,
+        now,
+        timeZone,
+      })
+    : [];
+  const globalCapHistoryKeys = globalCapConfigs.flatMap((config) =>
+    collectTimeCapPricingHistoryLookupKeys({
+      config,
+      chargeItems: chargeItemsForGlobalCaps,
+    }),
+  );
+  const globalCapPaidHistory = dependencies.pricingCapHistory
+    ? await dependencies.pricingCapHistory.sumByPlayerAndKeys(playerId, globalCapHistoryKeys)
+    : {};
+  for (const config of globalCapConfigs) {
+    const windows = explainTimeCapPricing({
+      config: {
+        ...config,
+        paidHistory: globalCapPaidHistory,
+      },
+      chargeItems: chargeItemsForGlobalCaps,
+    });
+    globalCapWindows.push(...allocateGlobalCapWindowContributions(windows));
+    const adjustments = applyTimeCapPricing({
+      config: {
+        ...config,
+        paidHistory: globalCapPaidHistory,
+      },
+      chargeItems: chargeItemsForGlobalCaps,
+    });
+    for (const adjustment of adjustments) {
+      globalCapAdjustments.push(adjustment);
+      unifiedAdjustments.push(adjustment);
+      totalAmount += adjustment.amount;
+    }
+  }
+
+  if (dependencies.assetDefinitions) {
+    for (const holding of availableHoldings.filter((h) => h.quantity > 0)) {
+      if (totalAmount <= 0) break;
+
+      const definition = availableDefinitions.get(`${holding.assetType}\u0000${holding.assetCode}`);
+      if (!definition || definition.status === "archived" || !isActiveInWindow(definition, anchorSession.startedAt)) continue;
+
+      const effectConfig = resolveAssetDefinitionEffectConfig(definition, anchorSession.startedAt);
+      if (!effectConfig || effectConfig.scope !== "unified") continue;
+      if (!isAssetEffectConfigAvailable(effectConfig, anchorSession.startedAt, timeZone)) continue;
+
+      if (effectConfig.limitPerDay) {
+        const todayStr = calendarDayAt(anchorSession.startedAt, timeZone);
+        const assetSource = assetDefinitionEffectSource(holding.assetType, holding.assetCode);
+        const usesToday = accumulatedAdjustments
+          .filter((adj) => adj.source === assetSource)
+          .filter((adj) => calendarDayAt(adj.sessionStartedAt, timeZone) === todayStr)
+          .length;
+        if (usesToday >= effectConfig.limitPerDay) continue;
+      }
+
+      const discountAmount = calculateAssetEffectDiscount(totalAmount, effectConfig);
+
+      if (discountAmount <= 0) continue;
+
+      const adjSource = assetDefinitionEffectSource(holding.assetType, holding.assetCode);
+      unifiedAdjustments.push({
+        id: `${anchorSession.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${effectConfig.type}`,
+        source: adjSource,
+        label: definition.name,
+        amount: -discountAmount,
+      });
+
+      totalAmount -= discountAmount;
+      accumulatedAdjustments.push({
+        source: adjSource,
+        sessionStartedAt: anchorSession.startedAt,
+      });
+
+      if (effectConfig.consumable === true) {
+        holding.quantity -= 1;
+        unifiedLedgerEntries.push({
+          assetType: holding.assetType,
+          assetCode: holding.assetCode,
+          delta: -1,
+          reason: "session.settlement.coupon",
+          refId: anchorSession.id,
+        });
+      }
+    }
+  }
+
+  return {
+    subtotal: Math.max(0, overallSubtotal),
+    total: Math.max(0, totalAmount),
+    sessionResults,
+    unifiedAdjustments,
+    unifiedLedgerEntries,
+    originalHoldings: assetHoldings,
+    currentHoldings,
+    availableHoldings,
+    resolvedAvailableAssets,
+    walletBalanceBefore,
+    globalCapAdjustments,
+    globalCapWindows,
+    timeZone,
+    pastAppliedAdjustments: accumulatedAdjustments,
+    anchorSession,
+  };
+}
+
+function sessionsForUnifiedCheckout(
+  unpaidClosedSessions: readonly Session[],
+  activeSessions: readonly Session[],
+): Session[] {
+  return uniqueSessionsById([
+    ...unpaidClosedSessions,
+    ...activeSessions,
+  ]);
+}
+
+function uniqueSessionsById<T extends Session>(sessions: readonly T[]): T[] {
+  const byId = new Map<string, T>();
+  for (const session of sessions) {
+    byId.set(session.id, session);
+  }
+  return [...byId.values()];
+}
+
+function toPlayerCheckoutPreview(
+  playerId: string,
+  details: Awaited<ReturnType<typeof calculateUnifiedCheckoutDetails>>,
+  now: Date,
+): PreviewPlayerCheckoutResult {
+  const sessionIds = details.sessionResults.map((result) => result.session.id);
+  return {
+    settlementPreview: {
+      playerId,
+      sessionIds,
+      subtotal: details.subtotal,
+      total: details.total,
+      status: "preview",
+      previewedAt: now,
+    },
+    sessionPreviews: details.sessionResults.map((result) => {
+      const subtotal = result.chargeItems.reduce((sum, item) => sum + item.amount, 0);
+      const total = subtotal + result.adjustments.reduce((sum, adj) => sum + adj.amount, 0);
+      return {
+        sessionId: result.session.id,
+        label: result.session.label ?? null,
+        startedAt: result.session.startedAt,
+        endedAt: result.session.endedAt ?? null,
+        status: result.session.status,
+        subtotal,
+        total,
+        chargeItems: result.chargeItems,
+        adjustments: result.adjustments,
+      };
+    }),
+    chargeItems: details.sessionResults.flatMap((result) => result.chargeItems),
+    adjustments: [
+      ...details.sessionResults.flatMap((result) => result.adjustments),
+      ...details.unifiedAdjustments,
+    ],
+    checkoutAdjustments: details.unifiedAdjustments.filter(
+      (adjustment) => adjustment.pricingCapHistory == null,
+    ),
+    pricingCapAdjustments: details.globalCapAdjustments,
+    wallet: {
+      balanceBefore: details.walletBalanceBefore,
+      balanceAfter: details.walletBalanceBefore - details.total,
+    },
+    globalCapWindows: details.globalCapWindows,
+  };
+}
+
+function allocateGlobalCapWindowContributions(
+  windows: readonly TimeCapPricingWindow[],
+): TimeCapPricingWindow[] {
+  return windows.map((window) => {
+    const contributions = [...window.contributions].sort((a, b) =>
+      a.sessionId.localeCompare(b.sessionId) || a.pricingConfigId.localeCompare(b.pricingConfigId),
+    );
+    const currentAmount = contributions.reduce((sum, contribution) => sum + contribution.amount, 0);
+    const allocatedContributions = contributions.map((contribution, index) => {
+      if (index === contributions.length - 1) {
+        return { ...contribution, amount: 0 };
+      }
+      return {
+        ...contribution,
+        amount: currentAmount === 0
+          ? 0
+          : (window.amountApplied * contribution.amount) / currentAmount,
+      };
+    });
+    const amountBeforeLast = allocatedContributions
+      .slice(0, -1)
+      .reduce((sum, contribution) => sum + contribution.amount, 0);
+
+    return {
+      ...window,
+      contributions: allocatedContributions.map((contribution, index) =>
+        index === allocatedContributions.length - 1
+          ? { ...contribution, amount: window.amountApplied - amountBeforeLast }
+          : contribution,
+      ),
+    };
+  });
+}
+
+async function persistUnifiedPlayerCheckout(
+  dependencies: SettlementServiceDependencies,
+  playerId: string,
+  details: Awaited<ReturnType<typeof calculateUnifiedCheckoutDetails>>,
+  now: Date,
+  overrideTotal?: {
+    total: number;
+    id: string;
+    source: string;
+    label: string;
+  },
+): Promise<SettlePlayerCheckoutResult> {
+  const anchorSession = details.anchorSession;
+  const sessionIds = details.sessionResults.map((result) => result.session.id);
+  const extraLedgerEntries = [
+    ...details.sessionResults.flatMap((result) => result.extraLedgerEntries),
+    ...details.unifiedLedgerEntries,
+  ];
+
+  let finalTotal = details.total;
+  let overrideAdjustment: SettlementAdjustment | undefined;
+  if (overrideTotal) {
+    const diff = overrideTotal.total - details.total;
+    finalTotal = overrideTotal.total;
+    overrideAdjustment = {
+      id: `${anchorSession.id}:${overrideTotal.id}`,
+      source: overrideTotal.source,
+      label: overrideTotal.label,
+      amount: diff,
+    };
+  }
+
+  const currencyLedgerEntries = deductCurrency(details.availableHoldings, {
+    amount: finalTotal,
+    reason: "session.settlement",
+    refId: anchorSession.id,
+    now,
+  });
+  const assetLedgerEntries = [
+    ...currencyLedgerEntries,
+    ...extraLedgerEntries,
+  ];
+
+  const nextHoldings = details.currentHoldings.filter((holding) => holding.quantity > 0);
+  await dependencies.assets.commitAssetTransaction({
+    transaction: {
+      id: `asset-tx:session.settlement:${anchorSession.id}`,
+      playerId,
+      kind: "session.settlement",
+      refId: anchorSession.id,
+      createdAt: now,
+      metadata: {
+        sessions: sessionIds,
+        total: finalTotal,
+      },
+    },
+    holdingChanges: diffAssetHoldings(details.originalHoldings, nextHoldings),
+    assetLedgerEntries,
+  });
+  const walletBalanceAfter = details.resolvedAvailableAssets
+    ? sumAvailableWalletBalance(details.resolvedAvailableAssets)
+    : sumCurrencyHoldings(details.availableHoldings);
+
+  const settlements: SettlementRecord[] = [];
+  const checkout: PlayerCheckout = {
+    id: `player-checkout:${anchorSession.id}`,
+    playerId,
+    subtotal: details.subtotal,
+    total: finalTotal,
+    status: "settled",
+    settledAt: now,
+  };
+  const pricingHistoryEntries: PricingHistoryEntry[] = [];
+  for (const result of details.sessionResults) {
+    const adjustments = [
+      ...result.adjustments,
+      ...(result.session.id === anchorSession.id ? details.unifiedAdjustments : []),
+      ...(overrideAdjustment && result.session.id === anchorSession.id ? [overrideAdjustment] : []),
+    ];
+    const subtotal = result.chargeItems.reduce((sum, item) => sum + item.amount, 0);
+    const total = subtotal + adjustments.reduce((sum, adjustment) => sum + adjustment.amount, 0);
+    const record: SettlementRecord = {
+      settlement: {
+        sessionId: result.session.id,
+        subtotal,
+        total,
+        status: "settled",
+        settledAt: now,
+      },
+      chargeItems: result.chargeItems,
+      adjustments,
+    };
+
+    result.session.paymentStatus = "paid";
+    pricingHistoryEntries.push(...toPricingHistoryEntries(result.chargeItems, {
+      playerId,
+      sessionId: result.session.id,
+      createdAt: now,
+    }));
+    settlements.push(record);
+  }
+  await savePlayerCheckout(dependencies.settlements, checkout, settlements);
+  await saveSessions(dependencies.sessions, details.sessionResults.map((result) => result.session));
+  await dependencies.pricingHistory?.appendEntries(pricingHistoryEntries);
+  await dependencies.pricingCapHistory?.appendEntries(toPricingCapHistoryEntries(details.globalCapAdjustments, {
+    playerId,
+    sessionIds,
+    createdAt: now,
+    anchorSessionId: anchorSession.id,
+  }));
+
+  return {
+    playerSettlement: {
+      playerId,
+      sessionIds,
+      subtotal: details.subtotal,
+      total: finalTotal,
+      status: "settled",
+      settledAt: now,
+    },
+    settlements,
+    sessionDetails: details.sessionResults.map((result) => ({
+      sessionId: result.session.id,
+      label: result.session.label ?? null,
+      startedAt: result.session.startedAt,
+      endedAt: result.session.endedAt ?? null,
+    })),
+    chargeItems: details.sessionResults.flatMap((result) => result.chargeItems),
+    adjustments: [
+      ...details.sessionResults.flatMap((result) => result.adjustments),
+      ...details.unifiedAdjustments,
+      ...(overrideAdjustment ? [overrideAdjustment] : []),
+    ],
+    checkoutAdjustments: [
+      ...details.unifiedAdjustments.filter(
+        (adjustment) => adjustment.pricingCapHistory == null,
+      ),
+      ...(overrideAdjustment ? [overrideAdjustment] : []),
+    ],
+    pricingCapAdjustments: details.globalCapAdjustments,
+    assetLedgerEntries,
+    wallet: {
+      balanceBefore: details.walletBalanceBefore,
+      balanceAfter: walletBalanceAfter,
+    },
+    globalCapWindows: details.globalCapWindows,
+  };
+}
+
+function toPricingCapHistoryEntries(
+  adjustments: readonly SettlementAdjustment[],
+  input: {
+    playerId: string;
+    sessionIds: readonly string[];
+    createdAt: Date;
+    anchorSessionId: string;
+  },
+): PricingCapHistoryEntry[] {
+  return adjustments.flatMap((adjustment, index) => {
+    const history = adjustment.pricingCapHistory;
+    if (!history || history.amount <= 0) return [];
+    return [
+      {
+        id: `pricing-cap-history:${input.anchorSessionId}:${index}`,
+        playerId: input.playerId,
+        capConfigId: history.capConfigId,
+        capRuleId: history.capRuleId,
+        capAnchorAt: history.capAnchorAt,
+        includedPricingConfigIds: history.includedPricingConfigIds,
+        sessionIds: [...input.sessionIds],
+        amount: history.amount,
+        createdAt: input.createdAt,
+        metadata: null,
+      },
+    ];
+  });
+}
+
+async function findSessionOrThrow(sessions: SessionRepository, playerId: string, sessionId?: string) {
+  if (sessionId) {
+    const session = await sessions.findById(sessionId);
+    if (!session || session.playerId !== playerId) {
+      throw new PrismDomainError("Session not found for player.", "SESSION_NOT_FOUND");
+    }
+    return session;
+  }
+  const activeSessions = await sessions.findActiveByPlayerId(playerId);
+  const latestActive = activeSessions.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
+  if (!latestActive) {
+    throw new PrismDomainError("Player has no active session.", "ACTIVE_SESSION_NOT_FOUND");
+  }
+  return latestActive;
+}
+
+async function saveSessions(
+  sessions: SessionRepository,
+  records: readonly Session[],
+): Promise<void> {
+  if (records.length === 0) return;
+  if (sessions.saveMany) {
+    await sessions.saveMany(records);
+    return;
+  }
+  for (const record of records) await sessions.save(record);
+}
+
+async function savePlayerCheckout(
+  settlements: SettlementRepository,
+  checkout: PlayerCheckout,
+  records: readonly SettlementRecord[],
+): Promise<void> {
+  await settlements.saveCheckout(checkout, records);
+}
+
+async function resolvePricingProviders(
+  dependencies: SettlementServiceDependencies,
+  context: PricingProviderResolverContext,
+): Promise<readonly PricingProvider[]> {
+  return dependencies.pricingProviderResolver
+    ? dependencies.pricingProviderResolver(context)
+    : dependencies.pricingProviders;
+}
+
+function toPricingHistoryEntries(
+  chargeItems: readonly ChargeItem[],
+  input: {
+    playerId: string;
+    sessionId: string;
+    createdAt: Date;
+  },
+): PricingHistoryEntry[] {
+  return chargeItems.flatMap((item, index) => {
+    if (!item.pricingHistory) return [];
+    const history = item.pricingHistory;
+    return [
+      {
+        id: `pricing-history:${input.sessionId}:${index}`,
+        playerId: input.playerId,
+        pricingConfigId: history.pricingConfigId,
+        providerId: history.providerId,
+        ruleId: history.ruleId,
+        ruleAnchorAt: history.ruleAnchorAt,
+        sessionId: input.sessionId,
+        amount: history.amount,
+        createdAt: input.createdAt,
+        metadata: null,
+      },
+    ];
+  });
+}

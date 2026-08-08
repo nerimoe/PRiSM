@@ -1,0 +1,9 @@
+[submodule "packages/prism-dashboard"]
+	path = packages/prism-dashboard
+	url = https://github.com/nerimoe/prism-dashboard.git
+[submodule "packages/plugin-prism-next-astrbot"]
+	path = packages/plugin-prism-next-astrbot
+	url = https://github.com/NeneNyann/plugin-prism-next-astrbot.git
+[submodule "packages/koishi-plugin"]
+	path = packages/koishi-plugin
+	url = https://github.com/nerimoe/koishi-plugin-prism.git
