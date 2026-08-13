@@ -76,7 +76,7 @@ describe("deployment artifacts", () => {
       "dev:local": "bun run packages/runtime/src/serve.ts",
       "wrangler:config": "bun run scripts/generate-wrangler-config.ts",
       "dev:worker": "bun run scripts/generate-wrangler-config.ts --local && wrangler dev --config wrangler.generated.jsonc",
-      "deploy:worker": "bun run scripts/generate-wrangler-config.ts && bun run scripts/release.ts deploy-worker",
+      "deploy:worker": "bun run scripts/generate-wrangler-config.ts && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote && bun run scripts/release.ts deploy-worker",
       "prism-dashboard:build": "bun run scripts/release.ts build-dashboard",
       "version:bump": "bun run scripts/release.ts bump",
       "db:create:d1": "wrangler d1 create prism",

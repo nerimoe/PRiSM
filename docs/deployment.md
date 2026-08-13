@@ -69,22 +69,22 @@ bun run dev:all
    ```
    Worker 代码使用的 D1 binding 固定为 `DB`，数据库资源名称和 ID 则由每位部署者独立配置。
 
-2. **应用数据库迁移（本地模拟与远程生产）**：
+2. **验证数据库迁移（本地模拟与远程生产）**：
    - 在本地测试 Worker 行为时，应用本地模拟迁移：
      ```bash
      bun run db:migrate:local
      ```
-   - 在正式发布生产前，必须向远程 Cloudflare D1 应用数据库架构升级：
+   - `bun run deploy:worker` 会在上传 Worker 之前自动向远程 D1 应用所有未执行的迁移。如果只想手动预先执行生产迁移，也可以运行：
      ```bash
      bun run db:migrate:remote
      ```
-   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。部署包含这些契约的 Worker 前必须先应用远程迁移。
+   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。
 
 3. **部署 Worker**：
    ```bash
    bun run deploy:worker
    ```
-   快捷指令会先根据当前部署者的环境变量生成 Wrangler 配置，再读取根目录 `package.json` 的 SemVer，并将该版本及当前 Git 短提交号注入 Worker；线上可通过 `GET /version` 核对实际运行版本。不要直接调用裸 `wrangler deploy`，否则可能绕过配置生成或令版本显示为开发占位值。
+   快捷指令会先根据当前部署者的环境变量生成 Wrangler 配置，再应用所有未执行的远程 D1 迁移，最后读取根目录 `package.json` 的 SemVer 并将该版本及当前 Git 短提交号注入 Worker。迁移失败时命令会停止，不会上传 Worker；线上可通过 `GET /version` 核对实际运行版本。不要直接调用裸 `wrangler deploy`，否则会绕过配置生成、迁移和版本注入。
    部署完成后，您将获得一个类似 `https://prism-api.your-subdomain.workers.dev` 的 API 接口域名。
 
 ### C. GitHub 自动构建（Cloudflare Workers Builds）
@@ -109,7 +109,7 @@ bun run dev:all
 
 Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不会进入 Git 历史，也不是 Worker 运行时变量。`PRISM_D1_DATABASE_ID` 本身不是访问凭据，但仍可标记为 secret 以减少日志暴露；真正的 API Token 或第三方凭据必须使用 Cloudflare 的运行时 **Variables & Secrets** 或 `wrangler secret` 管理。
 
-`bun run wrangler:config` 同时生成 `.wrangler/deploy/config.json`，因此 Cloudflare 默认的 `wrangler versions upload` 预览命令会自动使用当前项目的生成配置。生产数据库迁移不会在部署命令中隐式执行；合并包含新 `migrations/*.sql` 的版本前，先运行一次 `bun run db:migrate:remote`。
+`bun run wrangler:config` 同时生成 `.wrangler/deploy/config.json`，因此 Cloudflare 默认的 `wrangler versions upload` 预览命令会自动使用当前项目的生成配置。生产部署命令会在 Worker 上传前自动应用新 `migrations/*.sql`；如果选中的 Workers Builds API token 没有 D1 Edit 权限，构建日志会在迁移步骤失败，需要在 Cloudflare 的 API token 设置中换成允许 D1 写入的用户 token，然后重试构建。
 
 ---
 
