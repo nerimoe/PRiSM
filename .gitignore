@@ -8,8 +8,7 @@ dist-types/
 .env
 .env.*
 !.env.example
-*.sqlite
-*.sqlite-*
+*.sqlite*
 *.db
 data/
 exports/
