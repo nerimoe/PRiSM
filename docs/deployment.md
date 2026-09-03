@@ -127,13 +127,7 @@ Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不�
   ```bash
   bun run prism-dashboard:build  # 自动注入发布版本与 Dashboard Git 提交号
   ```
-  构建生成的静态文件位于：`packages/prism-dashboard/build/web/`。Dashboard 的
-  `web/_headers` 会让 Cloudflare Pages 缓存 Wasm 运行文件 4 小时，避免每次进入
-  都重新下载运行时；根构建脚本会将它复制到 `build/web/_headers`，HTML 仍保持
-  重新验证，bootstrap 也不会跨发布使用旧构建配置。生产 Pages 构建使用默认
-  JavaScript 编译，不加 `--wasm`。
-  Web bootstrap 会从产物内的 `canvaskit/` 加载 Flutter 渲染引擎，不再从
-  Google CDN 下载 CanvasKit。
+  构建生成的静态文件位于：`packages/prism-dashboard/build/web/`。
 
 * **构建老版后台 (`admin-flutter`)**：
   ```bash
