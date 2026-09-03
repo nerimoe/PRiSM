@@ -1,6 +1,6 @@
 import type { AssetDefinitionRepository, Present, PresentGrant, RedeemCode, RedeemRepository } from "@prism/core";
-import { PrismDomainError, isActiveInWindow } from "@prism/core";
-import { assetKey } from "./available-assets";
+import { PrismDomainError } from "@prism/core";
+import { assertPresentGrantAssetDefinitionsActive } from "./redeem";
 
 export type StaffCreatePresentInput = {
   name: string;
@@ -147,34 +147,6 @@ export function createStaffRedeemService(dependencies: StaffRedeemServiceDepende
       return revoked;
     },
   };
-}
-
-async function assertPresentGrantAssetDefinitionsActive(
-  dependencies: StaffRedeemServiceDependencies,
-  grants: readonly Pick<PresentGrant, "assetType" | "assetCode" | "activeAt" | "expiresAt">[],
-  now: Date,
-): Promise<void> {
-  if (!dependencies.assetDefinitions) return;
-
-  const definitions = new Map(
-    (await dependencies.assetDefinitions.listAll()).map((definition) => [
-      assetKey(definition.type, definition.code),
-      definition,
-    ]),
-  );
-  for (const grant of grants) {
-    if (!isActiveInWindow(grant, now)) continue;
-    const definition = definitions.get(assetKey(grant.assetType, grant.assetCode));
-    if (!definition) {
-      throw new PrismDomainError("Asset definition not found.", "ASSET_DEFINITION_NOT_FOUND");
-    }
-    if (definition.status === "archived") {
-      throw new PrismDomainError("Asset definition has been archived.", "ASSET_DEFINITION_ARCHIVED");
-    }
-    if (!isActiveInWindow(definition, now)) {
-      throw new PrismDomainError("Asset definition is not available.", "ASSET_DEFINITION_NOT_AVAILABLE");
-    }
-  }
 }
 
 async function assertPresentCanReceiveNewCodes(

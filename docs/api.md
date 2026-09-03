@@ -203,7 +203,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/pricing-configs/:pricingConfigId/timeline?date=YYYY-MM-DD` | 获取指定日期下该方案的可视化 24 小时时间轴分段明细。 |
 | `POST` | `/rpc/staff/pricing-timeline/preview` | 发送未保存的计费规则草稿，计算并预览其 24 小时时间轴；普通计费草稿发送 `pricing`，全局封顶草稿发送 `priceCap` 与可选 `includedPricingConfigIds`。 |
 | `GET` | `/rpc/staff/settings` | 读取店铺通用和硬件设置。 |
-| `PUT` | `/rpc/staff/settings` | 更改店铺配置与投币冷却时间。 |
+| `PUT` | `/rpc/staff/settings` | 更改店铺配置、投币冷却时间和新用户注册礼物包；`registration.defaultPresentId` 填现有礼物 ID，填 `null` 表示关闭。 |
 | `GET` | `/rpc/staff/device-states` | 获取设施设备上报状态，用于门禁、电源、空调、灯光等 Home Assistant 或设施网关视图。 |
 | `GET` | `/rpc/staff/machine-connections` | 获取游戏机器软件的 WebSocket 在线状态、能力列表、连接时间、最后心跳和断开时间。 |
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |
@@ -317,7 +317,7 @@ Integration body 支持结构化身份和简写身份：
 }
 ```
 
-`autoRegister` 为 `false` 或未传时，身份不存在会返回 `PLAYER_IDENTITY_NOT_FOUND` 和 HTTP 404。`autoRegister: true` 会创建玩家并绑定外部身份，然后继续执行这次动作。
+`autoRegister` 为 `false` 或未传时，身份不存在会返回 `PLAYER_IDENTITY_NOT_FOUND` 和 HTTP 404。`autoRegister: true` 会创建玩家并绑定外部身份，然后继续执行这次动作；如果后台配置了 `registration.defaultPresentId`，新玩家会按该礼物当前有效的内容自动获得资产。未配置、已归档、已过期或找不到的默认礼物只会跳过发放，不会阻断注册；后台手动创建玩家也使用同一规则。
 
 机器人或自助入口请求机器动作时，不需要先查玩家 ID。以 QQ 用户触发 maimai 投币为例：
 

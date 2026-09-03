@@ -333,6 +333,7 @@ describe("createPrismApp", () => {
       homeAssistantConnection: { url: "", token: "" },
       homeAssistantDevices: [] as any[],
       hinataIoDevices: [] as any[],
+      registration: { defaultPresentId: null as string | null },
     };
     const app = createPrismApp({
       playerQueries: {
@@ -366,6 +367,7 @@ describe("createPrismApp", () => {
           settings.homeAssistantConnection = input.homeAssistantConnection ?? { url: "", token: "" };
           settings.homeAssistantDevices = input.homeAssistantDevices || [];
           settings.hinataIoDevices = input.hinataIoDevices || [];
+          settings.registration = input.registration || { defaultPresentId: null };
           return settings;
         },
       },
@@ -424,6 +426,9 @@ describe("createPrismApp", () => {
             cardType: "aime",
           },
         ],
+        registration: {
+          defaultPresentId: "present-welcome",
+        },
       }),
     });
     expect(updateResponse.status).toBe(200);
@@ -459,6 +464,9 @@ describe("createPrismApp", () => {
             cardType: "aime",
           },
         ],
+        registration: {
+          defaultPresentId: "present-welcome",
+        },
       },
     });
   });

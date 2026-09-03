@@ -337,6 +337,10 @@ export type HinataIoDeviceConfig = {
   cardType: string;
 };
 
+export type PlayerRegistrationSettings = {
+  defaultPresentId: string | null;
+};
+
 export type StaffSettings = {
   store: {
     name: string;
@@ -348,6 +352,7 @@ export type StaffSettings = {
   homeAssistantConnection: HomeAssistantConnectionConfig;
   homeAssistantDevices: HomeAssistantDeviceConfig[];
   hinataIoDevices: HinataIoDeviceConfig[];
+  registration: PlayerRegistrationSettings;
 };
 
 export type StaffSettingsCommands = {

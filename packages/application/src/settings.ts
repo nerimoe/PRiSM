@@ -22,6 +22,10 @@ export type HinataIoDeviceConfig = {
   cardType: string;
 };
 
+export type PlayerRegistrationSettings = {
+  defaultPresentId: string | null;
+};
+
 export type StoreSettings = {
   store: {
     name: string;
@@ -33,6 +37,7 @@ export type StoreSettings = {
   homeAssistantConnection: HomeAssistantConnectionConfig;
   homeAssistantDevices: HomeAssistantDeviceConfig[];
   hinataIoDevices: HinataIoDeviceConfig[];
+  registration: PlayerRegistrationSettings;
 };
 
 export type SettingsServiceDependencies = {
@@ -50,6 +55,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
       const haDevices = settings.get("devices.homeassistant") as HomeAssistantDeviceConfig[] | undefined;
       const haConnection = settings.get("devices.homeassistant_connection") as Partial<HomeAssistantConnectionConfig> | undefined;
       const hinataIoDevices = settings.get("devices.hinata_io");
+      const registration = settings.get("player.registration");
 
       return {
         store: {
@@ -65,6 +71,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         },
         homeAssistantDevices: Array.isArray(haDevices) ? haDevices : [],
         hinataIoDevices: normalizeHinataIoDeviceConfigs(hinataIoDevices),
+        registration: normalizeRegistrationSettings(registration),
       };
     },
 
@@ -90,6 +97,11 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
           ? await dependencies.system.getAppSetting("devices.hinata_io")
           : input.hinataIoDevices,
       );
+      const registration = normalizeRegistrationSettings(
+        input.registration === undefined
+          ? await dependencies.system.getAppSetting("player.registration")
+          : input.registration,
+      );
 
       const settings = [
         { key: "store.profile", value: next.store },
@@ -97,6 +109,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         { key: "devices.homeassistant", value: haDevices },
         { key: "devices.homeassistant_connection", value: haConnection },
         { key: "devices.hinata_io", value: hinataIoDevices },
+        { key: "player.registration", value: registration },
       ];
       if (dependencies.system.setAppSettings) {
         await dependencies.system.setAppSettings(settings);
@@ -110,6 +123,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         homeAssistantConnection: haConnection,
         homeAssistantDevices: haDevices,
         hinataIoDevices,
+        registration,
       };
     },
   };
@@ -139,6 +153,17 @@ function normalizeSettings(input: StoreSettings): StoreSettings {
     homeAssistantConnection: input.homeAssistantConnection,
     homeAssistantDevices: input.homeAssistantDevices,
     hinataIoDevices: input.hinataIoDevices,
+    registration: normalizeRegistrationSettings(input.registration),
+  };
+}
+
+function normalizeRegistrationSettings(value: unknown): PlayerRegistrationSettings {
+  if (!isRecord(value)) return { defaultPresentId: null };
+  const defaultPresentId = value.defaultPresentId;
+  return {
+    defaultPresentId: typeof defaultPresentId === "string" && defaultPresentId.trim()
+      ? defaultPresentId.trim()
+      : null,
   };
 }
 

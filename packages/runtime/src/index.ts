@@ -282,9 +282,27 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     id: input.id,
     now: input.now,
   });
+  const staffPlayerCommands = createStaffPlayerService({
+    players: input.repositories.players,
+    assets: input.repositories.assets,
+    assetDefinitions: input.repositories.assetDefinitions,
+    redeems: input.repositories.redeems,
+    playerIdentities: input.repositories.playerIdentities,
+    async getDefaultRegistrationPresentId() {
+      const registration = await input.repositories.system.getAppSetting<{ defaultPresentId?: unknown }>(
+        "player.registration",
+      );
+      return typeof registration?.defaultPresentId === "string"
+        ? registration.defaultPresentId
+        : null;
+    },
+    id: input.id,
+    now: input.now,
+  });
   const integrationCommands = createIntegrationService({
     players: input.repositories.players,
     playerIdentities: input.repositories.playerIdentities,
+    registerPlayer: (player) => staffPlayerCommands.createPlayer(player),
     sessions: input.repositories.sessions,
     playerCommands,
     playerCheckoutCommands,
@@ -299,13 +317,6 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
   const staffAssetDefinitionCommands = createStaffAssetDefinitionService({
     assetDefinitions: input.repositories.assetDefinitions,
     pricingEffects: input.repositories.pricingEffects,
-  });
-  const staffPlayerCommands = createStaffPlayerService({
-    players: input.repositories.players,
-    assets: input.repositories.assets,
-    playerIdentities: input.repositories.playerIdentities,
-    id: input.id,
-    now: input.now,
   });
   const staffRedeemCommands = createStaffRedeemService({
     redeems: input.repositories.redeems,

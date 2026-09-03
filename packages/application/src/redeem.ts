@@ -119,8 +119,8 @@ export function createRedeemService(dependencies: RedeemServiceDependencies): Re
   };
 }
 
-async function assertPresentGrantAssetDefinitionsActive(
-  dependencies: RedeemServiceDependencies,
+export async function assertPresentGrantAssetDefinitionsActive(
+  dependencies: Pick<RedeemServiceDependencies, "assetDefinitions">,
   grants: readonly Pick<PresentGrant, "assetType" | "assetCode" | "activeAt" | "expiresAt">[],
   now: Date,
 ): Promise<void> {

@@ -1,4 +1,5 @@
 import type {
+  AssetDefinitionRepository,
   AssetGrant,
   AssetMergeStrategy,
   AssetRepository,
@@ -7,8 +8,10 @@ import type {
   PlayerIdentityRepository,
   PlayerRepository,
   PlayerStatus,
+  RedeemRepository,
 } from "@prism/core";
-import { diffAssetHoldings, grantAssets, PrismDomainError } from "@prism/core";
+import { diffAssetHoldings, grantAssets, isActiveInWindow, PrismDomainError } from "@prism/core";
+import { assertPresentGrantAssetDefinitionsActive } from "./redeem";
 
 export type StaffCreatePlayerInput = {
   displayName: string;
@@ -48,7 +51,10 @@ export type ResolvePlayerIdentityInput = {
 export type StaffPlayerServiceDependencies = {
   players: PlayerRepository;
   assets?: AssetRepository;
+  assetDefinitions?: AssetDefinitionRepository;
+  redeems?: Pick<RedeemRepository, "findPresentById">;
   playerIdentities?: PlayerIdentityRepository;
+  getDefaultRegistrationPresentId?: () => Promise<string | null>;
   id: () => string;
   now: () => Date;
 };
@@ -64,44 +70,50 @@ export type StaffPlayerService = {
 export function createStaffPlayerService(dependencies: StaffPlayerServiceDependencies): StaffPlayerService {
   return {
     async createPlayer(input) {
+      const now = dependencies.now();
       const player: Player = {
         id: dependencies.id(),
         displayName: input.displayName,
         status: "active",
-        createdAt: dependencies.now(),
+        createdAt: now,
       };
+      const grantPlan = input.initialGrants === undefined
+        ? await resolveDefaultRegistrationGrants(dependencies, now)
+        : {
+            grants: input.initialGrants.map((grant) => ({
+              ...grant,
+              reason: "player.register.grant",
+              refId: player.id,
+            })),
+            transactionKind: "player.register.grant",
+            transactionRefId: player.id,
+            metadata: { grantCount: input.initialGrants.length },
+          };
 
       await dependencies.players.save(player);
 
-      if (input.initialGrants && input.initialGrants.length > 0) {
+      if (grantPlan.grants.length > 0) {
         if (!dependencies.assets) {
           throw new PrismDomainError("Asset repository is required for register-time grants.", "REGISTER_GRANTS_NOT_CONFIGURED");
         }
 
-        const grants: AssetGrant[] = input.initialGrants.map((grant) => ({
-          ...grant,
-          reason: "player.register.grant",
-          refId: player.id,
-        }));
         const existingHoldings = await dependencies.assets.listAssetHoldings(player.id);
         const result = grantAssets({
           playerId: player.id,
           existingHoldings,
-          grants,
+          grants: grantPlan.grants,
           idFactory: dependencies.id,
-          now: dependencies.now(),
+          now,
         });
 
         await dependencies.assets.commitAssetTransaction({
           transaction: {
-            id: `asset-tx:player.register.grant:${player.id}`,
+            id: `asset-tx:${grantPlan.transactionKind}:${player.id}`,
             playerId: player.id,
-            kind: "player.register.grant",
-            refId: player.id,
+            kind: grantPlan.transactionKind,
+            refId: grantPlan.transactionRefId,
             createdAt: player.createdAt,
-            metadata: {
-              grantCount: input.initialGrants.length,
-            },
+            metadata: grantPlan.metadata,
           },
           holdingChanges: diffAssetHoldings(existingHoldings, result.holdings),
           assetLedgerEntries: result.assetLedgerEntries,
@@ -164,5 +176,68 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
 
       return dependencies.playerIdentities.findPlayerByIdentity(input.provider, input.subject);
     },
+  };
+}
+
+async function resolveDefaultRegistrationGrants(
+  dependencies: StaffPlayerServiceDependencies,
+  now: Date,
+): Promise<{
+  grants: AssetGrant[];
+  transactionKind: string;
+  transactionRefId: string;
+  metadata: Record<string, unknown>;
+}> {
+  const presentId = (await dependencies.getDefaultRegistrationPresentId?.())?.trim();
+  if (!presentId) {
+    return {
+      grants: [],
+      transactionKind: "player.register.present",
+      transactionRefId: "",
+      metadata: { grantCount: 0 },
+    };
+  }
+  if (!dependencies.redeems || !dependencies.assetDefinitions) {
+    throw new PrismDomainError(
+      "Registration present dependencies are not configured.",
+      "REGISTER_PRESENTS_NOT_CONFIGURED",
+    );
+  }
+
+  const present = await dependencies.redeems.findPresentById(presentId);
+  if (!present) {
+    return {
+      grants: [],
+      transactionKind: "player.register.present",
+      transactionRefId: presentId,
+      metadata: { presentId, grantCount: 0 },
+    };
+  }
+  if (present.status === "archived" || !isActiveInWindow(present, now)) {
+    return {
+      grants: [],
+      transactionKind: "player.register.present",
+      transactionRefId: present.id,
+      metadata: { presentId: present.id, presentName: present.name, grantCount: 0 },
+    };
+  }
+
+  await assertPresentGrantAssetDefinitionsActive(
+    { assetDefinitions: dependencies.assetDefinitions },
+    present.grants,
+    now,
+  );
+  const grants = present.grants
+    .filter((grant) => isActiveInWindow(grant, now))
+    .map((grant) => ({
+      ...grant,
+      reason: "player.register.present",
+      refId: present.id,
+    }));
+  return {
+    grants,
+    transactionKind: "player.register.present",
+    transactionRefId: present.id,
+    metadata: { presentId: present.id, presentName: present.name, grantCount: grants.length },
   };
 }

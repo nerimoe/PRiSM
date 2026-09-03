@@ -1,9 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type {
+  AssetDefinitionRepository,
   AssetHolding,
   AssetLedgerEntry,
   AssetRepository,
   AssetTransaction,
+  Present,
   Player,
   PlayerIdentity,
   PlayerIdentityRepository,
@@ -191,6 +193,88 @@ describe("createStaffPlayerService", () => {
         transactionId: "asset-tx:player.register.grant:player-1",
       },
     ]);
+  });
+
+  it("grants the configured present when a player is registered", async () => {
+    const players = new MemoryPlayerRepository();
+    const assets = new MemoryAssetRepository();
+    const present = {
+      id: "present-welcome",
+      name: "新用户欢迎包",
+      status: "active",
+      oncePerPlayer: false,
+      grants: [
+        {
+          assetType: "currency",
+          assetCode: "paid",
+          amount: 80,
+          mergeStrategy: "stack",
+          activeAt: null,
+          expiresAt: null,
+        },
+      ],
+    } satisfies Present;
+    const assetDefinitions: AssetDefinitionRepository = {
+      async save() {},
+      async findByCode() {
+        return null;
+      },
+      async listAll() {
+        return [
+          {
+            type: "currency",
+            code: "paid",
+            name: "余额",
+            stackable: true,
+            status: "active",
+            metadata: null,
+          },
+        ];
+      },
+    };
+    const ids = ["player-1", "holding-1"];
+    const service = createStaffPlayerService({
+      players,
+      assets,
+      assetDefinitions,
+      redeems: {
+        async findPresentById() {
+          return present;
+        },
+      },
+      getDefaultRegistrationPresentId: async () => present.id,
+      id: () => ids.shift() ?? "extra-id",
+      now: () => new Date("2026-06-07T10:00:00.000Z"),
+    });
+
+    await service.createPlayer({ displayName: "Guest" });
+
+    expect(assets.savedHoldings[0]).toEqual([
+      {
+        id: "holding-1",
+        assetType: "currency",
+        assetCode: "paid",
+        quantity: 80,
+        activeAt: null,
+        expiresAt: null,
+      },
+    ]);
+    expect(assets.assetTransactions[0]).toMatchObject({
+      kind: "player.register.present",
+      refId: "present-welcome",
+      metadata: {
+        presentId: "present-welcome",
+        presentName: "新用户欢迎包",
+        grantCount: 1,
+      },
+    });
+    expect(assets.ledgerEntries[0]).toMatchObject({
+      assetType: "currency",
+      assetCode: "paid",
+      delta: 80,
+      reason: "player.register.present",
+      refId: "present-welcome",
+    });
   });
 
   it("updates player status for staff management", async () => {

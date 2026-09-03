@@ -175,9 +175,21 @@ describe("createIntegrationService", () => {
   it("auto-registers a missing identity before starting a session", async () => {
     const players = new MemoryPlayerRepository();
     const identities = new MemoryPlayerIdentityRepository(players);
+    const registeredNames: string[] = [];
     const service = createIntegrationService({
       players,
       playerIdentities: identities,
+      registerPlayer: async ({ displayName }) => {
+        registeredNames.push(displayName);
+        const player = {
+          id: "player-new",
+          displayName,
+          status: "active",
+          createdAt: new Date("2026-07-07T11:00:00.000Z"),
+        } satisfies Player;
+        await players.save(player);
+        return player;
+      },
       playerCommands: {
         async startSession(input) {
           return {
@@ -205,6 +217,7 @@ describe("createIntegrationService", () => {
     });
 
     expect(session.playerId).toBe("player-new");
+    expect(registeredNames).toEqual(["QQ 8888"]);
     expect(players.saved).toEqual([
       {
         id: "player-new",

@@ -166,6 +166,62 @@ async function playerSessionHeaders(app: ReturnType<typeof createPrismApp>, play
 }
 
 describe("createPrismRuntimeDependencies", () => {
+  it("grants the configured present when integration registers a player", async () => {
+    const db = createDb();
+    const now = new Date("2026-06-07T10:00:00.000Z");
+    db.run(
+      "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+      [
+        "player.registration",
+        JSON.stringify({ defaultPresentId: "present-welcome" }),
+        now.toISOString(),
+      ],
+    );
+    db.run(
+      "INSERT INTO presents (id, name, once_per_player, active_at, expires_at, status, grants_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        "present-welcome",
+        "新用户欢迎包",
+        0,
+        null,
+        null,
+        "active",
+        JSON.stringify([
+          {
+            assetType: "currency",
+            assetCode: "currency.paid",
+            amount: 80,
+            mergeStrategy: "stack",
+            activeAt: null,
+            expiresAt: null,
+          },
+        ]),
+      ],
+    );
+
+    const runtime = createRuntimeForDb(db, () => now);
+    const player = await runtime.integrationCommands!.resolveOrRegisterPlayerByIdentity({
+      identity: { provider: "qq", subject: "10001" },
+      autoRegister: true,
+      displayName: "Guest",
+    });
+
+    expect(player).toMatchObject({
+      id: "id-1",
+      displayName: "Guest",
+      status: "active",
+    });
+    expect(db
+      .query("SELECT asset_type, asset_code, quantity FROM asset_holdings WHERE player_id = ?")
+      .all(player.id)).toEqual([
+        {
+          asset_type: "currency",
+          asset_code: "currency.paid",
+          quantity: 80,
+        },
+      ]);
+  });
+
   it("persists priority time pricing cap history per player and rule anchor during checkout", async () => {
     const db = createDb();
     db.run(

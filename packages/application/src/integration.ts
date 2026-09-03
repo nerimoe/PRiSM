@@ -88,6 +88,7 @@ export type IntegrationPlayerQueries = {
 export type IntegrationServiceDependencies = {
   players: PlayerRepository;
   playerIdentities: PlayerIdentityRepository;
+  registerPlayer?: (input: { displayName: string }) => Promise<Player>;
   sessions?: SessionRepository;
   playerCommands: PlayerCommandService;
   playerCheckoutCommands?: Pick<SettlementService, "previewCheckout" | "checkout" | "stopSession">;
@@ -133,13 +134,16 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
       throw new PrismDomainError("Player identity was not found.", "PLAYER_IDENTITY_NOT_FOUND");
     }
 
-    const player: Player = {
-      id: dependencies.id(),
-      displayName: input.displayName?.trim() || `${identity.provider}:${identity.subject}`,
-      status: "active",
-      createdAt: dependencies.now(),
-    };
-    await dependencies.players.save(player);
+    const displayName = input.displayName?.trim() || `${identity.provider}:${identity.subject}`;
+    const player = dependencies.registerPlayer
+      ? await dependencies.registerPlayer({ displayName })
+      : {
+          id: dependencies.id(),
+          displayName,
+          status: "active" as const,
+          createdAt: dependencies.now(),
+        };
+    if (!dependencies.registerPlayer) await dependencies.players.save(player);
     await dependencies.playerIdentities.save({
       playerId: player.id,
       provider: identity.provider,

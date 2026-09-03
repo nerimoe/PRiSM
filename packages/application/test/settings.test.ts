@@ -18,6 +18,7 @@ describe("createSettingsService", () => {
       homeAssistantConnection: { url: "", token: "" },
       homeAssistantDevices: [],
       hinataIoDevices: [],
+      registration: { defaultPresentId: null },
     });
 
     await expect(
@@ -41,6 +42,7 @@ describe("createSettingsService", () => {
           },
         ],
         hinataIoDevices: [hinataIoDevice],
+        registration: { defaultPresentId: "present-welcome" },
       }),
     ).resolves.toEqual({
       store: {
@@ -62,6 +64,7 @@ describe("createSettingsService", () => {
         },
       ],
       hinataIoDevices: [hinataIoDevice],
+      registration: { defaultPresentId: "present-welcome" },
     });
     await expect(system.getAppSetting("store.profile")).resolves.toEqual({
       name: "音游窝",
@@ -78,6 +81,9 @@ describe("createSettingsService", () => {
       },
     ]);
     await expect(system.getAppSetting("devices.hinata_io")).resolves.toEqual([hinataIoDevice]);
+    await expect(system.getAppSetting("player.registration")).resolves.toEqual({
+      defaultPresentId: "present-welcome",
+    });
   });
 
   it("rejects invalid operation settings", async () => {
@@ -97,6 +103,7 @@ describe("createSettingsService", () => {
         homeAssistantConnection: { url: "", token: "" },
         homeAssistantDevices: [],
         hinataIoDevices: [],
+        registration: { defaultPresentId: null },
       }),
     ).rejects.toMatchObject({
       code: "INVALID_COIN_COOLDOWN",
@@ -114,6 +121,7 @@ describe("createSettingsService", () => {
         hinataIoDevice,
         { ...hinataIoDevice, id: "maimai-right", name: "舞萌右机" },
       ],
+      registration: { defaultPresentId: null },
     })).rejects.toMatchObject({ code: "DUPLICATE_HINATA_IO_DEVICE_REF" });
   });
 });
