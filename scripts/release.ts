@@ -4,6 +4,8 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
 const dashboardPath = fileURLToPath(new URL("../packages/prism-dashboard", import.meta.url));
 const dashboardPubspecPath = fileURLToPath(new URL("../packages/prism-dashboard/pubspec.yaml", import.meta.url));
+const dashboardHeadersPath = fileURLToPath(new URL("../packages/prism-dashboard/web/_headers", import.meta.url));
+const dashboardBuildHeadersPath = fileURLToPath(new URL("../packages/prism-dashboard/build/web/_headers", import.meta.url));
 const wranglerConfigPath = fileURLToPath(new URL("../wrangler.generated.jsonc", import.meta.url));
 const [command, argument] = Bun.argv.slice(2);
 
@@ -40,6 +42,7 @@ if (command === "bump") {
     `--dart-define=PRISM_DASHBOARD_VERSION=${version}`,
     `--dart-define=PRISM_DASHBOARD_REVISION=${await revision(dashboardPath)}`,
   ], dashboardPath);
+  await Bun.write(dashboardBuildHeadersPath, Bun.file(dashboardHeadersPath));
 } else {
   throw new Error("Usage: bun run scripts/release.ts <bump patch|minor|major|deploy-worker|build-dashboard>");
 }
