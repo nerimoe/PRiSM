@@ -45,7 +45,7 @@ export function createDeviceStateSyncService(
             executorKind: "home_assistant",
             label: device.name,
             status: "online",
-            state: JSON.stringify({ state: state === "on" ? "on" : "off" }),
+            state: state === "on" ? "on" : "off",
             metadata: {},
             reportedAt,
             reportedBy: "home_assistant_sync",

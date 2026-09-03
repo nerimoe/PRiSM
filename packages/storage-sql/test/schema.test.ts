@@ -140,6 +140,14 @@ describe("sqliteSchema", () => {
       "created_at",
       "metadata_json",
     ]);
+
+    expect(() => db.run(
+      "INSERT INTO device_commands (id, type, device_id, target_kind, executor_kind, status, requested_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ["hinata-command", "coin", "machine-1", "game_machine", "hinata_io", "acked", "2026-08-15T00:00:00.000Z"],
+    )).not.toThrow();
+    expect(db.query<{ name: string }, []>(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'device_states'",
+    ).all().map((row) => row.name)).toContain("idx_device_states_reported_at");
   });
 
   it("backfills legacy settlements into explicit player checkouts", () => {

@@ -583,6 +583,7 @@ describe("runtime entrypoints", () => {
         },
         homeAssistantConnection: { url: "", token: "" },
         homeAssistantDevices: [],
+        hinataIoDevices: [],
       },
     });
 

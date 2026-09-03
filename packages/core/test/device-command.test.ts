@@ -46,6 +46,31 @@ describe("requestDeviceCommand", () => {
     });
   });
 
+  it("routes resolved Hinata IO targets to the direct executor", () => {
+    const result = requestDeviceCommand({
+      actor: { type: "staff", staffId: "staff-1" },
+      command: {
+        type: "coin",
+        target: {
+          kind: "game_machine",
+          id: "maimai-1",
+          executorKind: "hinata_io",
+        },
+        payload: { count: 1 },
+      },
+      activeSessions: [],
+      previousCommands: [],
+      now: new Date("2026-08-15T00:00:00.000Z"),
+      id: "command-hinata",
+    });
+
+    expect(result).toMatchObject({
+      deviceId: "maimai-1",
+      executorKind: "hinata_io",
+      status: "pending",
+    });
+  });
+
   it("rejects player coin and power commands without an active session", () => {
     for (const command of [
       {

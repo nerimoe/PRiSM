@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type {
   DeviceCommand,
   DeviceCommandRepository,
+  PlayerIdentityRepository,
   Session,
   SessionRepository,
 } from "@prism/core";
@@ -159,6 +160,95 @@ describe("createDeviceActionService", () => {
     expect(deviceCommands.queued).toEqual([command]);
   });
 
+  it("resolves a player-facing game machine reference before direct execution", async () => {
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: new MemorySessionRepository([activeSession()]),
+      deviceCommands,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-remote",
+      coinCooldownMs: 60_000,
+      resolveGameMachineTarget: async (deviceRef) => {
+        expect(deviceRef).toBe("舞萌左机");
+        return {
+          target: { kind: "game_machine", id: "maimai-left", executorKind: "hinata_io" },
+          deviceLabel: "舞萌 DX 左机",
+        };
+      },
+      executors: {
+        hinata_io: {
+          async execute() {
+            return { status: "success" };
+          },
+        },
+      },
+    });
+
+    const command = await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "coin",
+      target: { kind: "game_machine", ref: "舞萌左机" },
+      payload: { count: 2 },
+    });
+
+    expect(command).toMatchObject({
+      deviceId: "maimai-left",
+      executorKind: "hinata_io",
+      status: "acked",
+      payload: { count: 2, deviceLabel: "舞萌 DX 左机" },
+    });
+  });
+
+  it("loads the player's bound Aime identity when a scan omits the card number", async () => {
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const playerIdentities: PlayerIdentityRepository = {
+      async save() {},
+      async delete() {},
+      async findPlayerByIdentity() { return null; },
+      async listByPlayerId(playerId) {
+        expect(playerId).toBe("player-1");
+        return [{
+          playerId,
+          provider: "aime",
+          subject: "01234567890123456789",
+          createdAt: new Date("2026-08-01T00:00:00.000Z"),
+        }];
+      },
+    };
+    const service = createDeviceActionService({
+      sessions: new MemorySessionRepository([activeSession()]),
+      deviceCommands,
+      playerIdentities,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-scan",
+      coinCooldownMs: 60_000,
+      resolveGameMachineTarget: async () => ({
+        target: { kind: "game_machine", id: "maimai-left", executorKind: "hinata_io" },
+        deviceLabel: "舞萌 DX 左机",
+      }),
+      executors: {
+        hinata_io: {
+          async execute({ command }) {
+            expect(command.payload?.subject).toBe("01234567890123456789");
+            return { status: "success" };
+          },
+        },
+      },
+    });
+
+    const command = await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "aime.scan",
+      target: { kind: "game_machine", ref: "舞萌左机" },
+      payload: { provider: "aime" },
+    });
+
+    expect(command.payload).toEqual({
+      provider: "aime",
+      deviceLabel: "舞萌 DX 左机",
+    });
+  });
+
   it("persists facility executor failures as backend-visible command payloads", async () => {
     const deviceCommands = new MemoryDeviceCommandRepository();
     const service = createDeviceActionService({
@@ -290,5 +380,16 @@ async function resolveTestFacilityTarget(deviceRef: string) {
   return {
     target: { kind: "facility", id: "switch.maimai" } as const,
     deviceLabel: "Maimai Switch",
+  };
+}
+
+function activeSession(): Session {
+  return {
+    id: "session-1",
+    playerId: "player-1",
+    startedAt: new Date("2026-08-15T09:00:00.000Z"),
+    status: "active",
+    pricingConfigIds: ["music"],
+    paymentStatus: "unpaid",
   };
 }

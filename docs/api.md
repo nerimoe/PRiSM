@@ -109,7 +109,7 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
 - `facility`：门禁、电源、空调等设施动作，当前执行器为 `home_assistant` 或设施网关。
 - `game_machine`：投币、Aime 扫描等游戏机器软件动作，执行器为 `machine_ws`，由对应机器的在线 WebSocket 连接实时接收。
 
-玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；`coin` 还会检查投币冷却时间。开关机管理员模式由受信任的 Bot 集成控制，管理员请求通过 `staffOverride: true` 记录为员工动作，不受玩家 session 限制；该覆盖仅支持 `power.on/off`。
+玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；`coin` 还会检查投币冷却时间。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
 
 设施动作示例：
 
@@ -292,7 +292,7 @@ Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外�
 | `POST` | `/rpc/integration/players/by-identity/redeem` | 按外部身份为玩家兑换礼物码。 |
 | `POST` | `/rpc/integration/players/by-identity/device-actions` | 按外部身份申请设备动作，例如启机、投币或 Aime 扫卡；后端会先解析玩家并检查 active session、投币冷却等规则。 |
 | `GET` | `/rpc/integration/sessions/active` | 机器人列出在场所有活跃 session，含玩家对外身份（QQ 等）以便从聊天平台拉取昵称。 |
-| `GET` | `/rpc/integration/device-states` | 机器人列出当前所有设备上报的电源/状态，供 `/show` 一类查询。 |
+| `GET` | `/rpc/integration/device-states` | 机器人列出当前所有设备上报的电源/状态，供 `/show` 一类查询。`deviceStates[].state` 是普通字符串（如 `on`、`off`），不得再包装为 JSON 字符串。 |
 
 Integration body 支持结构化身份和简写身份：
 
@@ -327,7 +327,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
   -H "Content-Type: application/json" \
   -d '{
     "identity": {"provider":"qq","subject":"123456"},
-    "target": {"kind":"game_machine","id":"maimai-dx-1"},
+    "target": {"kind":"game_machine","ref":"舞萌左机"},
     "action": {
       "type": "coin",
       "payload": {"count":1}
@@ -349,11 +349,11 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 }
 ```
 
-`coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
+`coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Integration 的游戏机目标使用 `target.ref`，只接受后端 Hinata IO 配置中的设备 `name` 或 `aliases`，不会把用户输入直接当内部机器 ID。`aime.scan` 的 payload 只需提供 `provider`（默认 `aime`），后端会读取该玩家已绑定的对应身份；没有绑定时返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
 
 ## 机器软件接口 (Machine RPC / WebSocket)
 
-本地 Bun 部署支持机器软件 WebSocket：`GET /rpc/machine/ws`，Header 使用 `Authorization: Bearer <machine-token>`。这是投币、Aime 等游戏机软件动作的唯一接入通道；命令投递、ACK、失败信息和心跳都通过 WebSocket 完成。
+本地 Bun 部署支持机器软件 WebSocket：`GET /rpc/machine/ws`，Header 使用 `Authorization: Bearer <machine-token>`。原生机器软件通过该通道接收投币、刷卡等动作并返回 ACK；后台配置的 Hinata IO 设备则由后端通过加密 relay HTTP 协议直接执行。
 
 机器连接后先发送 hello：
 

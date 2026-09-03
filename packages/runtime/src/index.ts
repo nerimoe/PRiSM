@@ -9,6 +9,7 @@ import {
   createDeviceStateSyncService,
   createIntegrationService,
   createMachineConnectionService,
+  normalizeHinataIoDeviceConfigs,
   createPlayerAuthService,
   createPlayerCommandService,
   createRedeemService,
@@ -28,6 +29,7 @@ import {
   type ApplicationQueries,
   type DeviceActionExecutor,
   type HomeAssistantStateSource,
+  type HinataIoDeviceConfig,
   type StaffPricingExtension,
   type StaffPricingExtensionRequiredAsset,
 } from "@prism/application";
@@ -42,6 +44,12 @@ import type { CreateSqlReadModelsInput, SqlRepositories } from "@prism/storage-s
 import { createSqlReadModels, sqliteSchema } from "@prism/storage-sql";
 import type { Hono } from "hono";
 import { backendVersionInfo } from "./release-version";
+import {
+  createHinataIoExecutor,
+  resolveHinataIoDeviceRef,
+} from "./hinata-io-executor";
+
+export * from "./hinata-io-executor";
 
 export type RuntimeRepositoryInput = SqlRepositories;
 
@@ -55,6 +63,7 @@ export type CreatePrismRuntimeDependenciesInput = {
   plugins?: readonly PrismRuntimePlugin[];
   deviceActionExecutors?: {
     homeAssistant?: DeviceActionExecutor;
+    hinataIo?: DeviceActionExecutor;
   };
   homeAssistantStateSource?: HomeAssistantStateSource;
   coinCooldownMs: number;
@@ -108,6 +117,10 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
   ];
   const resolveFacilityTarget = createDynamicHomeAssistantTargetResolver({
     system: input.repositories.system,
+  });
+  const resolveGameMachineTarget = createDynamicHinataIoTargetResolver({
+    system: input.repositories.system,
+    executor: input.deviceActionExecutors?.hinataIo,
   });
   const availableAssets = createAvailableAssetReader({
     assets: input.repositories.assets,
@@ -235,6 +248,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     now: input.now,
     coinCooldownMs: input.coinCooldownMs,
     resolveFacilityTarget,
+    resolveGameMachineTarget,
     executors: {
       home_assistant: createDynamicHomeAssistantExecutor({
         system: input.repositories.system,
@@ -584,7 +598,7 @@ export type CreatePrismWorkerAppOptions = {
 };
 
 export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): Hono {
-  const runtime = createDefaultRuntimeConfig(env);
+  const runtime = createDefaultRuntimeConfig();
   return createPrismApp(
     {
       ...createPrismRuntimeDependencies({
@@ -616,7 +630,7 @@ export function createPrismLocalApp(input: CreatePrismLocalAppInput): Hono {
 }
 
 export function createPrismLocalDependencies(input: CreatePrismLocalAppInput): PrismAppDependencies {
-  const runtime = createDefaultRuntimeConfig(input.env);
+  const runtime = createDefaultRuntimeConfig();
   return {
     ...createPrismRuntimeDependencies({
       repositories: RuntimeRepositories.fromBunSqlite({
@@ -681,7 +695,7 @@ type DefaultRuntimeConfig = {
   now: () => Date;
 };
 
-function createDefaultRuntimeConfig(env: PrismRuntimeEnv): DefaultRuntimeConfig {
+function createDefaultRuntimeConfig(): DefaultRuntimeConfig {
   return {
     pricingProviders: [],
     assetEffectProviders: [],
@@ -835,6 +849,28 @@ function createDynamicHomeAssistantTargetResolver(input: {
     return {
       target: { kind: "facility", id: entityId } as const,
       deviceLabel: device.name.trim() || "设备",
+    };
+  };
+}
+
+function createDynamicHinataIoTargetResolver(input: {
+  system: SqlRepositories["system"];
+  executor?: DeviceActionExecutor;
+}) {
+  return async (deviceRef: string) => {
+    const devices = normalizeHinataIoDeviceConfigs(
+      await input.system.getAppSetting("devices.hinata_io"),
+    );
+    const device = resolveHinataIoDeviceRef(deviceRef, devices);
+    if (!device) throw new PrismDomainError("设备不存在", "DEVICE_NOT_FOUND");
+    return {
+      target: {
+        kind: "game_machine",
+        id: device.id,
+        executorKind: "hinata_io",
+      } as const,
+      deviceLabel: device.name,
+      executor: input.executor ?? createHinataIoExecutor({ devices }),
     };
   };
 }

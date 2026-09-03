@@ -46,7 +46,7 @@ Integration 适合 Koishi、AstrBot、自助 Web 入场页、扫码入口等“�
 | 路由 | 用途 |
 | --- | --- |
 | `GET /rpc/integration/sessions/active` | 列出在场所有活跃 session，含 `playerDisplayName`、`identities` (provider+subject)、`startedAt`、`label`、`elapsedMinutes`。机器人在 `/list`、`/窝里` 这类命令里用 `identities` 中的 `subject`（QQ 号）去调用聊天平台 API 拉昵称，而不是直接显示后台存的 `playerDisplayName`。 |
-| `GET /rpc/integration/device-states` | 列出当前所有设备的最新电源/状态。bot 的 `/show` 命令直接消费。 |
+| `GET /rpc/integration/device-states` | 列出当前所有设备的最新电源/状态。`state` 为普通字符串（如 `on`、`off`），bot 的 `/show` 命令直接消费。 |
 
 平台昵称的取法因适配器而异：Koishi 走 `session.bot.getUser(qq)`，AstrBot 在 aiocqhttp 走 `bot.call_action("get_stranger_info", user_id=qq)`，telegram、微信、Aime 等按对应适配器提供的方法拉取；取不到则退化为后台存的玩家名。机器人不要把后台存的 displayName 直接写进消息，避免不同身份来源的玩家出现 `Player 123` 这种开发者命名。
 
@@ -125,7 +125,7 @@ await client.requestDeviceCommandByIdentity(
     type: "coin",
     target: {
       kind: "game_machine",
-      id: "maimai-dx-1",
+      ref: "舞萌左机",
     },
     payload: {
       count: 1,
@@ -143,14 +143,13 @@ await client.requestScanByIdentity(
     subject: "123456",
   },
   {
-    deviceId: "maimai-dx-1",
+    deviceRef: "舞萌左机",
     provider: "aime",
-    subject: "aime-card-id",
   },
 );
 ```
 
-`coin`、`aime.scan`、`power.on` 和 `power.off` 都要求玩家当前至少有一条正在运行的计费 session。未入场时接口返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Bot 配置为开关机仅管理员可用时，只允许白名单管理员提交请求，并附加 `staffOverride: true`；后端将其记录为员工动作。该覆盖只接受 `power.on/off`，不能用于投币、刷卡或其他设施动作。
+`coin`、`aime.scan`、`power.on` 和 `power.off` 都要求玩家当前至少有一条正在运行的计费 session。未入场时接口返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Bot 不接收游戏机内部 ID 或 Aime 卡号：游戏机通过后台配置的 `name` / `aliases` 解析，刷卡身份由后端从当前玩家已绑定的 `aime` 身份中读取。Bot 配置为关机仅管理员可用时，只允许白名单管理员提交 `power.off` 请求，并附加 `staffOverride: true`；`power.on` 仍要求玩家已入场。后端将覆盖请求记录为员工动作。该覆盖只接受 `power.on/off`，不能用于投币、刷卡或其他设施动作。
 
 旧的 `botToken + playerToken + staffToken` 普通命令模式已经废弃。Integration Token 可调用受限的管理员快捷操作接口：按外部身份调整玩家资产（`POST /rpc/integration/players/by-identity/assets/adjustments`）和按指定总价立即结账（`POST /rpc/integration/players/by-identity/checkout/override`）。这两个接口不授予完整 Staff API 权限；机器人仍必须在自身配置中限制可发起该操作的平台管理员。麻将上桌、下桌这类玩家业务命令不需要额外权限。
 
@@ -177,7 +176,30 @@ Machine 适合店内机器软件、投币控制器、Aime 桥接程序、门禁/
 
 服务端会回复 `hello.ack` 并推送该机器的待执行命令。机器执行后发送 `ack`，`status` 为 `success` 或 `failed`。失败 ACK 的 `message` 会保存到命令记录里，方便后台排查机器故障。
 
-设备动作统一使用明确类型和目标分类：`door.open`、`power.on`、`power.off`、`ac.set_temperature` 属于 `facility`，执行方向是 `home_assistant` 或设施网关；`coin` 和 `aime.scan` 属于 `game_machine`，执行方向是 `machine_ws`。投币和 Aime 这类机器软件能力走 Machine WebSocket，由后端主动推送指令；Home Assistant 这类设施控制仍作为另一类设备能力接入，API 边界保持在 Machine 语义下，而不是继续保留 Agent 概念。
+设备动作统一使用明确类型和目标分类：`door.open`、`power.on`、`power.off`、`ac.set_temperature` 属于 `facility`，执行方向是 `home_assistant` 或设施网关；`coin` 和 `aime.scan` 属于 `game_machine`。原生 PRiSM 机器软件仍可走 `machine_ws`；Hinata IO 客户端走 `hinata_io` 直接执行器，由后端调用 relay HTTP 端点。Home Assistant 设施控制继续保持独立边界。
+
+### Hinata IO 配置与协议
+
+Hinata IO 设备由员工在设备看板的游戏机器区域配置，保存于 `app_settings` 的 `devices.hinata_io`。配置更新后，后端解析设备和执行命令时会读取最新设置，无需修改环境变量或重新部署。每项数据格式如下：
+
+```json
+[
+  {
+    "id": "maimai-left",
+    "name": "舞萌 DX 左机",
+    "aliases": ["舞萌左机", "mai-left"],
+    "url": "https://relay.example/instance-id",
+    "password": "remotePassword",
+    "salt": "ABEiM0RVZneImaq7zN3u_w",
+    "coinKey": 32,
+    "cardType": "aime"
+  }
+]
+```
+
+`id` 仅用于后端持久化与审计，玩家输入不会与它匹配；玩家只能使用 `name` 或 `aliases`。所有设备的 `id` 必须唯一；忽略大小写和首尾空白后，`name` 与 `aliases` 也必须全局唯一，冲突配置会被拒绝。`url` 是 Hinata IO relay 的实例状态端点。`password` 必须与客户端远程密码一致；`salt` 是 16 字节随机值的无 padding base64url 表示；`coinKey` 默认 `32`（空格键），范围为 `0..65535`；`cardType` 默认 `aime`。
+
+后端按 Hinata IO 协议使用 PBKDF2-HMAC-SHA256（600000 次）和 AES-256-GCM 生成 `E2EE_V1`：投币向 `<url>/event` 发送有效期 30 秒、带 UUID 去重 ID 的 `KEY_PRESS`；刷卡向 `<url>` 发送可重放状态通道中的一次性 `SET_CARD`。relay 返回 404 时命令记为执行失败，bot 只显示“设备未连接”，详细错误保留在后端设备命令审计中。刷卡卡号只在一次命令执行期间存在于内存中，持久化命令前会从 payload 中移除。
 
 ### 玩家面对的设备别名与 Home Assistant 解析
 

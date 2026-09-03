@@ -326,9 +326,8 @@ describe("createPrismBotClient", () => {
     await client.requestScanByIdentity(
       { provider: "qq", subject: "123456" },
       {
-        deviceId: "mai-1",
+        deviceRef: "舞萌左机",
         provider: "aime",
-        subject: "aime-card-1",
       },
     );
 
@@ -341,13 +340,12 @@ describe("createPrismBotClient", () => {
         },
         target: {
           kind: "game_machine",
-          id: "mai-1",
+          ref: "舞萌左机",
         },
         action: {
           type: "aime.scan",
           payload: {
             provider: "aime",
-            subject: "aime-card-1",
           },
         },
       }),

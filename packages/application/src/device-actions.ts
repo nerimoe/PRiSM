@@ -40,6 +40,11 @@ export type DeviceActionServiceDependencies = {
     target: Extract<DeviceTarget, { kind: "facility" }>;
     deviceLabel: string;
   }>;
+  resolveGameMachineTarget?: (deviceRef: string) => Promise<{
+    target: Extract<DeviceTarget, { kind: "game_machine" }>;
+    deviceLabel: string;
+    executor?: DeviceActionExecutor;
+  }>;
   executors?: Partial<Record<DeviceExecutorKind, DeviceActionExecutor>>;
 };
 
@@ -57,8 +62,13 @@ export type DeviceActionService = {
 export function createDeviceActionService(dependencies: DeviceActionServiceDependencies): DeviceActionService {
   return {
     async requestDeviceAction(input) {
+      let payload = input.payload;
       if (input.actor.type === "player" && input.type === "aime.scan") {
-        await assertScanIdentityBelongsToPlayer(dependencies.playerIdentities, input.actor.playerId, input.payload);
+        payload = await resolvePlayerScanIdentity(
+          dependencies.playerIdentities,
+          input.actor.playerId,
+          input.payload,
+        );
       }
 
       const playerId = input.actor.type === "player" ? input.actor.playerId : null;
@@ -70,9 +80,7 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
         input.type === "coin" && dependencies.getCoinCooldownMs
           ? await dependencies.getCoinCooldownMs()
           : dependencies.coinCooldownMs;
-      const resolvedTarget: { target: DeviceTarget; deviceLabel?: string } = input.target.kind === "facility"
-        ? await resolveFacilityTarget(input.target.ref, dependencies.resolveFacilityTarget)
-        : { target: input.target };
+      const resolvedTarget = await resolveDeviceTarget(input.target, dependencies);
       const command = requestDeviceCommand({
         actor: input.actor,
         command: {
@@ -80,10 +88,10 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
           target: resolvedTarget.target,
           payload: resolvedTarget.deviceLabel
             ? {
-                ...(input.payload ?? {}),
+                ...(payload ?? {}),
                 deviceLabel: resolvedTarget.deviceLabel,
               }
-            : input.payload,
+            : payload,
         },
         activeSessions,
         previousCommands,
@@ -92,7 +100,7 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
         id: dependencies.id(),
       });
 
-      const executor = dependencies.executors?.[command.executorKind];
+      const executor = resolvedTarget.executor ?? dependencies.executors?.[command.executorKind];
       if (!executor) {
         await dependencies.deviceCommands.enqueueDeviceCommand(command);
         return command;
@@ -112,10 +120,39 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
             },
           };
 
+      if (updated.executorKind === "hinata_io" && updated.type === "aime.scan") {
+        updated = withoutScanSubject(updated);
+      }
+
       await dependencies.deviceCommands.enqueueDeviceCommand(updated);
       return updated;
     },
   };
+}
+
+function withoutScanSubject(command: DeviceCommand): DeviceCommand {
+  if (!command.payload || !("subject" in command.payload)) return command;
+  const { subject: _subject, ...payload } = command.payload;
+  return { ...command, payload };
+}
+
+async function resolveDeviceTarget(
+  target: DeviceReferenceTarget,
+  dependencies: Pick<DeviceActionServiceDependencies, "resolveFacilityTarget" | "resolveGameMachineTarget">,
+): Promise<{ target: DeviceTarget; deviceLabel?: string; executor?: DeviceActionExecutor }> {
+  if (target.kind === "facility") {
+    return resolveFacilityTarget(target.ref, dependencies.resolveFacilityTarget);
+  }
+  if (typeof target.ref === "string") {
+    if (!dependencies.resolveGameMachineTarget) {
+      throw new PrismDomainError(
+        "Game machine reference resolver is not configured.",
+        "GAME_MACHINE_RESOLVER_NOT_CONFIGURED",
+      );
+    }
+    return dependencies.resolveGameMachineTarget(target.ref);
+  }
+  return { target };
 }
 
 async function resolveFacilityTarget(
@@ -134,23 +171,28 @@ async function resolveFacilityTarget(
   return resolver(deviceRef);
 }
 
-async function assertScanIdentityBelongsToPlayer(
+async function resolvePlayerScanIdentity(
   playerIdentities: PlayerIdentityRepository | undefined,
   playerId: string,
   payload: Record<string, unknown> | undefined,
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   if (!playerIdentities) {
     throw new PrismDomainError("Player identity repository is required for Aime scan actions.", "PLAYER_IDENTITY_REPOSITORY_NOT_CONFIGURED");
   }
 
-  const provider = typeof payload?.provider === "string" ? payload.provider : "";
-  const subject = typeof payload?.subject === "string" ? payload.subject : "";
-  if (!provider || !subject) {
-    throw new PrismDomainError("Aime scan action requires provider and subject.", "INVALID_SCAN_IDENTITY_PAYLOAD");
-  }
-
-  const player = await playerIdentities.findPlayerByIdentity(provider, subject);
-  if (!player || player.id !== playerId) {
+  const provider = typeof payload?.provider === "string" && payload.provider.trim()
+    ? payload.provider.trim().toLowerCase()
+    : "aime";
+  const requestedSubject = typeof payload?.subject === "string" ? payload.subject.trim() : "";
+  const identities = await playerIdentities.listByPlayerId(playerId);
+  const identity = identities.find((candidate) =>
+    candidate.provider.toLowerCase() === provider && (!requestedSubject || candidate.subject === requestedSubject));
+  if (!identity) {
     throw new PrismDomainError("Scan identity is not bound to the player.", "SCAN_IDENTITY_NOT_BOUND_TO_PLAYER");
   }
+  return {
+    ...(payload ?? {}),
+    provider: identity.provider,
+    subject: identity.subject,
+  };
 }

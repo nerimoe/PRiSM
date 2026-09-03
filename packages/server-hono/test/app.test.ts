@@ -332,6 +332,7 @@ describe("createPrismApp", () => {
       },
       homeAssistantConnection: { url: "", token: "" },
       homeAssistantDevices: [] as any[],
+      hinataIoDevices: [] as any[],
     };
     const app = createPrismApp({
       playerQueries: {
@@ -364,6 +365,7 @@ describe("createPrismApp", () => {
           settings.operations = input.operations;
           settings.homeAssistantConnection = input.homeAssistantConnection ?? { url: "", token: "" };
           settings.homeAssistantDevices = input.homeAssistantDevices || [];
+          settings.hinataIoDevices = input.hinataIoDevices || [];
           return settings;
         },
       },
@@ -410,6 +412,18 @@ describe("createPrismApp", () => {
             id: "switch.cuco_cn_571514441_v3_on_p_2_1",
           },
         ],
+        hinataIoDevices: [
+          {
+            id: "maimai-left",
+            name: "舞萌左机",
+            aliases: ["mai-left"],
+            url: "https://relay.example/maimai-left",
+            password: "test-password",
+            salt: "ABEiM0RVZneImaq7zN3u_w",
+            coinKey: 32,
+            cardType: "aime",
+          },
+        ],
       }),
     });
     expect(updateResponse.status).toBe(200);
@@ -431,6 +445,18 @@ describe("createPrismApp", () => {
             name: "中二官拆",
             alias: ["chu2"],
             id: "switch.cuco_cn_571514441_v3_on_p_2_1",
+          },
+        ],
+        hinataIoDevices: [
+          {
+            id: "maimai-left",
+            name: "舞萌左机",
+            aliases: ["mai-left"],
+            url: "https://relay.example/maimai-left",
+            password: "test-password",
+            salt: "ABEiM0RVZneImaq7zN3u_w",
+            coinKey: 32,
+            cardType: "aime",
           },
         ],
       },
@@ -4478,7 +4504,9 @@ describe("createPrismApp", () => {
           return {
             id: "command-1",
             type: input.type,
-            deviceId: input.target.kind === "facility" ? "switch.maimai" : input.target.id,
+            deviceId: input.target.kind === "facility"
+              ? "switch.maimai"
+              : ("id" in input.target ? input.target.id ?? "game-machine" : "game-machine"),
             targetKind: input.target.kind,
             executorKind: "home_assistant",
             staffId: input.staffId,

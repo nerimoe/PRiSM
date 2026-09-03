@@ -44,15 +44,14 @@ export type DeviceCommandInput = {
       }
     | {
         kind: "game_machine";
-        id: string;
+        ref: string;
       };
   payload?: Record<string, unknown>;
 };
 
 export type ScanCommandInput = {
-  deviceId: string;
+  deviceRef: string;
   provider: string;
-  subject: string;
 };
 
 export type StaffGrantAssetInput = {
@@ -252,13 +251,12 @@ export function createPrismBotClient(input: PrismBotClientInput) {
       return integrationRequest<unknown>(prismRpcEndpoints.integration.requestDeviceAction, identity, {
         target: {
           kind: "game_machine",
-          id: scan.deviceId,
+          ref: scan.deviceRef,
         },
         action: {
           type: "aime.scan",
           payload: {
             provider: scan.provider,
-            subject: scan.subject,
           },
         },
       });

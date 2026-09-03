@@ -49,13 +49,13 @@ describe("createDeviceStateSyncService", () => {
       expect.objectContaining({
         deviceId: "switch.maimai_1",
         label: "舞萌一号",
-        state: JSON.stringify({ state: "on" }),
+        state: "on",
         reportedBy: "home_assistant_sync",
       }),
       expect.objectContaining({
         deviceId: "light.wacca",
         label: "WACCA",
-        state: JSON.stringify({ state: "off" }),
+        state: "off",
         reportedBy: "home_assistant_sync",
       }),
     ]);

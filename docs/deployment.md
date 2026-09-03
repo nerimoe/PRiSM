@@ -78,7 +78,7 @@ bun run dev:all
      ```bash
      bun run db:migrate:remote
      ```
-   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。
+   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。`migrations/0014_hinata_io_executor.sql` 扩展 Hinata IO 执行器约束，并保留设备状态按上报时间查询所需的索引。
 
 3. **部署 Worker**：
    ```bash

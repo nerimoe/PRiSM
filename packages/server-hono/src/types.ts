@@ -326,6 +326,17 @@ export type HomeAssistantConnectionConfig = {
   token: string;
 };
 
+export type HinataIoDeviceConfig = {
+  id: string;
+  name: string;
+  aliases: string[];
+  url: string;
+  password: string;
+  salt: string;
+  coinKey: number;
+  cardType: string;
+};
+
 export type StaffSettings = {
   store: {
     name: string;
@@ -336,6 +347,7 @@ export type StaffSettings = {
   };
   homeAssistantConnection: HomeAssistantConnectionConfig;
   homeAssistantDevices: HomeAssistantDeviceConfig[];
+  hinataIoDevices: HinataIoDeviceConfig[];
 };
 
 export type StaffSettingsCommands = {

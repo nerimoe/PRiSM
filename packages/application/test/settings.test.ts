@@ -17,6 +17,7 @@ describe("createSettingsService", () => {
       },
       homeAssistantConnection: { url: "", token: "" },
       homeAssistantDevices: [],
+      hinataIoDevices: [],
     });
 
     await expect(
@@ -39,6 +40,7 @@ describe("createSettingsService", () => {
             id: "switch.cuco_cn_571514441_v3_on_p_2_1",
           },
         ],
+        hinataIoDevices: [hinataIoDevice],
       }),
     ).resolves.toEqual({
       store: {
@@ -59,6 +61,7 @@ describe("createSettingsService", () => {
           id: "switch.cuco_cn_571514441_v3_on_p_2_1",
         },
       ],
+      hinataIoDevices: [hinataIoDevice],
     });
     await expect(system.getAppSetting("store.profile")).resolves.toEqual({
       name: "音游窝",
@@ -74,6 +77,7 @@ describe("createSettingsService", () => {
         id: "switch.cuco_cn_571514441_v3_on_p_2_1",
       },
     ]);
+    await expect(system.getAppSetting("devices.hinata_io")).resolves.toEqual([hinataIoDevice]);
   });
 
   it("rejects invalid operation settings", async () => {
@@ -92,12 +96,38 @@ describe("createSettingsService", () => {
         },
         homeAssistantConnection: { url: "", token: "" },
         homeAssistantDevices: [],
+        hinataIoDevices: [],
       }),
     ).rejects.toMatchObject({
       code: "INVALID_COIN_COOLDOWN",
     });
   });
+
+  it("rejects duplicate Hinata IO aliases", async () => {
+    const service = createSettingsService({ system: createMemorySystemRepository() });
+    await expect(service.updateSettings({
+      store: { name: "音游窝", timeZone: "Asia/Tokyo" },
+      operations: { coinCooldownMs: 60_000 },
+      homeAssistantConnection: { url: "", token: "" },
+      homeAssistantDevices: [],
+      hinataIoDevices: [
+        hinataIoDevice,
+        { ...hinataIoDevice, id: "maimai-right", name: "舞萌右机" },
+      ],
+    })).rejects.toMatchObject({ code: "DUPLICATE_HINATA_IO_DEVICE_REF" });
+  });
 });
+
+const hinataIoDevice = {
+  id: "maimai-left",
+  name: "舞萌左机",
+  aliases: ["mai-left"],
+  url: "https://relay.example/maimai-left",
+  password: "test-password",
+  salt: "ABEiM0RVZneImaq7zN3u_w",
+  coinKey: 32,
+  cardType: "aime",
+};
 
 function createMemorySystemRepository(): SystemRepository {
   const settings = new Map<string, unknown>();

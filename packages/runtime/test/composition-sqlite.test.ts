@@ -2588,4 +2588,82 @@ describe("createPrismRuntimeDependencies", () => {
       ],
     });
   });
+
+  it("resolves an integration game-machine alias, loads the bound Aime card, and persists a redacted ACK", async () => {
+    const db = createDb();
+    insertActiveSession(db, {
+      id: "session-hinata",
+      playerId: "player-1",
+      startedAt: "2026-08-15T09:00:00.000Z",
+    });
+    db.run(
+      "INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES (?, ?, ?, ?)",
+      ["player-1", "aime", "01234567890123456789", "2026-08-15T09:00:00.000Z"],
+    );
+    const now = () => new Date("2026-08-15T10:00:00.000Z");
+    let nextId = 0;
+    const repositories = RuntimeRepositories.fromBunSqlite({
+      db,
+      id: () => `remote-id-${++nextId}`,
+      now,
+    });
+    let hinataIoSettingReads = 0;
+    const getAppSetting = repositories.system.getAppSetting.bind(repositories.system);
+    repositories.system.getAppSetting = async <T = unknown>(key: string) => {
+      if (key === "devices.hinata_io") hinataIoSettingReads += 1;
+      return getAppSetting<T>(key);
+    };
+    let executedPayload: Record<string, unknown> | undefined;
+    const dependencies = createPrismRuntimeDependencies({
+      repositories,
+      queries: RuntimeRepositories.queriesFromBunSqlite({ db, now }),
+      pricingProviders: [],
+      assetEffectProviders: [],
+      coinCooldownMs: 60_000,
+      deviceActionExecutors: {
+        hinataIo: {
+          async execute({ command }) {
+            executedPayload = command.payload;
+            return { status: "success" };
+          },
+        },
+      },
+      id: () => `command-${++nextId}`,
+      now,
+    });
+    await repositories.system.setAppSetting("devices.hinata_io", [{
+      id: "maimai-left",
+      name: "舞萌 DX 左机",
+      aliases: ["舞萌左机"],
+      url: "https://relay.example/maimai-left",
+      password: "test-password",
+      salt: "ABEiM0RVZneImaq7zN3u_w",
+      coinKey: 32,
+      cardType: "aime",
+    }]);
+
+    const command = await dependencies.integrationCommands!.requestDeviceActionByIdentity({
+      identity: { provider: "test", subject: "player-1" },
+      target: { kind: "game_machine", ref: "舞萌左机" },
+      action: { type: "aime.scan", payload: { provider: "aime" } },
+    });
+
+    expect(executedPayload).toEqual({
+      provider: "aime",
+      subject: "01234567890123456789",
+      deviceLabel: "舞萌 DX 左机",
+    });
+    expect(command).toMatchObject({
+      deviceId: "maimai-left",
+      executorKind: "hinata_io",
+      status: "acked",
+      payload: {
+        provider: "aime",
+        deviceLabel: "舞萌 DX 左机",
+      },
+    });
+    expect(command.payload).not.toHaveProperty("subject");
+    expect(hinataIoSettingReads).toBe(1);
+    await expect(repositories.deviceCommands.getDeviceCommand(command.id)).resolves.toEqual(command);
+  });
 });

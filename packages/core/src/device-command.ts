@@ -3,7 +3,7 @@ import type { Session } from "./session";
 
 export type DeviceTargetKind = "facility" | "game_machine";
 
-export type DeviceExecutorKind = "home_assistant" | "machine_ws";
+export type DeviceExecutorKind = "home_assistant" | "machine_ws" | "hinata_io";
 
 export type DeviceActionType =
   | "power.on"
@@ -29,6 +29,7 @@ export type DeviceTarget =
   | {
       kind: "game_machine";
       id: string;
+      executorKind?: "machine_ws" | "hinata_io";
       all?: never;
     };
 
@@ -42,6 +43,11 @@ export type DeviceReferenceTarget =
       kind: "game_machine";
       id: string;
       ref?: never;
+    }
+  | {
+      kind: "game_machine";
+      ref: string;
+      id?: never;
     };
 
 export type DeviceCommandActor =
@@ -164,7 +170,7 @@ export function resolveDeviceExecutor(command: DeviceCommandRequest): DeviceExec
   if (command.target.kind !== "game_machine") {
     throw new PrismDomainError("Game-machine action requires a game machine target.", "DEVICE_ACTION_TARGET_MISMATCH");
   }
-  return "machine_ws";
+  return command.target.executorKind ?? "machine_ws";
 }
 
 function requiresActiveSession(type: DeviceCommandType): boolean {
