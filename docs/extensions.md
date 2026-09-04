@@ -112,7 +112,6 @@ import { storePlugin } from "./store-plugin";
 
 const app = createPrismLocalApp({
   db: new Database("./prism.sqlite"),
-  env: {},
   plugins: [storePlugin],
 });
 ```

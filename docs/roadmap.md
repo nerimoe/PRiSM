@@ -66,12 +66,12 @@
 - [x] **基础财务报表**：指定时间段，汇总全场营业额、开单数、币数、排行榜，并支持结账流水导出为标准 CSV 格式。
 
 ### H. 机器人与机器软件适配
-- [x] **Integration API 支持**：`@prism/bot-client` 完整封装了 Hono RPC 接口，并支持 QQ 识别自动绑定新玩家。
+- [x] **Integration API 支持**：Hono 提供 Integration HTTP 接口，并支持 QQ 识别自动绑定新玩家。
 - [x] **Koishi 插件**：独立仓库 `koishi-plugin-prism`（作为 `packages/koishi-plugin` 子模块）注册并实现日常快捷聊天开机/下机/扫码/充值/兑换命令。
 - [x] **机器软件驱动**：游戏机软件通过 Machine WebSocket 接收投币和 Aime 指令并回传 ACK；Home Assistant 设施动作由后端适配器直接执行。旧 Agent HTTP 轮询包与路由已删除。
 
 ### I. API 规范与数据迁移
-- [x] **强类型 RPC 设计**：利用 `@prism/rpc` 在前端、机器人和机器软件之间传递定义，杜绝手写路径。
+- [x] **API 分层设计**：Dashboard 和机器人调用 Hono HTTP API，机器软件使用独立的 Machine WebSocket 协议。
 - [x] **CF Worker 云端组装**：在 `@prism/adapter-d1` 与运行时模块的配合下，无需更改业务代码即可在 D1/Worker 上发布。
 - [x] **本地 Bun 组装**：通过 `@prism/adapter-sqlite` 实现在小主机或店长电脑上双击 Bun 即可本地运行。
 - [x] **双平移数据迁移工具**：`@prism/migration` 模块包含 Postgres 和 SQLite 导出指令，可直接将旧的 postgresql pg_dump 包转换后写入新库。

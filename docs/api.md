@@ -1,6 +1,6 @@
 # PRiSM Next API 参考手册
 
-API 由 `packages/server-hono` 提供实现，共享的客户端调用接口定义位于 `packages/rpc`。
+API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客户端集成的接口依据。
 
 所有成功的响应均返回 JSON 格式的视图模型（View Model），而非原始的数据库行数据。发生异常时，错误响应的格式如下：
 

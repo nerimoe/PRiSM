@@ -31,10 +31,8 @@ packages/adapter-sqlite  Bun SQLite adapter.
 packages/adapter-d1      Cloudflare D1 adapter.
 packages/server-hono     Thin Hono API, auth guards, response views, and Staff Web handoff.
 packages/runtime         Local and Worker composition entrypoints and external adapters.
-packages/rpc             Shared endpoint contract and fetch requester.
 packages/prism-dashboard Flutter Web admin console named prism_dashboard (Git Submodule).
 packages/admin-flutter   Legacy Flutter admin reference package.
-packages/bot-client      Bot-side RPC client.
 packages/koishi-plugin   Koishi plugin (git submodule, standalone repo koishi-plugin-prism)
 packages/migration       prism-neo conversion plan and importer.
 migrations               D1 migration SQL.

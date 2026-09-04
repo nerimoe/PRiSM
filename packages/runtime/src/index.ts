@@ -590,17 +590,12 @@ function resolveRequiredExtensionAsset(
   };
 }
 
-export type PrismRuntimeEnv = {
-  [key: string]: unknown;
-};
-
-export type PrismWorkerEnv = PrismRuntimeEnv & {
+export type PrismWorkerEnv = {
   DB: D1DatabaseLike;
 };
 
 export type CreatePrismLocalAppInput = {
   db: Database;
-  env: PrismRuntimeEnv;
   plugins?: readonly PrismRuntimePlugin[];
 };
 
@@ -621,7 +616,6 @@ export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWo
       queries: RuntimeRepositories.queriesFromD1({
         db: env.DB,
         now: runtime.now,
-        env,
       }),
       pricingProviders: runtime.pricingProviders,
       assetEffectProviders: runtime.assetEffectProviders,
@@ -652,7 +646,6 @@ export function createPrismLocalDependencies(input: CreatePrismLocalAppInput): P
       queries: RuntimeRepositories.queriesFromBunSqlite({
         db: input.db,
         now: runtime.now,
-        env: input.env,
       }),
       pricingProviders: runtime.pricingProviders,
       assetEffectProviders: runtime.assetEffectProviders,
@@ -680,19 +673,17 @@ export const RuntimeRepositories = {
     return createD1Repositories(input);
   },
 
-  queriesFromBunSqlite(input: { db: Database; now: () => Date; env?: PrismRuntimeEnv }): RuntimeQueryInput {
+  queriesFromBunSqlite(input: { db: Database; now: () => Date }): RuntimeQueryInput {
     return createRuntimeQueries({
       executor: createBunSqliteExecutor(input.db),
       now: input.now,
-      env: input.env,
     });
   },
 
-  queriesFromD1(input: { db: D1DatabaseLike; now: () => Date; env?: PrismRuntimeEnv }): RuntimeQueryInput {
+  queriesFromD1(input: { db: D1DatabaseLike; now: () => Date }): RuntimeQueryInput {
     return createRuntimeQueries({
       executor: createD1Executor(input.db),
       now: input.now,
-      env: input.env,
     });
   },
 };
@@ -886,10 +877,4 @@ function createDynamicHinataIoTargetResolver(input: {
   };
 }
 
-export type CreateRuntimeQueriesInput = CreateSqlReadModelsInput & {
-  env?: PrismRuntimeEnv;
-};
-
-export function createRuntimeQueries(input: CreateRuntimeQueriesInput): RuntimeQueryInput {
-  return createSqlReadModels(input);
-}
+export const createRuntimeQueries = createSqlReadModels;

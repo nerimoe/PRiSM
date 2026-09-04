@@ -33,6 +33,13 @@ if (command === "bump") {
   ], root);
 } else if (command === "build-dashboard") {
   await run([
+    "dart",
+    "run",
+    "build_runner",
+    "build",
+    "--delete-conflicting-outputs",
+  ], dashboardPath);
+  await run([
     "flutter",
     "build",
     "web",

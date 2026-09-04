@@ -89,50 +89,26 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/sessi
 
 `POST /sessions/:sessionId/stop` 只用于结束这名玩家名下由 Integration 创建的 session，例如 AstrBot 创建的麻将叠加计时。它会把 session 关闭并标记为待结算，不会扣款；玩家最终离店时，统一结算会把仍在运行的 session 和已经停止但未结算的 session 一起计算。接口会校验外部身份对应的玩家、session 归属和 session 来源，不能拿一个 Integration Token 去停别人的 session 或员工手动创建的 session。
 
-`@prism/bot-client` 也使用同一套接口。普通玩家命令只配置一个 `integrationToken`：
+没有单独的客户端 SDK；集成直接调用 HTTP API。以下示例使用平台原生 `fetch`：
 
 ```ts
-import { createPrismBotClient } from "@prism/bot-client";
-
-const client = createPrismBotClient({
-  baseUrl: "https://prism.example.com",
-  integrationToken: process.env.PRISM_INTEGRATION_TOKEN!,
-});
-
-await client.startSessionByIdentity(
-  {
-    provider: "qq",
-    subject: "123456",
+await fetch("https://prism.example.com/rpc/integration/players/by-identity/session/start", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${process.env.PRISM_INTEGRATION_TOKEN}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    identity: { provider: "qq", subject: "123456" },
     autoRegister: true,
     displayName: "QQ 123456",
-  },
-  {
     pricingConfigIds: ["music-standard"],
     label: "音游区间",
-  },
-);
+  }),
+});
 ```
 
 玩家命令需要操作机器或设施时，也继续使用 Integration Token。后端会先按 QQ 号解析玩家，再检查该玩家是否已入场、投币冷却是否满足，最后生成发给机器通道或设施执行器的指令：
-
-```ts
-await client.requestDeviceCommandByIdentity(
-  {
-    provider: "qq",
-    subject: "123456",
-  },
-  {
-    type: "coin",
-    target: {
-      kind: "game_machine",
-      ref: "舞萌左机",
-    },
-    payload: {
-      count: 1,
-    },
-  },
-);
-```
 
 Aime 扫卡可以走便利方法：
 

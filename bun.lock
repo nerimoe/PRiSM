@@ -33,13 +33,6 @@
         "@prism/core": "workspace:*",
       },
     },
-    "packages/bot-client": {
-      "name": "@prism/bot-client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@prism/rpc": "workspace:*",
-      },
-    },
     "packages/core": {
       "name": "@prism/core",
       "version": "0.0.0",
@@ -53,10 +46,6 @@
         "@prism/runtime": "workspace:*",
         "@prism/storage-sql": "workspace:*",
       },
-    },
-    "packages/rpc": {
-      "name": "@prism/rpc",
-      "version": "0.0.0",
     },
     "packages/runtime": {
       "name": "@prism/runtime",
@@ -228,13 +217,9 @@
 
     "@prism/application": ["@prism/application@workspace:packages/application"],
 
-    "@prism/bot-client": ["@prism/bot-client@workspace:packages/bot-client"],
-
     "@prism/core": ["@prism/core@workspace:packages/core"],
 
     "@prism/migration": ["@prism/migration@workspace:packages/migration"],
-
-    "@prism/rpc": ["@prism/rpc@workspace:packages/rpc"],
 
     "@prism/runtime": ["@prism/runtime@workspace:packages/runtime"],
 

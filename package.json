@@ -7,10 +7,8 @@
     "packages/adapter-d1",
     "packages/adapter-sqlite",
     "packages/application",
-    "packages/bot-client",
     "packages/core",
     "packages/migration",
-    "packages/rpc",
     "packages/runtime",
     "packages/server-hono",
     "packages/storage-sql"

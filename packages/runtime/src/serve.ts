@@ -6,7 +6,6 @@ import {
 import {
   createPrismLocalDependencies,
   initializeSqliteSchema,
-  type PrismRuntimeEnv,
 } from "./index";
 import { createPrismLocalFetchHandler } from "./local-server";
 
@@ -25,7 +24,6 @@ initializeSqliteSchema(db);
 
 const dependencies = createPrismLocalDependencies({
   db,
-  env: process.env as PrismRuntimeEnv,
 });
 const fetch = createPrismLocalFetchHandler(dependencies);
 

@@ -24,12 +24,6 @@
     },
     {
       "path": "./packages/migration"
-    },
-    {
-      "path": "./packages/rpc"
-    },
-    {
-      "path": "./packages/bot-client"
     }
   ]
 }

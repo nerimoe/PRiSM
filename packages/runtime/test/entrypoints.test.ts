@@ -138,7 +138,7 @@ describe("runtime entrypoints", () => {
     });
   });
 
-  it("creates a local app from Bun SQLite and ignores legacy PRiSM business environment values", async () => {
+  it("creates and authenticates a local app from Bun SQLite", async () => {
     const db = new Database(":memory:");
     seed(db);
     for (const statement of [
@@ -170,36 +170,7 @@ describe("runtime entrypoints", () => {
     }
     const app = createPrismLocalApp({
       db,
-      env: {
-        PRISM_PLAYER_TOKEN: "player-token",
-        PRISM_STAFF_TOKEN: "staff-token",
-        PRISM_STAFF_TOKENS: JSON.stringify([
-          {
-            token: "viewer-token",
-            staffId: "viewer-1",
-            role: "viewer",
-          },
-        ]),
-        PRISM_INTEGRATION_TOKEN: "bot-token",
-        PRISM_MACHINE_TOKEN: "agent-token",
-        PRISM_COIN_COOLDOWN_MS: "60000",
-        PRISM_FLAT_PRICE: "999",
-      },
     });
-
-    const legacyStaffTokenResponse = await app.request("/rpc/staff/players", {
-      headers: {
-        Authorization: "Bearer staff-token",
-      },
-    });
-    expect(legacyStaffTokenResponse.status).toBe(403);
-
-    const legacyRoleTokenResponse = await app.request("/rpc/staff/players", {
-      headers: {
-        Authorization: "Bearer viewer-token",
-      },
-    });
-    expect(legacyRoleTokenResponse.status).toBe(403);
 
     const response = await app.request("/rpc/staff/players", {
       headers: {
@@ -230,7 +201,6 @@ describe("runtime entrypoints", () => {
     ]);
     const app = createPrismLocalApp({
       db,
-      env: {},
       plugins: [
         {
           id: "plugin.locker",
@@ -281,7 +251,6 @@ describe("runtime entrypoints", () => {
     seed(db);
     const app = createPrismLocalApp({
       db,
-      env: {},
       plugins: [
         {
           id: "plugin.reservation",
@@ -450,12 +419,11 @@ describe("runtime entrypoints", () => {
     });
   });
 
-  it("creates a local app without PRiSM business environment variables and supports setup login", async () => {
+  it("creates a local app and supports setup login", async () => {
     const db = new Database(":memory:");
     seed(db);
     const dependencies = createPrismLocalDependencies({
       db,
-      env: {},
     });
     const app = createPrismApp(dependencies);
 

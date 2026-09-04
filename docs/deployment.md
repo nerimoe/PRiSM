@@ -198,7 +198,6 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    在您的 Koishi 配置中启用 `koishi-plugin-prism` 插件（Koishi 控制台会读取其 `Config` Schema），或在自定义插件入口中引入并使用 `applyPrismKoishiPlugin`。示例代码如下：
    ```typescript
    import { Context, Schema } from 'koishi';
-   import { createPrismBotClient, PrismBotClient } from '@prism/bot-client';
    import { applyPrismKoishiPlugin } from 'koishi-plugin-prism';
 
    export const name = 'prism-next';
@@ -222,19 +221,13 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    });
 
    export function apply(ctx: Context, config: Config) {
-     // 实例化底层的 PRiSM 机器人客户端
-     const client = new PrismBotClient({
+     applyPrismKoishiPlugin(ctx, {
        baseUrl: config.baseUrl,
        integrationToken: config.integrationToken,
-     });
-
-     // 挂载 Koishi 指令
-     applyPrismKoishiPlugin(ctx, {
        provider: config.provider,
        autoRegister: config.autoRegister,
        defaultDoorDeviceId: config.defaultDoorDeviceId,
        enableStaffCommands: config.enableStaffCommands,
-       client: client,
      });
    }
    ```
