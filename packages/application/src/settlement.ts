@@ -360,16 +360,24 @@ async function calculateUnifiedCheckoutDetails(
 
     const extraLedgerEntries: AssetLedgerEntry[] = [];
     for (const adj of preview.adjustments) {
-      const match = adj.id.match(/:asset-definition:([^:]+):([^:]+):/);
+      const match = adj.id.match(/:asset-definition:([^:]+):([^:]+)(?::([^:]+))?:/);
       if (match && dependencies.assetDefinitions) {
         const assetType = match[1];
         const assetCode = match[2];
+        const holdingKey = match[3];
         const definition = availableDefinitions.get(`${assetType}\u0000${assetCode}`);
-        if (definition && definition.status !== "archived" && isActiveInWindow(definition, now)) {
-          const effectConfig = resolveAssetDefinitionEffectConfig(definition, now);
+        const effectiveAt = definition && isActiveInWindow(definition, session.startedAt)
+          ? session.startedAt
+          : definition && isActiveInWindow(definition, now)
+            ? now
+            : null;
+        if (definition && definition.status !== "archived" && effectiveAt) {
+          const effectConfig = resolveAssetDefinitionEffectConfig(definition, effectiveAt);
           const consumable = effectConfig?.consumable === true;
           if (consumable) {
             const holding = availableHoldings.find(
+              (h) => (holdingKey ? h.id === holdingKey : h.assetType === assetType && h.assetCode === assetCode) && h.quantity > 0,
+            ) ?? availableHoldings.find(
               (h) => h.assetType === assetType && h.assetCode === assetCode && h.quantity > 0,
             );
             if (holding) {
@@ -453,18 +461,25 @@ async function calculateUnifiedCheckoutDetails(
   }
 
   if (dependencies.assetDefinitions) {
-    for (const holding of availableHoldings.filter((h) => h.quantity > 0)) {
-      if (totalAmount <= 0) break;
+    const unifiedHoldings = availableHoldings.filter((h) => h.quantity > 0);
+    for (let holdingIndex = 0; holdingIndex < unifiedHoldings.length; holdingIndex++) {
+      const holding = unifiedHoldings[holdingIndex];
+      if (holding.quantity <= 0 || totalAmount <= 0) break;
 
       const definition = availableDefinitions.get(`${holding.assetType}\u0000${holding.assetCode}`);
-      if (!definition || definition.status === "archived" || !isActiveInWindow(definition, anchorSession.startedAt)) continue;
+      const effectiveAt = definition && isActiveInWindow(definition, anchorSession.startedAt)
+        ? anchorSession.startedAt
+        : definition && isActiveInWindow(definition, now)
+          ? now
+          : null;
+      if (!definition || definition.status === "archived" || !effectiveAt) continue;
 
-      const effectConfig = resolveAssetDefinitionEffectConfig(definition, anchorSession.startedAt);
+      const effectConfig = resolveAssetDefinitionEffectConfig(definition, effectiveAt);
       if (!effectConfig || effectConfig.scope !== "unified") continue;
-      if (!isAssetEffectConfigAvailable(effectConfig, anchorSession.startedAt, timeZone)) continue;
+      if (!isAssetEffectConfigAvailable(effectConfig, effectiveAt, timeZone)) continue;
 
       if (effectConfig.limitPerDay) {
-        const todayStr = calendarDayAt(anchorSession.startedAt, timeZone);
+        const todayStr = calendarDayAt(effectiveAt, timeZone);
         const assetSource = assetDefinitionEffectSource(holding.assetType, holding.assetCode);
         const usesToday = accumulatedAdjustments
           .filter((adj) => adj.source === assetSource)
@@ -478,8 +493,13 @@ async function calculateUnifiedCheckoutDetails(
       if (discountAmount <= 0) continue;
 
       const adjSource = assetDefinitionEffectSource(holding.assetType, holding.assetCode);
+      const holdingKey = holding.id ?? (holdingIndex > 0 ? String(holdingIndex) : "");
+      const adjId = holdingKey
+        ? `${anchorSession.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${holdingKey}:${effectConfig.type}`
+        : `${anchorSession.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${effectConfig.type}`;
+
       unifiedAdjustments.push({
-        id: `${anchorSession.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${effectConfig.type}`,
+        id: adjId,
         source: adjSource,
         label: definition.name,
         amount: -discountAmount,

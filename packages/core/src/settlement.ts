@@ -349,6 +349,7 @@ function availableHoldingsAt(assetHoldings: readonly AssetHolding[], now: Date):
 }
 
 function isHoldingAvailableAt(holding: AssetHolding, now: Date): boolean {
+  if (holding.quantity <= 0) return false;
   if (holding.activeAt && holding.activeAt > now) return false;
   if (holding.expiresAt && holding.expiresAt <= now) return false;
   return true;

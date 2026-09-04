@@ -41,16 +41,26 @@ export function createAssetDefinitionEffectProvider(
         ]),
       );
 
-      for (const holding of context.assetHoldings) {
+      const remainingChargeAmounts = new Map(context.chargeItems.map((item) => [item.id, item.amount]));
+
+      for (let holdingIndex = 0; holdingIndex < context.assetHoldings.length; holdingIndex++) {
         if (remainingSubtotal <= 0) break;
+        const holding = context.assetHoldings[holdingIndex];
+        if (holding.quantity <= 0) continue;
+
         const definition = definitions.get(assetDefinitionKey(holding.assetType, holding.assetCode));
-        if (!definition || definition.status === "archived" || !isActiveInWindow(definition, context.session.startedAt)) {
+        const effectiveAt = definition && isActiveInWindow(definition, context.session.startedAt)
+          ? context.session.startedAt
+          : definition && isActiveInWindow(definition, context.now)
+            ? context.now
+            : null;
+        if (!definition || definition.status === "archived" || !effectiveAt) {
           continue;
         }
 
-        const config = resolveAssetDefinitionEffectConfig(definition, context.session.startedAt);
+        const config = resolveAssetDefinitionEffectConfig(definition, effectiveAt);
         if (!config || config.scope === "unified") continue;
-        if (!isAssetEffectConfigAvailable(config, context.session.startedAt, timeZone)) continue;
+        if (!isAssetEffectConfigAvailable(config, effectiveAt, timeZone)) continue;
         if (
           config.applicableSessionLabels?.length
           && (!context.session.label || !config.applicableSessionLabels.includes(context.session.label))
@@ -59,19 +69,20 @@ export function createAssetDefinitionEffectProvider(
         }
 
         let eligibleSubtotal = remainingSubtotal;
-        if (config.applicablePricingConfigIds?.length || config.applicableRuleIds?.length) {
-          const eligibleCharges = context.chargeItems.filter((item) =>
-            isChargeItemEligibleForAssetEffect(item, config)
+        const targetedCharges = (config.applicablePricingConfigIds?.length || config.applicableRuleIds?.length)
+          ? context.chargeItems.filter((item) => isChargeItemEligibleForAssetEffect(item, config))
+          : null;
+        if (targetedCharges) {
+          const targetedRemaining = targetedCharges.reduce(
+            (sum, item) => sum + (remainingChargeAmounts.get(item.id) ?? 0),
+            0,
           );
-          eligibleSubtotal = Math.min(
-            remainingSubtotal,
-            eligibleCharges.reduce((sum, item) => sum + item.amount, 0),
-          );
+          eligibleSubtotal = Math.min(remainingSubtotal, targetedRemaining);
         }
         if (eligibleSubtotal <= 0) continue;
 
         if (config.limitPerDay) {
-          const today = calendarDayAt(context.session.startedAt, timeZone);
+          const today = calendarDayAt(effectiveAt, timeZone);
           const source = assetDefinitionEffectSource(holding.assetType, holding.assetCode);
           const usesToday = (context.pastAppliedAdjustments ?? [])
             .filter((adjustment) => adjustment.source === source)
@@ -82,8 +93,25 @@ export function createAssetDefinitionEffectProvider(
 
         const discountAmount = calculateAssetEffectDiscount(eligibleSubtotal, config);
         if (discountAmount <= 0) continue;
+
+        if (targetedCharges) {
+          let toDeduct = discountAmount;
+          for (const item of targetedCharges) {
+            if (toDeduct <= 0) break;
+            const current = remainingChargeAmounts.get(item.id) ?? 0;
+            const deducted = Math.min(current, toDeduct);
+            remainingChargeAmounts.set(item.id, current - deducted);
+            toDeduct -= deducted;
+          }
+        }
+
+        const holdingKey = holding.id ?? (holdingIndex > 0 ? String(holdingIndex) : "");
+        const adjId = holdingKey
+          ? `${context.session.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${holdingKey}:${config.type}`
+          : `${context.session.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${config.type}`;
+
         adjustments.push({
-          id: `${context.session.id}:asset-definition:${holding.assetType}:${holding.assetCode}:${config.type}`,
+          id: adjId,
           source: assetDefinitionEffectSource(holding.assetType, holding.assetCode),
           label: definition.name,
           amount: -discountAmount,
@@ -138,7 +166,8 @@ export function calculateAssetEffectDiscount(
   if (config.type === "free") return subtotal;
   if (config.type === "discount") return Math.min(subtotal, config.value ?? 0);
   if (config.type === "percentage-discount") {
-    return Math.round(subtotal * ((config.value ?? 0) / 100));
+    const discount = subtotal * ((config.value ?? 0) / 100);
+    return Math.round(discount * 100) / 100;
   }
   return 0;
 }
