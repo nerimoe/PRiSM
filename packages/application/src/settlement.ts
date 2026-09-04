@@ -477,6 +477,7 @@ async function calculateUnifiedCheckoutDetails(
       const effectConfig = resolveAssetDefinitionEffectConfig(definition, effectiveAt);
       if (!effectConfig || effectConfig.scope !== "unified") continue;
       if (!isAssetEffectConfigAvailable(effectConfig, effectiveAt, timeZone)) continue;
+      if (effectConfig.minSubtotal && totalAmount < effectConfig.minSubtotal) continue;
 
       if (effectConfig.limitPerDay) {
         const todayStr = calendarDayAt(effectiveAt, timeZone);

@@ -15,6 +15,7 @@ export type AssetSettlementEffectConfig = {
   value?: number | null;
   consumable?: boolean;
   limitPerDay?: number | null;
+  minSubtotal?: number | null;
   startDate?: string;
   endDate?: string;
   daysOfWeek?: number[];
@@ -80,6 +81,7 @@ export function createAssetDefinitionEffectProvider(
           eligibleSubtotal = Math.min(remainingSubtotal, targetedRemaining);
         }
         if (eligibleSubtotal <= 0) continue;
+        if (config.minSubtotal && eligibleSubtotal < config.minSubtotal) continue;
 
         if (config.limitPerDay) {
           const today = calendarDayAt(effectiveAt, timeZone);

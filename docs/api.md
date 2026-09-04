@@ -172,7 +172,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/sessions/active` | 获取全场当前的活跃场次。 |
 | `POST` | `/rpc/staff/sessions/active/checkout` | 一键结账/清理全场所有活跃场次。 |
 | `GET` | `/rpc/staff/pricing-effects` | 列出可绑定到资产的计费效果，如免时费、固定抵扣或比例折扣。 |
-| `PUT` | `/rpc/staff/pricing-effects/:effectId` | 新增或编辑计费效果，可设置作用范围、每日次数、生效时间、过期时间，以及适用的计时名称、计费方案和计费时段规则。 |
+| `PUT` | `/rpc/staff/pricing-effects/:effectId` | 新增或编辑计费效果，可设置作用范围、每日次数、最低消费门槛（`minSubtotal`）、生效时间、过期时间，以及适用的计时名称、计费方案和计费时段规则。 |
 | `POST` | `/rpc/staff/pricing-effects/:effectId/archive` | 软归档计费效果，历史资产引用保留但新配置不可继续使用。 |
 | `POST` | `/rpc/staff/pricing-effects/:effectId/restore` | 恢复已归档计费效果。 |
 | `GET` | `/rpc/staff/asset-definitions` | 列出资产定义的清单。 |
@@ -222,7 +222,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 玩家级 `globalCapWindows` 按全局封顶规则的锚定窗口分组，而不是按 session 或单次调整分组。每项包含稳定的 `key`、`capConfigId`、`capRuleId`、`ruleLabel`、窗口完整 ISO 8601 UTC 范围 `windowStartedAt` / `windowEndedAt`、`priceCap`、历史已计入金额 `paidBefore`、本次参与封顶前的 `currentAmount`、本次最终计入封顶的 `amountApplied`、`priceCapReached` 以及按 session/计费方案列出的 `contributions`。历史结账会进入同一个窗口的 `paidBefore`，因此客户端必须用这些 history-aware 值解释窗口余量；达到封顶时应展示 `priceCap` 这个封顶后的最终金额，未达到时展示 `amountApplied` 这个当前计入金额，不应把封顶产生的调整差额当成应收金额。`stop` 是独立的现场动作，只结束某个 session 的计时并保留待结算状态；停止后的 session 仍应显示在现场账单中，状态为已停止，直到玩家级 `confirm-all` 执行统一扣款。这样可以支持“音游计时 + 麻将服务叠加”等门店自定义计费方式，同时不把某个 session 设定成业务上的主从关系。
 
-资产计费效果的 `config` 可包含 `applicableSessionLabels`、`applicablePricingConfigIds`、`applicableRuleIds`。结算时只有当前计时名称、费用项所属计费方案和费用项所属规则匹配时，效果才会作用到那部分费用；针对特定方案的多张卡券叠加时，系统会跟踪并限制在目标费用项的剩余额度内，不会超出目标方案费用穿透到其他费用。资产持有量在扣减为 0 后不会在多场次结账中重复享受优惠；多张相同卡券生成的调整明细会带有持有唯一标识避免主键冲突；比例折扣按分保留两位小数；卡券有效窗口在开台时间或当前结算时间任一处于有效期内均可生效。后台 UI 会用中文控件生成这些配置，员工不需要手写 JSON。
+资产计费效果的 `config` 可包含 `applicableSessionLabels`、`applicablePricingConfigIds`、`applicableRuleIds` 以及最低消费门槛 `minSubtotal`（消费未达门槛时不触发减免）。结算时只有当前计时名称、费用项所属计费方案和费用项所属规则匹配且达到最低消费门槛时，效果才会作用到费用；针对特定方案的多张卡券叠加时，系统会跟踪并限制在目标费用项的剩余额度内，不会超出目标方案费用穿透到其他费用。资产持有量在扣减为 0 后不会在多场次结账中重复享受优惠；多张相同卡券生成的调整明细会带有持有唯一标识避免主键冲突；比例折扣按分保留两位小数；卡券有效窗口在开台时间或当前结算时间任一处于有效期内均可生效。后台 UI 会用中文控件生成这些配置，员工不需要手写 JSON。
 
 员工计费时间轴预览使用与已保存计费配置相同的时间轴分段引擎。`time.priority` 草稿返回带 `pricing` 的收费时段，`time.cap` 草稿返回带 `priceCap` 的封顶时段；Staff Web 在保存前调用它来绘制草稿日时间轴，以便可视化预览与结账行为保持一致。预览圆环以接口返回的 `startMinute` / `endMinute` 为准，不在前端重新猜测跨日时段。未覆盖的时间轴段是非营业时间：玩家无法在其中启动计费场次，如果现有场次跨越这些分钟，结算将跳过这些分钟；全局封顶则只在覆盖到的分钟内限制选中方案合计。在可视化编辑器中，未保存的草稿规则可以直接移除；已保存规则会写回 `status: "archived"`，不再参与结算和时间轴，但保留规则 ID 供历史账单和计费封顶记录回查。迁移来的 `specificDates` 与 `dateTimeRange` 会随草稿预览和保存原样保留，避免节假日规则落到普通营业日；当需要停用整个方案而不破坏历史数据时，已保存的计费方案应使用归档/还原逻辑。
 

@@ -317,4 +317,70 @@ describe("pricing effects edge cases", () => {
     expect(preview.adjustments).toHaveLength(1);
     expect(preview.adjustments[0].amount).toBe(-10);
   });
+
+  it("skips discount when eligible subtotal is below minSubtotal threshold", async () => {
+    const provider = createAssetDefinitionEffectProvider({
+      async listAll() {
+        return [{
+          type: "coupon",
+          code: "spend-50-minus-10",
+          name: "满50减10",
+          stackable: false,
+          status: "active",
+          pricingEffect: {
+            id: "effect-spend-50",
+            name: "满50减10",
+            type: "discount",
+            scope: "session",
+            value: 10,
+            consumable: true,
+            limitPerDay: null,
+            status: "active",
+            config: {
+              minSubtotal: 50,
+            },
+          },
+        }];
+      },
+    } as any);
+
+    // Subtotal 40 < 50 threshold: should NOT apply
+    const adjustmentsBelow = await provider.apply({
+      session: {
+        id: "session-1",
+        playerId: "p1",
+        startedAt: new Date("2026-09-01T10:00:00.000Z"),
+        status: "active",
+        paymentStatus: "unpaid",
+      },
+      subtotal: 40,
+      chargeItems: [],
+      assetHoldings: [
+        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: 1 },
+      ],
+      now: new Date("2026-09-01T10:00:00.000Z"),
+    });
+
+    expect(adjustmentsBelow).toHaveLength(0);
+
+    // Subtotal 60 >= 50 threshold: should apply
+    const adjustmentsAbove = await provider.apply({
+      session: {
+        id: "session-2",
+        playerId: "p1",
+        startedAt: new Date("2026-09-01T10:00:00.000Z"),
+        status: "active",
+        paymentStatus: "unpaid",
+      },
+      subtotal: 60,
+      chargeItems: [],
+      assetHoldings: [
+        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: 1 },
+      ],
+      now: new Date("2026-09-01T10:00:00.000Z"),
+    });
+
+    expect(adjustmentsAbove).toHaveLength(1);
+    expect(adjustmentsAbove[0].amount).toBe(-10);
+  });
 });
