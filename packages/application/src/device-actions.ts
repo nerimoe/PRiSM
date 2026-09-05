@@ -7,6 +7,7 @@ import type {
   DeviceReferenceTarget,
   DeviceTarget,
   PlayerIdentityRepository,
+  Session,
   SessionRepository,
 } from "@prism/core";
 import { ackDeviceCommand, expireDeviceCommand, PrismDomainError, requestDeviceCommand } from "@prism/core";
@@ -103,6 +104,7 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
       const executor = resolvedTarget.executor ?? dependencies.executors?.[command.executorKind];
       if (!executor) {
         await dependencies.deviceCommands.enqueueDeviceCommand(command);
+        await markActiveSessionsDeviceOperated(activeSessions, command, dependencies.sessions.save?.bind(dependencies.sessions));
         return command;
       }
 
@@ -125,9 +127,36 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
       }
 
       await dependencies.deviceCommands.enqueueDeviceCommand(updated);
+      if (updated.status === "acked") {
+        await markActiveSessionsDeviceOperated(activeSessions, command, dependencies.sessions.save?.bind(dependencies.sessions));
+      }
       return updated;
     },
   };
+}
+
+function isDeviceOperationAction(command: { targetKind: string; type: string }): boolean {
+  return command.type !== "door.open";
+}
+
+async function markActiveSessionsDeviceOperated(
+  sessions: readonly Session[],
+  command: DeviceCommand,
+  saveSession?: (session: Session) => Promise<void>,
+): Promise<void> {
+  if (!saveSession || !isDeviceOperationAction(command)) return;
+  for (const session of sessions) {
+    if (!session.metadata?.deviceOperated) {
+      session.metadata = {
+        ...(session.metadata ?? {}),
+        deviceOperated: true,
+      };
+      await saveSession({
+        ...session,
+        metadata: { ...session.metadata },
+      });
+    }
+  }
 }
 
 function withoutScanSubject(command: DeviceCommand): DeviceCommand {

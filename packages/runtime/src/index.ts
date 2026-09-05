@@ -192,6 +192,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     system: input.repositories.system,
     pricingHistory: input.repositories.pricingHistory,
     pricingCapHistory: input.repositories.pricingCapHistory,
+    deviceCommands: input.repositories.deviceCommands,
     pricingProviders: [...fallbackPricingProviders, ...pluginPricingProviders],
     async pricingProviderResolver(context) {
       const allConfigs = await input.repositories.pricingConfigs.listEnabled();

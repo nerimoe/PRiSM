@@ -6,6 +6,8 @@ import type {
   AssetLedgerEntry,
   AssetRepository,
   AssetTransaction,
+  DeviceCommand,
+  DeviceCommandRepository,
   PricingProvider,
   PlayerCheckout,
   Session,
@@ -13,6 +15,7 @@ import type {
   SettlementRecord,
   SettlementRepository,
 } from "@prism/core";
+import { createTimePricingProvider } from "@prism/core";
 import { createAssetDefinitionEffectProvider, createAvailableAssetReader, createSettlementService } from "../src/index";
 
 class MemorySessionRepository implements SessionRepository {
@@ -132,6 +135,26 @@ class MemorySettlementRepository implements SettlementRepository {
       }
     }
     return list;
+  }
+}
+
+class MemoryDeviceCommandRepository implements DeviceCommandRepository {
+  constructor(private readonly commands: DeviceCommand[] = []) {}
+
+  async enqueueDeviceCommand(command: DeviceCommand): Promise<void> {
+    this.commands.push(command);
+  }
+
+  async getDeviceCommand(commandId: string): Promise<DeviceCommand | null> {
+    return this.commands.find((c) => c.id === commandId) ?? null;
+  }
+
+  async listByPlayerId(playerId: string): Promise<DeviceCommand[]> {
+    return this.commands.filter((c) => c.playerId === playerId);
+  }
+
+  async listPending(limit: number): Promise<DeviceCommand[]> {
+    return this.commands.filter((c) => c.status === "pending").slice(0, limit);
   }
 }
 
@@ -1381,5 +1404,164 @@ describe("createSettlementService", () => {
       .toEqual(["session-a", "session-b", "session-c"]);
     expect(window.contributions.reduce((sum, contribution) => sum + contribution.amount, 0))
       .toBe(window.amountApplied);
+  });
+
+  it("settles with 0 fee if session ended within grace period and no device was operated", async () => {
+    const sessions = new MemorySessionRepository([
+      {
+        id: "session-free",
+        playerId: "player-1",
+        startedAt: new Date("2026-07-09T02:00:00.000Z"),
+        endedAt: new Date("2026-07-09T02:03:00.000Z"),
+        status: "closed",
+        pricingConfigIds: ["pricing-base"],
+        paymentStatus: "unpaid",
+      },
+    ]);
+    const provider = createTimePricingProvider({
+      id: "time.base",
+      label: "音游",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+    const service = createSettlementService({
+      sessions,
+      assets: new MemoryAssetRepository([]),
+      settlements: new MemorySettlementRepository(),
+      pricingProviders: [provider],
+      assetEffectProviders: [],
+      now: () => new Date("2026-07-09T02:03:00.000Z"),
+    });
+
+    const result = await service.previewCheckout({ playerId: "player-1" });
+    expect(result.settlementPreview.total).toBe(0);
+  });
+
+  it("invalidates first grace period when session has deviceOperated metadata", async () => {
+    const sessions = new MemorySessionRepository([
+      {
+        id: "session-op",
+        playerId: "player-1",
+        startedAt: new Date("2026-07-09T02:00:00.000Z"),
+        endedAt: new Date("2026-07-09T02:03:00.000Z"),
+        status: "closed",
+        pricingConfigIds: ["pricing-base"],
+        paymentStatus: "unpaid",
+        metadata: { deviceOperated: true },
+      },
+    ]);
+    const provider = createTimePricingProvider({
+      id: "time.base",
+      label: "音游",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+    const service = createSettlementService({
+      sessions,
+      assets: new MemoryAssetRepository([]),
+      settlements: new MemorySettlementRepository(),
+      pricingProviders: [provider],
+      assetEffectProviders: [],
+      now: () => new Date("2026-07-09T02:03:00.000Z"),
+    });
+
+    const result = await service.previewCheckout({ playerId: "player-1" });
+    expect(result.settlementPreview.total).toBe(10);
+  });
+
+  it("detects machine/power command in deviceCommands repository and invalidates first grace", async () => {
+    const sessions = new MemorySessionRepository([
+      {
+        id: "session-power",
+        playerId: "player-1",
+        startedAt: new Date("2026-07-09T02:00:00.000Z"),
+        endedAt: new Date("2026-07-09T02:03:00.000Z"),
+        status: "closed",
+        pricingConfigIds: ["pricing-base"],
+        paymentStatus: "unpaid",
+      },
+    ]);
+    const deviceCommands = new MemoryDeviceCommandRepository([
+      {
+        id: "cmd-power-1",
+        type: "power.on",
+        targetKind: "facility",
+        executorKind: "home_assistant",
+        deviceId: "switch.maimai",
+        playerId: "player-1",
+        status: "acked",
+        requestedAt: new Date("2026-07-09T02:01:00.000Z"),
+      },
+    ]);
+    const provider = createTimePricingProvider({
+      id: "time.base",
+      label: "音游",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+    const service = createSettlementService({
+      sessions,
+      assets: new MemoryAssetRepository([]),
+      settlements: new MemorySettlementRepository(),
+      pricingProviders: [provider],
+      deviceCommands,
+      assetEffectProviders: [],
+      now: () => new Date("2026-07-09T02:03:00.000Z"),
+    });
+
+    const result = await service.previewCheckout({ playerId: "player-1" });
+    expect(result.settlementPreview.total).toBe(10);
+  });
+
+  it("keeps free exit when only door.open command occurred during grace window", async () => {
+    const sessions = new MemorySessionRepository([
+      {
+        id: "session-door-only",
+        playerId: "player-1",
+        startedAt: new Date("2026-07-09T02:00:00.000Z"),
+        endedAt: new Date("2026-07-09T02:03:00.000Z"),
+        status: "closed",
+        pricingConfigIds: ["pricing-base"],
+        paymentStatus: "unpaid",
+      },
+    ]);
+    const deviceCommands = new MemoryDeviceCommandRepository([
+      {
+        id: "cmd-door-1",
+        type: "door.open",
+        targetKind: "facility",
+        executorKind: "home_assistant",
+        deviceId: "lock.front_door",
+        playerId: "player-1",
+        status: "acked",
+        requestedAt: new Date("2026-07-09T02:00:10.000Z"),
+      },
+    ]);
+    const provider = createTimePricingProvider({
+      id: "time.base",
+      label: "音游",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+    const service = createSettlementService({
+      sessions,
+      assets: new MemoryAssetRepository([]),
+      settlements: new MemorySettlementRepository(),
+      pricingProviders: [provider],
+      deviceCommands,
+      assetEffectProviders: [],
+      now: () => new Date("2026-07-09T02:03:00.000Z"),
+    });
+
+    const result = await service.previewCheckout({ playerId: "player-1" });
+    expect(result.settlementPreview.total).toBe(0);
   });
 });

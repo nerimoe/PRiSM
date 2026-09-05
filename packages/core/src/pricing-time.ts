@@ -147,7 +147,10 @@ export function createTimePricingProvider(config: TimePricingProviderConfig): Pr
     quote(context) {
       const endedAt = context.session.endedAt ?? context.now;
       const durationMinutes = Math.floor((endedAt.getTime() - context.session.startedAt.getTime()) / 60_000);
-      const amount = calculateUnitPrice(durationMinutes, config);
+      const hasDeviceActivity = Boolean(
+        context.session.metadata?.deviceOperated || context.session.metadata?.hasDeviceActivity,
+      );
+      const amount = calculateUnitPrice(durationMinutes, config, hasDeviceActivity);
 
       return [
         {
@@ -173,14 +176,24 @@ export function createPriorityTimePricingProvider(config: PriorityTimePricingPro
       const charges: ChargeItem[] = [];
       const currentPaidHistory: Record<string, number> = { ...(config.paidHistory ?? {}) };
       let cursor = new Date(context.session.startedAt);
+      const hasDeviceActivity = Boolean(
+        context.session.metadata?.deviceOperated || context.session.metadata?.hasDeviceActivity,
+      );
 
-      while (cursor < endedAt) {
+      let effectiveEndedAt = endedAt;
+      if (effectiveEndedAt <= cursor && hasDeviceActivity) {
+        effectiveEndedAt = new Date(cursor.getTime() + 60_000);
+      }
+
+      let invalidateFirstGrace = hasDeviceActivity;
+
+      while (cursor < effectiveEndedAt) {
         const rule = findActiveRule(cursor, rules, timeZone);
         if (!rule) {
-          cursor = findNextAnyRuleActivationAfter(cursor, endedAt, rules, timeZone);
+          cursor = findNextAnyRuleActivationAfter(cursor, effectiveEndedAt, rules, timeZone);
           continue;
         }
-        const nextBoundary = findNextPriorityBoundary(cursor, endedAt, rule, rules, timeZone);
+        const nextBoundary = findNextPriorityBoundary(cursor, effectiveEndedAt, rule, rules, timeZone);
         const durationMinutes = Math.floor((nextBoundary.getTime() - cursor.getTime()) / 60_000);
         const historyKey = buildRuleHistoryKey(
           config.pricingConfigId ?? config.id,
@@ -190,8 +203,16 @@ export function createPriorityTimePricingProvider(config: PriorityTimePricingPro
           timeZone,
         );
         const paidBefore = currentPaidHistory[historyKey] ?? 0;
-        const amount = calculateUnitPriceWithHistory(durationMinutes, rule.pricing, paidBefore);
+        const amount = calculateUnitPriceWithHistory(
+          durationMinutes,
+          rule.pricing,
+          paidBefore,
+          invalidateFirstGrace,
+        );
         currentPaidHistory[historyKey] = paidBefore + amount;
+        if (amount > 0) {
+          invalidateFirstGrace = false;
+        }
 
         charges.push({
           id: `${context.session.id}:${config.id}:${rule.id}:${cursor.toISOString()}`,
@@ -517,33 +538,45 @@ function calculateCapWindowTarget(currentAmount: number, priceCap: number, paidB
   return Math.max(0, Math.min(currentAmount, priceCap - paidBefore));
 }
 
-function calculateUnitPrice(durationMinutes: number, config: UnitPricingConfig): number {
-  if (durationMinutes <= 0) return 0;
+function calculateUnitPrice(
+  durationMinutes: number,
+  config: UnitPricingConfig,
+  invalidateFirstGrace?: boolean,
+): number {
+  if (durationMinutes <= 0 && !invalidateFirstGrace) return 0;
 
-  return calculateRawUnitPrice(durationMinutes, config);
+  return calculateRawUnitPrice(durationMinutes, config, invalidateFirstGrace);
 }
 
 function calculateUnitPriceWithHistory(
   durationMinutes: number,
   config: UnitPricingConfig,
   paidBefore: number,
+  invalidateFirstGrace?: boolean,
 ): number {
-  if (durationMinutes <= 0) return 0;
+  if (durationMinutes <= 0 && !invalidateFirstGrace) return 0;
 
   const raw = calculateRawUnitPrice(durationMinutes, {
     ...config,
     priceCap: Number.MAX_SAFE_INTEGER,
-  });
+  }, invalidateFirstGrace);
   if (raw <= 0) return raw;
 
   const effectiveTotal = Math.min(paidBefore + raw, config.priceCap);
   return Math.max(0, effectiveTotal - paidBefore);
 }
 
-function calculateRawUnitPrice(durationMinutes: number, config: UnitPricingConfig): number {
-  let units = Math.floor(durationMinutes / config.unitMinutes);
+function calculateRawUnitPrice(
+  durationMinutes: number,
+  config: UnitPricingConfig,
+  invalidateFirstGrace?: boolean,
+): number {
+  let units = Math.floor(Math.max(0, durationMinutes) / config.unitMinutes);
   if (durationMinutes % config.unitMinutes > config.roundGraceMinutes) {
     units += 1;
+  }
+  if (invalidateFirstGrace && units === 0) {
+    units = 1;
   }
 
   return Math.min(units * config.unitPrice, config.priceCap);

@@ -9,7 +9,7 @@ import type {
 import { createDeviceActionService } from "../src/index";
 
 class MemorySessionRepository implements SessionRepository {
-  constructor(private readonly sessions: Session[] = []) {}
+  constructor(public readonly sessions: Session[] = []) {}
 
   async findActiveByPlayerId(playerId: string): Promise<Session[]> {
     return this.sessions.filter((session) => session.playerId === playerId && session.status === "active");
@@ -23,7 +23,14 @@ class MemorySessionRepository implements SessionRepository {
     return this.sessions.filter((session) => session.playerId === playerId && session.status === "closed" && session.paymentStatus === "unpaid");
   }
 
-  async save(): Promise<void> {}
+  async save(session: Session): Promise<void> {
+    const index = this.sessions.findIndex((item) => item.id === session.id);
+    if (index >= 0) {
+      this.sessions[index] = session;
+    } else {
+      this.sessions.push(session);
+    }
+  }
 }
 
 class MemoryDeviceCommandRepository implements DeviceCommandRepository {
@@ -372,6 +379,131 @@ describe("createDeviceActionService", () => {
       targetKind: "facility",
       payload: { deviceLabel: "所有设备" },
     });
+  });
+
+  it("marks active sessions with deviceOperated when a game machine action is requested", async () => {
+    const sessionRepo = new MemorySessionRepository([activeSession()]);
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: sessionRepo,
+      deviceCommands,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-coin",
+      coinCooldownMs: 60_000,
+      resolveGameMachineTarget: async () => ({
+        target: { kind: "game_machine", id: "maimai-left", executorKind: "hinata_io" },
+        deviceLabel: "舞萌 DX 左机",
+      }),
+      executors: {
+        hinata_io: {
+          async execute() {
+            return { status: "success" };
+          },
+        },
+      },
+    });
+
+    expect(sessionRepo.sessions[0].metadata?.deviceOperated).toBeUndefined();
+
+    await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "coin",
+      target: { kind: "game_machine", ref: "舞萌左机" },
+      payload: { count: 1 },
+    });
+
+    expect(sessionRepo.sessions[0].metadata?.deviceOperated).toBe(true);
+  });
+
+  it("does not mark sessions as deviceOperated when executor fails", async () => {
+    const sessionRepo = new MemorySessionRepository([activeSession()]);
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: sessionRepo,
+      deviceCommands,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-failed",
+      coinCooldownMs: 60_000,
+      resolveGameMachineTarget: async () => ({
+        target: { kind: "game_machine", id: "maimai-left", executorKind: "hinata_io" },
+        deviceLabel: "舞萌 DX 左机",
+      }),
+      executors: {
+        hinata_io: {
+          async execute() {
+            return { status: "failed", message: "Network timeout" };
+          },
+        },
+      },
+    });
+
+    await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "coin",
+      target: { kind: "game_machine", ref: "舞萌左机" },
+      payload: { count: 1 },
+    });
+
+    expect(sessionRepo.sessions[0].metadata?.deviceOperated).toBeUndefined();
+  });
+
+  it("marks active sessions with deviceOperated when power.on is requested", async () => {
+    const sessionRepo = new MemorySessionRepository([activeSession()]);
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: sessionRepo,
+      deviceCommands,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-power",
+      coinCooldownMs: 60_000,
+      resolveFacilityTarget: resolveTestFacilityTarget,
+      executors: {
+        home_assistant: {
+          async execute() {
+            return { status: "success" };
+          },
+        },
+      },
+    });
+
+    await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "power.on",
+      target: { kind: "facility", ref: "maimai" },
+    });
+
+    expect(sessionRepo.sessions[0].metadata?.deviceOperated).toBe(true);
+  });
+
+  it("does not mark active sessions when only door.open is requested", async () => {
+    const sessionRepo = new MemorySessionRepository([activeSession()]);
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: sessionRepo,
+      deviceCommands,
+      now: () => new Date("2026-08-15T10:00:00.000Z"),
+      id: () => "command-door",
+      coinCooldownMs: 60_000,
+      resolveFacilityTarget: async () => ({
+        target: { kind: "facility", id: "lock.door" },
+        deviceLabel: "Front Door",
+      }),
+      executors: {
+        home_assistant: {
+          async execute() {
+            return { status: "success" };
+          },
+        },
+      },
+    });
+
+    await service.requestDeviceAction({
+      actor: { type: "player", playerId: "player-1" },
+      type: "door.open",
+      target: { kind: "facility", ref: "front-door" },
+    });
+
+    expect(sessionRepo.sessions[0].metadata?.deviceOperated).toBeUndefined();
   });
 });
 

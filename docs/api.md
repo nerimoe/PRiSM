@@ -232,6 +232,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 金额相关字段均按 JSON number 处理，可以传小数，不会按整数截断。包括资产发放 `amount`、资产调整 `quantityDelta`、固定收费 `provider.amount`、时间计费 `pricing.unitPrice` / `pricing.priceCap`、全局封顶 `time.cap` 规则的 `priceCap`、计费效果 `value`、服务项目 `price`、改单最终金额以及结算返回的 `subtotal` / `total` / `chargeItems.amount` / `adjustments.amount`。分页 `limit`、使用次数、计费单位分钟、宽限分钟、优先级等字段仍为整数。
 
+时间计费规则中的 `roundGraceMinutes`（宽限分钟）具有设备操作联动机制：如果玩家入场后未进行任何设备操作并于宽限期内退场，系统视为进店后未游玩离场，计费金额为 `0`；若玩家在场次期间发起并成功执行了除 `door.open` 门禁外的有效设备操作（包括 `coin` 投币、`aime.scan` 刷卡、`power.on` / `power.off` 开关电源、空调调温等），场次元数据会被自动打上 `deviceOperated: true`（或在结算时通过命令流水回溯补齐），使场次的首次进店免单宽限立即失效，强制收取至少 1 个计费单位的基础费用（即使时长不足 1 分钟或立即登出）；后续尾数取整宽限（例如 30 分钟单位计费时游玩 32 分钟仍按 1 单位计费）继续正常生效。
+
 员工发放资产时，`mergeStrategy` 可为 `stack`、`extend-time` 或 `replace`；普通余额、券和道具发放默认使用 `stack`。为了兼容旧客户端和简单发放入口，`/rpc/staff/players/:playerId/assets/grants` 在请求体没有传 `mergeStrategy` 时会按 `stack` 处理。`extend-time` 必须提供正数 `durationMs`，用于从当前到期时间或当前时间继续延长；顶层可选 `reason` 会进入资产流水，空值才回退为 `staff.asset.grant`。
 
 报表汇总字段 `assetGrantTotal` 为兼容旧响应名称而保留，但当前语义是所选时间段内正向资产流水的记录笔数，不是把余额、券和时长等不同单位的 `delta` 相加。Dashboard 因此显示为“资产入账笔数”。报表日期范围由店铺配置的 `store.timeZone` 解释后转换为 UTC；结账和玩家排行列表通过 `offset` 继续读取，不能把首屏条数当成完整结果。

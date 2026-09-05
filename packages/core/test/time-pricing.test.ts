@@ -79,6 +79,74 @@ describe("createTimePricingProvider", () => {
       },
     ]);
   });
+
+  it("grants free exit when within grace period without machine operation", async () => {
+    const provider = createTimePricingProvider({
+      id: "time.basic",
+      label: "Basic time pricing",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+
+    const chargeItems = await provider.quote({
+      session: {
+        id: "session-grace",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:02:00.000Z"),
+        status: "closed",
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:02:00.000Z"),
+    });
+
+    expect(chargeItems[0].amount).toBe(0);
+  });
+
+  it("invalidates first grace period when machine was operated", async () => {
+    const provider = createTimePricingProvider({
+      id: "time.basic",
+      label: "Basic time pricing",
+      unitMinutes: 30,
+      unitPrice: 10,
+      roundGraceMinutes: 5,
+      priceCap: 50,
+    });
+
+    // 2 minutes within 5 min grace, but device was operated
+    const chargeItems2m = await provider.quote({
+      session: {
+        id: "session-operated-2m",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:02:00.000Z"),
+        status: "closed",
+        metadata: { deviceOperated: true },
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:02:00.000Z"),
+    });
+
+    expect(chargeItems2m[0].amount).toBe(10);
+
+    // Immediate logout (0 minutes), device was operated
+    const chargeItems0m = await provider.quote({
+      session: {
+        id: "session-operated-0m",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:00:00.000Z"),
+        status: "closed",
+        metadata: { deviceOperated: true },
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:00:00.000Z"),
+    });
+
+    expect(chargeItems0m[0].amount).toBe(10);
+  });
 });
 
 describe("applyTimeCapPricing", () => {
@@ -264,6 +332,85 @@ describe("createPriorityTimePricingProvider", () => {
         amount: -2,
       },
     ]);
+  });
+
+  it("handles first grace invalidation on machine operation in priority provider", async () => {
+    const provider = createPriorityTimePricingProvider({
+      id: "time.priority",
+      rules: [
+        {
+          id: "default",
+          label: "Standard",
+          priority: 1,
+          timeRange: { start: "00:00", end: "00:00" },
+          pricing: {
+            unitMinutes: 30,
+            unitPrice: 15,
+            roundGraceMinutes: 5,
+            priceCap: 100,
+          },
+        },
+      ],
+    });
+
+    // 1. Without device action, 3 minutes is free
+    const freeItems = await provider.quote({
+      session: {
+        id: "session-free",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:03:00.000Z"),
+        status: "closed",
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:03:00.000Z"),
+    });
+    expect(freeItems[0].amount).toBe(0);
+
+    // 2. With device action, 3 minutes charges 1 unit (15)
+    const operated3m = await provider.quote({
+      session: {
+        id: "session-op-3m",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:03:00.000Z"),
+        status: "closed",
+        metadata: { deviceOperated: true },
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:03:00.000Z"),
+    });
+    expect(operated3m[0].amount).toBe(15);
+
+    // 3. With device action, instant logout (0 min) charges 1 unit (15)
+    const operated0m = await provider.quote({
+      session: {
+        id: "session-op-0m",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:00:00.000Z"),
+        status: "closed",
+        metadata: { deviceOperated: true },
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:00:00.000Z"),
+    });
+    expect(operated0m[0].amount).toBe(15);
+
+    // 4. With device action, 32 minutes (30 min unit + 2 min extra, within 5 min roundGraceMinutes) charges 1 unit (15), not 2 units
+    const operated32m = await provider.quote({
+      session: {
+        id: "session-op-32m",
+        playerId: "player-1",
+        startedAt: new Date("2026-06-07T10:00:00.000Z"),
+        endedAt: new Date("2026-06-07T10:32:00.000Z"),
+        status: "closed",
+        metadata: { deviceOperated: true },
+      },
+      assetHoldings: [],
+      now: new Date("2026-06-07T10:32:00.000Z"),
+    });
+    expect(operated32m[0].amount).toBe(15);
   });
 
   it("splits charges when a higher priority rule starts", async () => {
