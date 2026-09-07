@@ -255,8 +255,8 @@ PRiSM Next 对网络接口实行严格的数据库级 Token 认证拦截：
 
 - **机器人与机器软件运行位置**：机器人应当部署在店铺控制的服务上；机器软件运行在对应游戏机或可控制游戏机的小主机上。
 - **网络调用**：机器人和机器软件通过 API URL 远程或本地调用部署好的 PRiSM API 服务。
-- **硬件操作隔离**：Home Assistant 负责电源、空调等设施设备；投币、Aime 等游戏机软件能力由机器 WebSocket 通道接入。
-- **Home Assistant 直连配置**：如果 HA 与 PRiSM API 服务同在云端或可互相访问，可在运行环境配置 `PRISM_HOME_ASSISTANT_URL` 和 `PRISM_HOME_ASSISTANT_TOKEN`。配置后，`power.on`、`power.off`、`door.open`、`ac.set_temperature` 这类 `facility` 动作会由后端直接调用 HA；未配置时，设施动作仍会保留为待执行命令，供迁移期客户端处理。
+- **硬件操作隔离**：Home Assistant 负责电源、空调等设施设备，TTLock 负责配置了 TTLock 映射的门锁；投币、Aime 等游戏机软件能力由机器 WebSocket 通道接入。
+- **硬件连接配置**：Home Assistant、TTLock 和 Hinata IO 的连接信息由员工在设备看板配置并保存到 D1 的 `app_settings`，运行时动态读取，不需要把硬件密钥写进 Worker 环境变量或重新部署。Worker 环境变量仅用于指定目标 Worker/D1 数据库等部署资源。
 
 ---
 

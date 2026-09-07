@@ -11,6 +11,24 @@ export type HomeAssistantConnectionConfig = {
   token: string;
 };
 
+export type TTLockConnectionConfig = {
+  baseUrl: string;
+  clientId: string;
+  clientSecret: string;
+  appAccount: string;
+  appPwd: string;
+  accessToken: string;
+  refreshToken: string;
+  accessTokenExpiresAt?: number | null;
+};
+
+export type TTLockDeviceConfig = {
+  id: string;
+  name: string;
+  aliases: string[];
+  lockId: number;
+};
+
 export type HinataIoDeviceConfig = {
   id: string;
   name: string;
@@ -36,6 +54,8 @@ export type StoreSettings = {
   };
   homeAssistantConnection: HomeAssistantConnectionConfig;
   homeAssistantDevices: HomeAssistantDeviceConfig[];
+  ttLockConnection?: TTLockConnectionConfig;
+  ttLockDevices?: TTLockDeviceConfig[];
   hinataIoDevices: HinataIoDeviceConfig[];
   registration: PlayerRegistrationSettings;
 };
@@ -54,6 +74,8 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
       const operations = settings.get("venue.operations") as Partial<StoreSettings["operations"]> | undefined;
       const haDevices = settings.get("devices.homeassistant") as HomeAssistantDeviceConfig[] | undefined;
       const haConnection = settings.get("devices.homeassistant_connection") as Partial<HomeAssistantConnectionConfig> | undefined;
+      const ttLockConnection = settings.get("devices.ttlock_connection");
+      const ttLockDevices = settings.get("devices.ttlock");
       const hinataIoDevices = settings.get("devices.hinata_io");
       const registration = settings.get("player.registration");
 
@@ -70,6 +92,8 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
           token: typeof haConnection?.token === "string" ? haConnection.token : "",
         },
         homeAssistantDevices: Array.isArray(haDevices) ? haDevices : [],
+        ttLockConnection: normalizeTTLockConnectionConfig(ttLockConnection),
+        ttLockDevices: normalizeTTLockDeviceConfigs(ttLockDevices),
         hinataIoDevices: normalizeHinataIoDeviceConfigs(hinataIoDevices),
         registration: normalizeRegistrationSettings(registration),
       };
@@ -92,6 +116,17 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         url: typeof input.homeAssistantConnection?.url === "string" ? input.homeAssistantConnection.url.trim() : "",
         token: typeof input.homeAssistantConnection?.token === "string" ? input.homeAssistantConnection.token.trim() : "",
       };
+      const ttLockConnection = normalizeTTLockConnectionConfig(
+        input.ttLockConnection === undefined
+          ? await dependencies.system.getAppSetting("devices.ttlock_connection")
+          : input.ttLockConnection,
+      );
+      const ttLockDevices = normalizeTTLockDeviceConfigs(
+        input.ttLockDevices === undefined
+          ? await dependencies.system.getAppSetting("devices.ttlock")
+          : input.ttLockDevices,
+      );
+      validateTTLockConfiguration(ttLockConnection, ttLockDevices);
       const hinataIoDevices = normalizeHinataIoDeviceConfigs(
         input.hinataIoDevices === undefined
           ? await dependencies.system.getAppSetting("devices.hinata_io")
@@ -108,6 +143,8 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         { key: "venue.operations", value: next.operations },
         { key: "devices.homeassistant", value: haDevices },
         { key: "devices.homeassistant_connection", value: haConnection },
+        { key: "devices.ttlock_connection", value: ttLockConnection },
+        { key: "devices.ttlock", value: ttLockDevices },
         { key: "devices.hinata_io", value: hinataIoDevices },
         { key: "player.registration", value: registration },
       ];
@@ -122,6 +159,8 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         ...next,
         homeAssistantConnection: haConnection,
         homeAssistantDevices: haDevices,
+        ttLockConnection,
+        ttLockDevices,
         hinataIoDevices,
         registration,
       };
@@ -152,6 +191,8 @@ function normalizeSettings(input: StoreSettings): StoreSettings {
     },
     homeAssistantConnection: input.homeAssistantConnection,
     homeAssistantDevices: input.homeAssistantDevices,
+    ttLockConnection: input.ttLockConnection,
+    ttLockDevices: input.ttLockDevices,
     hinataIoDevices: input.hinataIoDevices,
     registration: normalizeRegistrationSettings(input.registration),
   };
@@ -193,6 +234,112 @@ export function normalizeHinataIoDeviceConfigs(value: unknown): HinataIoDeviceCo
     }
   }
   return devices;
+}
+
+const DEFAULT_TTLOCK_BASE_URL = "https://api.sciener.com";
+
+export function normalizeTTLockConnectionConfig(value: unknown): TTLockConnectionConfig {
+  const record = isRecord(value) ? value : {};
+  const numberValue = record.accessTokenExpiresAt;
+  return {
+    baseUrl: typeof record.baseUrl === "string" && record.baseUrl.trim()
+      ? record.baseUrl.trim().replace(/\/+$/, "")
+      : DEFAULT_TTLOCK_BASE_URL,
+    clientId: optionalString(record.clientId),
+    clientSecret: optionalString(record.clientSecret),
+    appAccount: optionalString(record.appAccount),
+    appPwd: optionalString(record.appPwd),
+    accessToken: optionalString(record.accessToken),
+    refreshToken: optionalString(record.refreshToken),
+    accessTokenExpiresAt: typeof numberValue === "number" && Number.isFinite(numberValue)
+      ? numberValue
+      : null,
+  };
+}
+
+export function normalizeTTLockDeviceConfigs(value: unknown): TTLockDeviceConfig[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new PrismDomainError("TTLock devices must be a list.", "INVALID_TTLOCK_DEVICES");
+  }
+  const devices = value.map((entry, index) => normalizeTTLockDeviceConfig(entry, index));
+  const ids = new Set<string>();
+  const lockIds = new Set<number>();
+  const refs = new Set<string>();
+  for (const device of devices) {
+    const normalizedId = normalizeDeviceRef(device.id);
+    if (ids.has(normalizedId)) {
+      throw new PrismDomainError("TTLock device ids must be unique.", "DUPLICATE_TTLOCK_DEVICE_ID");
+    }
+    ids.add(normalizedId);
+    if (lockIds.has(device.lockId)) {
+      throw new PrismDomainError("TTLock lock ids must be unique.", "DUPLICATE_TTLOCK_LOCK_ID");
+    }
+    lockIds.add(device.lockId);
+    for (const ref of [device.name, ...device.aliases]) {
+      const normalized = normalizeDeviceRef(ref);
+      if (!normalized) continue;
+      if (refs.has(normalized)) {
+        throw new PrismDomainError(
+          "TTLock device names and aliases must be unique.",
+          "DUPLICATE_TTLOCK_DEVICE_REF",
+        );
+      }
+      refs.add(normalized);
+    }
+  }
+  return devices;
+}
+
+function normalizeTTLockDeviceConfig(value: unknown, index: number): TTLockDeviceConfig {
+  if (!isRecord(value)) {
+    throw new PrismDomainError(`TTLock device ${index + 1} is invalid.`, "INVALID_TTLOCK_DEVICE");
+  }
+  const id = requiredTTLockString(value.id, index, "id");
+  const name = requiredTTLockString(value.name, index, "name");
+  const lockId = value.lockId;
+  if (typeof lockId !== "number" || !Number.isInteger(lockId) || lockId <= 0) {
+    throw new PrismDomainError(`TTLock device ${index + 1} lockId is invalid.`, "INVALID_TTLOCK_LOCK_ID");
+  }
+  if (!Array.isArray(value.aliases) || !value.aliases.every((alias) => typeof alias === "string")) {
+    throw new PrismDomainError(`TTLock device ${index + 1} aliases are invalid.`, "INVALID_TTLOCK_ALIASES");
+  }
+  return {
+    id,
+    name,
+    aliases: value.aliases.map((alias) => alias.trim()).filter(Boolean),
+    lockId,
+  };
+}
+
+function validateTTLockConfiguration(
+  connection: TTLockConnectionConfig,
+  devices: readonly TTLockDeviceConfig[],
+): void {
+  if (devices.length === 0) return;
+  if (!connection.clientId) {
+    throw new PrismDomainError("TTLock clientId is required when locks are configured.", "INVALID_TTLOCK_CONNECTION");
+  }
+  const hasToken = Boolean(connection.accessToken || connection.refreshToken);
+  const hasPasswordGrant = Boolean(connection.appAccount && connection.appPwd && connection.clientSecret);
+  if (!hasToken && !hasPasswordGrant) {
+    throw new PrismDomainError(
+      "TTLock requires an access token, refresh token, or complete account credentials.",
+      "INVALID_TTLOCK_CONNECTION",
+    );
+  }
+}
+
+function optionalString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function requiredTTLockString(value: unknown, index: number, field: string): string {
+  const result = optionalString(value);
+  if (!result) {
+    throw new PrismDomainError(`TTLock device ${index + 1} ${field} is required.`, "INVALID_TTLOCK_DEVICE");
+  }
+  return result;
 }
 
 function normalizeHinataIoDeviceConfig(value: unknown, index: number): HinataIoDeviceConfig {

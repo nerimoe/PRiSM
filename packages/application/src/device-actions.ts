@@ -37,7 +37,7 @@ export type DeviceActionServiceDependencies = {
   id: () => string;
   coinCooldownMs: number;
   getCoinCooldownMs?: () => Promise<number>;
-  resolveFacilityTarget?: (deviceRef: string) => Promise<{
+  resolveFacilityTarget?: (deviceRef: string, actionType?: DeviceCommandType) => Promise<{
     target: Extract<DeviceTarget, { kind: "facility" }>;
     deviceLabel: string;
   }>;
@@ -81,7 +81,7 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
         input.type === "coin" && dependencies.getCoinCooldownMs
           ? await dependencies.getCoinCooldownMs()
           : dependencies.coinCooldownMs;
-      const resolvedTarget = await resolveDeviceTarget(input.target, dependencies);
+      const resolvedTarget = await resolveDeviceTarget(input.target, dependencies, input.type);
       const command = requestDeviceCommand({
         actor: input.actor,
         command: {
@@ -168,9 +168,10 @@ function withoutScanSubject(command: DeviceCommand): DeviceCommand {
 async function resolveDeviceTarget(
   target: DeviceReferenceTarget,
   dependencies: Pick<DeviceActionServiceDependencies, "resolveFacilityTarget" | "resolveGameMachineTarget">,
+  actionType: DeviceCommandType,
 ): Promise<{ target: DeviceTarget; deviceLabel?: string; executor?: DeviceActionExecutor }> {
   if (target.kind === "facility") {
-    return resolveFacilityTarget(target.ref, dependencies.resolveFacilityTarget);
+    return resolveFacilityTarget(target.ref, dependencies.resolveFacilityTarget, actionType);
   }
   if (typeof target.ref === "string") {
     if (!dependencies.resolveGameMachineTarget) {
@@ -187,6 +188,7 @@ async function resolveDeviceTarget(
 async function resolveFacilityTarget(
   deviceRef: string,
   resolver: DeviceActionServiceDependencies["resolveFacilityTarget"],
+  actionType?: DeviceCommandType,
 ): Promise<{
   target: Extract<DeviceTarget, { kind: "facility" }>;
   deviceLabel: string;
@@ -197,7 +199,7 @@ async function resolveFacilityTarget(
       "FACILITY_DEVICE_RESOLVER_NOT_CONFIGURED",
     );
   }
-  return resolver(deviceRef);
+  return resolver(deviceRef, actionType);
 }
 
 async function resolvePlayerScanIdentity(

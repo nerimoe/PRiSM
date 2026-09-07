@@ -42,6 +42,10 @@ import type {
   StaffOperationsService,
   StaffQueries,
   StaffRedeemQueries,
+  HomeAssistantConnectionConfig,
+  HomeAssistantDeviceConfig,
+  TTLockConnectionConfig,
+  TTLockDeviceConfig,
 } from "@prism/application";
 export type {
   LiveGlobalCapWindowView,
@@ -315,16 +319,7 @@ export type StaffUpdatePricingConfigInput = {
   provider: PricingConfig["provider"];
 };
 
-export type HomeAssistantDeviceConfig = {
-  name: string;
-  alias?: string[];
-  id: string;
-};
-
-export type HomeAssistantConnectionConfig = {
-  url: string;
-  token: string;
-};
+export type { HomeAssistantConnectionConfig, HomeAssistantDeviceConfig, TTLockConnectionConfig, TTLockDeviceConfig } from "@prism/application";
 
 export type HinataIoDeviceConfig = {
   id: string;
@@ -351,6 +346,8 @@ export type StaffSettings = {
   };
   homeAssistantConnection: HomeAssistantConnectionConfig;
   homeAssistantDevices: HomeAssistantDeviceConfig[];
+  ttLockConnection?: TTLockConnectionConfig;
+  ttLockDevices?: TTLockDeviceConfig[];
   hinataIoDevices: HinataIoDeviceConfig[];
   registration: PlayerRegistrationSettings;
 };

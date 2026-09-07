@@ -30,6 +30,10 @@ import {
   type DeviceActionExecutor,
   type HomeAssistantStateSource,
   type HinataIoDeviceConfig,
+  normalizeTTLockConnectionConfig,
+  normalizeTTLockDeviceConfigs,
+  type TTLockConnectionConfig,
+  type TTLockDeviceConfig,
   type StaffPricingExtension,
   type StaffPricingExtensionRequiredAsset,
 } from "@prism/application";
@@ -48,8 +52,10 @@ import {
   createHinataIoExecutor,
   resolveHinataIoDeviceRef,
 } from "./hinata-io-executor";
+import { createTTLockExecutor, resolveTTLockDeviceRef, TTLockClient } from "./ttlock-executor";
 
 export * from "./hinata-io-executor";
+export * from "./ttlock-executor";
 
 export type RuntimeRepositoryInput = SqlRepositories;
 
@@ -64,6 +70,7 @@ export type CreatePrismRuntimeDependenciesInput = {
   deviceActionExecutors?: {
     homeAssistant?: DeviceActionExecutor;
     hinataIo?: DeviceActionExecutor;
+    ttLock?: DeviceActionExecutor;
   };
   homeAssistantStateSource?: HomeAssistantStateSource;
   coinCooldownMs: number;
@@ -115,7 +122,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     ...input.assetEffectProviders,
     ...pluginRuntime.assetEffectProviders,
   ];
-  const resolveFacilityTarget = createDynamicHomeAssistantTargetResolver({
+  const resolveFacilityTarget = createDynamicFacilityTargetResolver({
     system: input.repositories.system,
   });
   const resolveGameMachineTarget = createDynamicHinataIoTargetResolver({
@@ -146,6 +153,15 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
             await deviceStateSync.syncConfiguredHomeAssistantStates();
           } catch (error) {
             console.error("Failed to load or sync HA devices:", error);
+          }
+          try {
+            await syncConfiguredTTLockStates({
+              system: input.repositories.system,
+              deviceStates: input.repositories.deviceStates,
+              now: input.now,
+            });
+          } catch (error) {
+            console.error("Failed to load or sync TTLock devices:", error);
           }
           return storedStaffQueries.listDeviceStates!();
         },
@@ -252,6 +268,9 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     resolveGameMachineTarget,
     executors: {
       home_assistant: createDynamicHomeAssistantExecutor({
+        system: input.repositories.system,
+      }),
+      ttlock: createDynamicTTLockExecutor({
         system: input.repositories.system,
       }),
     },
@@ -824,10 +843,10 @@ function createDynamicHomeAssistantExecutor(input: {
   };
 }
 
-function createDynamicHomeAssistantTargetResolver(input: {
+function createDynamicFacilityTargetResolver(input: {
   system: SqlRepositories["system"];
 }) {
-  return async (deviceRef: string) => {
+  return async (deviceRef: string, actionType?: string) => {
     const normalizedRef = typeof deviceRef === "string" ? deviceRef.trim().toLowerCase() : "";
     if (!normalizedRef) {
       throw new PrismDomainError("设备不存在", "DEVICE_NOT_FOUND");
@@ -837,6 +856,23 @@ function createDynamicHomeAssistantTargetResolver(input: {
         target: { kind: "facility", all: true } as const,
         deviceLabel: "所有设备",
       };
+    }
+
+    if (actionType === "door.open") {
+      const ttLockDevices = normalizeTTLockDeviceConfigs(
+        await input.system.getAppSetting("devices.ttlock"),
+      );
+      const ttLockDevice = resolveTTLockDeviceRef(deviceRef, ttLockDevices);
+      if (ttLockDevice) {
+        return {
+          target: {
+            kind: "facility",
+            id: ttLockDevice.id,
+            executorKind: "ttlock",
+          } as const,
+          deviceLabel: ttLockDevice.name,
+        };
+      }
     }
 
     const devicesSetting = await input.system.getAppSetting<HomeAssistantDeviceConfig[]>(
@@ -854,6 +890,83 @@ function createDynamicHomeAssistantTargetResolver(input: {
       deviceLabel: device.name.trim() || "设备",
     };
   };
+}
+
+function createDynamicTTLockExecutor(input: {
+  system: SqlRepositories["system"];
+}): DeviceActionExecutor {
+  return {
+    async execute(executionInput) {
+      const connection = normalizeTTLockConnectionConfig(
+        await input.system.getAppSetting("devices.ttlock_connection"),
+      );
+      const devices = normalizeTTLockDeviceConfigs(
+        await input.system.getAppSetting("devices.ttlock"),
+      );
+      if (devices.length === 0) {
+        return {
+          status: "failed",
+          message: "TTLock 未配置门锁。请在设备看板的 TTLock 设置中添加门锁。",
+        };
+      }
+      return createTTLockExecutor({
+        connection,
+        devices,
+        onConnectionUpdated: async (nextConnection) => {
+          await input.system.setAppSetting("devices.ttlock_connection", nextConnection);
+        },
+      }).execute(executionInput);
+    },
+  };
+}
+
+async function syncConfiguredTTLockStates(input: {
+  system: SqlRepositories["system"];
+  deviceStates: SqlRepositories["deviceStates"];
+  now: () => Date;
+}): Promise<void> {
+  const devices = normalizeTTLockDeviceConfigs(await input.system.getAppSetting("devices.ttlock"));
+  if (devices.length === 0) return;
+  const connection = normalizeTTLockConnectionConfig(
+    await input.system.getAppSetting("devices.ttlock_connection"),
+  );
+  const client = new TTLockClient({
+    connection,
+    onConnectionUpdated: async (nextConnection) => {
+      await input.system.setAppSetting("devices.ttlock_connection", nextConnection);
+    },
+  });
+  const states = await Promise.all(devices.map(async (device) => {
+    try {
+      const response = await client.queryOpenState(device.lockId);
+      return {
+        deviceId: device.id,
+        type: "door.open" as const,
+        targetKind: "facility" as const,
+        executorKind: "ttlock" as const,
+        label: device.name,
+        status: "online" as const,
+        state: response.state === 0 ? "locked" : response.state === 1 ? "unlocked" : "unknown",
+        metadata: { lockId: device.lockId, stateCode: response.state },
+        reportedAt: input.now(),
+        reportedBy: "ttlock_sync",
+      };
+    } catch (error) {
+      return {
+        deviceId: device.id,
+        type: "door.open" as const,
+        targetKind: "facility" as const,
+        executorKind: "ttlock" as const,
+        label: device.name,
+        status: "degraded" as const,
+        state: "unknown",
+        metadata: { lockId: device.lockId },
+        reportedAt: input.now(),
+        reportedBy: "ttlock_sync",
+      };
+    }
+  }));
+  await input.deviceStates.saveMany(states);
 }
 
 function createDynamicHinataIoTargetResolver(input: {

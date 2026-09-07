@@ -3,7 +3,7 @@ import type { Session } from "./session";
 
 export type DeviceTargetKind = "facility" | "game_machine";
 
-export type DeviceExecutorKind = "home_assistant" | "machine_ws" | "hinata_io";
+export type DeviceExecutorKind = "home_assistant" | "machine_ws" | "hinata_io" | "ttlock";
 
 export type DeviceActionType =
   | "power.on"
@@ -19,6 +19,7 @@ export type DeviceTarget =
   | {
       kind: "facility";
       id: string;
+      executorKind?: "home_assistant" | "ttlock";
       all?: never;
     }
   | {
@@ -164,7 +165,7 @@ export function resolveDeviceExecutor(command: DeviceCommandRequest): DeviceExec
         "DEVICE_ACTION_TARGET_MISMATCH",
       );
     }
-    return "home_assistant";
+    return "executorKind" in command.target ? command.target.executorKind ?? "home_assistant" : "home_assistant";
   }
 
   if (command.target.kind !== "game_machine") {

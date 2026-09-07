@@ -152,7 +152,26 @@ Machine 适合店内机器软件、投币控制器、Aime 桥接程序、门禁/
 
 服务端会回复 `hello.ack` 并推送该机器的待执行命令。机器执行后发送 `ack`，`status` 为 `success` 或 `failed`。失败 ACK 的 `message` 会保存到命令记录里，方便后台排查机器故障。
 
-设备动作统一使用明确类型和目标分类：`door.open`、`power.on`、`power.off`、`ac.set_temperature` 属于 `facility`，执行方向是 `home_assistant` 或设施网关；`coin` 和 `aime.scan` 属于 `game_machine`。原生 PRiSM 机器软件仍可走 `machine_ws`；Hinata IO 客户端走 `hinata_io` 直接执行器，由后端调用 relay HTTP 端点。Home Assistant 设施控制继续保持独立边界。
+设备动作统一使用明确类型和目标分类：`door.open`、`power.on`、`power.off`、`ac.set_temperature` 属于 `facility`，执行方向是 `home_assistant`、`ttlock` 或设施网关；`coin` 和 `aime.scan` 属于 `game_machine`。原生 PRiSM 机器软件仍可走 `machine_ws`；Hinata IO 客户端走 `hinata_io` 直接执行器，由后端调用 relay HTTP 端点。Home Assistant 电源/空调控制与 TTLock 门锁控制保持独立边界。
+
+### TTLock 配置与门禁控制
+
+TTLock 由员工在设备看板的设施设备区域点击锁形设置按钮配置，保存于 `app_settings` 的 `devices.ttlock_connection` 和 `devices.ttlock`。配置更新后，后端会在执行命令和同步状态时动态读取，不需要 Worker 环境变量或重新部署。连接配置兼容旧 `prism-neo` 的字段：
+
+```json
+{
+  "baseUrl": "https://api.sciener.com",
+  "clientId": "app-id",
+  "clientSecret": "app-secret",
+  "appAccount": "ttlock-app-account",
+  "appPwd": "ttlock-app-password",
+  "accessToken": "access-token",
+  "refreshToken": "refresh-token",
+  "accessTokenExpiresAt": null
+}
+```
+
+门锁映射格式为 `[{ "id": "front-door", "name": "主门锁", "aliases": ["front-door", "门禁"], "lockId": 25356943 }]`。玩家或员工只需使用 `name` / `aliases` 作为 `target.ref`；匹配到 TTLock 映射的 `door.open` 会保存为 `executorKind: "ttlock"`，调用 `/v3/lock/unlock`。看板会定期调用 `/v3/lock/queryOpenState` 展示锁定/解锁状态。access token 过期时，运行时会优先使用 `refreshToken`，失败后再使用 TTLock APP 账号密码重新获取 token，并把新 token 写回数据库。API 的远程开锁要求锁已绑定可用网关并在 TTLock/Sciener APP 中开启远程开锁。
 
 ### Hinata IO 配置与协议
 
@@ -179,12 +198,12 @@ Hinata IO 设备由员工在设备看板的游戏机器区域配置，保存于 
 
 ### 玩家面对的设备别名与 Home Assistant 解析
 
-玩家通过机器人指令（如 `/prism on wacca`）发起设施动作时，插件把用户输入作为 `target.ref` 设备引用发送。用户只能输入后台配置的设备 `name`、任意一个 `alias`（别名）或 `all`，不能直接输入 Home Assistant entity ID，后端也不接受设施请求中的 `target.id`。后端在创建命令前读取 `app_settings` 中的 `devices.homeassistant` 注册表，并按如下优先级解析单设备引用：
+玩家通过机器人指令（如 `/prism on wacca` 或 `/prism lock`）发起设施动作时，插件把用户输入作为 `target.ref` 设备引用发送。用户只能输入后台配置的设备 `name`、任意一个 `alias`（别名）或 `all`，不能直接输入 Home Assistant entity ID 或 TTLock `lockId`，后端也不接受设施请求中的 `target.id`。`door.open` 会先读取 `devices.ttlock`，其他设施动作读取 `devices.homeassistant`，因此门锁与电源可以使用相同的设备引用体系而不会串用执行器。
 
 1. 匹配设备 `name`；
 2. 匹配设备 `alias` 列表中的任一条目；
 
-`alias` 必须配置为字符串数组；单个字符串不是有效格式，设置接口会拒绝保存。匹配大小写不敏感并去除首尾空白。解析成功后，`DeviceCommand.deviceId` 只保存真实 HA entity ID，执行器不再解析 name、alias 或原始用户输入。`all` 被表示为没有单一 `deviceId` 的设施批量目标，持久化为 `device_id = NULL`；它只支持 `power.on/off`。普通设备和批量动作分别在 `action.payload.deviceLabel` 中返回设备 `name` 和“所有设备”。批量失败信息同样使用设备 `name`，不会暴露 entity ID。未命中的 name/alias（包括用户直接输入的 entity ID）统一返回「设备不存在」。
+`alias` 必须配置为字符串数组；单个字符串不是有效格式，设置接口会拒绝保存。匹配大小写不敏感并去除首尾空白。解析成功后，Home Assistant 命令的 `DeviceCommand.deviceId` 保存真实 entity ID，TTLock 命令的 `DeviceCommand.deviceId` 保存后台映射的内部 `id`；执行器不再解析 name、alias 或原始用户输入。`all` 被表示为没有单一 `deviceId` 的设施批量目标，持久化为 `device_id = NULL`；它只支持 `power.on/off`。普通设备和批量动作分别在 `action.payload.deviceLabel` 中返回设备 `name` 和“所有设备”。批量失败信息同样使用设备 `name`，不会暴露 entity ID。未命中的 name/alias（包括用户直接输入的 entity ID 或 TTLock lockId）统一返回「设备不存在」。
 
 > 需注意：设备状态同步（`syncHomeAssistantStates`）始终使用注册表里的真实 `id` 调用 `/api/states/<entity_id>`，因此看板上的在线/离线状态不会被别名影响；只有命令执行路径此前漏掉了这一解析，现已修复。
 

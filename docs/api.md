@@ -106,7 +106,7 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
 
 设备动作的目标分两类：
 
-- `facility`：门禁、电源、空调等设施动作，当前执行器为 `home_assistant` 或设施网关。
+- `facility`：门禁、电源、空调等设施动作，执行器可以是 `home_assistant`、`ttlock` 或设施网关。
 - `game_machine`：投币、Aime 扫描等游戏机器软件动作，执行器为 `machine_ws`，由对应机器的在线 WebSocket 连接实时接收。
 
 玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；`coin` 还会检查投币冷却时间。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
@@ -120,9 +120,9 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
   -d '{"type":"power.on","target":{"kind":"facility","ref":"舞萌一号机"}}'
 ```
 
-设施动作的请求目标必须使用 `target.ref`，只接受后台设备 `name`、任意一个 `alias` 或批量目标 `all`，不接受 `target.id` 或 Home Assistant entity ID。后端会先把单设备引用解析成真实 entity ID，再创建并保存命令，因此响应中的 `action.deviceId` 对单设备动作始终是规范 HA entity ID；批量动作没有单一设备 ID，返回 `deviceId: null` 和 `target: { "kind": "facility", "all": true }`。
+设施动作的请求目标必须使用 `target.ref`，只接受后台设备 `name`、任意一个 `alias` 或批量目标 `all`，不接受 `target.id`、Home Assistant entity ID 或 TTLock `lockId`。后端会先解析设备引用再创建并保存命令：Home Assistant 命令的 `action.deviceId` 是规范 entity ID，TTLock 命令的 `action.deviceId` 是后台门锁映射的内部 ID；批量动作没有单一设备 ID，返回 `deviceId: null` 和 `target: { "kind": "facility", "all": true }`。
 
-当运行时配置了 `PRISM_HOME_ASSISTANT_URL` 和 `PRISM_HOME_ASSISTANT_TOKEN` 时，`power.on`、`power.off`、`door.open`、`ac.set_temperature` 会直接调用 Home Assistant。`power.on/off` 会映射到实体所属 domain 的 `turn_on/turn_off`，`door.open` 映射为 `unlock`，`ac.set_temperature` 映射为 `climate.set_temperature` 并传递 `payload.temperature`。HA 执行器只接收解析完成的 entity ID。执行成功的设备动作会在 `action.payload.deviceLabel` 中返回后台设备 `name`；`all` 会对后台注册的所有 Home Assistant 设备逐个执行电源动作，并返回 `payload.deviceLabel: "所有设备"`。
+当后台设置中配置了 Home Assistant 连接时，`power.on`、`power.off` 和 `ac.set_temperature` 直接调用 Home Assistant；未被 TTLock 映射的 `door.open` 仍可调用 HA 的 `unlock`。匹配到 TTLock 门锁映射的 `door.open` 会调用 TTLock Cloud `/v3/lock/unlock`；TTLock 认证信息和门锁映射分别存于 `devices.ttlock_connection`、`devices.ttlock`。`power.on/off` 会映射到实体所属 domain 的 `turn_on/turn_off`，`ac.set_temperature` 映射为 `climate.set_temperature` 并传递 `payload.temperature`。执行成功的设备动作会在 `action.payload.deviceLabel` 中返回后台设备 `name`；`all` 会对后台注册的所有 Home Assistant 设备逐个执行电源动作，并返回 `payload.deviceLabel: "所有设备"`。
 
 兑换礼物 CDK：
 
@@ -203,7 +203,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/pricing-configs/:pricingConfigId/timeline?date=YYYY-MM-DD` | 获取指定日期下该方案的可视化 24 小时时间轴分段明细。 |
 | `POST` | `/rpc/staff/pricing-timeline/preview` | 发送未保存的计费规则草稿，计算并预览其 24 小时时间轴；普通计费草稿发送 `pricing`，全局封顶草稿发送 `priceCap` 与可选 `includedPricingConfigIds`。 |
 | `GET` | `/rpc/staff/settings` | 读取店铺通用和硬件设置。 |
-| `PUT` | `/rpc/staff/settings` | 更改店铺配置、投币冷却时间和新用户注册礼物包；`registration.defaultPresentId` 填现有礼物 ID，填 `null` 表示关闭。 |
+| `PUT` | `/rpc/staff/settings` | 更改店铺配置、投币冷却时间、新用户注册礼物包、Home Assistant、TTLock 和 Hinata IO 设置；`registration.defaultPresentId` 填现有礼物 ID，填 `null` 表示关闭。 |
 | `GET` | `/rpc/staff/device-states` | 获取设施设备上报状态，用于门禁、电源、空调、灯光等 Home Assistant 或设施网关视图。 |
 | `GET` | `/rpc/staff/machine-connections` | 获取游戏机器软件的 WebSocket 在线状态、能力列表、连接时间、最后心跳和断开时间。 |
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |

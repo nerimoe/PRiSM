@@ -119,6 +119,10 @@ PRISM_SQLITE_PATH=./data/prism-next-staging.sqlite bun run dev:local
 - 礼物（`Present`）与 CDK（`Redeem`）正常平移，历史合并发放策略自动转化为 `stack` / `extend-time` / `replace`。礼物授予里的 `activeAt` / `expiresAt` 会在 PRiSM Next 仓储层恢复为 `Date | null`，兼容旧 JSON 快照和 pg_dump 导入后的字符串日期。
 - 旧的投币日志 `CoinRecord` 均会转化为已确认（`acked`）的 `coin` 通道设备命令记录，作为设备审计和投币数量统计的基础，而不会重新触发任何物理出币动作。
 
+### G. 旧配置中的硬件连接迁移
+
+`prism-neo/src/config.json` 不属于业务数据库快照，通用 JSON 导入命令不会自动处理其中的硬件凭据。迁移 TTLock 时，将旧 `door.clientId`、`clientSecret`、`appAccount`、`appPwd`、`accessToken`、`refreshToken` 和 `mainLockId` 分别转为 `devices.ttlock_connection` 与 `devices.ttlock`；门锁映射必须补充后台可读的 `id`、`name` 和 `aliases`。迁移后应在设备看板的 TTLock 设置中复核 API 地址、门锁 `lockId` 和远程开锁权限。Home Assistant 的 URL、Token 和实体映射同样应写入后台设置，不要放入仓库或 Worker 构建日志。
+
 ---
 
 ## 4. 迁移后需要人工重构的内容
@@ -128,7 +132,7 @@ PRISM_SQLITE_PATH=./data/prism-next-staging.sqlite bun run dev:local
 - 商家和前台收银员的管理员账号（旧系统的 admin 表不会迁移，防止密码泄漏）。
 - 机器人/店内入口的 Integration API Token、机器软件的 Machine API Token，以及玩家 Web 的 player session 登录流程。旧的 Bot/Player/Agent 静态 Token 废弃，不能继续迁移到新系统。
 - 旧的主机环境变量设置。
-- 物理出币机、Aime 桥接、门禁、插座和 Home Assistant/设施网关的网络配置。投币和 Aime 走 Machine WebSocket，电源、空调、门禁等设施控制按部署情况接入 Home Assistant 或设施网关。
+- 物理出币机、Aime 桥接、门禁、插座和 Home Assistant/TTLock/设施网关的网络配置。投币和 Aime 走 Machine WebSocket，电源和空调通常接入 Home Assistant，TTLock 门禁使用 `devices.ttlock_connection` 与 `devices.ttlock` 配置；这些密钥由后台设置保存，不依赖 Worker 环境变量。
 
 ---
 
