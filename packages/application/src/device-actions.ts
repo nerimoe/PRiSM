@@ -19,6 +19,8 @@ export type DeviceActionExecutionInput = {
 export type DeviceActionExecutionResult =
   | {
       status: "success";
+      /** Transient data returned to the caller; it is not persisted in the command audit. */
+      payload?: Record<string, unknown>;
     }
   | {
       status: "failed";
@@ -129,6 +131,15 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
       await dependencies.deviceCommands.enqueueDeviceCommand(updated);
       if (updated.status === "acked") {
         await markActiveSessionsDeviceOperated(activeSessions, command, dependencies.sessions.save?.bind(dependencies.sessions));
+      }
+      if (result.status === "success" && result.payload) {
+        return {
+          ...updated,
+          payload: {
+            ...(updated.payload ?? {}),
+            ...result.payload,
+          },
+        };
       }
       return updated;
     },

@@ -304,6 +304,40 @@ describe("createDeviceActionService", () => {
     expect(deviceCommands.queued).toEqual([command]);
   });
 
+  it("returns executor payloads without persisting transient values in the audit", async () => {
+    const deviceCommands = new MemoryDeviceCommandRepository();
+    const service = createDeviceActionService({
+      sessions: new MemorySessionRepository(),
+      deviceCommands,
+      now: () => new Date("2026-07-07T10:00:00.000Z"),
+      id: () => "command-1",
+      coinCooldownMs: 60_000,
+      resolveFacilityTarget: resolveTestFacilityTarget,
+      executors: {
+        home_assistant: {
+          async execute() {
+            return {
+              status: "success",
+              payload: { temporaryPassword: "12345678" },
+            };
+          },
+        },
+      },
+    });
+
+    const command = await service.requestDeviceAction({
+      actor: { type: "staff", staffId: "staff-1" },
+      type: "door.open",
+      target: { kind: "facility", ref: "maimai" },
+    });
+
+    expect(command.payload).toMatchObject({
+      deviceLabel: "Maimai Switch",
+      temporaryPassword: "12345678",
+    });
+    expect(deviceCommands.queued[0]?.payload).toEqual({ deviceLabel: "Maimai Switch" });
+  });
+
   it("resolves a facility reference before creating and executing the command", async () => {
     const deviceCommands = new MemoryDeviceCommandRepository();
     const service = createDeviceActionService({

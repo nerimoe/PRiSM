@@ -171,7 +171,7 @@ TTLock 由员工在设备看板的设施设备区域点击锁形设置按钮配�
 }
 ```
 
-门锁映射格式为 `[{ "id": "front-door", "name": "主门锁", "aliases": ["front-door", "门禁"], "lockId": 25356943 }]`。玩家或员工只需使用 `name` / `aliases` 作为 `target.ref`；匹配到 TTLock 映射的 `door.open` 会保存为 `executorKind: "ttlock"`，调用 `/v3/lock/unlock`。看板会定期调用 `/v3/lock/queryOpenState` 展示锁定/解锁状态。access token 过期时，运行时会优先使用 `refreshToken`，失败后再使用 TTLock APP 账号密码重新获取 token，并把新 token 写回数据库。API 的远程开锁要求锁已绑定可用网关并在 TTLock/Sciener APP 中开启远程开锁。
+门锁映射格式为 `[{ "id": "front-door", "name": "主门锁", "aliases": ["front-door", "门禁"], "lockId": 25356943 }]`。玩家或员工只需使用 `name` / `aliases` 作为 `target.ref`；匹配到 TTLock 映射的 `door.open` 会保存为 `executorKind: "ttlock"`，调用 `/v3/keyboardPwd/add` 创建一个 8 位随机临时密码，默认有效期 3 分钟。看板会定期调用 `/v3/lock/queryOpenState` 展示锁定/解锁状态。access token 过期时，运行时会优先使用 `refreshToken`，失败后再使用 TTLock APP 账号密码重新获取 token，并把新 token 写回数据库。
 
 ### Hinata IO 配置与协议
 

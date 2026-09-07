@@ -122,7 +122,7 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
 
 设施动作的请求目标必须使用 `target.ref`，只接受后台设备 `name`、任意一个 `alias` 或批量目标 `all`，不接受 `target.id`、Home Assistant entity ID 或 TTLock `lockId`。后端会先解析设备引用再创建并保存命令：Home Assistant 命令的 `action.deviceId` 是规范 entity ID，TTLock 命令的 `action.deviceId` 是后台门锁映射的内部 ID；批量动作没有单一设备 ID，返回 `deviceId: null` 和 `target: { "kind": "facility", "all": true }`。
 
-当后台设置中配置了 Home Assistant 连接时，`power.on`、`power.off` 和 `ac.set_temperature` 直接调用 Home Assistant；未被 TTLock 映射的 `door.open` 仍可调用 HA 的 `unlock`。匹配到 TTLock 门锁映射的 `door.open` 会调用 TTLock Cloud `/v3/lock/unlock`；TTLock 认证信息和门锁映射分别存于 `devices.ttlock_connection`、`devices.ttlock`。`power.on/off` 会映射到实体所属 domain 的 `turn_on/turn_off`，`ac.set_temperature` 映射为 `climate.set_temperature` 并传递 `payload.temperature`。执行成功的设备动作会在 `action.payload.deviceLabel` 中返回后台设备 `name`；`all` 会对后台注册的所有 Home Assistant 设备逐个执行电源动作，并返回 `payload.deviceLabel: "所有设备"`。
+当后台设置中配置了 Home Assistant 连接时，`power.on`、`power.off` 和 `ac.set_temperature` 直接调用 Home Assistant；未被 TTLock 映射的 `door.open` 仍可调用 HA 的 `unlock`。匹配到 TTLock 门锁映射的 `door.open` 会调用 TTLock Cloud `/v3/keyboardPwd/add` 创建 8 位随机临时密码，默认有效期 3 分钟；TTLock 认证信息和门锁映射分别存于 `devices.ttlock_connection`、`devices.ttlock`。执行成功的 TTLock 动作会在本次响应的 `action.payload.temporaryPassword` 返回密码，不写入命令审计记录。`power.on/off` 会映射到实体所属 domain 的 `turn_on/turn_off`，`ac.set_temperature` 映射为 `climate.set_temperature` 并传递 `payload.temperature`。执行成功的设备动作会在 `action.payload.deviceLabel` 中返回后台设备 `name`；`all` 会对后台注册的所有 Home Assistant 设备逐个执行电源动作，并返回 `payload.deviceLabel: "所有设备"`。
 
 兑换礼物 CDK：
 

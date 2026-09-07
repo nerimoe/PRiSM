@@ -26,14 +26,15 @@ describe("TTLock executor", () => {
     expect(resolveTTLockDeviceRef("25356943", [device])).toBeNull();
   });
 
-  it("unlocks a configured lock through the cloud API", async () => {
+  it("creates a random temporary password for a configured lock", async () => {
     const requests: Request[] = [];
     const executor = createTTLockExecutor({
       connection,
       devices: [device],
+      now: () => new Date("2026-09-07T00:00:00.000Z"),
       fetch: async (url, init) => {
         requests.push(new Request(url, init));
-        return Response.json({ errcode: 0, errmsg: "none error message" });
+        return Response.json({ errcode: 0, keyboardPwdId: 987654321 });
       },
     });
 
@@ -49,13 +50,21 @@ describe("TTLock executor", () => {
       },
     });
 
-    expect(result).toEqual({ status: "success" });
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.payload?.temporaryPassword).toMatch(/^\d{8}$/);
+      expect(result.payload?.keyboardPwdId).toBe(987654321);
+      expect(result.payload?.temporaryPasswordExpiresAt).toBe("2026-09-07T00:03:00.000Z");
+    }
     expect(requests).toHaveLength(1);
-    expect(requests[0].url).toBe("https://api.sciener.com/v3/lock/unlock");
+    expect(requests[0].url).toBe("https://api.sciener.com/v3/keyboardPwd/add");
     const body = await requests[0].text();
     expect(body).toContain("clientId=client-id");
     expect(body).toContain("accessToken=access-token");
     expect(body).toContain("lockId=25356943");
+    expect(body).toContain("keyboardPwdType=3");
+    expect(body).toContain("addType=2");
+    expect(body).toContain("keyboardPwdName=uid%3Aunknown_random");
   });
 
   it("refreshes an expired token and persists the replacement", async () => {
@@ -73,10 +82,10 @@ describe("TTLock executor", () => {
             expires_in: 7776000,
           });
         }
-        if (request.url.endsWith("/v3/lock/unlock")) {
+        if (request.url.endsWith("/v3/keyboardPwd/add")) {
           const body = await request.text();
           return body.includes("accessToken=new-access-token")
-            ? Response.json({ errcode: 0 })
+            ? Response.json({ errcode: 0, keyboardPwdId: 1 })
             : Response.json({ errcode: 10004, errmsg: "invalid grant" });
         }
         return Response.json({ errcode: 10004, errmsg: "invalid grant" });
@@ -87,7 +96,7 @@ describe("TTLock executor", () => {
       },
     });
 
-    await expect(client.unlock(device.lockId)).resolves.toEqual({ errcode: 0 });
+    await expect(client.addTemporaryPassword(device.lockId, "12345678", "test")).resolves.toEqual({ keyboardPwdId: 1 });
     expect(requests).toHaveLength(3);
     expect(requests[1].url).toBe("https://api.sciener.com/oauth2/token");
     const refreshBody = await requests[1].text();

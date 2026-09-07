@@ -121,7 +121,7 @@ PRISM_SQLITE_PATH=./data/prism-next-staging.sqlite bun run dev:local
 
 ### G. 旧配置中的硬件连接迁移
 
-`prism-neo/src/config.json` 不属于业务数据库快照，通用 JSON 导入命令不会自动处理其中的硬件凭据。迁移 TTLock 时，将旧 `door.clientId`、`clientSecret`、`appAccount`、`appPwd`、`accessToken`、`refreshToken` 和 `mainLockId` 分别转为 `devices.ttlock_connection` 与 `devices.ttlock`；门锁映射必须补充后台可读的 `id`、`name` 和 `aliases`。迁移后应在设备看板的 TTLock 设置中复核 API 地址、门锁 `lockId` 和远程开锁权限。Home Assistant 的 URL、Token 和实体映射同样应写入后台设置，不要放入仓库或 Worker 构建日志。
+`prism-neo/src/config.json` 不属于业务数据库快照，通用 JSON 导入命令不会自动处理其中的硬件凭据。迁移 TTLock 时，将旧 `door.clientId`、`clientSecret`、`appAccount`、`appPwd`、`accessToken`、`refreshToken` 和 `mainLockId` 分别转为 `devices.ttlock_connection` 与 `devices.ttlock`；门锁映射必须补充后台可读的 `id`、`name` 和 `aliases`。迁移后应在设备看板的 TTLock 设置中复核 API 地址和门锁 `lockId`。当前 `/lock` / `door.open` 的行为是通过 TTLock 云端创建 8 位随机临时密码（默认有效期 3 分钟），不是直接调用远程解锁；门锁需要支持 TTLock 临时密码下发。Home Assistant 的 URL、Token 和实体映射同样应写入后台设置，不要放入仓库或 Worker 构建日志。
 
 ---
 

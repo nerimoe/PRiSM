@@ -44,8 +44,18 @@ export function createTTLockExecutor(input: TTLockExecutorInput): DeviceActionEx
       if (!device) return failed("TTLock 门锁配置不存在。");
 
       try {
-        const response = await client.unlock(device.lockId);
-        return toExecutionResult(response, "开门");
+        const temporaryPassword = await client.createRandomTemporaryPassword(
+          device.lockId,
+          `uid:${command.playerId ?? command.staffId ?? "unknown"}_random`,
+        );
+        return {
+          status: "success",
+          payload: {
+            temporaryPassword: temporaryPassword.password,
+            keyboardPwdId: temporaryPassword.id,
+            temporaryPasswordExpiresAt: temporaryPassword.expiresAt,
+          },
+        };
       } catch (error) {
         return failed(error instanceof Error ? error.message : "TTLock request failed.");
       }
@@ -130,11 +140,16 @@ export class TTLockClient {
     return { keyboardPwdId };
   }
 
-  async createRandomTemporaryPassword(lockId: number, name: string): Promise<{ password: string; id: number }> {
+  async createRandomTemporaryPassword(
+    lockId: number,
+    name: string,
+  ): Promise<{ password: string; id: number; expiresAt: string }> {
     const random = crypto.getRandomValues(new Uint32Array(1))[0] % 100_000_000;
     const password = String(random).padStart(8, "0");
-    const result = await this.addTemporaryPassword(lockId, password, name);
-    return { password, id: result.keyboardPwdId };
+    const startDate = this.now().getTime();
+    const endDate = startDate + 180_000;
+    const result = await this.addTemporaryPassword(lockId, password, name, startDate, endDate);
+    return { password, id: result.keyboardPwdId, expiresAt: new Date(endDate).toISOString() };
   }
 
   private async requestWithTokenRetry(
