@@ -415,7 +415,7 @@ test("report dates use shop midnight across time zones and daylight saving", () 
   expect((end.getTime() - start.getTime()) / 3600000).toBe(23);
 });
 
-test("one machine ticket sends once, audits the imported entry and never closes billing on relay failure", async () => {
+test("one machine ticket supports repeated card sends, audits the imported entry and never closes billing on relay failure", async () => {
   const url = await encryptSecret(
     "https://receiver.test/card",
     env.URL_ENCRYPTION_KEY,
@@ -451,13 +451,13 @@ test("one machine ticket sends once, audits the imported entry and never closes 
       request("/api/v1/machines/login", { ticket, cardId: "card" }),
       request("/api/v1/machines/login", { ticket, cardId: "card" }),
     ]);
-    expect(results.map((r) => r.status).sort()).toEqual([200, 410]);
-    expect(calls).toBe(1);
+    expect(results.map((r) => r.status).sort()).toEqual([200, 200]);
+    expect(calls).toBe(2);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM device_commands WHERE shop_id='a' AND type='aime.scan'",
       ).first("n"),
-    ).toBe(1);
+    ).toBe(2);
     const next = await request("/api/v1/machines/session/start", {
       shopCode: "a",
       publicId: "machine",
@@ -475,7 +475,7 @@ test("one machine ticket sends once, audits the imported entry and never closes 
     });
     expect(failed.status).toBe(502);
     expect(await failed.json()).toMatchObject({
-      error: { code: "DEVICE_RESULT_UNKNOWN" },
+      error: { code: "DEVICE_UNAVAILABLE" },
     });
     expect(
       (
@@ -484,8 +484,9 @@ test("one machine ticket sends once, audits the imported entry and never closes 
           cardId: "card",
         })
       ).status,
-    ).toBe(410);
-    expect(calls).toBe(2);
+    ).toBe(502);
+    expect((await request(`/api/v1/devices/session/state?ticket=${nextTicket}`)).status).toBe(200);
+    expect(calls).toBe(4);
     expect(
       await env.DB.prepare(
         "SELECT status FROM sessions WHERE shop_id='a' AND player_id='p'",
@@ -495,7 +496,7 @@ test("one machine ticket sends once, audits the imported entry and never closes 
       await env.DB.prepare(
         "SELECT COUNT(*) AS n FROM player_operations WHERE shop_id='a' AND kind='aime.scan' AND status='unknown'",
       ).first("n"),
-    ).toBe(1);
+    ).toBe(2);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -625,6 +626,8 @@ test("devices allow zero or combined capabilities and retain one identity for po
       (await request("/api/v1/devices/session/actions", coin)).status,
     ).toBe(200);
     expect(coinCalls).toBe(1);
+    expect((await request("/api/v1/devices/session/actions", {ticket, operationId: crypto.randomUUID(), action: "coin"})).status).toBe(429);
+    expect(coinCalls).toBe(1);
     expect(
       await env.DB.prepare(
         "SELECT COUNT(DISTINCT device_id) FROM device_commands WHERE shop_id='card'",
@@ -656,7 +659,8 @@ test("devices allow zero or combined capabilities and retain one identity for po
           action: "coin",
         })
       ).status,
-    ).toBe(409);
+    ).toBe(200);
+    expect(coinCalls).toBe(2);
     expect(
       (await request("/api/v1/machines/login", { ticket, cardId: "card" }))
         .status,
@@ -1014,20 +1018,21 @@ test("nonbilling card and automatic coin flows need no QQ or entry, dispatch onc
         cardId: "card",
       }),
     ]);
-    expect(results.map((r) => r.status).sort()).toEqual([200, 410]);
-    const success = (await results
-      .find((r) => r.status === 200)!
-      .json()) as any;
+    expect(results.map((r) => r.status).sort()).toEqual([200, 200]);
+    const responses = await Promise.all(results.map(r => r.json())) as any[];
+    const success = responses.find(r => r.data.coin.status === "sent");
     expect(success.data.coin.status).toBe("sent");
-    expect(calls.map((c) => c.action)).toEqual(["SET_CARD", "KEY_PRESS"]);
-    expect(calls[1]!.body).toEqual({ key: 32, count: 1 });
-    expect(calls[0]!.id).not.toBe(calls[1]!.id);
+    expect(calls.filter(c => c.action === "SET_CARD")).toHaveLength(2);
+    const coins = calls.filter(c => c.action === "KEY_PRESS");
+    expect(coins).toHaveLength(1);
+    expect(coins[0]!.body).toEqual({ key: 32, count: 1 });
+    expect(calls[0]!.id).not.toBe(coins[0]!.id);
     expect(calls.every((c) => !!c.id)).toBe(true);
     expect(
       await env.DB.prepare(
         "SELECT payload_json FROM device_commands WHERE shop_id='card' AND id=?",
       )
-        .bind(calls[1]!.id!)
+        .bind(coins[0]!.id!)
         .first("payload_json"),
     ).toBe(JSON.stringify({ parentOperationId: success.data.operationId }));
     const cooldown = await start();
@@ -1087,8 +1092,9 @@ test("nonbilling card and automatic coin flows need no QQ or entry, dispatch onc
       expect(
         (await request("/api/v1/machines/login", { ticket, cardId: "card" }))
           .status,
-      ).toBe(410);
-      expect(calls).toHaveLength(mode!.startsWith("SET_CARD") ? 1 : 2);
+      ).toBe(mode!.startsWith("SET_CARD") ? 502 : 200);
+      expect((await request(`/api/v1/devices/session/state?ticket=${ticket}`)).status).toBe(200);
+      expect(calls).toHaveLength(mode!.startsWith("SET_CARD") ? 2 : 3);
     }
     expect(
       await env.DB.prepare(

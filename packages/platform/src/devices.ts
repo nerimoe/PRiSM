@@ -531,23 +531,7 @@ async function executeDeviceAction(
         },
       ]);
       if (body.action === "coin") {
-        const ticketHash = await sha256(body.ticket);
-        if (!staff) {
-          const claimed = await c.env.DB.prepare(
-            "UPDATE machine_tickets SET coin_operation_id=? WHERE token_hash=? AND coin_operation_id IS NULL AND claimed_at IS NULL AND expires_at>? RETURNING token_hash",
-          )
-            .bind(body.operationId, ticketHash, new Date().toISOString())
-            .first();
-          if (!claimed) jsonError(409, "已投币", "COIN_ALREADY_USED");
-        }
-        const claim = await claimDeviceCoin(c, machine, body.operationId);
-        if (!claim) {
-          if (!staff)
-            await c.env.DB.prepare(
-              "UPDATE machine_tickets SET coin_operation_id=NULL WHERE token_hash=? AND coin_operation_id=?",
-            )
-              .bind(ticketHash, body.operationId)
-              .run();
+        if (!(await claimDeviceCoin(c, machine, body.operationId))) {
           jsonError(429, "请稍后再投币", "COIN_COOLDOWN");
         }
       }
@@ -647,20 +631,13 @@ async function executeDeviceAction(
           if (!sent.ok) throw new Error("IO request failed");
         }
       } catch {
-        // Keep the uncertain command pending, but never let this ticket repeat it.
-        if (!staff)
-          await c.env.DB.prepare(
-            "UPDATE machine_tickets SET claimed_at=?,claimed_by=? WHERE token_hash=?",
-          )
-            .bind(new Date().toISOString(), user.id, await sha256(body.ticket))
-            .run();
         return c.json(
           {
             error: {
-              code: "DEVICE_RESULT_UNKNOWN",
+              code: "DEVICE_UNAVAILABLE",
               message: isDoor
-                ? "开门密码暂未确认，请联系店员；入场计费不会自动结束"
-                : "操作结果待确认，请检查设备，不要重复操作",
+                ? "获取开门密码失败，请联系店员"
+                : "设备连接失败，请联系店员检查设备或配置",
               details: { operationId: body.operationId },
             },
           },

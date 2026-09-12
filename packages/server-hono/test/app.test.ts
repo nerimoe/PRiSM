@@ -3077,6 +3077,7 @@ describe("createPrismApp", () => {
       players: [
         {
           playerId: "player-1",
+          identities: [],
           displayName: "A",
           status: "active",
           walletTotal: 132,

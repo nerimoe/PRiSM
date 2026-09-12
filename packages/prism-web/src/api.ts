@@ -171,14 +171,23 @@ export async function api<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(path, {
+  const send = () => fetch(path, {
     ...options,
+    cache: "no-store",
     credentials: "include",
     headers: {
       "content-type": "application/json",
       ...options.headers,
     },
   });
+  let response: Response;
+  try { response = await send(); }
+  catch (error) {
+    const readOnly = (options.method ?? "GET").toUpperCase() === "GET" || path.endsWith("/checkout/preview");
+    if (!(error instanceof TypeError) || !readOnly || options.signal?.aborted) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    response = await send();
+  }
   const payload = (await response.json().catch(() => ({}))) as {
     data?: T;
     error?: { code: string; message: string; details?: unknown };

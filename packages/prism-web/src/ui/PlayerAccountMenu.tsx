@@ -56,7 +56,7 @@ export function PlayerDialog({
 
 type Section = "账单" | "兑换" | "记录" | "钱包";
 export function PlayerAccountMenu() {
-  const { user, logout, activeShop } = useAuth();
+  const { user, logout, activeShop, billingActive, setBillingActive } = useAuth();
   const { t } = useI18n();
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [section, setSection] = useState<Section | null>(null);
@@ -66,14 +66,19 @@ export function PlayerAccountMenu() {
     setInfo(null);
     if (user && activeShop)
       api<ShopInfo>(shopApi(activeShop))
-        .then((result) => {
-          if (!cancelled) setInfo(result);
+        .then(async (result) => {
+          if (cancelled) return;
+          setInfo(result);
+          if (result.shop.billingEnabled && result.membership) {
+            const current = await api<Summary>(shopApi(activeShop, "player/me"));
+            if (!cancelled) setBillingActive(activeShop, !!current.activeSession);
+          } else setBillingActive(activeShop, false);
         })
         .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeShop, user]);
+  }, [activeShop, user, setBillingActive]);
   useEffect(() => {
     const close = (event: PointerEvent) => {
       if (
@@ -98,8 +103,9 @@ export function PlayerAccountMenu() {
     <>
       <details ref={menu} className="player-account-menu">
         <summary className="focus-ring">
-          {user.displayName || user.username || user.id}
-          <ChevronDown size={16} />
+          {billingActive && <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted"><span className="h-1.5 w-1.5 rounded-full bg-green-600" />{t("计费中")}</span>}
+          <span className="min-w-0 truncate">{user.displayName || user.username || user.id}</span>
+          <ChevronDown size={16} className="shrink-0" />
         </summary>
         <div className="player-menu-items">
           {info?.shop.billingEnabled &&
@@ -146,6 +152,7 @@ function AccountContent({
 }) {
   const { t, errorText } = useI18n();
   const code = info.shop.publicId;
+  const { setBillingActive } = useAuth();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [assets, setAssets] = useState<Assets | null>(null);
@@ -170,6 +177,7 @@ function AccountContent({
               )
             : null;
           if (!cancelled) {
+            setBillingActive(code, !!current.activeSession);
             setSummary(current);
             setPreview(bill);
           }
@@ -193,7 +201,7 @@ function AccountContent({
     return () => {
       cancelled = true;
     };
-  }, [code, section, attempt, errorText]);
+  }, [code, section, attempt, errorText, setBillingActive]);
   async function submit() {
     if (busy) return;
     setBusy(true);
@@ -208,6 +216,7 @@ function AccountContent({
           ? { code: redeem.trim() }
           : { location: await operationLocation(info.shop.locationEnabled ?? info.shop.checkoutGeo) },
       );
+      if (section === "账单") setBillingActive(code, false);
       setDone(true);
       setPreview(null);
     } catch (e) {

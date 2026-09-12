@@ -25,3 +25,22 @@ test("a lost checkout response reuses its operation ID",async()=>{
     expect(storage.size).toBe(0);
   }finally{if(previous)Object.defineProperty(globalThis,"sessionStorage",previous);else Reflect.deleteProperty(globalThis,"sessionStorage");}
 });
+
+
+test("reads retry once on a lost connection; mutations never auto-retry", async () => {
+  for (const [path, method, expected] of [
+    ["/api/v1/shops/test/player/me", "GET", 2],
+    ["/api/v1/shops/test/player/checkout/preview", "POST", 2],
+    ["/api/v1/shops/test/player/checkout/confirm", "POST", 1],
+    ["/api/v1/devices/session/actions", "POST", 1],
+  ] as const) {
+    let calls = 0;
+    globalThis.fetch = Object.assign(async () => {
+      if (++calls === 1) throw new TypeError("Failed to fetch");
+      return Response.json({ data: { ok: true } });
+    }, { preconnect: originalFetch.preconnect });
+    if (expected === 2) expect(await api(path, { method })).toEqual({ ok: true });
+    else await expect(api(path, { method })).rejects.toThrow("Failed to fetch");
+    expect(calls).toBe(expected);
+  }
+});

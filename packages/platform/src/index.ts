@@ -657,40 +657,10 @@ async function handleMachineLogin(
     : null;
   const operationId = crypto.randomUUID();
   const now = new Date().toISOString();
-  const ticketHash = await sha256(body.ticket);
-  const claims = [
-    c.env.DB.prepare(
-      "UPDATE machine_tickets SET claimed_by=?,claimed_at=?,operation_id=? WHERE token_hash=? AND claimed_at IS NULL AND expires_at>? RETURNING token_hash",
-    ).bind(user.id, now, operationId, ticketHash, now),
-    c.env.DB.prepare(
-      "INSERT INTO player_operations (shop_id,user_id,id,kind,status,created_at,device_id) SELECT ?,?,?, 'aime.scan','pending',?,? FROM machine_tickets WHERE token_hash=? AND operation_id=?",
-    ).bind(
-      shop.id,
-      user.id,
-      operationId,
-      now,
-      machine.id,
-      ticketHash,
-      operationId,
-    ),
-  ];
-  claims.push(
-    c.env.DB.prepare(
-      "INSERT INTO device_commands (shop_id,id,type,device_id,target_kind,executor_kind,player_id,status,payload_json,requested_at) SELECT ?,?,'aime.scan',?,'game_machine','hinata_io',?,'pending',?,? FROM machine_tickets WHERE token_hash=? AND operation_id=?",
-    ).bind(
-      shop.id,
-      operationId,
-      machine.id,
-      playerId,
-      JSON.stringify({ cardId: card.id }),
-      now,
-      ticketHash,
-      operationId,
-    ),
-  );
-  const claimed = await c.env.DB.batch(claims);
-  if (!claimed[0]?.results.length)
-    jsonError(410, "本次会话已失效", "TICKET_EXPIRED");
+  await c.env.DB.batch([
+    c.env.DB.prepare("INSERT INTO player_operations (shop_id,user_id,id,kind,status,created_at,device_id) VALUES (?,?,?,'aime.scan','pending',?,?)").bind(shop.id,user.id,operationId,now,machine.id),
+    c.env.DB.prepare("INSERT INTO device_commands (shop_id,id,type,device_id,target_kind,executor_kind,player_id,status,payload_json,requested_at) VALUES (?,?,'aime.scan',?,'game_machine','hinata_io',?,'pending',?,?)").bind(shop.id,operationId,machine.id,playerId,JSON.stringify({cardId:card.id}),now),
+  ]);
   const result = await sendHinataCard(
     targetUrl,
     card.access_code,
@@ -757,10 +727,10 @@ async function handleMachineLogin(
   if (!result.ok)
     jsonError(
       502,
-      result.status === 0
-        ? "发送结果待确认，请检查机台，不要重复发送"
-        : "机台暂时不可用",
-      result.status === 0 ? "DEVICE_RESULT_UNKNOWN" : "DEVICE_UNAVAILABLE",
+      result.status === 0 || result.status === 404
+        ? "设备离线或连接地址不正确，请联系店员"
+        : "设备连接失败，请联系店员检查配置",
+      "DEVICE_UNAVAILABLE",
       response,
     );
   if (machine.coin_after_swipe) {
@@ -768,12 +738,7 @@ async function handleMachineLogin(
     // Card delivery is already recorded. A coin failure must not invite another card swipe.
     response.coin = { operationId: coinId, status: "unknown" };
     try {
-      const coinClaim = await c.env.DB.prepare(
-        "UPDATE machine_tickets SET coin_operation_id=? WHERE token_hash=? AND operation_id=? AND coin_operation_id IS NULL RETURNING token_hash",
-      )
-        .bind(coinId, await sha256(body.ticket), operationId)
-        .first();
-      if (!coinClaim || !(await claimDeviceCoin(c, machine, coinId))) {
+      if (!(await claimDeviceCoin(c, machine, coinId))) {
         response.coin = {
           operationId: coinId,
           status: "skipped",

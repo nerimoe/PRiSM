@@ -608,7 +608,7 @@
   "暂无待结账单": "No outstanding bill",
   "暂无资产": "No assets",
   "计费中": "Billing in progress",
-  "计费时段": "Rates by time",
+  "计费时段": "Billing periods",
   "计费日期": "Pricing date",
   "每次入场": "Per entry",
   "不开放入场": "Entry unavailable",
@@ -675,5 +675,14 @@
   "确认绑定": "Confirm link",
   "玩家验证码": "Player verification code",
   "玩家绑定页面上的验证码": "Code shown on the player’s binding screen",
-  "没有玩家管理权限": "Player management permission required"
+  "没有玩家管理权限": "Player management permission required",
+  "已刷卡": "Card sent",
+  "设备离线或连接地址不正确，请联系店员": "Device offline or address incorrect. Please contact staff.",
+  "设备连接失败，请联系店员检查配置": "Device connection failed. Please ask staff to check the configuration.",
+  "设备连接失败，请联系店员检查设备或配置": "Device connection failed. Please ask staff to check the device or configuration.",
+  "玩家分组": "Player grouping",
+  "不分组": "No grouping",
+  "按计费方案分组": "Group by billing plan",
+  "按计费时段分组": "Group by billing period",
+  "暂无计费明细": "No billing details yet"
 }

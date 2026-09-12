@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Plus, RefreshCw } from "lucide-react";
 import { useI18n } from "../../i18n";
@@ -23,6 +23,8 @@ import {
   type Player,
   type Preview,
 } from "./shared";
+
+import { liveBilling } from "./live-billing";
 
 type Holdings = {
   holdings: {
@@ -51,26 +53,41 @@ export function Players({ live = false }: { live?: boolean }) {
   const { t } = useI18n();
   const { canWrite, shopCode } = useMerchant();
   const request = useStaffApi();
-  const list = useResource<{ players: Player[] }>("players");
-  const onSite = useResource<{ players: LivePlayer[] }>("live-players");
+  const list = useResource<{ players: Player[] }>(live ? null : "players");
+  const onSite = useResource<{ players: LivePlayer[] }>(live ? "live-players" : null);
+  const [groupBy, setGroupBy] = useState("none");
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState(false);
   const [bind, setBind] = useState(false);
   const [params, setParams] = useSearchParams();
-  const selected = list.data?.players.find(
+  const players: Player[] | undefined = live ? onSite.data?.players.map(p => ({
+    id: p.playerId, displayName: p.displayName, status: p.status, walletTotal: p.walletTotal,
+    identities: p.identities, activeSessionId: p.sessions.find(s => !s.endedAt)?.id ?? null,
+  })) : list.data?.players;
+  const currentById = new Map(onSite.data?.players.map(p => [p.playerId, p]));
+  const selected = players?.find(
     (p) => p.id === params.get("player"),
   );
   const refresh = () => {
     list.reload();
     onSite.reload();
   };
-  const rows = list.data?.players.filter(
+  const rows = players?.filter(
     (player) =>
-      (!live || onSite.data?.players.some((p) => p.playerId === player.id)) &&
       `${player.displayName} ${player.identities?.map((i) => i.subject).join(" ")}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
+  const billingById = new Map(onSite.data?.players.map(p => [p.playerId, liveBilling(p)]));
+  const groups = new Map<string, { label: string; players: Player[] }>();
+  for (const player of rows ?? []) {
+    const billing = billingById.get(player.id);
+    const key = !live || groupBy === "none" ? "" : groupBy === "plan" ? billing!.planKey : billing!.periodKey;
+    const label = billing?.plans.join(" + ") || t("暂无计费明细");
+    const group = groups.get(key) ?? { label: groupBy === "period" ? billing?.periods.join(" · ") || label : label, players: [] };
+    group.players.push(player);
+    groups.set(key, group);
+  }
   return (
     <div className="grid gap-5">
       <div className="flex flex-wrap items-center gap-3">
@@ -105,19 +122,25 @@ export function Players({ live = false }: { live?: boolean }) {
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
+      {live && <select className={`${input} w-auto justify-self-start`} aria-label={t("玩家分组")}
+        value={groupBy} onChange={e => setGroupBy(e.target.value)}>
+        <option value="none">{t("不分组")}</option>
+        <option value="plan">{t("按计费方案分组")}</option>
+        <option value="period">{t("按计费时段分组")}</option>
+      </select>}
       {list.error || onSite.error ? (
         <State error={list.error || onSite.error} />
-      ) : !rows || !onSite.data ? (
+      ) : !rows ? (
         <State />
       ) : !rows.length ? (
         <State empty />
       ) : (
         <>
+        {[...groups].map(([key, group]) => <Fragment key={key}>
+          {live && groupBy !== "none" && <h3 className="text-sm font-semibold">{group.label}<span className="ml-2 font-normal text-ink/50">{group.players.length}</span></h3>}
           <div className="divide-y divide-ink/10 rounded-xl bg-panel md:hidden">
-            {rows.map((player) => {
-              const current = onSite.data?.players.find(
-                (p) => p.playerId === player.id,
-              );
+            {group.players.map((player) => {
+              const current = currentById.get(player.id);
               return (
                 <button
                   key={player.id}
@@ -137,6 +160,7 @@ export function Players({ live = false }: { live?: boolean }) {
                   <span className="text-right text-xs text-ink/50">
                     {t("余额")}
                   </span>
+                  {live && <span className="col-span-2 text-sm text-ink/70">{billingById.get(player.id)?.periods.join(" · ") || t("暂无计费明细")}</span>}
                   {current && (
                     <span className="col-span-2 mt-2 flex justify-between border-t border-ink/10 pt-3 text-sm text-ink/60">
                       <span>
@@ -156,14 +180,12 @@ export function Players({ live = false }: { live?: boolean }) {
               headers={[
                 "玩家",
                 "余额",
-                ...(live ? ["时长", "预计消费"] : ["状态"]),
+                ...(live ? ["计费时段", "时长", "预计消费"] : ["状态"]),
                 "操作",
               ]}
             >
-              {rows.map((player) => {
-                const current = onSite.data?.players.find(
-                  (p) => p.playerId === player.id,
-                );
+              {group.players.map((player) => {
+                const current = currentById.get(player.id);
                 return (
                   <tr key={player.id}>
                     <td className={cell}>
@@ -183,6 +205,7 @@ export function Players({ live = false }: { live?: boolean }) {
                     <td className={cell}>{money(player.walletTotal)}</td>
                     {live ? (
                       <>
+                        <td className={cell}><div className="grid gap-1 text-sm">{billingById.get(player.id)?.periods.length ? billingById.get(player.id)!.periods.map(period => <span key={period}>{period}</span>) : t("暂无计费明细")}</div></td>
                         <td className={cell}>
                           {Math.floor(current?.stayDurationMinutes ?? 0)}{" "}
                           {t("分钟")}
@@ -196,7 +219,7 @@ export function Players({ live = false }: { live?: boolean }) {
                         {t(
                           player.status !== "active"
                             ? "已停用"
-                            : current
+                            : player.activeSessionId || player.hasUnpaidSession
                               ? "在店"
                               : "正常",
                         )}
@@ -215,6 +238,7 @@ export function Players({ live = false }: { live?: boolean }) {
               })}
             </Table>
           </div>
+        </Fragment>)}
         </>
       )}
       {live && (
@@ -271,7 +295,7 @@ export function Players({ live = false }: { live?: boolean }) {
         <PlayerDetail
           key={selected.id}
           player={selected}
-          current={onSite.data?.players.find((p) => p.playerId === selected.id)}
+          active={live || !!selected.activeSessionId || !!selected.hasUnpaidSession}
           close={() => setParams({})}
           refresh={refresh}
         />
@@ -281,12 +305,12 @@ export function Players({ live = false }: { live?: boolean }) {
 }
 function PlayerDetail({
   player,
-  current,
+  active,
   close,
   refresh,
 }: {
   player: Player;
-  current?: LivePlayer;
+  active: boolean;
   close: () => void;
   refresh: () => void;
 }) {
@@ -348,9 +372,9 @@ function PlayerDetail({
           <button
             className={button}
             disabled={busy || player.status !== "active"}
-            onClick={() => (current ? checkout() : setAction("entry"))}
+            onClick={() => (active ? checkout() : setAction("entry"))}
           >
-            {t(current ? "结账" : "入场")}
+            {t(active ? "结账" : "入场")}
           </button>
           <button className={button} onClick={() => setAction("grant")}>
             {t("发放资产")}

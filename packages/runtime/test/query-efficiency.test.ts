@@ -52,6 +52,11 @@ test("runtime read models execute one SQL statement each", async () => {
   await expectOneStatement(() => queries.playerQueries.listPlayerAssets!("player-1"));
   await expectOneStatement(() => queries.staffQueries.getPlayerAssets!("player-1"));
   await expectOneStatement(() => queries.staffQueries.listPlayers!());
+  await expectOneStatement(() => queries.staffQueries.listPlayers({playerIds: ['player-1']}));
+  expect(await queries.staffQueries.listPlayers({playerIds: ['missing']})).toEqual([]);
+  statements.length = 0;
+  expect(await queries.staffQueries.listPlayers({playerIds: []})).toEqual([]);
+  expect(statements).toHaveLength(0);
   await expectOneStatement(() => queries.staffQueries.listActiveSessions!());
   await expectOneStatement(() => queries.playerQueries.getPlayerSessionHistoryDetail!("player-1", "session-1"));
   await expectOneStatement(() => queries.staffQueries.getReportsSummary!({

@@ -115,7 +115,7 @@ function MachineSessionPage({
   const [cards, setCards] = useState<Card[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
   const [cardsError, setCardsError] = useState<string | null>(null);
-  const [status, setStatus] = useState<"idle" | "locating" | "sending">("idle");
+  const [status, setStatus] = useState<"idle" | "locating" | "sending" | "success">("idle");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [heroFailed, setHeroFailed] = useState(false);
   const [munetBusy, setMunetBusy] = useState(false);
@@ -184,25 +184,18 @@ function MachineSessionPage({
       const position =
         (machine.shop.locationEnabled ?? machine.shop.machineGeo) === false ? null : await getPosition();
       setStatus("sending");
-      await Api.loginMachine({
+      const result = await Api.loginMachine({
         cardId,
         lat: position?.coords.latitude,
         lng: position?.coords.longitude,
         accuracy: position?.coords.accuracy,
         ticket,
       });
-      window.setTimeout(() => navigate("/m/expired", { replace: true }), 3000);
+      setStatus("success");
+      window.setTimeout(() => setStatus("idle"), 1000);
+      if (["failed", "unknown"].includes(result.coin?.status ?? "")) window.alert(errorText("刷卡已完成，投币请求失败，请联系店员。"));
     } catch (caught) {
-      if (
-        caught instanceof TypeError ||
-        (caught instanceof ApiError &&
-          ([
-            "DEVICE_RESULT_UNKNOWN",
-            "DEVICE_UNAVAILABLE",
-            "OPERATION_PENDING",
-          ].includes(caught.code ?? "") ||
-            caught.sessionExpired))
-      ) {
+      if (caught instanceof ApiError && caught.sessionExpired) {
         navigate("/m/expired", { replace: true });
         return;
       }
@@ -304,7 +297,7 @@ function MachineSessionPage({
           key={reload}
           machine={machine}
           ticket={ticket}
-          cardBusy={busy}
+          cardBusy={status === "locating" || status === "sending"}
         >
           {cardsLoading ? (
             <div
@@ -330,6 +323,7 @@ function MachineSessionPage({
               {cards.map((card) => {
                 const active = activeCardId === card.id;
                 const detail =
+                  active && status === "success" ? t("已刷卡") :
                   active && status === "locating"
                     ? t("确认位置…")
                     : active && status === "sending"
@@ -354,7 +348,9 @@ function MachineSessionPage({
                         {detail}
                       </span>
                     </span>
-                    {active && busy ? (
+                    {active && status === "success" ? (
+                      <span aria-label={t("已刷卡")}>✓</span>
+                    ) : active && busy ? (
                       <Loader2 size={20} className="animate-spin text-mint" />
                     ) : (
                       <ChevronRight size={20} className="text-ink/30" />
@@ -434,6 +430,7 @@ function MachineExpiredPage() {
 }
 
 function friendlyLoginError(err: unknown): string {
+  if (err instanceof ApiError && err.code === "DEVICE_UNAVAILABLE") return err.message;
   if (err instanceof Error) {
     const msg = err.message;
     if (msg === "geo_denied") return "需要定位权限才能确认你在店内";

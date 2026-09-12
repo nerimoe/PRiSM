@@ -43,3 +43,45 @@ function activeSession(id: string, playerId: string) {
     elapsedMinutes: 60,
   };
 }
+
+it('live list skips empty venues and bounds preview concurrency to four players', async () => {
+  const now = new Date('2026-09-12T12:00:00Z');
+  let occupied = false, playerReads = 0, pricingReads = 0, running = 0, peak = 0;
+  const ids = Array.from({length: 9}, (_, i) => `p${i}`);
+  const service = createStaffOperationsService({
+    now: () => now,
+    staffQueries: {
+      listActiveSessions: async () => occupied ? ids.map(playerId => ({
+        id: `s-${playerId}`, playerId, playerDisplayName: playerId,
+        startedAt: now, elapsedMinutes: 0,
+      })) : [],
+      listPlayers: async (input) => {
+        playerReads++;
+        expect(input?.playerIds).toEqual(ids);
+        return ids.map(id => ({id, displayName: id, status: 'active' as const,
+          walletTotal: 10, activeSessionId: `s-${id}`,
+          identities: [{provider: 'qq', subject: id, createdAt: now}],
+        }));
+      },
+    },
+    listPricingConfigs: async () => { pricingReads++; return []; },
+    checkout: {
+      checkout: async () => { throw new Error('listing must not settle'); },
+      previewCheckout: async () => {
+        peak = Math.max(peak, ++running);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        running--;
+        return {settlementPreview: {total: 3}, sessionPreviews: []};
+      },
+    },
+  });
+  expect(await service.listLivePlayers()).toEqual([]);
+  expect(playerReads + pricingReads).toBe(0);
+  occupied = true;
+  const rows = await service.listLivePlayers();
+  expect(rows).toHaveLength(9);
+  expect(peak).toBe(4);
+  expect(playerReads).toBe(1);
+  expect(pricingReads).toBe(1);
+  expect(rows.every(row => row.estimatedTotal === 3 && row.walletTotal === 10 && row.identities?.length === 1)).toBe(true);
+});

@@ -121,7 +121,9 @@ function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
 
 function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
   return {
-    async listPlayers() {
+    async listPlayers(options) {
+      const ids = options?.playerIds;
+      if (ids?.length === 0) return [];
       const rows = await input.executor.all<StaffPlayerWithIdentityRow>(
         `WITH wallet_rows AS (
            SELECT
@@ -144,11 +146,12 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            FROM (SELECT * FROM asset_holdings WHERE shop_id = ${sqlShop(input.executor)}) h
            LEFT JOIN (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(input.executor)}) d ON d.type = h.asset_type AND d.code = h.asset_code
            WHERE h.asset_type = 'currency'
+             ${ids ? 'AND h.player_id IN (SELECT value FROM json_each(?))' : ''}
            GROUP BY h.player_id
          ), active_sessions AS (
-           SELECT player_id, MIN(id) AS active_session_id
+           SELECT player_id, MIN(CASE WHEN status='active' THEN id END) AS active_session_id, MAX(payment_status='unpaid') AS has_unpaid_session
            FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)})
-           WHERE status = 'active'
+           WHERE status = 'active' OR payment_status = 'unpaid'
            GROUP BY player_id
          )
          SELECT
@@ -157,6 +160,7 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            p.status,
            wallet_rows.wallet_rows_json,
            active_sessions.active_session_id,
+           active_sessions.has_unpaid_session,
            i.provider AS identity_provider,
            i.subject AS identity_subject,
            i.created_at AS identity_created_at
@@ -164,7 +168,9 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
          LEFT JOIN wallet_rows ON wallet_rows.player_id = p.id
          LEFT JOIN active_sessions ON active_sessions.player_id = p.id
          LEFT JOIN (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(input.executor)}) i ON i.player_id = p.id
+         ${ids ? 'WHERE p.id IN (SELECT value FROM json_each(?))' : ''}
          ORDER BY p.created_at DESC, p.id, i.created_at ASC, i.provider, i.subject`,
+        ids ? [JSON.stringify(ids), JSON.stringify(ids)] : [],
       );
       return groupStaffPlayers(rows, input.now());
     },
@@ -810,6 +816,7 @@ function groupStaffPlayers(
         status: row.status,
         walletTotal: availableCurrencyTotal(row.wallet_rows_json, at),
         activeSessionId: row.active_session_id,
+        hasUnpaidSession: !!row.has_unpaid_session,
         identities: [],
       };
       players.set(row.id, player);
@@ -924,6 +931,7 @@ type StaffPlayerRow = {
   status: StaffPlayerListItem["status"];
   wallet_rows_json: string | null;
   active_session_id: string | null;
+  has_unpaid_session: number | null;
 };
 
 type StaffPlayerWithIdentityRow = StaffPlayerRow & {

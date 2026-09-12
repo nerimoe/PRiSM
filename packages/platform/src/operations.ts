@@ -45,7 +45,7 @@ export async function runPlayerOperation(
     }
     jsonError(
       409,
-      "操作结果尚未确认，请查看消费记录或联系店员，不要重复操作",
+      "操作未完成，请稍后重试",
       "OPERATION_PENDING",
       { operationId: id },
     );

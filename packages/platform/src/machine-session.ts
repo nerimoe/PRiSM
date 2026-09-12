@@ -58,10 +58,10 @@ export async function resolveMachineSession(
   if (!normalizedTicket) jsonError(410, "本次会话已失效", "TICKET_EXPIRED");
 
   const row = await c.env.DB.prepare(
-    "SELECT m.public_id,t.coin_operation_id FROM machine_tickets t JOIN machines m ON m.id=t.machine_id WHERE t.token_hash=? AND t.expires_at>? AND t.claimed_at IS NULL",
+    "SELECT m.public_id FROM machine_tickets t JOIN machines m ON m.id=t.machine_id WHERE t.token_hash=? AND t.expires_at>?",
   )
     .bind(await sha256(normalizedTicket), new Date().toISOString())
-    .first<{ public_id: string; coin_operation_id: string | null }>();
+    .first<{ public_id: string }>();
   if (
     !row ||
     (normalizedRoutePublicId && normalizedRoutePublicId !== row.public_id)
@@ -73,7 +73,7 @@ export async function resolveMachineSession(
   return {
     publicId: machine.public_id,
     machine,
-    coinUsed: !!row.coin_operation_id,
+    coinUsed: false,
   };
 }
 

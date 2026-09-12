@@ -1,5 +1,5 @@
 import type { ChargeItem, PricingConfig, TimeCapPricingWindow } from "@prism/core";
-import type { StaffActiveSessionListItem, StaffQueries } from "./query-contracts";
+import type { StaffActiveSessionListItem, StaffPlayerListItem, StaffQueries } from "./query-contracts";
 
 export type LivePricingChargeView = {
   pricingConfigId: string;
@@ -54,6 +54,7 @@ export type LiveSessionView = {
 };
 
 export type LivePlayerView = {
+  identities: StaffPlayerListItem["identities"];
   playerId: string;
   displayName: string;
   status: "active" | "disabled" | "banned";
@@ -98,9 +99,10 @@ export function createStaffOperationsService<TCheckoutResult>(
 ): StaffOperationsService<TCheckoutResult> {
   return {
     async listLivePlayers() {
-      const [players, sessions, pricingConfigs] = await Promise.all([
-        dependencies.staffQueries.listPlayers(),
-        dependencies.staffQueries.listLiveSessions?.() ?? dependencies.staffQueries.listActiveSessions(),
+      const sessions = await (dependencies.staffQueries.listLiveSessions?.() ?? dependencies.staffQueries.listActiveSessions());
+      if (!sessions.length) return [];
+      const [players, pricingConfigs] = await Promise.all([
+        dependencies.staffQueries.listPlayers({ playerIds: [...new Set(sessions.map(s => s.playerId))] }),
         dependencies.listPricingConfigs?.() ?? Promise.resolve([]),
       ]);
       const playerById = new Map(players.map((player) => [player.id, player]));
@@ -113,61 +115,69 @@ export function createStaffOperationsService<TCheckoutResult>(
       }
 
       const rows: LivePlayerView[] = [];
-      for (const [playerId, playerSessions] of sessionsByPlayer.entries()) {
-        const player = playerById.get(playerId);
-        const preview = dependencies.checkout?.previewCheckout
-          ? await dependencies.checkout.previewCheckout({ playerId })
-          : null;
-        const previewBySessionId = new Map(
-          (preview?.sessionPreviews ?? []).map((item) => [item.sessionId, item]),
-        );
-        const activeSessionById = new Set(playerSessions.map((session) => session.id));
-        const liveSessions = playerSessions.map(toLiveSession);
-        for (const sessionPreview of preview?.sessionPreviews ?? []) {
-          if (activeSessionById.has(sessionPreview.sessionId)) continue;
-          if (sessionPreview.status !== "closed" || !sessionPreview.startedAt) continue;
-          const end = sessionPreview.endedAt ?? dependencies.now();
-          liveSessions.push({
-            id: sessionPreview.sessionId,
-            label: sessionPreview.label,
-            startedAt: sessionPreview.startedAt,
-            endedAt: sessionPreview.endedAt ?? null,
-            elapsedMinutes: Math.max(0, Math.floor((end.getTime() - sessionPreview.startedAt.getTime()) / 60_000)),
-            status: "closed",
+      const entries = [...sessionsByPlayer.entries()];
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+        for (;;) {
+          const entry = entries[next++];
+          if (!entry) return;
+          const [playerId, playerSessions] = entry;
+          const player = playerById.get(playerId);
+          const preview = dependencies.checkout?.previewCheckout
+            ? await dependencies.checkout.previewCheckout({ playerId })
+            : null;
+          const previewBySessionId = new Map(
+            (preview?.sessionPreviews ?? []).map((item) => [item.sessionId, item]),
+          );
+          const activeSessionById = new Set(playerSessions.map((session) => session.id));
+          const liveSessions = playerSessions.map(toLiveSession);
+          for (const sessionPreview of preview?.sessionPreviews ?? []) {
+            if (activeSessionById.has(sessionPreview.sessionId)) continue;
+            if (sessionPreview.status !== "closed" || !sessionPreview.startedAt) continue;
+            const end = sessionPreview.endedAt ?? dependencies.now();
+            liveSessions.push({
+              id: sessionPreview.sessionId,
+              label: sessionPreview.label,
+              startedAt: sessionPreview.startedAt,
+              endedAt: sessionPreview.endedAt ?? null,
+              elapsedMinutes: Math.max(0, Math.floor((end.getTime() - sessionPreview.startedAt.getTime()) / 60_000)),
+              status: "closed",
+            });
+          }
+
+          const orderedSessions = liveSessions.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime());
+          rows.push({
+            playerId,
+            identities: player?.identities ?? [],
+            displayName: player?.displayName ?? playerSessions[0]?.playerDisplayName ?? playerId,
+            status: player?.status ?? "active",
+            walletTotal: player?.walletTotal ?? 0,
+            stayDurationMinutes: Math.max(...orderedSessions.map((session) => session.elapsedMinutes)),
+            estimatedTotal: preview?.settlementPreview.total ?? null,
+            sessions: orderedSessions.map((session) => {
+              const sessionPreview = previewBySessionId.get(session.id);
+              return {
+                id: session.id,
+                label: session.label ?? undefined,
+                startedAt: session.startedAt.toISOString(),
+                endedAt: session.endedAt?.toISOString() ?? null,
+                elapsedMinutes: session.elapsedMinutes,
+                currentImpact: sessionPreview?.total ?? null,
+                pricingCharges: pricingChargesForSession(
+                  sessionPreview?.chargeItems ?? [],
+                  pricingConfigNameById,
+                ),
+                pricingSegments: pricingSegmentsForSession(
+                  sessionPreview?.chargeItems ?? [],
+                  pricingConfigNameById,
+                ),
+                status: session.status,
+              };
+            }),
+            globalCapWindows: globalCapWindowsForPlayer(preview?.globalCapWindows ?? []),
           });
         }
-
-        const orderedSessions = liveSessions.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime());
-        rows.push({
-          playerId,
-          displayName: player?.displayName ?? playerSessions[0]?.playerDisplayName ?? playerId,
-          status: player?.status ?? "active",
-          walletTotal: player?.walletTotal ?? 0,
-          stayDurationMinutes: Math.max(...orderedSessions.map((session) => session.elapsedMinutes)),
-          estimatedTotal: preview?.settlementPreview.total ?? null,
-          sessions: orderedSessions.map((session) => {
-            const sessionPreview = previewBySessionId.get(session.id);
-            return {
-              id: session.id,
-              label: session.label ?? undefined,
-              startedAt: session.startedAt.toISOString(),
-              endedAt: session.endedAt?.toISOString() ?? null,
-              elapsedMinutes: session.elapsedMinutes,
-              currentImpact: sessionPreview?.total ?? null,
-              pricingCharges: pricingChargesForSession(
-                sessionPreview?.chargeItems ?? [],
-                pricingConfigNameById,
-              ),
-              pricingSegments: pricingSegmentsForSession(
-                sessionPreview?.chargeItems ?? [],
-                pricingConfigNameById,
-              ),
-              status: session.status,
-            };
-          }),
-          globalCapWindows: globalCapWindowsForPlayer(preview?.globalCapWindows ?? []),
-        });
-      }
+      }));
 
       rows.sort((left, right) =>
         right.stayDurationMinutes - left.stayDurationMinutes

@@ -53,7 +53,7 @@ export function useStaffApi() {
     [shopCode],
   );
 }
-export function useResource<T>(path: string) {
+export function useResource<T>(path: string | null) {
   const request = useStaffApi();
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
@@ -62,6 +62,7 @@ export function useResource<T>(path: string) {
   useEffect(() => {
     let current = true;
     setError("");
+    if (path === null) { setData(null); return; }
     request<T>(path)
       .then((result) => {
         if (current) setData(result);
@@ -220,9 +221,12 @@ export type Player = {
   walletTotal: number;
   status: string;
   activeSessionId: string | null;
+  hasUnpaidSession?: boolean;
   identities?: { provider: string; subject: string }[];
 };
 export type LivePlayer = {
+  status: string;
+  identities?: { provider: string; subject: string }[];
   playerId: string;
   displayName: string;
   walletTotal: number;
@@ -233,6 +237,8 @@ export type LivePlayer = {
     label?: string;
     startedAt: string;
     endedAt: string | null;
+    pricingCharges: { pricingConfigId: string; planName: string; ruleLabel: string }[];
+    pricingSegments: { pricingConfigId: string; ruleId: string; planName: string; ruleLabel: string; ruleTimeRange: { start: string; end: string } | null }[];
   }[];
 };
 export type Asset = {

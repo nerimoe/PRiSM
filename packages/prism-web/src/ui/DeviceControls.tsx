@@ -14,8 +14,10 @@ import {
   shopApi,
   post,
   type ShopInfo,
+  type Summary,
   EntryPricing,
 } from "./BillingPages";
+import { useAuth } from "./AuthContext";
 import { PlayerDialog } from "./PlayerAccountMenu";
 
 type DeviceState = {
@@ -38,6 +40,7 @@ export function DeviceControls({
   const { t, errorText } = useI18n();
   const navigate = useNavigate();
   const code = machine.shop.publicId!;
+  const { setBillingActive } = useAuth();
   const [state, setState] = useState<DeviceState | null>(null);
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [binding, setBinding] = useState<{
@@ -61,8 +64,6 @@ export function DeviceControls({
       if (
         [
           "TICKET_EXPIRED",
-          "DEVICE_RESULT_UNKNOWN",
-          "OPERATION_PENDING",
         ].includes(code)
       )
         navigate("/m/expired", { replace: true });
@@ -85,12 +86,30 @@ export function DeviceControls({
     void refresh().catch(failed);
   }, [refresh, failed]);
   useEffect(() => {
-    if (cardBusy || (state?.gate !== "qq" && !waitingPower && !machine.capabilities.mahjong)) return;
-    const timer = setInterval(() => {
-      void refresh().catch(failed);
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [state?.gate, waitingPower, cardBusy, refresh, failed, machine.capabilities.mahjong]);
+    let cancelled = false;
+    if (info?.shop.billingEnabled && info.membership) {
+      api<Summary>(shopApi(code, "player/me")).then((current) => {
+        if (!cancelled) setBillingActive(code, !!current.activeSession);
+      }).catch(() => {});
+    }
+    return () => { cancelled = true; };
+  }, [code, state?.gate, info?.shop.billingEnabled, info?.membership?.playerId, setBillingActive]);
+  useEffect(() => {
+    if (busy || cardBusy || (state?.gate !== "qq" && !waitingPower && !machine.capabilities.mahjong)) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function poll() {
+      try {
+        if (!document.hidden) await refresh();
+      } catch (e) {
+        if (!stopped && e instanceof ApiError) failed(e);
+      } finally {
+        if (!stopped) timer = setTimeout(poll, 3000);
+      }
+    }
+    timer = setTimeout(poll, 3000);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [state?.gate, waitingPower, cardBusy, busy, refresh, failed, machine.capabilities.mahjong]);
   useEffect(() => {
     if (
       state?.gate !== "qq" ||
@@ -147,10 +166,6 @@ export function DeviceControls({
         action,
         consent,
         location,
-      }).catch((e) => {
-        if (!(e instanceof ApiError) || e.status >= 500)
-          throw new ApiError("本次会话已失效", 410, "TICKET_EXPIRED");
-        throw e;
       });
       if (result.temporaryPassword)
         setPassword({
@@ -175,9 +190,7 @@ export function DeviceControls({
         </PlayerDialog>
       )}
       {!state || !info ? (
-        <button className="session-action" onClick={() => act("load", refresh)}>
-          {error ? t("重试") : spinner}
-        </button>
+        error ? <button className="session-action" onClick={() => act("load", refresh)}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
       ) : state.gate === "qq" ? (
         <div className="grid gap-6">
           <h2>{t("绑定 QQ")}</h2>
@@ -321,17 +334,15 @@ export function DeviceControls({
                 {cap.coin && !machine.coinAfterSwipe && (
                   <button
                     className="session-action"
-                    disabled={!!busy || cardBusy || state.coinUsed}
+                    disabled={!!busy || cardBusy}
                     onClick={() => operate("coin")}
                   >
                     {busy === "coin" ? (
                       spinner
-                    ) : state.coinUsed ? (
-                      <Check size={22} />
                     ) : (
                       <Coins size={22} />
                     )}{" "}
-                    {t(state.coinUsed ? "已投币" : "投币")}
+                    {t("投币")}
                   </button>
                 )}
               </>

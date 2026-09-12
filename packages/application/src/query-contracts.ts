@@ -106,6 +106,7 @@ export type StaffPlayerListItem = {
   status: "active" | "disabled" | "banned";
   walletTotal: number;
   activeSessionId: string | null;
+  hasUnpaidSession?: boolean;
   identities?: Array<{
     provider: string;
     subject: string;
@@ -178,7 +179,7 @@ export type StaffReportPlayerListItem = {
 };
 
 export type StaffQueries = {
-  listPlayers(): Promise<StaffPlayerListItem[]>;
+  listPlayers(input?: { playerIds?: readonly string[] }): Promise<StaffPlayerListItem[]>;
   listActiveSessions(): Promise<StaffActiveSessionListItem[]>;
   listLiveSessions?(): Promise<StaffActiveSessionListItem[]>;
   getPlayerAssets?(playerId: string): Promise<PlayerAssets>;
