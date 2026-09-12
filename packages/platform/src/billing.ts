@@ -825,20 +825,16 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         : await c.req.json<Record<string, unknown>>();
     if (!shop.billing_enabled)
       jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
-    // Bots cannot supply trustworthy browser coordinates: use the Web operation when required.
-    if (path.endsWith("/session/start"))
-      checkShopLocation(shop, "checkin", null);
-    if (path.endsWith("/checkout/confirm"))
-      checkShopLocation(shop, "checkout", null);
-    if (path.endsWith("/device-actions"))
-      jsonError(409, "请通过设备二维码操作", "DEVICE_QR_REQUIRED", {
-        url: `/t/${shop.public_id}`,
-      });
+    // Integration credentials authorize shop automation independently of player GPS/tickets.
+    const deps = dependencies(c, shop);
+    const token = c.req.header("authorization")?.match(/^Bearer (.+)$/)?.[1];
+    if (!token || (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !== "integration")
+      jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
     if (body) {
       body.autoRegister = !!shop.auto_register;
       body.closeSessionsBeforeBalanceCheck = false;
     }
-    const result = await forward(c, dependencies(c, shop), "integration/" + path, body);
+    const result = await forward(c, deps, "integration/" + path, body);
     if (path === "sessions/active" && result.ok) {
       const payload = await result.json() as Record<string, unknown>;
       return c.json({ ...payload, mahjongTables: await mahjongRoster(c, shop.id) });

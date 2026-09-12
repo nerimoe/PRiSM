@@ -109,7 +109,7 @@ A logical device may enable a Mahjong table with capacity 2–8 (default 4) and 
 
 Migration 0020 adds table configuration and seats. The snapshot merger now applies all post-platform migrations in order, including 0019/0020. ArcadeLink user/shop/card/device IDs and encrypted values remain intact; sessions become auth_sessions. Sources stay read-only and content digests/foreign keys are checked. Existing ArcadeLink owners need no new account. Other billing sources require an explicit target shop/owner mapping. Retain repositories and databases for rollback until production acceptance.
 
-Bot acceptance covers QQ binding and roster queries, including persistent Mahjong waiting seats. Legacy device/billing commands are not release requirements.
+Bot acceptance includes QQ binding, roster, billing and legacy device commands. A valid shop Integration token authorizes automation without player GPS or QR tickets; shop isolation, player status, entry requirements, coin cooldown and staff-command checks still apply. Web/native player endpoints retain their GPS and ticket requirements. See `bot-comparison-2026-09-13.md` for the real Koishi differential run.
 
 ## Cloudflare beta deployment
 

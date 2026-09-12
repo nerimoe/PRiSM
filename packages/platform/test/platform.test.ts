@@ -194,27 +194,27 @@ test("QQ codes are shop-bound, single-use and grant no membership in another sho
   expect((await request("/api/v1/shops/a/player/me")).status).toBe(200);
 });
 
-test("required location blocks Web and Bot entry without creating a billing session", async () => {
-  const response = await request(
-    "/api/v1/shops/a/player/session/start",
-    await entryBody(),
-  );
+test("location remains required for Web while authenticated shop integrations can enter and checkout", async () => {
+  const response = await request("/api/v1/shops/a/player/session/start", await entryBody());
   expect(response.status).toBe(403);
-  expect(await response.json()).toMatchObject({
-    error: { code: "LOCATION_REQUIRED" },
-  });
-  expect(
-    (
-      await request(
-        "/api/v1/shops/a/integration/players/by-identity/session/start",
-        { identity: { provider: "qq", subject: "123456" } },
-        "a-bot",
-      )
-    ).status,
-  ).toBe(403);
-  expect(
-    await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first("n"),
-  ).toBe(0);
+  expect(await response.json()).toMatchObject({ error: { code: "LOCATION_REQUIRED" } });
+  await env.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('a','geo-bot','Bot test','active','2026-01-01')").run();
+  await env.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('a','geo-bot','qq','990001','2026-01-01')").run();
+  const base = "/api/v1/shops/a/integration/players/by-identity";
+  const body = { identity: { provider: "qq", subject: "990001" } };
+  for (const token of [undefined, "invalid", "b-bot"]) {
+    expect((await request(base + "/session/start", body, token)).status).toBe(403);
+  }
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first("n")).toBe(0);
+  expect((await request(base + "/session/start", body, "a-bot")).status).toBe(200);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NULL").first("n")).toBe(1);
+  const deviceBody = { ...body, target: { kind: "facility", ref: "unknown-device" }, action: { type: "power.on" } };
+  expect((await request(base + "/device-actions", deviceBody, "b-bot")).status).toBe(403);
+  const device = await request(base + "/device-actions", deviceBody, "a-bot");
+  expect(device.status).toBe(400);
+  expect(await device.json()).toMatchObject({ error: { code: "DEVICE_NOT_FOUND" } });
+  expect((await request(base + "/checkout/confirm", body, "a-bot")).status).toBe(200);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE ended_at IS NULL").first("n")).toBe(0);
 });
 
 test("public identity strings cannot mint a player session", async () => {
