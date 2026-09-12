@@ -1280,6 +1280,7 @@ describe("createPrismApp", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+      Authorization: "Bearer staff-token",
       },
       body: JSON.stringify({
         identity: {
@@ -7027,7 +7028,7 @@ describe("createPrismApp", () => {
       }),
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({
       error: {
         code: "INSUFFICIENT_BALANCE",
@@ -7920,6 +7921,6 @@ describe("createPrismApp", () => {
     expect(response.status).toBe(500);
     const json = (await response.json()) as any;
     expect(json.error.code).toBe("INTERNAL_ERROR");
-    expect(json.error.message).toBe("database connection lost");
-    expect(json.error.details).toContain("database connection lost");
+    expect(json.error.message).toBe("An unexpected error occurred.");
+    expect(json.error.details).toBeUndefined();
   });

@@ -3,10 +3,7 @@ import {
   handleMachineWebSocketClose,
   handleMachineWebSocketMessage,
 } from "@prism/server-hono";
-import {
-  createPrismLocalDependencies,
-  initializeSqliteSchema,
-} from "./index";
+import { createPrismLocalDependencies, initializeSqliteSchema } from "./index";
 import { createPrismLocalFetchHandler } from "./local-server";
 
 const databasePath = process.env.PRISM_SQLITE_PATH ?? "./prism.sqlite";
@@ -20,6 +17,25 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const db = new Database(databasePath);
+const playerColumns = db.query("PRAGMA table_info(players)").all() as {
+  name: string;
+}[];
+if (
+  playerColumns.length &&
+  !playerColumns.some((column) => column.name === "shop_id")
+) {
+  const migration = await Bun.file(
+    new URL(
+      "../../../migrations/0016_shop_scoped_billing.sql",
+      import.meta.url,
+    ),
+  ).text();
+  const backupPath = `${databasePath}.before-shops-${Date.now()}.sqlite`;
+  db.run("VACUUM INTO ?", [backupPath]);
+  db.run("PRAGMA foreign_keys=ON");
+  db.transaction(() => db.exec(migration))();
+  console.log("Created pre-migration SQLite backup:", backupPath);
+}
 initializeSqliteSchema(db);
 
 const dependencies = createPrismLocalDependencies({
@@ -35,11 +51,19 @@ Bun.serve({
       try {
         await handleMachineWebSocketMessage(socket, message, dependencies);
       } catch (error) {
-        socket.send(JSON.stringify({
-          type: "error",
-          code: error instanceof Error && "code" in error ? String(error.code) : "MACHINE_WS_ERROR",
-          message: error instanceof Error ? error.message : "Machine WebSocket error.",
-        }));
+        socket.send(
+          JSON.stringify({
+            type: "error",
+            code:
+              error instanceof Error && "code" in error
+                ? String(error.code)
+                : "MACHINE_WS_ERROR",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Machine WebSocket error.",
+          }),
+        );
       }
     },
     close(socket) {

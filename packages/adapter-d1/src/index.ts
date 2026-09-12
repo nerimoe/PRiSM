@@ -23,20 +23,22 @@ export type D1DatabaseLike = {
 
 export type CreateD1RepositoriesInput = {
   db: D1DatabaseLike;
+  shopId?: string;
   id: () => string;
   now: () => Date;
 };
 
 export function createD1Repositories(input: CreateD1RepositoriesInput): D1Repositories {
   return createSqlRepositories({
-    executor: createD1Executor(input.db),
+    executor: createD1Executor(input.db, input.shopId),
     id: input.id,
     now: input.now,
   });
 }
 
-export function createD1Executor(db: D1DatabaseLike): SqlExecutor {
+export function createD1Executor(db: D1DatabaseLike, shopId = "legacy"): SqlExecutor {
   return {
+    shopId,
     async first<T>(sql: string, params: readonly SqlValue[] = []) {
       return db.prepare(sql).bind(...params).first<T>();
     },

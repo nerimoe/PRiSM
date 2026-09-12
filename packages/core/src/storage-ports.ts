@@ -6,6 +6,15 @@ import type { Present, RedeemCode, RedeemRecord } from "./redeem";
 import type { Session } from "./session";
 import type { PastAppliedAdjustment, PlayerCheckout, SettlementRecord } from "./settlement";
 
+export type CheckoutCommit = {
+  assets: Parameters<AssetRepository["commitAssetTransaction"]>[0];
+  checkout: PlayerCheckout;
+  settlements: readonly SettlementRecord[];
+  sessions: readonly Session[];
+  pricingHistory: readonly PricingHistoryEntry[];
+  pricingCapHistory: readonly PricingCapHistoryEntry[];
+};
+
 export type PricingHistoryLookupKey = {
   pricingConfigId: string;
   providerId: string;

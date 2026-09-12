@@ -39,7 +39,9 @@ class MemoryDeviceCommandRepository implements DeviceCommandRepository {
   constructor(private readonly previous: DeviceCommand[] = []) {}
 
   async enqueueDeviceCommand(command: DeviceCommand): Promise<void> {
-    this.queued.push(command);
+    const index = this.queued.findIndex(item => item.id === command.id);
+    if (index < 0) this.queued.push(command);
+    else this.queued[index] = command;
   }
 
   async getDeviceCommand(commandId: string): Promise<DeviceCommand | null> {
@@ -559,3 +561,19 @@ function activeSession(): Session {
     paymentStatus: "unpaid",
   };
 }
+
+ it("persists a redacted pending command before an ambiguous transport failure", async () => {
+  const commands = new MemoryDeviceCommandRepository();
+  const service = createDeviceActionService({
+    sessions: new MemorySessionRepository(), deviceCommands: commands,
+    now: () => new Date(), id: () => "uncertain", coinCooldownMs: 0,
+    resolveFacilityTarget: resolveTestFacilityTarget,
+    executors: { home_assistant: { async execute() {
+      expect(commands.queued).toHaveLength(1);
+      expect(commands.queued[0]?.status).toBe("pending");
+      throw new Error("connection lost");
+    } } },
+  });
+  await expect(service.requestDeviceAction({ actor: { type: "staff", staffId: "staff" }, type: "power.on", target: { kind: "facility", ref: "maimai" } })).rejects.toThrow("connection lost");
+  expect(commands.queued[0]?.status).toBe("pending");
+});

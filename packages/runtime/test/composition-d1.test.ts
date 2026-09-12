@@ -111,7 +111,7 @@ function createD1Fixture(): InMemoryD1Fixture {
 
 function bindTestIdentity(db: Database, playerId: string) {
   db.run(
-    "INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(provider, subject) DO UPDATE SET player_id = excluded.player_id",
+    "INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO UPDATE SET player_id = excluded.player_id",
     [playerId, "test", playerId, "2026-06-07T09:00:00.000Z"],
   );
 }
@@ -162,6 +162,7 @@ async function playerSessionHeaders(app: ReturnType<typeof createPrismApp>, play
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: "Bearer staff-token",
     },
     body: JSON.stringify({
       identity: {

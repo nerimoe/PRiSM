@@ -1,0 +1,726 @@
+import { useState } from "react";
+import { Plus } from "lucide-react";
+import { useI18n } from "../../i18n";
+import {
+  ActionForm,
+  Field,
+  Modal,
+  State,
+  Table,
+  button,
+  cell,
+  date,
+  input,
+  primary,
+  segment,
+  useMerchant,
+  useResource,
+  useStaffApi,
+  type Asset,
+} from "./shared";
+
+type Effect = {
+  id: string;
+  name: string;
+  type: string;
+  scope: string;
+  value: number | null;
+  consumable: boolean;
+  limitPerDay: number | null;
+  activeAt?: string | null;
+  expiresAt?: string | null;
+  status: string;
+  config: Record<string, unknown> | null;
+};
+type Grant = {
+  assetType: string;
+  assetCode: string;
+  amount: number;
+  mergeStrategy: string;
+  activeAt: string | null;
+  expiresAt: string | null;
+};
+type Present = {
+  id: string;
+  name: string;
+  status: string;
+  oncePerPlayer: boolean;
+  grants: Grant[];
+};
+type RedeemCode = {
+  id: string;
+  code: string;
+  presentId: string;
+  usageCount: number;
+  maxUseCount: number;
+  expiresAt: string | null;
+  redemptions?: { playerDisplayName: string; redeemedAt: string }[];
+};
+export function AssetsPage() {
+  const { t } = useI18n();
+  const { canWrite } = useMerchant();
+  const request = useStaffApi();
+  const assets = useResource<{ assetDefinitions: Asset[] }>(
+    "asset-definitions",
+  );
+  const effects = useResource<{ pricingEffects: Effect[] }>("pricing-effects");
+  const presents = useResource<{ presents: Present[] }>("presents");
+  const codes = useResource<{ redeemCodes: RedeemCode[] }>("redeem-codes");
+  const [tab, setTab] = useState("assets");
+  const [creatingAsset, setCreatingAsset] = useState(false);
+  const [editing, setEditing] = useState<Asset | null>(null);
+  const [effect, setEffect] = useState<Effect | null>(null);
+  const [gift, setGift] = useState(false);
+  const [code, setCode] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [confirmation, setConfirmation] = useState<{
+    name: string;
+    path: string;
+  } | null>(null);
+  const reload = () => {
+    assets.reload();
+    effects.reload();
+    presents.reload();
+    codes.reload();
+  };
+  return (
+    <div className="grid gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold">{t("资产与兑换")}</h2>
+        {canWrite && (
+          <button
+            className={primary}
+            onClick={() => {
+              if (tab === "assets") {
+                setCreatingAsset(true);
+                setEditing({
+                  type: "coupon",
+                  code: crypto.randomUUID(),
+                  name: "",
+                  stackable: true,
+                  pricingEffectId: null,
+                  status: "active",
+                  metadata: null,
+                });
+              } else if (tab === "effects")
+                setEffect({
+                  id: "",
+                  name: "",
+                  type: "discount",
+                  scope: "unified",
+                  value: 1,
+                  consumable: true,
+                  limitPerDay: null,
+                  status: "active",
+                  config: null,
+                });
+              else if (tab === "gifts") setGift(true);
+              else setCode(true);
+            }}
+          >
+            <Plus size={16} />
+            {t("添加")}
+          </button>
+        )}
+      </div>
+      <nav
+        className="flex gap-1 overflow-x-auto border-b border-ink/10"
+        aria-label={t("资产分类")}
+      >
+        {[
+          ["assets", "资产"],
+          ["effects", "优惠"],
+          ["gifts", "礼物"],
+          ["codes", "兑换码"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            className={`focus-ring whitespace-nowrap border-b-2 px-4 py-3 text-sm ${tab === key ? "border-ink font-semibold" : "border-transparent text-ink/60"}`}
+            onClick={() => setTab(key!)}
+            aria-current={tab === key ? "page" : undefined}
+          >
+            {t(label!)}
+          </button>
+        ))}
+      </nav>
+      {tab !== "codes" && (
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          {t("显示已归档")}
+        </label>
+      )}
+      {tab === "assets" &&
+        (!assets.data ? (
+          <State error={assets.error} />
+        ) : (
+          <Table headers={["名称", "类型", "状态", "操作"]}>
+            {assets.data.assetDefinitions
+              .filter((a) => showArchived || a.status !== "archived")
+              .map((a) => (
+                <tr key={`${a.type}:${a.code}`}>
+                  <td className={`${cell} font-medium`}>{a.name}</td>
+                  <td className={cell}>
+                    {t(a.type === "currency" ? "余额" : "权益")}
+                  </td>
+                  <td className={cell}>
+                    {t(a.status === "archived" ? "已归档" : "正常")}
+                  </td>
+                  <td className={cell}>
+                    {canWrite && (
+                      <div className="flex gap-2">
+                        <button
+                          className={button}
+                          onClick={() => {
+                            setCreatingAsset(false);
+                            setEditing(a);
+                          }}
+                        >
+                          {t("编辑")}
+                        </button>
+                        <button
+                          className={button}
+                          onClick={() =>
+                            setConfirmation({
+                              name: a.name,
+                              path: `asset-definitions/${segment(a.type)}/${segment(a.code)}/${a.status === "archived" ? "restore" : "archive"}`,
+                            })
+                          }
+                        >
+                          {t(a.status === "archived" ? "恢复" : "归档")}
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+          </Table>
+        ))}
+      {tab === "effects" &&
+        (!effects.data ? (
+          <State error={effects.error} />
+        ) : (
+          <Table headers={["名称", "状态", "操作"]}>
+            {effects.data.pricingEffects
+              .filter((e) => showArchived || e.status !== "archived")
+              .map((e) => (
+                <tr key={e.id}>
+                  <td className={`${cell} font-medium`}>{e.name}</td>
+                  <td className={cell}>
+                    {t(e.status === "archived" ? "已归档" : "正常")}
+                  </td>
+                  <td className={cell}>
+                    {canWrite && (
+                      <div className="flex gap-2">
+                        <button className={button} onClick={() => setEffect(e)}>
+                          {t("编辑")}
+                        </button>
+                        <button
+                          className={button}
+                          onClick={() =>
+                            setConfirmation({
+                              name: e.name,
+                              path: `pricing-effects/${segment(e.id)}/${e.status === "archived" ? "restore" : "archive"}`,
+                            })
+                          }
+                        >
+                          {t(e.status === "archived" ? "恢复" : "归档")}
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+          </Table>
+        ))}
+      {tab === "gifts" &&
+        (!presents.data ? (
+          <State error={presents.error} />
+        ) : (
+          <Table headers={["礼物", "内容", "操作"]}>
+            {presents.data.presents
+              .filter((p) => showArchived || p.status !== "archived")
+              .map((p) => (
+                <tr key={p.id}>
+                  <td className={`${cell} font-medium`}>{p.name}</td>
+                  <td className={cell}>
+                    {p.grants.map((g, i) => (
+                      <p key={i}>
+                        {assets.data?.assetDefinitions.find(
+                          (a) =>
+                            a.type === g.assetType && a.code === g.assetCode,
+                        )?.name ?? g.assetCode}{" "}
+                        × {g.amount}
+                      </p>
+                    ))}
+                  </td>
+                  <td className={cell}>
+                    {canWrite && (
+                      <button
+                        className={button}
+                        onClick={() =>
+                          setConfirmation({
+                            name: p.name,
+                            path: `presents/${segment(p.id)}/${p.status === "archived" ? "restore" : "archive"}`,
+                          })
+                        }
+                      >
+                        {t(p.status === "archived" ? "恢复" : "归档")}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+          </Table>
+        ))}
+      {tab === "codes" &&
+        (!codes.data ? (
+          <State error={codes.error} />
+        ) : (
+          <Table headers={["兑换码", "礼物", "使用次数", "到期", "操作"]}>
+            {codes.data.redeemCodes.map((c) => (
+              <tr key={c.id}>
+                <td className={cell}>
+                  <code className="select-all">{c.code}</code>
+                  {c.redemptions?.length ? (
+                    <details className="mt-2 text-xs">
+                      <summary className="cursor-pointer">
+                        {t("兑换记录")}
+                      </summary>
+                      {c.redemptions.map((r, i) => (
+                        <p className="mt-2" key={i}>
+                          {r.playerDisplayName} · {date(r.redeemedAt)}
+                        </p>
+                      ))}
+                    </details>
+                  ) : null}
+                </td>
+                <td className={cell}>
+                  {presents.data?.presents.find((p) => p.id === c.presentId)
+                    ?.name ?? "—"}
+                </td>
+                <td className={cell}>
+                  {c.usageCount} / {c.maxUseCount}
+                </td>
+                <td className={`${cell} whitespace-nowrap`}>
+                  {date(c.expiresAt)}
+                </td>
+                <td className={cell}>
+                  {canWrite && (
+                    <button
+                      className={button}
+                      onClick={() =>
+                        setConfirmation({
+                          name: c.code,
+                          path: `redeem-codes/${segment(c.id)}/revoke`,
+                        })
+                      }
+                    >
+                      {t("撤销")}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ))}
+      {editing && (
+        <Modal title="资产" close={() => setEditing(null)}>
+          <ActionForm
+            done={() => {
+              setEditing(null);
+              reload();
+            }}
+            submit={(f) => {
+              if (
+                creatingAsset &&
+                assets.data?.assetDefinitions.some(
+                  (a) => a.type === editing.type && a.code === editing.code,
+                )
+              )
+                throw new Error(t("资产编号已存在"));
+              return request(
+                `asset-definitions/${segment(editing.type)}/${segment(editing.code)}`,
+                "PUT",
+                {
+                  ...editing,
+                  name: f.get("name"),
+                  stackable: f.get("stackable") === "on",
+                  pricingEffectId: f.get("effect") || null,
+                },
+              );
+            }}
+          >
+            <Field label="名称">
+              <input
+                className={input}
+                name="name"
+                required
+                defaultValue={editing.name}
+              />
+            </Field>
+            {creatingAsset && (
+              <>
+                <Field label="类型">
+                  <select
+                    className={input}
+                    value={editing.type}
+                    onChange={(e) =>
+                      setEditing({
+                        ...editing,
+                        type: e.target.value,
+                        code:
+                          e.target.value === "currency"
+                            ? "paid"
+                            : crypto.randomUUID(),
+                      })
+                    }
+                  >
+                    <option value="currency">{t("余额")}</option>
+                    <option value="coupon">{t("权益")}</option>
+                  </select>
+                </Field>
+                <Field label="资产编号">
+                  <input
+                    className={input}
+                    required
+                    value={editing.code}
+                    onChange={(e) =>
+                      setEditing({ ...editing, code: e.target.value })
+                    }
+                  />
+                </Field>
+              </>
+            )}
+            <Field label="优惠">
+              <select
+                className={input}
+                name="effect"
+                defaultValue={editing.pricingEffectId ?? ""}
+              >
+                <option value="">{t("无")}</option>
+                {effects.data?.pricingEffects
+                  .filter((e) => e.status !== "archived")
+                  .map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.name}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <label className="flex gap-2 text-sm">
+              <input
+                name="stackable"
+                type="checkbox"
+                defaultChecked={editing.stackable}
+              />
+              {t("数量可叠加")}
+            </label>
+          </ActionForm>
+        </Modal>
+      )}
+      {effect && (
+        <Modal title="优惠" close={() => setEffect(null)}>
+          <ActionForm
+            done={() => {
+              setEffect(null);
+              reload();
+            }}
+            submit={(f) =>
+              request(
+                `pricing-effects/${segment(effect.id || crypto.randomUUID())}`,
+                "PUT",
+                {
+                  ...effect,
+                  name: f.get("name"),
+                  type: f.get("type"),
+                  scope: f.get("scope"),
+                  value:
+                    f.get("type") === "free" ? null : Number(f.get("value")),
+                  consumable: f.get("consumable") === "on",
+                  limitPerDay: f.get("limit") ? Number(f.get("limit")) : null,
+                },
+              )
+            }
+          >
+            <Field label="名称">
+              <input
+                className={input}
+                name="name"
+                required
+                defaultValue={effect.name}
+              />
+            </Field>
+            <Field label="优惠方式">
+              <select className={input} name="type" defaultValue={effect.type}>
+                {[
+                  ["free", "免费"],
+                  ["discount", "减免金额"],
+                  ["percentage-discount", "折扣比例"],
+                  ["surcharge", "加收金额"],
+                ].map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {t(label!)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="数值（折扣使用 0～1）">
+              <input
+                className={input}
+                type="number"
+                min="0"
+                step="0.01"
+                name="value"
+                defaultValue={effect.value ?? 0}
+              />
+            </Field>
+            <Field label="范围">
+              <select
+                className={input}
+                name="scope"
+                defaultValue={effect.scope}
+              >
+                <option value="unified">{t("整笔账单")}</option>
+                <option value="session">{t("单项消费")}</option>
+              </select>
+            </Field>
+            <Field label="每日使用上限">
+              <input
+                className={input}
+                name="limit"
+                type="number"
+                min="1"
+                step="1"
+                defaultValue={effect.limitPerDay ?? ""}
+              />
+            </Field>
+            <label className="flex gap-2 text-sm">
+              <input
+                type="checkbox"
+                name="consumable"
+                defaultChecked={effect.consumable}
+              />
+              {t("使用后扣除")}
+            </label>
+          </ActionForm>
+        </Modal>
+      )}
+      {gift && (
+        <Modal title="添加礼物" close={() => setGift(false)}>
+          <GiftForm
+            assets={assets.data?.assetDefinitions ?? []}
+            done={() => {
+              setGift(false);
+              reload();
+            }}
+          />
+        </Modal>
+      )}
+      {code && (
+        <Modal title="生成兑换码" close={() => setCode(false)}>
+          <ActionForm
+            done={() => {
+              setCode(false);
+              reload();
+            }}
+            label="生成"
+            submit={(f) =>
+              request("redeem-codes/batch", "POST", {
+                presentId: f.get("present"),
+                prefix: f.get("prefix"),
+                count: Number(f.get("count")),
+                maxUseCount: Number(f.get("uses")),
+                activeAt: null,
+                expiresAt: f.get("expires")
+                  ? new Date(String(f.get("expires"))).toISOString()
+                  : null,
+              })
+            }
+          >
+            <Field label="礼物">
+              <select className={input} required name="present" defaultValue="">
+                <option value="" disabled>
+                  {t("请选择")}
+                </option>
+                {presents.data?.presents
+                  .filter((p) => p.status !== "archived")
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+            <Field label="前缀">
+              <input className={input} name="prefix" maxLength={24} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="生成数量">
+                <input
+                  className={input}
+                  name="count"
+                  type="number"
+                  min="1"
+                  max="100"
+                  step="1"
+                  defaultValue="1"
+                  required
+                />
+              </Field>
+              <Field label="每码可用次数">
+                <input
+                  className={input}
+                  name="uses"
+                  type="number"
+                  min="1"
+                  step="1"
+                  defaultValue="1"
+                  required
+                />
+              </Field>
+            </div>
+            <Field label="到期时间">
+              <input className={input} type="datetime-local" name="expires" />
+            </Field>
+          </ActionForm>
+        </Modal>
+      )}
+      {confirmation && (
+        <Modal title="确认操作" close={() => setConfirmation(null)}>
+          <ActionForm
+            label="确认"
+            done={() => {
+              setConfirmation(null);
+              reload();
+            }}
+            submit={() => request(confirmation.path, "POST", {})}
+          >
+            <p>{confirmation.name}</p>
+          </ActionForm>
+        </Modal>
+      )}
+    </div>
+  );
+}
+function GiftForm({ assets, done }: { assets: Asset[]; done: () => void }) {
+  const { t } = useI18n();
+  const request = useStaffApi();
+  const [grants, setGrants] = useState<Grant[]>([
+    {
+      assetType: "",
+      assetCode: "",
+      amount: 1,
+      mergeStrategy: "stack",
+      activeAt: null,
+      expiresAt: null,
+    },
+  ]);
+  return (
+    <ActionForm
+      done={done}
+      submit={(f) =>
+        request("presents", "POST", {
+          name: f.get("name"),
+          oncePerPlayer: f.get("once") === "on",
+          activeAt: null,
+          expiresAt: null,
+          grants,
+        })
+      }
+    >
+      <Field label="名称">
+        <input className={input} name="name" required />
+      </Field>
+      <label className="flex gap-2 text-sm">
+        <input type="checkbox" name="once" defaultChecked />
+        {t("每位玩家仅限一次")}
+      </label>
+      {grants.map((g, index) => (
+        <div
+          className="grid grid-cols-[1fr_6rem_auto] items-end gap-2"
+          key={index}
+        >
+          <Field label="资产">
+            <select
+              className={input}
+              required
+              value={`${g.assetType}|${g.assetCode}`}
+              onChange={(e) => {
+                const [assetType, assetCode] = e.target.value.split("|");
+                setGrants(
+                  grants.map((v, i) =>
+                    i === index
+                      ? { ...v, assetType: assetType!, assetCode: assetCode! }
+                      : v,
+                  ),
+                );
+              }}
+            >
+              <option value="|" disabled>
+                {t("请选择")}
+              </option>
+              {assets
+                .filter((a) => a.status !== "archived")
+                .map((a) => (
+                  <option
+                    key={`${a.type}:${a.code}`}
+                    value={`${a.type}|${a.code}`}
+                  >
+                    {a.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+          <Field label="数量">
+            <input
+              className={input}
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={g.amount}
+              required
+              onChange={(e) =>
+                setGrants(
+                  grants.map((v, i) =>
+                    i === index ? { ...v, amount: Number(e.target.value) } : v,
+                  ),
+                )
+              }
+            />
+          </Field>
+          <button
+            type="button"
+            className={button}
+            disabled={grants.length === 1}
+            onClick={() => setGrants(grants.filter((_, i) => i !== index))}
+          >
+            {t("移除")}
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className={button}
+        onClick={() =>
+          setGrants([
+            ...grants,
+            {
+              assetType: "",
+              assetCode: "",
+              amount: 1,
+              mergeStrategy: "stack",
+              activeAt: null,
+              expiresAt: null,
+            },
+          ])
+        }
+      >
+        {t("添加资产")}
+      </button>
+    </ActionForm>
+  );
+}

@@ -2,6 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { createPrismNeoMigrationPlan } from "../src";
 
 describe("createPrismNeoMigrationPlan", () => {
+  it("preserves fractional wallet balances during migration", () => {
+    const plan = createPrismNeoMigrationPlan({
+      exportedAt: new Date("2026-09-12T00:00:00Z"),
+      users: [{ id: 1, createdAt: new Date("2026-01-01T00:00:00Z"), isBanned: false }],
+      assetDefinitions: [{ id: 1, type: "CURRENCY", assetId: 10001, name: "Balance", valid: true }],
+      userAssets: [{ id: 1, userId: 1, assetDefId: 10001, assetType: "CURRENCY", count: 12.5 }],
+    });
+    expect(plan.assetHoldings[0]?.quantity).toBe(12.5);
+  });
+
   it("maps legacy prism-neo exports into PRiSM Next domain records", () => {
     const plan = createPrismNeoMigrationPlan({
       exportedAt: new Date("2026-06-01T00:00:00.000Z"),

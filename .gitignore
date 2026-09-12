@@ -15,3 +15,7 @@ exports/
 /mmw_prism.sql
 coverage/
 *.log
+
+/packages/prism-web/dist/
+
+/packages/platform/scripts/*.local.ts

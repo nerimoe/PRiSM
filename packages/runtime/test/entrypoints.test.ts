@@ -98,6 +98,7 @@ async function playerSessionHeaders(app: ReturnType<typeof createPrismApp>, play
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: "Bearer staff-token",
     },
     body: JSON.stringify({
       identity: {
@@ -719,12 +720,12 @@ describe("runtime entrypoints", () => {
       id: () => "unused",
       now: () => new Date("2026-06-07T11:30:00.000Z"),
     });
-    const app = createPrismApp(dependencies);
+    const app = createPrismApp({ ...dependencies, authenticatedPrincipal: { role: "player_session", playerId: "player-1" } });
 
     const previewResponse = await app.request("/rpc/player/checkout/preview", {
       method: "POST",
       headers: {
-        ...(await playerSessionHeaders(app, "player-1")),
+        "Content-Type": "application/json",
       },
     });
 
@@ -762,7 +763,7 @@ describe("runtime entrypoints", () => {
       createdAt: new Date("2026-06-07T10:00:00.000Z"),
       lastUsedAt: new Date("2026-06-07T10:00:00.000Z"),
     });
-    const timelineResponse = await app.request("/rpc/staff/pricing-configs/pricing-1/timeline?date=2026-06-07", {
+    const timelineResponse = await createPrismApp(dependencies).request("/rpc/staff/pricing-configs/pricing-1/timeline?date=2026-06-07", {
       headers: {
         Authorization: "Bearer admin-runtime-session",
       },
@@ -841,12 +842,12 @@ describe("runtime entrypoints", () => {
       id: () => "unused",
       now: () => new Date("2026-06-07T10:30:00.000Z"),
     });
-    const app = createPrismApp(dependencies);
+    const app = createPrismApp({ ...dependencies, authenticatedPrincipal: { role: "player_session", playerId: "player-1" } });
 
     const previewResponse = await app.request("/rpc/player/checkout/preview", {
       method: "POST",
       headers: {
-        ...(await playerSessionHeaders(app, "player-1")),
+        "Content-Type": "application/json",
       },
     });
 

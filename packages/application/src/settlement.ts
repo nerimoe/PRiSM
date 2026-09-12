@@ -1,4 +1,5 @@
 import type {
+  CheckoutCommit,
   AssetDefinitionRepository,
   AssetDefinition,
   AssetEffectProvider,
@@ -50,6 +51,7 @@ import {
 } from "./asset-definition-effects";
 
 export type SettlementServiceDependencies = {
+  commitCheckout?: (input: CheckoutCommit) => Promise<void>;
   sessions: SessionRepository;
   operationLocks?: OperationLockRepository;
   assets: AssetRepository;
@@ -220,7 +222,7 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
         const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, closedSessions, assetHoldings, now);
         if (input.closeSessionsBeforeBalanceCheck === false) assertCheckoutBalance(details.availableHoldings, details.total, now);
         for (const session of closedActiveSessions) session.paymentStatus = "unpaid";
-        await saveSessions(dependencies.sessions, closedActiveSessions);
+        if (input.closeSessionsBeforeBalanceCheck !== false) await saveSessions(dependencies.sessions, closedActiveSessions);
         return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now);
       });
     },
@@ -257,7 +259,7 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
         const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, closedSessions, assetHoldings, now);
         if (input.closeSessionsBeforeBalanceCheck === false) assertCheckoutBalance(details.availableHoldings, input.total, now);
         for (const session of closedActiveSessions) session.paymentStatus = "unpaid";
-        await saveSessions(dependencies.sessions, closedActiveSessions);
+        if (input.closeSessionsBeforeBalanceCheck !== false) await saveSessions(dependencies.sessions, closedActiveSessions);
         return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now, {
           total: input.total,
           id: "staff.override",
@@ -705,7 +707,7 @@ async function persistUnifiedPlayerCheckout(
   ];
 
   const nextHoldings = details.currentHoldings.filter((holding) => holding.quantity > 0);
-  await dependencies.assets.commitAssetTransaction({
+  const assetCommit: CheckoutCommit["assets"] = {
     transaction: {
       id: `asset-tx:session.settlement:${anchorSession.id}`,
       playerId,
@@ -719,7 +721,7 @@ async function persistUnifiedPlayerCheckout(
     },
     holdingChanges: diffAssetHoldings(details.originalHoldings, nextHoldings),
     assetLedgerEntries,
-  });
+  };
   const walletBalanceAfter = details.resolvedAvailableAssets
     ? sumAvailableWalletBalance(details.resolvedAvailableAssets)
     : sumCurrencyHoldings(details.availableHoldings);
@@ -762,15 +764,22 @@ async function persistUnifiedPlayerCheckout(
     }));
     settlements.push(record);
   }
-  await savePlayerCheckout(dependencies.settlements, checkout, settlements);
-  await saveSessions(dependencies.sessions, details.sessionResults.map((result) => result.session));
-  await dependencies.pricingHistory?.appendEntries(pricingHistoryEntries);
-  await dependencies.pricingCapHistory?.appendEntries(toPricingCapHistoryEntries(details.globalCapAdjustments, {
+  const pricingCapHistory = toPricingCapHistoryEntries(details.globalCapAdjustments, {
     playerId,
     sessionIds,
     createdAt: now,
     anchorSessionId: anchorSession.id,
-  }));
+  });
+  const sessions = details.sessionResults.map((result) => result.session);
+  if (dependencies.commitCheckout) {
+    await dependencies.commitCheckout({ assets: assetCommit, checkout, settlements, sessions, pricingHistory: pricingHistoryEntries, pricingCapHistory });
+  } else {
+    await dependencies.assets.commitAssetTransaction(assetCommit);
+    await savePlayerCheckout(dependencies.settlements, checkout, settlements);
+    await saveSessions(dependencies.sessions, sessions);
+    await dependencies.pricingHistory?.appendEntries(pricingHistoryEntries);
+    await dependencies.pricingCapHistory?.appendEntries(pricingCapHistory);
+  }
 
   return {
     playerSettlement: {

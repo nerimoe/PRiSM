@@ -1,3 +1,4 @@
+import { sqlShop } from "./shop-scope";
 import type {
   ApplicationQueries,
   PlayerAssets,
@@ -61,15 +62,15 @@ function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
            d.active_at AS definition_active_at,
            d.expires_at AS definition_expires_at,
            d.metadata_json
-         FROM players p
-         LEFT JOIN sessions active_session ON active_session.id = (
+         FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p
+         LEFT JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) active_session ON active_session.id = (
            SELECT s.id
-           FROM sessions s
+           FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
            WHERE s.player_id = p.id AND s.status = 'active'
            LIMIT 1
          )
-         LEFT JOIN asset_holdings h ON h.player_id = p.id AND h.asset_type = 'currency'
-         LEFT JOIN asset_definitions d ON d.type = h.asset_type AND d.code = h.asset_code
+         LEFT JOIN (SELECT * FROM asset_holdings WHERE shop_id = ${sqlShop(input.executor)}) h ON h.player_id = p.id AND h.asset_type = 'currency'
+         LEFT JOIN (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(input.executor)}) d ON d.type = h.asset_type AND d.code = h.asset_code
          WHERE p.id = ?
          ORDER BY h.asset_type, h.asset_code, h.active_at, h.id`,
         [playerId],
@@ -140,13 +141,13 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
                'holding_active_at', h.active_at,
                'holding_expires_at', h.expires_at
              )) AS wallet_rows_json
-           FROM asset_holdings h
-           LEFT JOIN asset_definitions d ON d.type = h.asset_type AND d.code = h.asset_code
+           FROM (SELECT * FROM asset_holdings WHERE shop_id = ${sqlShop(input.executor)}) h
+           LEFT JOIN (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(input.executor)}) d ON d.type = h.asset_type AND d.code = h.asset_code
            WHERE h.asset_type = 'currency'
            GROUP BY h.player_id
          ), active_sessions AS (
            SELECT player_id, MIN(id) AS active_session_id
-           FROM sessions
+           FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)})
            WHERE status = 'active'
            GROUP BY player_id
          )
@@ -159,10 +160,10 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            i.provider AS identity_provider,
            i.subject AS identity_subject,
            i.created_at AS identity_created_at
-         FROM players p
+         FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p
          LEFT JOIN wallet_rows ON wallet_rows.player_id = p.id
          LEFT JOIN active_sessions ON active_sessions.player_id = p.id
-         LEFT JOIN player_identities i ON i.player_id = p.id
+         LEFT JOIN (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(input.executor)}) i ON i.player_id = p.id
          ORDER BY p.created_at DESC, p.id, i.created_at ASC, i.provider, i.subject`,
       );
       return groupStaffPlayers(rows, input.now());
@@ -178,9 +179,9 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            s.label,
            i.provider AS identity_provider,
            i.subject AS identity_subject
-         FROM sessions s
-         INNER JOIN players p ON p.id = s.player_id
-         LEFT JOIN player_identities i ON i.player_id = s.player_id
+         FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
+         INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
+         LEFT JOIN (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(input.executor)}) i ON i.player_id = s.player_id
          WHERE s.status = 'active'
          ORDER BY s.started_at, s.id, i.created_at ASC, i.provider, i.subject`,
       );
@@ -198,8 +199,8 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            s.ended_at,
            s.label,
            s.status
-         FROM sessions s
-         INNER JOIN players p ON p.id = s.player_id
+         FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
+         INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
          WHERE s.status = 'active' OR s.payment_status = 'unpaid'
          ORDER BY s.started_at`,
       );
@@ -253,7 +254,7 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            acked_at,
            expired_at,
            payload_json
-         FROM device_commands
+         FROM (SELECT * FROM device_commands WHERE shop_id = ${sqlShop(input.executor)})
          ORDER BY requested_at DESC, id
          LIMIT ?`,
         [query.limit],
@@ -308,8 +309,8 @@ function createStaffRedeemQueries(input: CreateSqlReadModelsInput): StaffRedeemQ
            rr.player_id,
            p.display_name AS player_display_name,
            rr.redeemed_at
-         FROM redeem_records rr
-         INNER JOIN players p ON p.id = rr.player_id
+         FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) rr
+         INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = rr.player_id
          ORDER BY rr.redeemed_at DESC, rr.code_id`,
       );
       return rows.map((row) => ({
@@ -333,20 +334,20 @@ async function getReportsSummary(
          COALESCE(SUM(pc.total), 0) AS revenue_total,
          (
            SELECT COUNT(*)
-           FROM settlements st
+           FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st
            CROSS JOIN bounds
            WHERE st.settled_at >= bounds.from_at AND st.settled_at < bounds.to_at
          ) AS session_count
-       FROM player_checkouts pc
+       FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
      ), asset_summary AS (
        SELECT COUNT(*) AS asset_grant_total
-       FROM asset_ledger_entries, bounds
+       FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${sqlShop(input.executor)}), bounds
        WHERE delta > 0 AND created_at >= bounds.from_at AND created_at < bounds.to_at
      ), coin_summary AS (
        SELECT COUNT(*) AS coin_command_count
-       FROM device_commands, bounds
+       FROM (SELECT * FROM device_commands WHERE shop_id = ${sqlShop(input.executor)}), bounds
        WHERE type = 'coin' AND requested_at >= bounds.from_at AND requested_at < bounds.to_at
      )
      SELECT
@@ -383,9 +384,9 @@ async function listReportSettlements(
        st.settled_at,
        st.subtotal,
        st.total
-     FROM settlements st
-     INNER JOIN sessions s ON s.id = st.session_id
-     INNER JOIN players p ON p.id = s.player_id
+     FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st
+     INNER JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s ON s.id = st.session_id
+     INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
      WHERE st.settled_at >= ? AND st.settled_at < ?
      ORDER BY st.settled_at DESC, st.id DESC
      LIMIT ? OFFSET ?`,
@@ -426,14 +427,14 @@ async function listReportPlayers(
            WHEN s.ended_at IS NULL THEN 0
            ELSE CAST((strftime('%s', s.ended_at) - strftime('%s', s.started_at)) / 60 AS INTEGER)
          END AS duration_minutes
-       FROM settlements st
-       INNER JOIN sessions s ON s.id = st.session_id
-       INNER JOIN players p ON p.id = s.player_id
+       FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st
+       INNER JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s ON s.id = st.session_id
+       INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
        CROSS JOIN bounds
        WHERE st.settled_at >= bounds.from_at AND st.settled_at < bounds.to_at
      ), player_revenue AS (
        SELECT pc.player_id, COALESCE(SUM(pc.total), 0) AS revenue_total
-       FROM player_checkouts pc
+       FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
        GROUP BY pc.player_id
@@ -476,7 +477,7 @@ async function listReportPlayers(
 async function listDeviceStates(input: CreateSqlReadModelsInput): Promise<DeviceState[]> {
   const rows = await input.executor.all<DeviceStateRow>(
     `SELECT device_id, type, target_kind, executor_kind, label, status, state, metadata_json, reported_at, reported_by
-     FROM device_states
+     FROM (SELECT * FROM device_states WHERE shop_id = ${sqlShop(input.executor)})
      ORDER BY reported_at DESC, device_id`,
   );
 
@@ -497,7 +498,7 @@ async function listDeviceStates(input: CreateSqlReadModelsInput): Promise<Device
 async function listMachineConnections(input: CreateSqlReadModelsInput): Promise<MachineConnection[]> {
   const rows = await input.executor.all<MachineConnectionRow>(
     `SELECT machine_id, status, capabilities_json, connected_at, last_seen_at, disconnected_at
-     FROM machine_connections
+     FROM (SELECT * FROM machine_connections WHERE shop_id = ${sqlShop(input.executor)})
      ORDER BY status DESC, last_seen_at DESC, machine_id`,
   );
 
@@ -527,8 +528,8 @@ async function getPlayerSessionHistoryDetail(
          st.total,
          st.status AS settlement_status,
          st.settled_at
-       FROM sessions s
-       LEFT JOIN settlements st ON st.session_id = s.id
+       FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
+       LEFT JOIN (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st ON st.session_id = s.id
        WHERE s.player_id = ? AND s.id = ?
        LIMIT 1
      ), detail_rows AS (
@@ -540,12 +541,12 @@ async function getPlayerSessionHistoryDetail(
        SELECT 1, 'charge', sd.*,
               ci.id, ci.source, ci.label, ci.amount, ci.item_order
        FROM session_detail sd
-       INNER JOIN settlement_charge_items ci ON ci.session_id = sd.session_id
+       INNER JOIN (SELECT * FROM settlement_charge_items WHERE shop_id = ${sqlShop(input.executor)}) ci ON ci.session_id = sd.session_id
        UNION ALL
        SELECT 2, 'adjustment', sd.*,
               sa.id, sa.source, sa.label, sa.amount, sa.adjustment_order
        FROM session_detail sd
-       INNER JOIN settlement_adjustments sa ON sa.session_id = sd.session_id
+       INNER JOIN (SELECT * FROM settlement_adjustments WHERE shop_id = ${sqlShop(input.executor)}) sa ON sa.session_id = sd.session_id
      )
      SELECT * FROM detail_rows
      ORDER BY row_order, item_order, item_id`,
@@ -583,8 +584,8 @@ async function listPlayerSessionHistory(
        st.total,
        st.status AS settlement_status,
        st.settled_at
-     FROM sessions s
-     LEFT JOIN settlements st ON st.session_id = s.id
+     FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
+     LEFT JOIN (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st ON st.session_id = s.id
      WHERE s.player_id = ?
      ORDER BY COALESCE(s.ended_at, s.started_at) DESC, s.id DESC
      LIMIT 100`,
@@ -637,8 +638,8 @@ async function listPlayerAssets(
          NULL AS ref_id,
          NULL AS transaction_id,
          NULL AS created_at
-       FROM asset_holdings h
-       LEFT JOIN asset_definitions d ON d.type = h.asset_type AND d.code = h.asset_code
+       FROM (SELECT * FROM asset_holdings WHERE shop_id = ${sqlShop(input.executor)}) h
+       LEFT JOIN (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(input.executor)}) d ON d.type = h.asset_type AND d.code = h.asset_code
        WHERE h.player_id = ?
      ), ledger_rows AS (
        SELECT
@@ -661,8 +662,8 @@ async function listPlayerAssets(
          l.ref_id,
          l.transaction_id,
          l.created_at
-       FROM asset_ledger_entries l
-       INNER JOIN asset_definitions d ON d.type = l.asset_type AND d.code = l.asset_code
+       FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${sqlShop(input.executor)}) l
+       INNER JOIN (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(input.executor)}) d ON d.type = l.asset_type AND d.code = l.asset_code
        WHERE l.player_id = ?
        ORDER BY l.created_at DESC, l.id DESC
        LIMIT 100
@@ -745,9 +746,9 @@ async function listPlayerRedeemRecords(
        rr.present_id,
        pr.name AS present_name,
        rr.redeemed_at
-     FROM redeem_records rr
-     INNER JOIN redeem_codes rc ON rc.id = rr.code_id
-     INNER JOIN presents pr ON pr.id = rr.present_id
+     FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) rr
+     INNER JOIN (SELECT * FROM redeem_codes WHERE shop_id = ${sqlShop(input.executor)}) rc ON rc.id = rr.code_id
+     INNER JOIN (SELECT * FROM presents WHERE shop_id = ${sqlShop(input.executor)}) pr ON pr.id = rr.present_id
      WHERE rr.player_id = ?
      ORDER BY rr.redeemed_at DESC, rr.code_id`,
     [playerId],

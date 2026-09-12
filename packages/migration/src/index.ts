@@ -1,3 +1,4 @@
+import { sqlShop, shopValues } from "@prism/storage-sql";
 import type {
   AssetDefinition,
   AssetHolding,
@@ -254,7 +255,7 @@ async function deleteMigrationRowsBySessionIds(
   for (let offset = 0; offset < uniqueIds.length; offset += maxSqlParametersPerStatement) {
     const chunk = uniqueIds.slice(offset, offset + maxSqlParametersPerStatement);
     await executor.run(
-      `DELETE FROM ${table} WHERE session_id IN (${chunk.map(() => "?").join(", ")})`,
+      `DELETE FROM ${table} WHERE shop_id = ${sqlShop(executor)} AND session_id IN (${chunk.map(() => "?").join(", ")})`,
       chunk,
     );
   }
@@ -266,9 +267,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
   await runSqlValuesInBatches(
     executor,
     plan.players.map((player) => [player.id, player.displayName, player.status, player.createdAt.toISOString()]),
-    (values) => `INSERT INTO players (id, display_name, status, created_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO players (shop_id, id, display_name, status, created_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          display_name = excluded.display_name,
          status = excluded.status,
          created_at = excluded.created_at`,
@@ -283,9 +284,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       definition.stackable ? 1 : 0,
       definition.metadata ? JSON.stringify(definition.metadata) : null,
     ]),
-    (values) => `INSERT INTO asset_definitions (type, code, name, stackable, metadata_json)
-       VALUES ${values}
-       ON CONFLICT(type, code) DO UPDATE SET
+    (values) => `INSERT INTO asset_definitions (shop_id, type, code, name, stackable, metadata_json)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, type, code) DO UPDATE SET
          name = excluded.name,
          stackable = excluded.stackable,
          metadata_json = excluded.metadata_json`,
@@ -299,9 +300,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       identity.subject,
       identity.createdAt.toISOString(),
     ]),
-    (values) => `INSERT INTO player_identities (player_id, provider, subject, created_at)
-       VALUES ${values}
-       ON CONFLICT(provider, subject) DO UPDATE SET
+    (values) => `INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, provider, subject) DO UPDATE SET
          player_id = excluded.player_id,
          created_at = excluded.created_at`,
   );
@@ -317,9 +318,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       holding.activeAt?.toISOString() ?? null,
       holding.expiresAt?.toISOString() ?? null,
     ]),
-    (values) => `INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity, active_at, expires_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO asset_holdings (shop_id, id, player_id, asset_type, asset_code, quantity, active_at, expires_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          player_id = excluded.player_id,
          asset_type = excluded.asset_type,
          asset_code = excluded.asset_code,
@@ -340,9 +341,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       entry.refId,
       entry.createdAt.toISOString(),
     ]),
-    (values) => `INSERT INTO asset_ledger_entries (id, player_id, asset_type, asset_code, delta, reason, ref_id, created_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO asset_ledger_entries (shop_id, id, player_id, asset_type, asset_code, delta, reason, ref_id, created_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          player_id = excluded.player_id,
          asset_type = excluded.asset_type,
          asset_code = excluded.asset_code,
@@ -362,9 +363,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       session.status ?? "active",
       session.paymentStatus ?? "unpaid",
     ]),
-    (values) => `INSERT INTO sessions (id, player_id, started_at, ended_at, status, payment_status)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO sessions (shop_id, id, player_id, started_at, ended_at, status, payment_status)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          player_id = excluded.player_id,
          started_at = excluded.started_at,
          ended_at = excluded.ended_at,
@@ -382,9 +383,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       settlement.status,
       settlement.settledAt.toISOString(),
     ]),
-    (values) => `INSERT INTO settlements (id, session_id, subtotal, total, status, settled_at)
-       VALUES ${values}
-       ON CONFLICT(session_id) DO UPDATE SET
+    (values) => `INSERT INTO settlements (shop_id, id, session_id, subtotal, total, status, settled_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, session_id) DO UPDATE SET
          subtotal = excluded.subtotal,
          total = excluded.total,
          status = excluded.status,
@@ -403,8 +404,8 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       item.label,
       item.amount,
     ])),
-    (values) => `INSERT INTO settlement_charge_items (id, session_id, item_order, source, label, amount)
-                 VALUES ${values}`,
+    (values) => `INSERT INTO settlement_charge_items (shop_id, id, session_id, item_order, source, label, amount)
+                 VALUES ${shopValues(executor, values)}`,
   );
   await runSqlValuesInBatches(
     executor,
@@ -416,8 +417,8 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       adjustment.label,
       adjustment.amount,
     ])),
-    (values) => `INSERT INTO settlement_adjustments (id, session_id, adjustment_order, source, label, amount)
-                 VALUES ${values}`,
+    (values) => `INSERT INTO settlement_adjustments (shop_id, id, session_id, adjustment_order, source, label, amount)
+                 VALUES ${shopValues(executor, values)}`,
   );
 
   await runSqlValuesInBatches(
@@ -431,9 +432,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       config.createdAt.toISOString(),
       config.updatedAt.toISOString(),
     ]),
-    (values) => `INSERT INTO pricing_configs (id, kind, name, enabled, provider_json, created_at, updated_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, provider_json, created_at, updated_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          kind = excluded.kind,
          name = excluded.name,
          enabled = excluded.enabled,
@@ -455,9 +456,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       entry.createdAt.toISOString(),
       entry.metadata ? JSON.stringify(entry.metadata) : null,
     ]),
-    (values) => `INSERT INTO pricing_history_entries (id, player_id, pricing_config_id, provider_id, rule_id, rule_anchor_at, session_id, amount, created_at, metadata_json)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO pricing_history_entries (shop_id, id, player_id, pricing_config_id, provider_id, rule_id, rule_anchor_at, session_id, amount, created_at, metadata_json)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          player_id = excluded.player_id,
          pricing_config_id = excluded.pricing_config_id,
          provider_id = excluded.provider_id,
@@ -477,9 +478,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       present.oncePerPlayer ? 1 : 0,
       JSON.stringify(present.grants),
     ]),
-    (values) => `INSERT INTO presents (id, name, once_per_player, grants_json)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO presents (shop_id, id, name, once_per_player, grants_json)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          name = excluded.name,
          once_per_player = excluded.once_per_player,
          grants_json = excluded.grants_json`,
@@ -495,9 +496,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       code.expiresAt?.toISOString() ?? null,
       code.maxUseCount,
     ]),
-    (values) => `INSERT INTO redeem_codes (id, code, present_id, active_at, expires_at, max_use_count)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO redeem_codes (shop_id, id, code, present_id, active_at, expires_at, max_use_count)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          code = excluded.code,
          present_id = excluded.present_id,
          active_at = excluded.active_at,
@@ -514,9 +515,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       record.presentId,
       record.redeemedAt.toISOString(),
     ]),
-    (values) => `INSERT INTO redeem_records (id, player_id, code_id, present_id, redeemed_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO redeem_records (shop_id, id, player_id, code_id, present_id, redeemed_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          player_id = excluded.player_id,
          code_id = excluded.code_id,
          present_id = excluded.present_id,
@@ -539,9 +540,9 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
       command.ackedAt?.toISOString() ?? null,
       command.expiredAt?.toISOString() ?? null,
     ]),
-    (values) => `INSERT INTO device_commands (id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at)
-       VALUES ${values}
-       ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO device_commands (shop_id, id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at)
+       VALUES ${shopValues(executor, values)}
+       ON CONFLICT(shop_id, id) DO UPDATE SET
          type = excluded.type,
          device_id = excluded.device_id,
          target_kind = excluded.target_kind,
@@ -858,7 +859,7 @@ function toAssetHolding(holding: PrismNeoUserAsset): MigratedAssetHolding {
     playerId: legacyUserId(holding.userId),
     assetType: mapped.type,
     assetCode: mapped.code,
-    quantity: Math.trunc(holding.count),
+    quantity: holding.count,
     activeAt: holding.activeAt ?? null,
     expiresAt: holding.expireAt ?? null,
   };

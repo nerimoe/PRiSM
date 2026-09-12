@@ -57,7 +57,7 @@ function createDb() {
 
 function bindTestIdentity(db: Database, playerId: string) {
   db.run(
-    "INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(provider, subject) DO UPDATE SET player_id = excluded.player_id",
+    "INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO UPDATE SET player_id = excluded.player_id",
     [playerId, "test", playerId, "2026-06-07T09:00:00.000Z"],
   );
 }
@@ -150,6 +150,7 @@ async function playerSessionHeaders(app: ReturnType<typeof createPrismApp>, play
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      Authorization: "Bearer staff-token",
     },
     body: JSON.stringify({
       identity: {
@@ -2722,4 +2723,20 @@ describe("createPrismRuntimeDependencies", () => {
     expect(hinataIoSettingReads).toBe(1);
     await expect(repositories.deviceCommands.getDeviceCommand(command.id)).resolves.toEqual(command);
   });
+});
+
+it("rolls back wallet, checkout records and session closure when a checkout batch fails", async () => {
+  const db=createDb();
+  const now=()=>new Date("2026-06-07T11:00:00Z");
+  const deps=createRuntimeForDb(db,now);
+  const rule=await deps.staffPricingCommands!.createPricingConfig({kind:"charge.fixed",name:"Entry",enabled:true,provider:{id:"fixed",label:"Entry",amount:12}});
+  await deps.playerCommands.startSession({playerId:"player-1",pricingConfigIds:[rule.id],label:"entry"});
+  const before=db.query("SELECT * FROM asset_holdings ORDER BY id").all();
+  db.run("CREATE TRIGGER fail_settlement BEFORE INSERT ON settlements BEGIN SELECT RAISE(ABORT, 'injected checkout failure'); END");
+  await expect(deps.playerCheckoutCommands!.checkout({playerId:"player-1",closeSessionsBeforeBalanceCheck:false})).rejects.toThrow("injected checkout failure");
+  expect(db.query("SELECT * FROM asset_holdings ORDER BY id").all()).toEqual(before);
+  expect(db.query("SELECT status FROM sessions WHERE player_id='player-1'").get()).toEqual({status:"active"});
+  expect(db.query("SELECT COUNT(*) AS n FROM player_checkouts").get()).toEqual({n:0});
+  expect(db.query("SELECT COUNT(*) AS n FROM asset_transactions").get()).toEqual({n:0});
+  db.close();
 });

@@ -435,6 +435,7 @@ export type MachineConnectionCommands = {
 };
 
 export type PlayerCheckoutInput = {
+  closeSessionsBeforeBalanceCheck?: boolean;
   playerId: string;
   sessionId?: string;
 };
@@ -456,7 +457,7 @@ export type StaffCheckoutCommands = {
   previewCheckout?(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   checkoutWithOverride?(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;
-  stopSession?(input: Required<PlayerCheckoutInput>): Promise<Session & { status: "closed"; endedAt: Date }>;
+  stopSession?(input: Required<Pick<PlayerCheckoutInput, "playerId" | "sessionId">>): Promise<Session & { status: "closed"; endedAt: Date }>;
 };
 
 export type RedeemCodeInput = {
@@ -557,6 +558,8 @@ export type ServiceVersionInfo = {
 };
 
 export type PrismAppDependencies = {
+  /** Set only by the hosted platform after account and shop authorization. */
+  authenticatedPrincipal?: Principal;
   versionInfo?: ServiceVersionInfo;
   playerQueries: PlayerQueries;
   staffQueries: StaffQueries;

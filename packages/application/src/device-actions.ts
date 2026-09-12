@@ -110,6 +110,8 @@ export function createDeviceActionService(dependencies: DeviceActionServiceDepen
         return command;
       }
 
+      // Persist before dispatch: a transport failure must leave an auditable pending command.
+      await dependencies.deviceCommands.enqueueDeviceCommand(withoutScanSubject(command));
       const result = await executor.execute({ command });
       let updated: DeviceCommand = result.status === "success"
         ? ackDeviceCommand({ command, now: dependencies.now() })

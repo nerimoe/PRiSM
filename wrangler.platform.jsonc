@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "prism-platform",
+  "main": "packages/platform/src/index.ts",
+  "compatibility_date": "2026-06-07",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "packages/prism-web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/t/*/*",
+      "/.well-known/*",
+      "/callback*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "prism-platform",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "RATE_LIMIT",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "vars": {
+    "APP_ORIGIN": "http://localhost:8787",
+    "EXTRA_ALLOWED_ORIGINS": "http://localhost:5173",
+    "MUNET_CLIENT_ID": ""
+  },
+  "observability": {
+    "enabled": true
+  }
+}

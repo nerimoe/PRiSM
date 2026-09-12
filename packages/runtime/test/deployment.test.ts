@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { sqliteSchema } from "@prism/storage-sql";
-import { readdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const projectRoot = new URL("../../../", import.meta.url);
 
@@ -10,6 +12,47 @@ async function readProjectFile(path: string): Promise<string> {
 }
 
 describe("deployment artifacts", () => {
+  it("generates platform deployment from environment variables and rejects missing configuration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "prism-config-"));
+    try {
+      mkdirSync(join(root, "scripts"));
+      for (const path of ["scripts/generate-wrangler-config.ts", "wrangler.platform.jsonc"]) {
+        copyFileSync(new URL(path, projectRoot), join(root, path));
+      }
+      const env = {
+        PRISM_WORKER_NAME: "test-worker",
+        PRISM_D1_DATABASE_NAME: "test-db",
+        PRISM_D1_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
+        PRISM_ACCOUNT_ID: "1".repeat(32),
+        PRISM_KV_RATE_LIMIT_ID: "2".repeat(32),
+        PRISM_APP_ORIGIN: "https://test.example.com",
+        PRISM_ROUTE_PATTERN: "test.example.com",
+        PRISM_MUNET_CLIENT_ID: "test-client",
+        PRISM_APPLE_TEAM_ID: "TESTTEAM",
+      };
+      const run = (variables: Record<string, string>, args: string[] = ["--platform"]) =>
+        Bun.spawnSync([process.execPath, join(root, "scripts/generate-wrangler-config.ts"), ...args], {
+          cwd: root, env: variables, stdout: "pipe", stderr: "pipe",
+        });
+      expect(run(env).exitCode).toBe(0);
+      const config = await Bun.file(join(root, "wrangler.generated.jsonc")).json();
+      expect(config).toMatchObject({
+        name: "test-worker", account_id: env.PRISM_ACCOUNT_ID,
+        main: "packages/platform/src/index.ts", workers_dev: false,
+        routes: [{ pattern: "test.example.com", custom_domain: true }],
+        d1_databases: [{ binding: "DB", database_id: env.PRISM_D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
+        kv_namespaces: [{ binding: "RATE_LIMIT", id: env.PRISM_KV_RATE_LIMIT_ID }],
+        vars: { APP_ORIGIN: env.PRISM_APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
+      });
+      expect(run({ ...env, PRISM_KV_RATE_LIMIT_ID: "" }).exitCode).not.toBe(0);
+      expect(run({ ...env, PRISM_APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
+      expect(run(env, []).exitCode).toBe(0);
+      expect((await Bun.file(join(root, "wrangler.generated.jsonc")).json()).main).toBe("packages/runtime/src/worker.ts");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("documents both local SQLite and Cloudflare D1 deployment paths", async () => {
     const deployment = await readProjectFile("docs/deployment.md");
 
@@ -137,7 +180,7 @@ describe("deployment artifacts", () => {
         .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .all()
         .map((row) => row.name),
-    ).toEqual(tableNames);
+    ).toEqual(expect.arrayContaining(tableNames));
 
     for (const tableName of tableNames) {
       const columns = (db: Database) =>

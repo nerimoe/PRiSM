@@ -11,7 +11,9 @@
     "packages/migration",
     "packages/runtime",
     "packages/server-hono",
-    "packages/storage-sql"
+    "packages/storage-sql",
+    "packages/platform",
+    "packages/prism-web"
   ],
   "scripts": {
     "test": "bun test",
@@ -31,10 +33,15 @@
     "migration:export-sqlite": "bun run packages/migration/src/cli.ts export-sqlite",
     "migration:export-postgres": "bun run packages/migration/src/cli.ts export-postgres",
     "migration:export-postgres-dump": "bun run packages/migration/src/cli.ts export-postgres-dump",
-    "migration:import-json": "bun run packages/migration/src/cli.ts import-json"
+    "migration:import-json": "bun run packages/migration/src/cli.ts import-json",
+    "build:web": "bun run --cwd packages/prism-web build",
+    "dev:platform": "bun run build:web && wrangler dev --config wrangler.platform.jsonc",
+    "check:platform": "bun run build:web && wrangler deploy --dry-run --config wrangler.platform.jsonc",
+    "deploy:beta": "bun run scripts/generate-wrangler-config.ts --platform && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote && wrangler deploy --config wrangler.generated.jsonc"
   },
   "devDependencies": {
     "bun-types": "1.3.14",
+    "miniflare": "4.20260603.0",
     "typescript": "^5.9.3",
     "wrangler": "^4.98.0"
   }

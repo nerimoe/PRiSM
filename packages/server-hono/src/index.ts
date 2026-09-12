@@ -1,3 +1,4 @@
+import { wrapApiResponse, unwrapLegacyResponse } from "./api-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { PrismDomainError } from "@prism/core";
@@ -84,6 +85,7 @@ import type { PriorityTimePricingProviderConfig } from "@prism/core";
 type StaffPrincipal = Extract<Principal, { role: "staff" }>;
 type IntegrationPrincipal = { role: "integration" };
 
+export * from "./api-contract";
 export * from "./auth";
 export * from "./machine-ws";
 export * from "./types";
@@ -91,6 +93,15 @@ export * from "./views";
 
 export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   const app = new Hono();
+  app.use("/api/v1/*", async (context, next) => {
+    await next();
+    context.res = await wrapApiResponse(context.res);
+  });
+  app.all("/rpc/*", async (context) => {
+    const url = new URL(context.req.url);
+    url.pathname = url.pathname.replace(/^\/rpc\//, "/api/v1/");
+    return unwrapLegacyResponse(await app.fetch(new Request(url, context.req.raw)));
+  });
   const staffOperations = dependencies.staffOperations;
   const versionInfo = dependencies.versionInfo ?? { version: "dev", revision: "unknown" };
 
@@ -218,7 +229,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
             message: error.message,
           },
         },
-        400,
+        error.code === "INSUFFICIENT_BALANCE" ? 409 : 400,
       );
     }
     console.error("[prism] unhandled route error:", error);
@@ -226,8 +237,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
       {
         error: {
           code: "INTERNAL_ERROR",
-          message: error instanceof Error ? error.message : "An unexpected error occurred.",
-          details: error instanceof Error ? error.stack : String(error),
+          message: "An unexpected error occurred.",
         },
       },
       500,
@@ -272,7 +282,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     `)
   );
 
-  app.get("/rpc/setup/status", async (context) => {
+  app.get("/api/v1/setup/status", async (context) => {
     if (!dependencies.setupCommands) {
       return context.json(
         {
@@ -287,7 +297,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(await dependencies.setupCommands.getSetupStatus());
   });
 
-  app.post("/rpc/setup/install", async (context) => {
+  app.post("/api/v1/setup/install", async (context) => {
     if (!dependencies.setupCommands) {
       return context.json(
         {
@@ -312,7 +322,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/admin/login", async (context) => {
+  app.post("/api/v1/admin/login", async (context) => {
     if (!dependencies.setupCommands) {
       return context.json(
         {
@@ -334,7 +344,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/admin/logout", async (context) => {
+  app.post("/api/v1/admin/logout", async (context) => {
     const authorization = context.req.header("Authorization");
     const principal = await authenticate(authorization, undefined, dependencies);
     if (!principal || principal.role !== "staff") {
@@ -345,7 +355,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.body(null, 204);
   });
 
-  app.get("/rpc/staff/me", async (context) => {
+  app.get("/api/v1/staff/me", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     return context.json({
@@ -358,7 +368,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/users", async (context) => {
+  app.get("/api/v1/staff/users", async (context) => {
     const principal = await staffOwnerPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffUserCommands) {
@@ -379,7 +389,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/users", async (context) => {
+  app.post("/api/v1/staff/users", async (context) => {
     const principal = await staffOwnerPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffUserCommands) {
@@ -406,7 +416,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.patch("/rpc/staff/users/:staffUserId", async (context) => {
+  app.patch("/api/v1/staff/users/:staffUserId", async (context) => {
     const principal = await staffOwnerPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffUserCommands) {
@@ -433,7 +443,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/users/:staffUserId/password", async (context) => {
+  app.post("/api/v1/staff/users/:staffUserId/password", async (context) => {
     const principal = await staffOwnerPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffUserCommands?.resetStaffUserPassword) {
@@ -458,7 +468,9 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/player-auth/login/by-identity", async (context) => {
+  app.post("/api/v1/player-auth/login/by-identity", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), undefined, dependencies);
+    if (!principal || (principal.role !== "integration" && !(principal.role === "staff" && principal.staffRole !== "viewer"))) return forbidden(context, "Trusted identity verification required.");
     if (!dependencies.playerAuthCommands) {
       return context.json(
         {
@@ -485,7 +497,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/player/me", async (context) => {
+  app.get("/api/v1/player/me", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -495,7 +507,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerSummaryView(summary));
   });
 
-  app.get("/rpc/player/assets", async (context) => {
+  app.get("/api/v1/player/assets", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -516,7 +528,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerAssetsView(assets));
   });
 
-  app.get("/rpc/player/sessions/history", async (context) => {
+  app.get("/api/v1/player/sessions/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -537,7 +549,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toSessionHistoryView(sessions));
   });
 
-  app.get("/rpc/player/sessions/:sessionId/history", async (context) => {
+  app.get("/api/v1/player/sessions/:sessionId/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -573,7 +585,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toSessionHistoryDetailView(session));
   });
 
-  app.post("/rpc/player/session/start", async (context) => {
+  app.post("/api/v1/player/session/start", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -600,7 +612,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/player/device-commands", async (context) => {
+  app.post("/api/v1/player/device-commands", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -619,7 +631,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/player/checkout/preview", async (context) => {
+  app.post("/api/v1/player/checkout/preview", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -651,7 +663,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerCheckoutPreviewView(result));
   });
 
-  app.post("/rpc/player/checkout/confirm", async (context) => {
+  app.post("/api/v1/player/checkout/confirm", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -683,7 +695,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerCheckoutResultView(result));
   });
 
-  app.post("/rpc/player/redeem", async (context) => {
+  app.post("/api/v1/player/redeem", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -709,7 +721,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toRedeemGiftView(result));
   });
 
-  app.post("/rpc/player/business-items/:businessItemId/purchase", async (context) => {
+  app.post("/api/v1/player/business-items/:businessItemId/purchase", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -738,7 +750,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/player/business-item-orders", async (context) => {
+  app.get("/api/v1/player/business-item-orders", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
       return forbidden(context, "Player principal required.");
@@ -763,7 +775,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/bot/identities/resolve", async (context) => {
+  app.post("/api/v1/bot/identities/resolve", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "integration") {
       return forbidden(context, "Bot principal required.");
@@ -802,7 +814,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/resolve", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/resolve", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -817,7 +829,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/register", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/register", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -833,7 +845,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/session/start", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/session/start", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -848,7 +860,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/checkout/preview", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/checkout/preview", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -861,7 +873,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/checkout/confirm", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/checkout/confirm", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -874,7 +886,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/sessions/:sessionId/stop", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/sessions/:sessionId/stop", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -890,7 +902,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/wallet", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/wallet", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -903,7 +915,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/assets", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/assets", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -916,7 +928,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/history", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/history", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -929,7 +941,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/redeem", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/redeem", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -942,7 +954,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/assets/adjustments", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/assets/adjustments", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -962,7 +974,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/wallet/adjustment", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/wallet/adjustment", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -972,7 +984,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
       context.json(await integrationCommands.adjustWalletByIdentity(body)));
   });
 
-  app.post("/rpc/integration/players/by-identity/checkout/override", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/checkout/override", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -985,7 +997,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/integration/players/by-identity/device-actions", async (context) => {
+  app.post("/api/v1/integration/players/by-identity/device-actions", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
     const integrationCommands = integrationCommandsOrError(context);
@@ -1000,7 +1012,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/integration/sessions/active", async (context) => {
+  app.get("/api/v1/integration/sessions/active", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
 
@@ -1022,7 +1034,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/integration/device-states", async (context) => {
+  app.get("/api/v1/integration/device-states", async (context) => {
     const principal = await integrationPrincipal(context);
     if (principal instanceof Response) return principal;
 
@@ -1044,7 +1056,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/settings", async (context) => {
+  app.get("/api/v1/staff/settings", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffSettingsCommands) {
@@ -1064,7 +1076,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.put("/rpc/staff/settings", async (context) => {
+  app.put("/api/v1/staff/settings", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffSettingsCommands) {
@@ -1085,7 +1097,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/api-tokens", async (context) => {
+  app.get("/api/v1/staff/api-tokens", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffApiTokenCommands) {
@@ -1106,7 +1118,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/api-tokens", async (context) => {
+  app.post("/api/v1/staff/api-tokens", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffApiTokenCommands) {
@@ -1134,7 +1146,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/api-tokens/:tokenId/revoke", async (context) => {
+  app.post("/api/v1/staff/api-tokens/:tokenId/revoke", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffApiTokenCommands) {
@@ -1157,7 +1169,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/players", async (context) => {
+  app.get("/api/v1/staff/players", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1169,7 +1181,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/players/:playerId/assets", async (context) => {
+  app.get("/api/v1/staff/players/:playerId/assets", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1190,7 +1202,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerAssetsView(assets));
   });
 
-  app.get("/rpc/staff/players/:playerId/sessions/history", async (context) => {
+  app.get("/api/v1/staff/players/:playerId/sessions/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1211,7 +1223,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toSessionHistoryView(sessions));
   });
 
-  app.get("/rpc/staff/players/:playerId/sessions/:sessionId/history", async (context) => {
+  app.get("/api/v1/staff/players/:playerId/sessions/:sessionId/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1247,7 +1259,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toSessionHistoryDetailView(session));
   });
 
-  app.get("/rpc/staff/players/:playerId/redeem-records", async (context) => {
+  app.get("/api/v1/staff/players/:playerId/redeem-records", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1268,7 +1280,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerRedeemRecordsView(records));
   });
 
-  app.post("/rpc/staff/players", async (context) => {
+  app.post("/api/v1/staff/players", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPlayerCommands) {
@@ -1297,7 +1309,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.patch("/rpc/staff/players/:playerId/status", async (context) => {
+  app.patch("/api/v1/staff/players/:playerId/status", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPlayerCommands) {
@@ -1322,7 +1334,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/players/:playerId/identities", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/identities", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPlayerCommands?.bindPlayerIdentity) {
@@ -1348,7 +1360,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.delete("/rpc/staff/players/:playerId/identities/:provider/:subject", async (context) => {
+  app.delete("/api/v1/staff/players/:playerId/identities/:provider/:subject", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPlayerCommands?.deletePlayerIdentity) {
@@ -1371,7 +1383,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json({ ok: true });
   });
 
-  app.post("/rpc/staff/players/:playerId/session/start", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/session/start", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
 
@@ -1396,7 +1408,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/players/:playerId/checkout/preview", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/checkout/preview", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffCheckoutCommands?.previewCheckout) {
@@ -1426,7 +1438,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerCheckoutPreviewView(result));
   });
 
-  app.post("/rpc/staff/players/:playerId/checkout/override", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/checkout/override", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffCheckoutCommands) {
@@ -1452,7 +1464,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerCheckoutResultView(result));
   });
 
-  app.post("/rpc/staff/players/:playerId/checkout/confirm", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/checkout/confirm", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffCheckoutCommands) {
@@ -1482,7 +1494,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerCheckoutResultView(result));
   });
 
-  app.post("/rpc/staff/players/:playerId/sessions/:sessionId/stop", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/sessions/:sessionId/stop", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffCheckoutCommands?.stopSession) {
@@ -1504,7 +1516,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toStoppedSessionView(session));
   });
 
-  app.post("/rpc/staff/sessions/active/checkout", async (context) => {
+  app.post("/api/v1/staff/sessions/active/checkout", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffCheckoutCommands) {
@@ -1525,7 +1537,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/live-players", async (context) => {
+  app.get("/api/v1/staff/live-players", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
 
@@ -1535,7 +1547,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/sessions/active", async (context) => {
+  app.get("/api/v1/staff/sessions/active", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1548,11 +1560,9 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   });
 
 
-  app.post("/rpc/staff/device-actions", async (context) => {
-    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
-    if (!principal || principal.role !== "staff") {
-      return forbidden(context, "Staff principal required.");
-    }
+  app.post("/api/v1/staff/device-actions", async (context) => {
+    const principal = await staffWritePrincipal(context);
+    if (principal instanceof Response) return principal;
     if (!dependencies.staffDeviceCommands) {
       return context.json(
         {
@@ -1577,7 +1587,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/device-commands", async (context) => {
+  app.get("/api/v1/staff/device-commands", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1603,7 +1613,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/device-states", async (context) => {
+  app.get("/api/v1/staff/device-states", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1626,7 +1636,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/machine-connections", async (context) => {
+  app.get("/api/v1/staff/machine-connections", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1649,7 +1659,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/reports/summary", async (context) => {
+  app.get("/api/v1/staff/reports/summary", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1684,7 +1694,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toStaffReportsSummaryView(summary));
   });
 
-  app.get("/rpc/staff/reports/settlements", async (context) => {
+  app.get("/api/v1/staff/reports/settlements", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1726,7 +1736,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/reports/players", async (context) => {
+  app.get("/api/v1/staff/reports/players", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1768,7 +1778,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/pricing-configs", async (context) => {
+  app.get("/api/v1/staff/pricing-configs", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -1791,7 +1801,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/pricing-extensions", async (context) => {
+  app.get("/api/v1/staff/pricing-extensions", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     const extensions =
@@ -1804,7 +1814,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/pricing-configs/:pricingConfigId/timeline", async (context) => {
+  app.get("/api/v1/staff/pricing-configs/:pricingConfigId/timeline", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands?.getPricingTimeline) {
@@ -1839,7 +1849,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-timeline/preview", async (context) => {
+  app.post("/api/v1/staff/pricing-timeline/preview", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands?.previewPricingTimeline) {
@@ -1875,7 +1885,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-configs", async (context) => {
+  app.post("/api/v1/staff/pricing-configs", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands) {
@@ -1902,7 +1912,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.patch("/rpc/staff/pricing-configs/:pricingConfigId", async (context) => {
+  app.patch("/api/v1/staff/pricing-configs/:pricingConfigId", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands) {
@@ -1929,7 +1939,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-configs/:pricingConfigId/archive", async (context) => {
+  app.post("/api/v1/staff/pricing-configs/:pricingConfigId/archive", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands?.archivePricingConfig) {
@@ -1952,7 +1962,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-configs/:pricingConfigId/restore", async (context) => {
+  app.post("/api/v1/staff/pricing-configs/:pricingConfigId/restore", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingCommands?.restorePricingConfig) {
@@ -1975,7 +1985,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/business-items", async (context) => {
+  app.get("/api/v1/staff/business-items", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffBusinessItemCommands) {
@@ -1996,7 +2006,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/business-items", async (context) => {
+  app.post("/api/v1/staff/business-items", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffBusinessItemCommands) {
@@ -2027,7 +2037,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/business-items/:businessItemId/archive", async (context) => {
+  app.post("/api/v1/staff/business-items/:businessItemId/archive", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffBusinessItemCommands?.archiveBusinessItem) {
@@ -2050,7 +2060,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/business-items/:businessItemId/restore", async (context) => {
+  app.post("/api/v1/staff/business-items/:businessItemId/restore", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffBusinessItemCommands?.restoreBusinessItem) {
@@ -2073,7 +2083,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/business-item-orders", async (context) => {
+  app.get("/api/v1/staff/business-item-orders", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.businessItemOrderCommands) {
@@ -2094,7 +2104,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/business-item-orders/:orderId/fulfill", async (context) => {
+  app.post("/api/v1/staff/business-item-orders/:orderId/fulfill", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.businessItemOrderCommands) {
@@ -2117,7 +2127,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/business-item-orders/:orderId/cancel", async (context) => {
+  app.post("/api/v1/staff/business-item-orders/:orderId/cancel", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.businessItemOrderCommands) {
@@ -2140,7 +2150,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/asset-definitions", async (context) => {
+  app.get("/api/v1/staff/asset-definitions", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -2163,7 +2173,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/pricing-effects", async (context) => {
+  app.get("/api/v1/staff/pricing-effects", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingEffectCommands) {
@@ -2184,7 +2194,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.put("/rpc/staff/pricing-effects/:effectId", async (context) => {
+  app.put("/api/v1/staff/pricing-effects/:effectId", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingEffectCommands) {
@@ -2218,7 +2228,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-effects/:effectId/archive", async (context) => {
+  app.post("/api/v1/staff/pricing-effects/:effectId/archive", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingEffectCommands) {
@@ -2241,7 +2251,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/pricing-effects/:effectId/restore", async (context) => {
+  app.post("/api/v1/staff/pricing-effects/:effectId/restore", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffPricingEffectCommands) {
@@ -2264,7 +2274,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.put("/rpc/staff/asset-definitions/:assetType/:assetCode", async (context) => {
+  app.put("/api/v1/staff/asset-definitions/:assetType/:assetCode", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffAssetDefinitionCommands) {
@@ -2295,7 +2305,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/asset-definitions/:assetType/:assetCode/archive", async (context) => {
+  app.post("/api/v1/staff/asset-definitions/:assetType/:assetCode/archive", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffAssetDefinitionCommands?.archiveAssetDefinition) {
@@ -2319,7 +2329,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/asset-definitions/:assetType/:assetCode/restore", async (context) => {
+  app.post("/api/v1/staff/asset-definitions/:assetType/:assetCode/restore", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffAssetDefinitionCommands?.restoreAssetDefinition) {
@@ -2343,7 +2353,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/players/:playerId/assets/grants", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/assets/grants", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     const staffAssetCommands = dependencies.staffAssetCommands;
@@ -2360,6 +2370,9 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     }
 
     const body = await context.req.json<StaffGrantAssetsBody>();
+    if (!Array.isArray(body.grants) || !body.grants.length || body.grants.some(grant => !grant || typeof grant.assetType !== "string" || typeof grant.assetCode !== "string" || !Number.isFinite(grant.amount) || grant.amount <= 0)) {
+      return context.json({error:{code:"INVALID_ASSET_GRANT",message:"请选择资产并填写有效数量"}},400);
+    }
     const result = await staffAssetCommands.grantAssets({
       staffId: principal.staffId,
       playerId: context.req.param("playerId"),
@@ -2375,7 +2388,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toGrantAssetsView(result));
   });
 
-  app.post("/rpc/staff/players/:playerId/assets/adjustments", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/assets/adjustments", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffAssetCommands) {
@@ -2404,7 +2417,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toGrantAssetsView(result));
   });
 
-  app.post("/rpc/staff/players/:playerId/wallet/adjustment", async (context) => {
+  app.post("/api/v1/staff/players/:playerId/wallet/adjustment", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     const staffAssetCommands = dependencies.staffAssetCommands;
@@ -2422,7 +2435,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
       })));
   });
 
-  app.post("/rpc/staff/presents", async (context) => {
+  app.post("/api/v1/staff/presents", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands) {
@@ -2455,7 +2468,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/presents", async (context) => {
+  app.get("/api/v1/staff/presents", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands?.listPresents) {
@@ -2476,7 +2489,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/presents/:presentId/archive", async (context) => {
+  app.post("/api/v1/staff/presents/:presentId/archive", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands?.archivePresent) {
@@ -2499,7 +2512,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/presents/:presentId/restore", async (context) => {
+  app.post("/api/v1/staff/presents/:presentId/restore", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands?.restorePresent) {
@@ -2522,7 +2535,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/redeem-codes", async (context) => {
+  app.post("/api/v1/staff/redeem-codes", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands) {
@@ -2551,7 +2564,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.get("/rpc/staff/redeem-codes", async (context) => {
+  app.get("/api/v1/staff/redeem-codes", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "staff") {
       return forbidden(context, "Staff principal required.");
@@ -2582,7 +2595,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/redeem-codes/batch", async (context) => {
+  app.post("/api/v1/staff/redeem-codes/batch", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands) {
@@ -2611,7 +2624,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
-  app.post("/rpc/staff/redeem-codes/:codeId/revoke", async (context) => {
+  app.post("/api/v1/staff/redeem-codes/:codeId/revoke", async (context) => {
     const principal = await staffWritePrincipal(context);
     if (principal instanceof Response) return principal;
     if (!dependencies.staffRedeemCommands) {

@@ -199,6 +199,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     now: input.now,
   });
   const playerCheckoutCommands = createSettlementService({
+    commitCheckout: input.repositories.commitCheckout,
     sessions: input.repositories.sessions,
     operationLocks: input.repositories.operationLocks,
     assets: input.repositories.assets,
@@ -616,25 +617,32 @@ export type PrismWorkerEnv = {
 
 export type CreatePrismLocalAppInput = {
   db: Database;
+  shopId?: string;
   plugins?: readonly PrismRuntimePlugin[];
 };
 
 export type CreatePrismWorkerAppOptions = {
+  shopId?: string;
   plugins?: readonly PrismRuntimePlugin[];
 };
 
 export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): Hono {
+  return createPrismApp(createPrismWorkerDependencies(env, options));
+}
+
+export function createPrismWorkerDependencies(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): PrismAppDependencies {
   const runtime = createDefaultRuntimeConfig();
-  return createPrismApp(
-    {
+  return {
       ...createPrismRuntimeDependencies({
       repositories: RuntimeRepositories.fromD1({
         db: env.DB,
+        shopId: options.shopId,
         id: runtime.id,
         now: runtime.now,
       }),
       queries: RuntimeRepositories.queriesFromD1({
         db: env.DB,
+        shopId: options.shopId,
         now: runtime.now,
       }),
       pricingProviders: runtime.pricingProviders,
@@ -646,8 +654,7 @@ export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWo
       now: runtime.now,
       }),
       versionInfo: backendVersionInfo,
-    },
-  );
+  };
 }
 
 export function createPrismLocalApp(input: CreatePrismLocalAppInput): Hono {
@@ -660,11 +667,13 @@ export function createPrismLocalDependencies(input: CreatePrismLocalAppInput): P
     ...createPrismRuntimeDependencies({
       repositories: RuntimeRepositories.fromBunSqlite({
         db: input.db,
+        shopId: input.shopId,
         id: runtime.id,
         now: runtime.now,
       }),
       queries: RuntimeRepositories.queriesFromBunSqlite({
         db: input.db,
+        shopId: input.shopId,
         now: runtime.now,
       }),
       pricingProviders: runtime.pricingProviders,
@@ -680,29 +689,33 @@ export function createPrismLocalDependencies(input: CreatePrismLocalAppInput): P
 }
 
 export function initializeSqliteSchema(db: Database): void {
+  const columns = db.query("PRAGMA table_info(players)").all() as {name:string}[];
+  if (columns.length && !columns.some(column => column.name === "shop_id")) {
+    throw new Error("SQLite schema requires migration 0016; start with dev:local to create a backup and upgrade.");
+  }
   db.run("PRAGMA foreign_keys = ON");
   for (const statement of sqliteSchema) db.run(statement);
 }
 
 export const RuntimeRepositories = {
-  fromBunSqlite(input: { db: Database; id: () => string; now: () => Date }): RuntimeRepositoryInput {
+  fromBunSqlite(input: { db: Database; shopId?: string; id: () => string; now: () => Date }): RuntimeRepositoryInput {
     return createSqliteRepositories(input);
   },
 
-  fromD1(input: { db: D1DatabaseLike; id: () => string; now: () => Date }): RuntimeRepositoryInput {
+  fromD1(input: { db: D1DatabaseLike; shopId?: string; id: () => string; now: () => Date }): RuntimeRepositoryInput {
     return createD1Repositories(input);
   },
 
-  queriesFromBunSqlite(input: { db: Database; now: () => Date }): RuntimeQueryInput {
+  queriesFromBunSqlite(input: { db: Database; shopId?: string; now: () => Date }): RuntimeQueryInput {
     return createRuntimeQueries({
-      executor: createBunSqliteExecutor(input.db),
+      executor: createBunSqliteExecutor(input.db, input.shopId),
       now: input.now,
     });
   },
 
-  queriesFromD1(input: { db: D1DatabaseLike; now: () => Date }): RuntimeQueryInput {
+  queriesFromD1(input: { db: D1DatabaseLike; shopId?: string; now: () => Date }): RuntimeQueryInput {
     return createRuntimeQueries({
-      executor: createD1Executor(input.db),
+      executor: createD1Executor(input.db, input.shopId),
       now: input.now,
     });
   },

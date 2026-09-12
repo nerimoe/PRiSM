@@ -24,6 +24,12 @@
     },
     {
       "path": "./packages/migration"
+    },
+    {
+      "path": "./packages/platform"
+    },
+    {
+      "path": "./packages/prism-web"
     }
   ]
 }

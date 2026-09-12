@@ -5,20 +5,22 @@ export type SqliteRepositories = SqlRepositories;
 
 export type CreateSqliteRepositoriesInput = {
   db: Database;
+  shopId?: string;
   id: () => string;
   now: () => Date;
 };
 
 export function createSqliteRepositories(input: CreateSqliteRepositoriesInput): SqliteRepositories {
   return createSqlRepositories({
-    executor: createBunSqliteExecutor(input.db),
+    executor: createBunSqliteExecutor(input.db, input.shopId),
     id: input.id,
     now: input.now,
   });
 }
 
-export function createBunSqliteExecutor(db: Database): SqlExecutor {
+export function createBunSqliteExecutor(db: Database, shopId = "legacy"): SqlExecutor {
   return {
+    shopId,
     async first<T>(sql: string, params: readonly SqlValue[] = []) {
       return (db.query(sql).get(...toMutableParams(params)) as T | null) ?? null;
     },

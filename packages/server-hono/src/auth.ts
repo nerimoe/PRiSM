@@ -6,6 +6,7 @@ export async function authenticate(
   playerId: string | undefined,
   dependencies: PrismAppDependencies,
 ): Promise<Principal | null> {
+  if (dependencies.authenticatedPrincipal) return dependencies.authenticatedPrincipal;
   const token = authorization?.match(/^Bearer (.+)$/)?.[1];
   if (!token) return null;
 

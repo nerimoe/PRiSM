@@ -5,6 +5,22 @@ import { describe, expect, it } from "bun:test";
 import { sqliteSchema } from "../src/index";
 
 describe("sqliteSchema", () => {
+  it("preserves assets linked to pricing effects during tenant migration", () => {
+    const db = new Database(":memory:");
+    db.run("PRAGMA foreign_keys=ON");
+    const root = resolve(import.meta.dir, "../../../migrations");
+    for (const name of readdirSync(root).filter(name => name.endsWith(".sql") && name < "0016_").sort()) {
+      runMigrationFile(db, resolve(root, name));
+    }
+    db.run("INSERT INTO pricing_effects(id,name,type,scope,value) VALUES('effect','Discount','discount','session',5)");
+    db.run("INSERT INTO asset_definitions(type,code,name,pricing_effect_id) VALUES('item','coupon','Coupon','effect')");
+    runMigrationFile(db, resolve(root, "0016_shop_scoped_billing.sql"));
+    expect(db.query("SELECT shop_id,pricing_effect_id FROM asset_definitions WHERE code='coupon'").get())
+      .toEqual({ shop_id: "legacy", pricing_effect_id: "effect" });
+    expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
+
   it("creates the core tables needed by both SQLite and D1 adapters", () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");
@@ -66,7 +82,7 @@ describe("sqliteSchema", () => {
         .all(tableName)
         .map((row) => row.name);
 
-    expect(columns("staff_users")).toEqual([
+    expect(columns("staff_users")).toEqual(["shop_id",
       "id",
       "username",
       "display_name",
@@ -79,12 +95,12 @@ describe("sqliteSchema", () => {
     ]);
     expect(columns("admin_sessions")).toContain("token_hash");
     expect(columns("api_tokens")).toContain("token_hash");
-    expect(columns("app_settings")).toEqual(["key", "value_json", "updated_at"]);
+    expect(columns("app_settings")).toEqual(["shop_id", "key", "value_json", "updated_at"]);
     expect(columns("asset_definitions")).toContain("status");
     expect(columns("asset_definitions")).toContain("pricing_effect_id");
     expect(columns("asset_definitions")).toContain("active_at");
     expect(columns("asset_definitions")).toContain("expires_at");
-    expect(columns("pricing_effects")).toEqual([
+    expect(columns("pricing_effects")).toEqual(["shop_id",
       "id",
       "name",
       "type",
@@ -105,7 +121,7 @@ describe("sqliteSchema", () => {
     expect(columns("presents")).toContain("active_at");
     expect(columns("presents")).toContain("expires_at");
     expect(columns("pricing_configs")).toContain("status");
-    expect(columns("sessions")).toEqual([
+    expect(columns("sessions")).toEqual(["shop_id",
       "id",
       "player_id",
       "started_at",
@@ -116,7 +132,7 @@ describe("sqliteSchema", () => {
       "label",
       "metadata_json",
     ]);
-    expect(columns("pricing_history_entries")).toEqual([
+    expect(columns("pricing_history_entries")).toEqual(["shop_id",
       "id",
       "player_id",
       "pricing_config_id",
@@ -128,7 +144,7 @@ describe("sqliteSchema", () => {
       "created_at",
       "metadata_json",
     ]);
-    expect(columns("pricing_cap_history_entries")).toEqual([
+    expect(columns("pricing_cap_history_entries")).toEqual(["shop_id",
       "id",
       "player_id",
       "cap_config_id",

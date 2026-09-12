@@ -738,7 +738,7 @@ function parseNextClockTime(base: Date, time: string, timeZone: string): Date {
   return date;
 }
 
-function parseLocalDateTime(localDate: string, time: string, timeZone: string): Date {
+export function parseLocalDateTime(localDate: string, time: string, timeZone: string): Date {
   const [year, month, day] = localDate.split("-").map(Number);
   const minutes = parseClockMinutes(time);
   return zonedLocalTimeToUtc(
@@ -814,7 +814,7 @@ function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
   return localAsUtc - date.getTime();
 }
 
-function formatLocalDate(date: Date, timeZone: string): string {
+export function formatLocalDate(date: Date, timeZone: string): string {
   return formatLocalDateFromParts(getZonedParts(date, timeZone));
 }
 
@@ -825,7 +825,7 @@ function formatLocalDateFromParts(parts: Pick<ZonedParts, "year" | "month" | "da
   return `${year}-${month}-${day}`;
 }
 
-function addLocalDays(localDate: string, days: number): string {
+export function addLocalDays(localDate: string, days: number): string {
   const [year, month, day] = localDate.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day + days, 0, 0, 0, 0));
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;

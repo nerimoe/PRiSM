@@ -1,4 +1,7 @@
+import { PrismDomainError } from "@prism/core";
+import { sqlShop, shopValues } from "./shop-scope";
 import type {
+  CheckoutCommit,
   AssetHolding,
   AssetDefinition,
   AssetDefinitionRepository,
@@ -56,6 +59,7 @@ export type SqlStatement = {
 };
 
 export type SqlExecutor = {
+  readonly shopId?: string;
   first<T>(sql: string, params?: readonly SqlValue[]): Promise<T | null>;
   all<T>(sql: string, params?: readonly SqlValue[]): Promise<T[]>;
   run(sql: string, params?: readonly SqlValue[]): Promise<void>;
@@ -63,6 +67,7 @@ export type SqlExecutor = {
 };
 
 export type SqlRepositories = {
+  commitCheckout(input: CheckoutCommit): Promise<void>;
   system: SystemRepository;
   players: PlayerRepository;
   playerIdentities: PlayerIdentityRepository;
@@ -94,6 +99,23 @@ export function createSqlRepositories(
   input: CreateSqlRepositoriesInput,
 ): SqlRepositories {
   return {
+    async commitCheckout(checkout) {
+      const statements: SqlStatement[] = [];
+      const writer: SqlExecutor = {
+        shopId: input.executor.shopId,
+        async first() { throw new Error("Checkout commit must not perform reads"); },
+        async all() { throw new Error("Checkout commit must not perform reads"); },
+        async run(sql, params) { statements.push({ sql, params }); },
+        async batch(batch) { statements.push(...batch); },
+      };
+      const repositories = createSqlRepositories({ ...input, executor: writer });
+      await repositories.assets.commitAssetTransaction(checkout.assets);
+      await repositories.settlements.saveCheckout!(checkout.checkout, checkout.settlements);
+      await repositories.sessions.saveMany!(checkout.sessions);
+      await repositories.pricingHistory.appendEntries(checkout.pricingHistory);
+      await repositories.pricingCapHistory.appendEntries(checkout.pricingCapHistory);
+      await input.executor.batch(statements);
+    },
     system: createSystemRepository(input),
     players: createPlayerRepository(input.executor),
     playerIdentities: createPlayerIdentityRepository(input.executor),
@@ -138,7 +160,7 @@ async function runDeleteByValues(
   for (let offset = 0; offset < uniqueValues.length; offset += maxSqlParametersPerStatement) {
     const chunk = uniqueValues.slice(offset, offset + maxSqlParametersPerStatement);
     await executor.run(
-      `DELETE FROM ${table} WHERE ${column} IN (${chunk.map(() => "?").join(", ")})`,
+      `DELETE FROM ${table} WHERE shop_id = ${sqlShop(executor)} AND ${column} IN (${chunk.map(() => "?").join(", ")})`,
       chunk,
     );
   }
@@ -148,9 +170,9 @@ function createOperationLockRepository(executor: SqlExecutor): OperationLockRepo
   return {
     async acquire(scope, resourceId, lockId, acquiredAt, expiresAt) {
       const row = await executor.first<{ resource_id: string }>(
-        `INSERT INTO operation_locks (scope, resource_id, lock_id, acquired_at, expires_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(scope, resource_id) DO UPDATE SET
+        `INSERT INTO operation_locks (shop_id, scope, resource_id, lock_id, acquired_at, expires_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, scope, resource_id) DO UPDATE SET
            lock_id = excluded.lock_id,
            acquired_at = excluded.acquired_at,
            expires_at = excluded.expires_at
@@ -161,7 +183,7 @@ function createOperationLockRepository(executor: SqlExecutor): OperationLockRepo
       return row != null;
     },
     async release(scope, resourceId, lockId) {
-      await executor.run("DELETE FROM operation_locks WHERE scope = ? AND resource_id = ? AND lock_id = ?", [scope, resourceId, lockId]);
+      await executor.run(`DELETE FROM operation_locks WHERE shop_id = ${sqlShop(executor)} AND scope = ? AND resource_id = ? AND lock_id = ?`, [scope, resourceId, lockId]);
     },
   };
 }
@@ -174,9 +196,9 @@ function createSystemRepository(
     await runSqlValuesInBatches(
       input.executor,
       settings.map((setting) => [setting.key, JSON.stringify(setting.value), updatedAt]),
-      (values) => `INSERT INTO app_settings (key, value_json, updated_at)
-                   VALUES ${values}
-                   ON CONFLICT(key) DO UPDATE SET
+      (values) => `INSERT INTO app_settings (shop_id, key, value_json, updated_at)
+                   VALUES ${shopValues(input.executor, values)}
+                   ON CONFLICT(shop_id, key) DO UPDATE SET
                      value_json = excluded.value_json,
                      updated_at = excluded.updated_at`,
     );
@@ -195,9 +217,9 @@ function createSystemRepository(
         token.lastUsedAt?.toISOString() ?? null,
         token.revokedAt?.toISOString() ?? null,
       ]),
-      (values) => `INSERT INTO api_tokens (id, label, role, token_prefix, token_hash, status, created_at, last_used_at, revoked_at)
-                   VALUES ${values}
-                   ON CONFLICT(id) DO UPDATE SET
+      (values) => `INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at, last_used_at, revoked_at)
+                   VALUES ${shopValues(input.executor, values)}
+                   ON CONFLICT(shop_id, id) DO UPDATE SET
                      label = excluded.label,
                      role = excluded.role,
                      token_prefix = excluded.token_prefix,
@@ -211,16 +233,16 @@ function createSystemRepository(
   return {
     async hasOwnerStaffUser() {
       const row = await input.executor.first<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM staff_users WHERE role = 'owner' AND status = 'active'",
+        `SELECT COUNT(*) AS count FROM (SELECT * FROM staff_users WHERE shop_id = ${sqlShop(input.executor)}) WHERE role = 'owner' AND status = 'active'`,
       );
       return (row?.count ?? 0) > 0;
     },
 
     async saveStaffUser(user) {
       await input.executor.run(
-        `INSERT INTO staff_users (id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO staff_users (shop_id, id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at)
+         VALUES (${sqlShop(input.executor)}, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            username = excluded.username,
            display_name = excluded.display_name,
            password_hash = excluded.password_hash,
@@ -245,7 +267,7 @@ function createSystemRepository(
     async findStaffUserByUsername(username) {
       const row = await input.executor.first<StaffUserRow>(
         `SELECT id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at
-         FROM staff_users
+         FROM (SELECT * FROM staff_users WHERE shop_id = ${sqlShop(input.executor)})
          WHERE username = ?
          LIMIT 1`,
         [username],
@@ -256,7 +278,7 @@ function createSystemRepository(
     async listStaffUsers() {
       const rows = await input.executor.all<StaffUserRow>(
         `SELECT id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at
-         FROM staff_users
+         FROM (SELECT * FROM staff_users WHERE shop_id = ${sqlShop(input.executor)})
          ORDER BY created_at ASC, id`,
       );
       return rows.map(toStaffUser);
@@ -265,7 +287,7 @@ function createSystemRepository(
     async findStaffUserById(staffUserId) {
       const row = await input.executor.first<StaffUserRow>(
         `SELECT id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at
-         FROM staff_users
+         FROM (SELECT * FROM staff_users WHERE shop_id = ${sqlShop(input.executor)})
          WHERE id = ?
          LIMIT 1`,
         [staffUserId],
@@ -275,9 +297,9 @@ function createSystemRepository(
 
     async saveAdminSession(session) {
       await input.executor.run(
-        `INSERT INTO admin_sessions (id, staff_user_id, token_hash, expires_at, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO admin_sessions (shop_id, id, staff_user_id, token_hash, expires_at, created_at, last_used_at)
+         VALUES (${sqlShop(input.executor)}, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            token_hash = excluded.token_hash,
            expires_at = excluded.expires_at,
            last_used_at = excluded.last_used_at`,
@@ -295,7 +317,7 @@ function createSystemRepository(
     async findAdminSessionByTokenHash(tokenHash) {
       const row = await input.executor.first<AdminSessionRow>(
         `SELECT id, staff_user_id, token_hash, expires_at, created_at, last_used_at
-         FROM admin_sessions
+         FROM (SELECT * FROM admin_sessions WHERE shop_id = ${sqlShop(input.executor)})
          WHERE token_hash = ?
          LIMIT 1`,
         [tokenHash],
@@ -304,7 +326,7 @@ function createSystemRepository(
     },
 
     async revokeAdminSession(sessionId) {
-      await input.executor.run("DELETE FROM admin_sessions WHERE id = ?", [
+      await input.executor.run(`DELETE FROM admin_sessions WHERE shop_id = ${sqlShop(input.executor)} AND id = ?`, [
         sessionId,
       ]);
     },
@@ -320,7 +342,7 @@ function createSystemRepository(
     async listApiTokens() {
       const rows = await input.executor.all<ApiTokenRow>(
         `SELECT id, label, role, token_prefix, token_hash, status, created_at, last_used_at, revoked_at
-         FROM api_tokens
+         FROM (SELECT * FROM api_tokens WHERE shop_id = ${sqlShop(input.executor)})
          ORDER BY created_at DESC, id`,
       );
       return rows.map(toApiToken);
@@ -329,7 +351,7 @@ function createSystemRepository(
     async findActiveApiTokenByHash(tokenHash) {
       const row = await input.executor.first<ApiTokenRow>(
         `SELECT id, label, role, token_prefix, token_hash, status, created_at, last_used_at, revoked_at
-         FROM api_tokens
+         FROM (SELECT * FROM api_tokens WHERE shop_id = ${sqlShop(input.executor)})
          WHERE token_hash = ? AND status = 'active'
          LIMIT 1`,
         [tokenHash],
@@ -339,14 +361,14 @@ function createSystemRepository(
 
     async updateApiTokenLastUsed(tokenId, usedAt) {
       await input.executor.run(
-        "UPDATE api_tokens SET last_used_at = ? WHERE id = ?",
+        `UPDATE api_tokens SET last_used_at = ? WHERE shop_id = ${sqlShop(input.executor)} AND id = ?`,
         [usedAt.toISOString(), tokenId],
       );
     },
 
     async revokeApiToken(tokenId, revokedAt) {
       await input.executor.run(
-        "UPDATE api_tokens SET status = 'revoked', revoked_at = ? WHERE id = ?",
+        `UPDATE api_tokens SET status = 'revoked', revoked_at = ? WHERE shop_id = ${sqlShop(input.executor)} AND id = ?`,
         [revokedAt.toISOString(), tokenId],
       );
     },
@@ -361,7 +383,7 @@ function createSystemRepository(
 
     async getAppSetting<T = unknown>(key: string): Promise<T | null> {
       const row = await input.executor.first<AppSettingRow>(
-        "SELECT key, value_json, updated_at FROM app_settings WHERE key = ? LIMIT 1",
+        `SELECT key, value_json, updated_at FROM (SELECT * FROM app_settings WHERE shop_id = ${sqlShop(input.executor)}) WHERE key = ? LIMIT 1`,
         [key],
       );
       return row ? (JSON.parse(row.value_json) as T) : null;
@@ -369,7 +391,7 @@ function createSystemRepository(
 
     async listAppSettings() {
       const rows = await input.executor.all<AppSettingRow>(
-        "SELECT key, value_json, updated_at FROM app_settings ORDER BY key",
+        `SELECT key, value_json, updated_at FROM (SELECT * FROM app_settings WHERE shop_id = ${sqlShop(input.executor)}) ORDER BY key`,
       );
       return rows.map((row) => ({
         key: row.key,
@@ -397,9 +419,9 @@ function createAssetDefinitionRepository(
         definition.expiresAt?.toISOString() ?? null,
         definition.metadata ? JSON.stringify(definition.metadata) : null,
       ]),
-      (values) => `INSERT INTO asset_definitions (type, code, name, stackable, status, pricing_effect_id, active_at, expires_at, metadata_json)
-                   VALUES ${values}
-                   ON CONFLICT(type, code) DO UPDATE SET
+      (values) => `INSERT INTO asset_definitions (shop_id, type, code, name, stackable, status, pricing_effect_id, active_at, expires_at, metadata_json)
+                   VALUES ${shopValues(executor, values)}
+                   ON CONFLICT(shop_id, type, code) DO UPDATE SET
                      name = excluded.name,
                      stackable = excluded.stackable,
                      status = excluded.status,
@@ -421,7 +443,7 @@ function createAssetDefinitionRepository(
 
     async findByCode(type, code) {
       const row = await executor.first<AssetDefinitionRow>(
-        `${assetDefinitionSelectSql()} WHERE ad.type = ? AND ad.code = ? LIMIT 1`,
+        `${assetDefinitionSelectSql(executor)} WHERE ad.type = ? AND ad.code = ? LIMIT 1`,
         [type, code],
       );
       return row ? toAssetDefinition(row) : null;
@@ -429,7 +451,7 @@ function createAssetDefinitionRepository(
 
     async listAll() {
       const rows = await executor.all<AssetDefinitionRow>(
-        `${assetDefinitionSelectSql()} ORDER BY ad.type, ad.code`,
+        `${assetDefinitionSelectSql(executor)} ORDER BY ad.type, ad.code`,
       );
       return rows.map(toAssetDefinition);
     },
@@ -442,9 +464,9 @@ function createPricingEffectRepository(
   return {
     async save(effect) {
       await executor.run(
-        `INSERT INTO pricing_effects (id, name, type, scope, value, consumable, limit_per_day, active_at, expires_at, status, config_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO pricing_effects (shop_id, id, name, type, scope, value, consumable, limit_per_day, active_at, expires_at, status, config_json)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            name = excluded.name,
            type = excluded.type,
            scope = excluded.scope,
@@ -474,7 +496,7 @@ function createPricingEffectRepository(
     async findById(effectId) {
       const row = await executor.first<PricingEffectRow>(
         `SELECT id, name, type, scope, value, consumable, limit_per_day, active_at, expires_at, status, config_json
-         FROM pricing_effects WHERE id = ? LIMIT 1`,
+         FROM (SELECT * FROM pricing_effects WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
         [effectId],
       );
       return row ? toPricingEffect(row) : null;
@@ -483,7 +505,7 @@ function createPricingEffectRepository(
     async listAll() {
       const rows = await executor.all<PricingEffectRow>(
         `SELECT id, name, type, scope, value, consumable, limit_per_day, active_at, expires_at, status, config_json
-         FROM pricing_effects ORDER BY name, id`,
+         FROM (SELECT * FROM pricing_effects WHERE shop_id = ${sqlShop(executor)}) ORDER BY name, id`,
       );
       return rows.map(toPricingEffect);
     },
@@ -494,7 +516,7 @@ function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
   return {
     async findById(playerId) {
       const row = await executor.first<PlayerRow>(
-        "SELECT id, display_name, status, created_at FROM players WHERE id = ? LIMIT 1",
+        `SELECT id, display_name, status, created_at FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
         [playerId],
       );
       return row ? toPlayer(row) : null;
@@ -502,16 +524,16 @@ function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
 
     async listPlayers() {
       const rows = await executor.all<PlayerRow>(
-        "SELECT id, display_name, status, created_at FROM players ORDER BY created_at DESC, id",
+        `SELECT id, display_name, status, created_at FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) ORDER BY created_at DESC, id`,
       );
       return rows.map(toPlayer);
     },
 
     async save(player) {
       await executor.run(
-        `INSERT INTO players (id, display_name, status, created_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO players (shop_id, id, display_name, status, created_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            display_name = excluded.display_name,
            status = excluded.status`,
         [
@@ -524,7 +546,7 @@ function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
     },
 
     async updateStatus(playerId, status) {
-      await executor.run("UPDATE players SET status = ? WHERE id = ?", [
+      await executor.run(`UPDATE players SET status = ? WHERE shop_id = ${sqlShop(executor)} AND id = ?`, [
         status,
         playerId,
       ]);
@@ -538,10 +560,9 @@ function createPlayerIdentityRepository(
   return {
     async save(identity) {
       await executor.run(
-        `INSERT INTO player_identities (player_id, provider, subject, created_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(provider, subject) DO UPDATE SET
-           player_id = excluded.player_id`,
+        `INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, provider, subject) DO NOTHING`,
         [
           identity.playerId,
           identity.provider,
@@ -549,12 +570,19 @@ function createPlayerIdentityRepository(
           identity.createdAt.toISOString(),
         ],
       );
+      const owner = await executor.first<{ player_id: string }>(
+        `SELECT player_id FROM player_identities WHERE shop_id = ${sqlShop(executor)} AND provider = ? AND subject = ?`,
+        [identity.provider, identity.subject],
+      );
+      if (owner?.player_id !== identity.playerId) {
+        throw new PrismDomainError("Identity is already bound to another player.", "IDENTITY_ALREADY_BOUND");
+      }
     },
 
     async delete(playerId, provider, subject) {
       await executor.run(
         `DELETE FROM player_identities
-         WHERE player_id = ? AND provider = ? AND subject = ?`,
+         WHERE shop_id = ${sqlShop(executor)} AND player_id = ? AND provider = ? AND subject = ?`,
         [playerId, provider, subject],
       );
     },
@@ -562,8 +590,8 @@ function createPlayerIdentityRepository(
     async findPlayerByIdentity(provider, subject) {
       const row = await executor.first<PlayerRow>(
         `SELECT p.id, p.display_name, p.status, p.created_at
-         FROM player_identities i
-         INNER JOIN players p ON p.id = i.player_id
+         FROM (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(executor)}) i
+         INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) p ON p.id = i.player_id
          WHERE i.provider = ? AND i.subject = ?
          LIMIT 1`,
         [provider, subject],
@@ -574,7 +602,7 @@ function createPlayerIdentityRepository(
     async listByPlayerId(playerId) {
       const rows = await executor.all<PlayerIdentityRow>(
         `SELECT player_id, provider, subject, created_at
-         FROM player_identities
+         FROM (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(executor)})
          WHERE player_id = ?
          ORDER BY provider, subject`,
         [playerId],
@@ -590,9 +618,9 @@ function createPlayerSessionRepository(
   return {
     async save(session) {
       await executor.run(
-        `INSERT INTO player_sessions (id, player_id, token_hash, expires_at, created_at, last_used_at, revoked_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO player_sessions (shop_id, id, player_id, token_hash, expires_at, created_at, last_used_at, revoked_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            token_hash = excluded.token_hash,
            expires_at = excluded.expires_at,
            last_used_at = excluded.last_used_at,
@@ -612,7 +640,7 @@ function createPlayerSessionRepository(
     async findByTokenHash(tokenHash) {
       const row = await executor.first<PlayerSessionRow>(
         `SELECT id, player_id, token_hash, expires_at, created_at, last_used_at, revoked_at
-         FROM player_sessions
+         FROM (SELECT * FROM player_sessions WHERE shop_id = ${sqlShop(executor)})
          WHERE token_hash = ?
          LIMIT 1`,
         [tokenHash],
@@ -622,7 +650,7 @@ function createPlayerSessionRepository(
 
     async revoke(sessionId, revokedAt) {
       await executor.run(
-        "UPDATE player_sessions SET revoked_at = ? WHERE id = ?",
+        `UPDATE player_sessions SET revoked_at = ? WHERE shop_id = ${sqlShop(executor)} AND id = ?`,
         [revokedAt.toISOString(), sessionId],
       );
     },
@@ -644,9 +672,9 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
         session.label ?? null,
         session.metadata ? JSON.stringify(session.metadata) : null,
       ]),
-      (values) => `INSERT INTO sessions (id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json)
-                   VALUES ${values}
-                   ON CONFLICT(id) DO UPDATE SET
+      (values) => `INSERT INTO sessions (shop_id, id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json)
+                   VALUES ${shopValues(executor, values)}
+                   ON CONFLICT(shop_id, id) DO UPDATE SET
                      player_id = excluded.player_id,
                      started_at = excluded.started_at,
                      ended_at = excluded.ended_at,
@@ -661,7 +689,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
   return {
     async findActiveByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        "SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM sessions WHERE player_id = ? AND status = 'active'",
+        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'active'`,
         [playerId],
       );
       return rows.map(toSession);
@@ -669,7 +697,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findById(sessionId) {
       const row = await executor.first<SessionRow>(
-        "SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM sessions WHERE id = ?",
+        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE id = ?`,
         [sessionId],
       );
       return row ? toSession(row) : null;
@@ -677,7 +705,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findUnpaidClosedByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        "SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM sessions WHERE player_id = ? AND status = 'closed' AND payment_status = 'unpaid'",
+        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'closed' AND payment_status = 'unpaid'`,
         [playerId],
       );
       return rows.map(toSession);
@@ -699,7 +727,7 @@ function createAssetRepository(
   return {
     async listAssetHoldings(playerId) {
       const rows = await input.executor.all<AssetHoldingRow>(
-        "SELECT id, asset_type, asset_code, quantity, active_at, expires_at FROM asset_holdings WHERE player_id = ? ORDER BY id",
+        `SELECT id, asset_type, asset_code, quantity, active_at, expires_at FROM (SELECT * FROM asset_holdings WHERE shop_id = ${sqlShop(input.executor)}) WHERE player_id = ? ORDER BY id`,
         [playerId],
       );
       return rows.map(toAssetHolding);
@@ -709,8 +737,8 @@ function createAssetRepository(
       const playerId = transaction.playerId;
       const statements: SqlStatement[] = [
         {
-          sql: `INSERT INTO asset_transactions (id, player_id, kind, ref_id, created_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?)`,
+          sql: `INSERT INTO asset_transactions (shop_id, id, player_id, kind, ref_id, created_at, metadata_json)
+                VALUES (${sqlShop(input.executor)}, ?, ?, ?, ?, ?, ?)`,
           params: [
             transaction.id,
             playerId,
@@ -721,7 +749,7 @@ function createAssetRepository(
           ],
         },
         ...assetHoldingUpsertStatements(input, playerId, holdingChanges.upserts),
-        ...assetHoldingDeleteStatements(playerId, holdingChanges.deleteIds),
+        ...assetHoldingDeleteStatements(input.executor, playerId, holdingChanges.deleteIds),
         ...assetLedgerInsertStatements(input, transaction, assetLedgerEntries),
       ];
 
@@ -730,7 +758,7 @@ function createAssetRepository(
 
     async listLedgerEntriesByPlayerId(playerId) {
       const rows = await input.executor.all<AssetLedgerEntryRow>(
-        "SELECT transaction_id, asset_type, asset_code, delta, reason, ref_id FROM asset_ledger_entries WHERE player_id = ? ORDER BY created_at, id",
+        `SELECT transaction_id, asset_type, asset_code, delta, reason, ref_id FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${sqlShop(input.executor)}) WHERE player_id = ? ORDER BY created_at, id`,
         [playerId],
       );
       return rows.map(toAssetLedgerEntry);
@@ -739,7 +767,7 @@ function createAssetRepository(
     async listTransactionsByPlayerId(playerId) {
       const rows = await input.executor.all<AssetTransactionRow>(
         `SELECT id, player_id, kind, ref_id, created_at, metadata_json
-         FROM asset_transactions
+         FROM (SELECT * FROM asset_transactions WHERE shop_id = ${sqlShop(input.executor)})
          WHERE player_id = ?
          ORDER BY created_at, id`,
         [playerId],
@@ -764,9 +792,9 @@ function assetHoldingUpsertStatements(
       holding.activeAt?.toISOString() ?? null,
       holding.expiresAt?.toISOString() ?? null,
     ]),
-    (values) => `INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity, active_at, expires_at)
-                 VALUES ${values}
-                 ON CONFLICT(id) DO UPDATE SET
+    (values) => `INSERT INTO asset_holdings (shop_id, id, player_id, asset_type, asset_code, quantity, active_at, expires_at)
+                 VALUES ${shopValues(input.executor, values)}
+                 ON CONFLICT(shop_id, id) DO UPDATE SET
                    asset_type = excluded.asset_type,
                    asset_code = excluded.asset_code,
                    quantity = excluded.quantity,
@@ -776,14 +804,14 @@ function assetHoldingUpsertStatements(
   );
 }
 
-function assetHoldingDeleteStatements(playerId: string, deleteIds: readonly string[]): SqlStatement[] {
+function assetHoldingDeleteStatements(executor: SqlExecutor, playerId: string, deleteIds: readonly string[]): SqlStatement[] {
   const ids = [...new Set(deleteIds)];
   const statements: SqlStatement[] = [];
   for (let offset = 0; offset < ids.length; offset += maxSqlParametersPerStatement - 1) {
     const chunk = ids.slice(offset, offset + maxSqlParametersPerStatement - 1);
     statements.push({
       sql: `DELETE FROM asset_holdings
-            WHERE player_id = ? AND id IN (${chunk.map(() => "?").join(", ")})`,
+            WHERE shop_id = ${sqlShop(executor)} AND player_id = ? AND id IN (${chunk.map(() => "?").join(", ")})`,
       params: [playerId, ...chunk],
     });
   }
@@ -808,8 +836,8 @@ function assetLedgerInsertStatements(
       entry.refId,
       createdAt,
     ]),
-    (values) => `INSERT INTO asset_ledger_entries (id, player_id, transaction_id, asset_type, asset_code, delta, reason, ref_id, created_at)
-                 VALUES ${values}`,
+    (values) => `INSERT INTO asset_ledger_entries (shop_id, id, player_id, transaction_id, asset_type, asset_code, delta, reason, ref_id, created_at)
+                 VALUES ${shopValues(input.executor, values)}`,
   );
 }
 
@@ -837,9 +865,9 @@ function createDeviceCommandRepository(
   return {
     async enqueueDeviceCommand(command) {
       await executor.run(
-        `INSERT INTO device_commands (id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO device_commands (shop_id, id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            type = excluded.type,
            device_id = excluded.device_id,
            target_kind = excluded.target_kind,
@@ -870,7 +898,7 @@ function createDeviceCommandRepository(
 
     async getDeviceCommand(commandId) {
       const row = await executor.first<DeviceCommandRow>(
-        "SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM device_commands WHERE id = ?",
+        `SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM (SELECT * FROM device_commands WHERE shop_id = ${sqlShop(executor)}) WHERE id = ?`,
         [commandId],
       );
       return row ? toDeviceCommand(row) : null;
@@ -878,7 +906,7 @@ function createDeviceCommandRepository(
 
     async listByPlayerId(playerId) {
       const rows = await executor.all<DeviceCommandRow>(
-        "SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM device_commands WHERE player_id = ? ORDER BY requested_at",
+        `SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM (SELECT * FROM device_commands WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? ORDER BY requested_at`,
         [playerId],
       );
       return rows.map(toDeviceCommand);
@@ -886,7 +914,7 @@ function createDeviceCommandRepository(
 
     async listPending(limit) {
       const rows = await executor.all<DeviceCommandRow>(
-        "SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM device_commands WHERE status = 'pending' ORDER BY requested_at, id LIMIT ?",
+        `SELECT id, type, device_id, target_kind, executor_kind, player_id, staff_id, status, payload_json, requested_at, acked_at, expired_at FROM (SELECT * FROM device_commands WHERE shop_id = ${sqlShop(executor)}) WHERE status = 'pending' ORDER BY requested_at, id LIMIT ?`,
         [limit],
       );
       return rows.map(toDeviceCommand);
@@ -897,9 +925,9 @@ function createDeviceCommandRepository(
 function createDeviceStateRepository(
   executor: SqlExecutor,
 ): DeviceStateRepository {
-  const saveSql = (values: string) => `INSERT INTO device_states (device_id, type, target_kind, executor_kind, label, status, state, metadata_json, reported_at, reported_by)
-    VALUES ${values}
-    ON CONFLICT(device_id) DO UPDATE SET
+  const saveSql = (values: string) => `INSERT INTO device_states (shop_id, device_id, type, target_kind, executor_kind, label, status, state, metadata_json, reported_at, reported_by)
+    VALUES ${shopValues(executor, values)}
+    ON CONFLICT(shop_id, device_id) DO UPDATE SET
       type = excluded.type,
       target_kind = excluded.target_kind,
       executor_kind = excluded.executor_kind,
@@ -934,7 +962,7 @@ function createDeviceStateRepository(
     async listAll() {
       const rows = await executor.all<DeviceStateRow>(
         `SELECT device_id, type, target_kind, executor_kind, label, status, state, metadata_json, reported_at, reported_by
-         FROM device_states
+         FROM (SELECT * FROM device_states WHERE shop_id = ${sqlShop(executor)})
          ORDER BY reported_at DESC, device_id`,
       );
       return rows.map(toDeviceState);
@@ -948,9 +976,9 @@ function createMachineConnectionRepository(
   return {
     async save(connection) {
       await executor.run(
-        `INSERT INTO machine_connections (machine_id, status, capabilities_json, connected_at, last_seen_at, disconnected_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(machine_id) DO UPDATE SET
+        `INSERT INTO machine_connections (shop_id, machine_id, status, capabilities_json, connected_at, last_seen_at, disconnected_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, machine_id) DO UPDATE SET
            status = excluded.status,
            capabilities_json = excluded.capabilities_json,
            connected_at = excluded.connected_at,
@@ -970,7 +998,7 @@ function createMachineConnectionRepository(
     async findByMachineId(machineId) {
       const row = await executor.first<MachineConnectionRow>(
         `SELECT machine_id, status, capabilities_json, connected_at, last_seen_at, disconnected_at
-         FROM machine_connections
+         FROM (SELECT * FROM machine_connections WHERE shop_id = ${sqlShop(executor)})
          WHERE machine_id = ?`,
         [machineId],
       );
@@ -980,7 +1008,7 @@ function createMachineConnectionRepository(
     async listAll() {
       const rows = await executor.all<MachineConnectionRow>(
         `SELECT machine_id, status, capabilities_json, connected_at, last_seen_at, disconnected_at
-         FROM machine_connections
+         FROM (SELECT * FROM machine_connections WHERE shop_id = ${sqlShop(executor)})
          ORDER BY status DESC, last_seen_at DESC, machine_id`,
       );
       return rows.map(toMachineConnection);
@@ -988,15 +1016,15 @@ function createMachineConnectionRepository(
   };
 }
 
-const redeemCodeSelectSql = `SELECT rc.id,
+const redeemCodeSelectSql = (executor: SqlExecutor) => `SELECT rc.id,
        rc.code,
        rc.present_id,
        rc.active_at,
        rc.expires_at,
        rc.max_use_count,
        COUNT(rr.id) AS usage_count
-FROM redeem_codes rc
-LEFT JOIN redeem_records rr ON rr.code_id = rc.id`;
+FROM (SELECT * FROM redeem_codes WHERE shop_id = ${sqlShop(executor)}) rc
+LEFT JOIN (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(executor)}) rr ON rr.code_id = rc.id`;
 
 function createRedeemRepository(
   input: CreateSqlRepositoriesInput,
@@ -1012,9 +1040,9 @@ function createRedeemRepository(
         code.expiresAt?.toISOString() ?? null,
         code.maxUseCount,
       ]),
-      (values) => `INSERT INTO redeem_codes (id, code, present_id, active_at, expires_at, max_use_count)
-                   VALUES ${values}
-                   ON CONFLICT(id) DO UPDATE SET
+      (values) => `INSERT INTO redeem_codes (shop_id, id, code, present_id, active_at, expires_at, max_use_count)
+                   VALUES ${shopValues(input.executor, values)}
+                   ON CONFLICT(shop_id, id) DO UPDATE SET
                      code = excluded.code,
                      present_id = excluded.present_id,
                      active_at = excluded.active_at,
@@ -1026,7 +1054,7 @@ function createRedeemRepository(
   return {
     async findRedeemCodeByCode(code) {
       const row = await input.executor.first<RedeemCodeRow>(
-        `${redeemCodeSelectSql}
+        `${redeemCodeSelectSql(input.executor)}
          WHERE rc.code = ?
          GROUP BY rc.id, rc.code, rc.present_id, rc.active_at, rc.expires_at, rc.max_use_count`,
         [code],
@@ -1036,7 +1064,7 @@ function createRedeemRepository(
 
     async findRedeemCodeById(codeId) {
       const row = await input.executor.first<RedeemCodeRow>(
-        `${redeemCodeSelectSql}
+        `${redeemCodeSelectSql(input.executor)}
          WHERE rc.id = ?
          GROUP BY rc.id, rc.code, rc.present_id, rc.active_at, rc.expires_at, rc.max_use_count`,
         [codeId],
@@ -1046,7 +1074,7 @@ function createRedeemRepository(
 
     async findPresentById(presentId) {
       const row = await input.executor.first<PresentRow>(
-        "SELECT id, name, once_per_player, active_at, expires_at, status, grants_json FROM presents WHERE id = ?",
+        `SELECT id, name, once_per_player, active_at, expires_at, status, grants_json FROM (SELECT * FROM presents WHERE shop_id = ${sqlShop(input.executor)}) WHERE id = ?`,
         [presentId],
       );
       return row ? toPresent(row) : null;
@@ -1054,9 +1082,9 @@ function createRedeemRepository(
 
     async savePresent(present) {
       await input.executor.run(
-        `INSERT INTO presents (id, name, once_per_player, active_at, expires_at, status, grants_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO presents (shop_id, id, name, once_per_player, active_at, expires_at, status, grants_json)
+         VALUES (${sqlShop(input.executor)}, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            name = excluded.name,
            once_per_player = excluded.once_per_player,
            active_at = excluded.active_at,
@@ -1077,7 +1105,7 @@ function createRedeemRepository(
 
     async listPresents() {
       const rows = await input.executor.all<PresentRow>(
-        "SELECT id, name, once_per_player, active_at, expires_at, status, grants_json FROM presents ORDER BY id",
+        `SELECT id, name, once_per_player, active_at, expires_at, status, grants_json FROM (SELECT * FROM presents WHERE shop_id = ${sqlShop(input.executor)}) ORDER BY id`,
       );
       return rows.map(toPresent);
     },
@@ -1092,7 +1120,7 @@ function createRedeemRepository(
 
     async listRedeemCodes() {
       const rows = await input.executor.all<RedeemCodeRow>(
-        `${redeemCodeSelectSql}
+        `${redeemCodeSelectSql(input.executor)}
          GROUP BY rc.id, rc.code, rc.present_id, rc.active_at, rc.expires_at, rc.max_use_count
          ORDER BY rc.id`,
       );
@@ -1101,14 +1129,14 @@ function createRedeemRepository(
 
     async listRedeemRecords() {
       const rows = await input.executor.all<RedeemRecordRow>(
-        "SELECT player_id, code_id, present_id, redeemed_at FROM redeem_records",
+        `SELECT player_id, code_id, present_id, redeemed_at FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)})`,
       );
       return rows.map(toRedeemRecord);
     },
 
     async countRedeemCodeUses(codeId) {
       const row = await input.executor.first<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM redeem_records WHERE code_id = ?",
+        `SELECT COUNT(*) AS count FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) WHERE code_id = ?`,
         [codeId],
       );
       return row?.count ?? 0;
@@ -1116,7 +1144,7 @@ function createRedeemRepository(
 
     async hasPlayerRedeemedPresent(playerId, presentId) {
       const row = await input.executor.first<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM redeem_records WHERE player_id = ? AND present_id = ?",
+        `SELECT COUNT(*) AS count FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) WHERE player_id = ? AND present_id = ?`,
         [playerId, presentId],
       );
       return (row?.count ?? 0) > 0;
@@ -1124,7 +1152,7 @@ function createRedeemRepository(
 
     async saveRedeemRecord(record) {
       await input.executor.run(
-        "INSERT INTO redeem_records (id, player_id, code_id, present_id, redeemed_at) VALUES (?, ?, ?, ?, ?)",
+        `INSERT INTO redeem_records (shop_id, id, player_id, code_id, present_id, redeemed_at) VALUES (${sqlShop(input.executor)}, ?, ?, ?, ?, ?)`,
         [
           input.id(),
           record.playerId,
@@ -1156,9 +1184,9 @@ function createSettlementRepository(
         settlement.status,
         settlement.settledAt.toISOString(),
       ]),
-      (values) => `INSERT INTO settlements (id, session_id, checkout_id, subtotal, total, status, settled_at)
-                   VALUES ${values}
-                   ON CONFLICT(session_id) DO UPDATE SET
+      (values) => `INSERT INTO settlements (shop_id, id, session_id, checkout_id, subtotal, total, status, settled_at)
+                   VALUES ${shopValues(input.executor, values)}
+                   ON CONFLICT(shop_id, session_id) DO UPDATE SET
                      checkout_id = excluded.checkout_id,
                      subtotal = excluded.subtotal,
                      total = excluded.total,
@@ -1178,8 +1206,8 @@ function createSettlementRepository(
         item.label,
         item.amount,
       ])),
-      (values) => `INSERT INTO settlement_charge_items (id, session_id, item_order, source, label, amount)
-                   VALUES ${values}`,
+      (values) => `INSERT INTO settlement_charge_items (shop_id, id, session_id, item_order, source, label, amount)
+                   VALUES ${shopValues(input.executor, values)}`,
     );
     await runSqlValuesInBatches(
       input.executor,
@@ -1191,8 +1219,8 @@ function createSettlementRepository(
         adjustment.label,
         adjustment.amount,
       ])),
-      (values) => `INSERT INTO settlement_adjustments (id, session_id, adjustment_order, source, label, amount)
-                   VALUES ${values}`,
+      (values) => `INSERT INTO settlement_adjustments (shop_id, id, session_id, adjustment_order, source, label, amount)
+                   VALUES ${shopValues(input.executor, values)}`,
     );
   };
 
@@ -1214,7 +1242,7 @@ function createSettlementRepository(
       const rows = await input.executor.all<SettlementDetailRow>(
         `WITH settlement_row AS (
            SELECT session_id, subtotal, total, status, settled_at
-           FROM settlements
+           FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)})
            WHERE session_id = ?
          ), detail_rows AS (
            SELECT 0 AS row_order, 'settlement' AS row_kind, sr.*,
@@ -1225,12 +1253,12 @@ function createSettlementRepository(
            SELECT 1, 'charge', sr.*,
                   ci.id, ci.source, ci.label, ci.amount, ci.item_order
            FROM settlement_row sr
-           INNER JOIN settlement_charge_items ci ON ci.session_id = sr.session_id
+           INNER JOIN (SELECT * FROM settlement_charge_items WHERE shop_id = ${sqlShop(input.executor)}) ci ON ci.session_id = sr.session_id
            UNION ALL
            SELECT 2, 'adjustment', sr.*,
                   sa.id, sa.source, sa.label, sa.amount, sa.adjustment_order
            FROM settlement_row sr
-           INNER JOIN settlement_adjustments sa ON sa.session_id = sr.session_id
+           INNER JOIN (SELECT * FROM settlement_adjustments WHERE shop_id = ${sqlShop(input.executor)}) sa ON sa.session_id = sr.session_id
          )
          SELECT * FROM detail_rows
          ORDER BY row_order, item_order, item_id`,
@@ -1254,9 +1282,9 @@ function createSettlementRepository(
       type Row = { source: string; started_at: string };
       const rows = await input.executor.all<Row>(
         `SELECT sa.source, s.started_at
-         FROM settlement_adjustments sa
-         INNER JOIN settlements st ON st.session_id = sa.session_id
-         INNER JOIN sessions s ON s.id = st.session_id
+         FROM (SELECT * FROM settlement_adjustments WHERE shop_id = ${sqlShop(input.executor)}) sa
+         INNER JOIN (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st ON st.session_id = sa.session_id
+         INNER JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s ON s.id = st.session_id
          WHERE s.player_id = ?`,
         [playerId],
       );
@@ -1274,9 +1302,9 @@ function createPricingConfigRepository(
   return {
     async save(config) {
       await executor.run(
-        `INSERT INTO pricing_configs (id, kind, name, enabled, status, provider_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            kind = excluded.kind,
            name = excluded.name,
            enabled = excluded.enabled,
@@ -1298,7 +1326,7 @@ function createPricingConfigRepository(
 
     async findById(configId) {
       const row = await executor.first<PricingConfigRow>(
-        "SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM pricing_configs WHERE id = ? LIMIT 1",
+        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
         [configId],
       );
       return row ? toPricingConfig(row) : null;
@@ -1306,14 +1334,14 @@ function createPricingConfigRepository(
 
     async listAll() {
       const rows = await executor.all<PricingConfigRow>(
-        "SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM pricing_configs ORDER BY updated_at DESC, id",
+        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) ORDER BY updated_at DESC, id`,
       );
       return rows.map(toPricingConfig);
     },
 
     async listEnabled() {
       const rows = await executor.all<PricingConfigRow>(
-        "SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM pricing_configs WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, id",
+        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, id`,
       );
       return rows.map(toPricingConfig);
     },
@@ -1348,7 +1376,7 @@ function createPricingHistoryRepository(
              requested.rule_anchor_at,
              COALESCE(SUM(history.amount), 0) AS total
            FROM requested
-           LEFT JOIN pricing_history_entries history
+           LEFT JOIN (SELECT * FROM pricing_history_entries WHERE shop_id = ${sqlShop(executor)}) history
              ON history.player_id = ?
             AND history.pricing_config_id = requested.pricing_config_id
             AND history.provider_id = requested.provider_id
@@ -1393,9 +1421,9 @@ function createPricingHistoryRepository(
             entry.createdAt.toISOString(),
             entry.metadata ? JSON.stringify(entry.metadata) : null,
         ]),
-        (values) => `INSERT INTO pricing_history_entries (id, player_id, pricing_config_id, provider_id, rule_id, rule_anchor_at, session_id, amount, created_at, metadata_json)
-                     VALUES ${values}
-                     ON CONFLICT(id) DO UPDATE SET
+        (values) => `INSERT INTO pricing_history_entries (shop_id, id, player_id, pricing_config_id, provider_id, rule_id, rule_anchor_at, session_id, amount, created_at, metadata_json)
+                     VALUES ${shopValues(executor, values)}
+                     ON CONFLICT(shop_id, id) DO UPDATE SET
                        player_id = excluded.player_id,
                        pricing_config_id = excluded.pricing_config_id,
                        provider_id = excluded.provider_id,
@@ -1437,7 +1465,7 @@ function createPricingCapHistoryRepository(
              requested.cap_anchor_at,
              COALESCE(SUM(history.amount), 0) AS total
            FROM requested
-           LEFT JOIN pricing_cap_history_entries history
+           LEFT JOIN (SELECT * FROM pricing_cap_history_entries WHERE shop_id = ${sqlShop(executor)}) history
              ON history.player_id = ?
             AND history.cap_config_id = requested.cap_config_id
             AND history.cap_rule_id = requested.cap_rule_id
@@ -1475,9 +1503,9 @@ function createPricingCapHistoryRepository(
             entry.createdAt.toISOString(),
             entry.metadata ? JSON.stringify(entry.metadata) : null,
         ]),
-        (values) => `INSERT INTO pricing_cap_history_entries (id, player_id, cap_config_id, cap_rule_id, cap_anchor_at, included_pricing_config_ids_json, session_ids_json, amount, created_at, metadata_json)
-                     VALUES ${values}
-                     ON CONFLICT(id) DO UPDATE SET
+        (values) => `INSERT INTO pricing_cap_history_entries (shop_id, id, player_id, cap_config_id, cap_rule_id, cap_anchor_at, included_pricing_config_ids_json, session_ids_json, amount, created_at, metadata_json)
+                     VALUES ${shopValues(executor, values)}
+                     ON CONFLICT(shop_id, id) DO UPDATE SET
                        player_id = excluded.player_id,
                        cap_config_id = excluded.cap_config_id,
                        cap_rule_id = excluded.cap_rule_id,
@@ -1498,9 +1526,9 @@ function createBusinessItemRepository(
   return {
     async save(item) {
       await executor.run(
-        `INSERT INTO business_items (id, kind, name, status, price, asset_type, asset_code, active_at, expires_at, metadata_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+        `INSERT INTO business_items (shop_id, id, kind, name, status, price, asset_type, asset_code, active_at, expires_at, metadata_json, created_at, updated_at)
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            kind = excluded.kind,
            name = excluded.name,
            status = excluded.status,
@@ -1531,7 +1559,7 @@ function createBusinessItemRepository(
     async findById(itemId) {
       const row = await executor.first<BusinessItemRow>(
         `SELECT id, kind, name, status, price, asset_type, asset_code, active_at, expires_at, metadata_json, created_at, updated_at
-         FROM business_items
+         FROM (SELECT * FROM business_items WHERE shop_id = ${sqlShop(executor)})
          WHERE id = ?
          LIMIT 1`,
         [itemId],
@@ -1542,7 +1570,7 @@ function createBusinessItemRepository(
     async listAll() {
       const rows = await executor.all<BusinessItemRow>(
         `SELECT id, kind, name, status, price, asset_type, asset_code, active_at, expires_at, metadata_json, created_at, updated_at
-         FROM business_items
+         FROM (SELECT * FROM business_items WHERE shop_id = ${sqlShop(executor)})
          ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC, id`,
       );
       return rows.map(toBusinessItem);
@@ -1556,12 +1584,12 @@ function createBusinessItemOrderRepository(
   return {
     async save(order) {
       await executor.run(
-        `INSERT INTO business_item_orders (
+        `INSERT INTO business_item_orders (shop_id,
           id, business_item_id, business_item_kind, business_item_name, player_id, session_id, status,
           price, asset_type, asset_code, metadata_json, created_at, updated_at, fulfilled_at, cancelled_at
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
+         VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(shop_id, id) DO UPDATE SET
            business_item_id = excluded.business_item_id,
            business_item_kind = excluded.business_item_kind,
            business_item_name = excluded.business_item_name,
@@ -1599,7 +1627,7 @@ function createBusinessItemOrderRepository(
       const row = await executor.first<BusinessItemOrderRow>(
         `SELECT id, business_item_id, business_item_kind, business_item_name, player_id, session_id, status,
                 price, asset_type, asset_code, metadata_json, created_at, updated_at, fulfilled_at, cancelled_at
-         FROM business_item_orders
+         FROM (SELECT * FROM business_item_orders WHERE shop_id = ${sqlShop(executor)})
          WHERE id = ?
          LIMIT 1`,
         [orderId],
@@ -1611,7 +1639,7 @@ function createBusinessItemOrderRepository(
       const rows = await executor.all<BusinessItemOrderRow>(
         `SELECT id, business_item_id, business_item_kind, business_item_name, player_id, session_id, status,
                 price, asset_type, asset_code, metadata_json, created_at, updated_at, fulfilled_at, cancelled_at
-         FROM business_item_orders
+         FROM (SELECT * FROM business_item_orders WHERE shop_id = ${sqlShop(executor)})
          ORDER BY created_at DESC, id`,
       );
       return rows.map(toBusinessItemOrder);
@@ -1621,7 +1649,7 @@ function createBusinessItemOrderRepository(
       const rows = await executor.all<BusinessItemOrderRow>(
         `SELECT id, business_item_id, business_item_kind, business_item_name, player_id, session_id, status,
                 price, asset_type, asset_code, metadata_json, created_at, updated_at, fulfilled_at, cancelled_at
-         FROM business_item_orders
+         FROM (SELECT * FROM business_item_orders WHERE shop_id = ${sqlShop(executor)})
          WHERE player_id = ?
          ORDER BY created_at DESC, id`,
         [playerId],
@@ -1631,7 +1659,7 @@ function createBusinessItemOrderRepository(
 
     async countOpenByItemId(itemId) {
       const row = await executor.first<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM business_item_orders WHERE business_item_id = ? AND status != 'cancelled'",
+        `SELECT COUNT(*) AS count FROM (SELECT * FROM business_item_orders WHERE shop_id = ${sqlShop(executor)}) WHERE business_item_id = ? AND status != 'cancelled'`,
         [itemId],
       );
       return row?.count ?? 0;
@@ -2021,7 +2049,7 @@ function toPricingEffect(row: PricingEffectRow): PricingEffect {
   };
 }
 
-function assetDefinitionSelectSql(): string {
+function assetDefinitionSelectSql(executor: SqlExecutor): string {
   return `SELECT
       ad.type,
       ad.code,
@@ -2043,8 +2071,8 @@ function assetDefinitionSelectSql(): string {
       pe.expires_at AS effect_expires_at,
       pe.status AS effect_status,
       pe.config_json AS effect_config_json
-    FROM asset_definitions ad
-    LEFT JOIN pricing_effects pe ON pe.id = ad.pricing_effect_id`;
+    FROM (SELECT * FROM asset_definitions WHERE shop_id = ${sqlShop(executor)}) ad
+    LEFT JOIN (SELECT * FROM pricing_effects WHERE shop_id = ${sqlShop(executor)}) pe ON pe.id = ad.pricing_effect_id`;
 }
 
 function toAssetLedgerEntry(row: AssetLedgerEntryRow): AssetLedgerEntry {
@@ -2203,9 +2231,9 @@ async function savePlayerCheckout(
   checkout: PlayerCheckout,
 ): Promise<void> {
   await executor.run(
-    `INSERT INTO player_checkouts (id, player_id, subtotal, total, status, settled_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET
+    `INSERT INTO player_checkouts (shop_id, id, player_id, subtotal, total, status, settled_at)
+     VALUES (${sqlShop(executor)}, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(shop_id, id) DO UPDATE SET
        player_id = excluded.player_id,
        subtotal = excluded.subtotal,
        total = excluded.total,
