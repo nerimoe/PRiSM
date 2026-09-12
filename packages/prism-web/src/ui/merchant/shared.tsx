@@ -232,13 +232,20 @@ export type LivePlayer = {
   walletTotal: number;
   stayDurationMinutes: number;
   estimatedTotal: number | null;
+  globalCapWindows: {
+    key: string; ruleLabel: string; windowStartedAt: string; windowEndedAt: string;
+    priceCap: number; paidBefore: number; currentAmount: number; amountApplied: number; priceCapReached: boolean;
+  }[];
   sessions: {
-    id: string;
-    label?: string;
-    startedAt: string;
-    endedAt: string | null;
-    pricingCharges: { pricingConfigId: string; planName: string; ruleLabel: string }[];
-    pricingSegments: { pricingConfigId: string; ruleId: string; planName: string; ruleLabel: string; ruleTimeRange: { start: string; end: string } | null }[];
+    id: string; label?: string; startedAt: string; endedAt: string | null;
+    status: "active" | "closed"; elapsedMinutes: number; currentImpact: number | null;
+    pricingCharges: { pricingConfigId: string; planName: string; ruleLabel: string; amount: number }[];
+    pricingSegments: {
+      pricingConfigId: string; ruleId: string; planName: string; ruleLabel: string;
+      ruleTimeRange: { start: string; end: string } | null;
+      actualStartedAt: string; actualEndedAt: string; amount: number;
+      intervalCap: number; intervalCapReached: boolean;
+    }[];
   }[];
 };
 export type Asset = {
