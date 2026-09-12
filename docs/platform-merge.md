@@ -156,3 +156,7 @@ Merchant Players requests only the batched player listing and uses its active/un
 在店列表的入场时间、账单中的实际开始／停止时间和封顶窗口时间使用更醒目的正文大小、半粗体和等宽数字；持续时长与规则时段保留次要层级。窄屏允许时间范围换行。
 
 在店信息优先级调整：每位玩家的姓名与状态下方并列显示入场钟点、累计时长、应付金额，均为主要数字；日期、余额、计费项数为次要信息。账单顶部采用相同顺序，并放大会话及明细中的持续时长。
+
+### Bot 兼容检查（2026-09-13）
+
+Koishi 分支已修正 QQ 绑定对 onebot 平台的误拒绝，以及查人时麻将等待席位未计入总人数的问题；混合音游与麻将名单按玩家 ID 去重。插件 48 项测试与 TypeScript 构建通过，平台已有 QQ 绑定隔离与麻将名单接口测试。检查 npm 实际发布包 0.1.38，尚不包含 prism.bind 与 shopCode 路由支持，因此更新后端不能替代升级 Bot 插件。源码测试不代表实际 QQ 群、Bot 框架过滤与运行版本已验收；本次不发布 npm。新平台配置为 baseUrl=https://link-beta.neri.moe，shopCode 为店铺编号，integrationToken 为对应店铺的 Integration 令牌。
