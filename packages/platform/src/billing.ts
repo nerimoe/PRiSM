@@ -641,18 +641,21 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       .first();
     return c.json({ binding });
   });
-  app.post(
-    "/api/v1/shops/:shopCode/integration/qq-binding/confirm",
+  for (const channel of ["integration", "staff"] as const) app.post(
+    `/api/v1/shops/:shopCode/${channel}/qq-binding/confirm`,
     async (c) => {
       const shop = await getBillingShop(c, c.req.param("shopCode"));
       const deps = dependencies(c, shop);
       const token = c.req.header("authorization")?.match(/^Bearer (.+)$/)?.[1];
-      if (
+      if (channel === "staff") {
+        const principal = await staffPrincipal(c, shop);
+        if (principal.staffRole === "viewer") jsonError(403, "没有玩家管理权限", "FORBIDDEN");
+      } else if (
         !token ||
-        (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !==
-          "integration"
-      )
+        (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !== "integration"
+      ) {
         jsonError(403, "店铺 Bot 凭据无效");
+      }
       await enforceRateLimits(c, [
         {
           key: `bind-confirm:${shop.id}:${Math.floor(Date.now() / 60000)}`,
@@ -705,7 +708,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           const player =
             await deps.integrationCommands!.resolveOrRegisterPlayerByIdentity({
               identity: { provider: "qq", subject: body.qq },
-              autoRegister: !!shop.auto_register,
+              autoRegister: channel === "staff" || !!shop.auto_register,
             });
           if (player.status !== "active")
             jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");

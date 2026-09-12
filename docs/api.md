@@ -411,3 +411,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 ```
 
 成功 ACK 会把命令标记为 `acked`；失败 ACK 会把命令标记为 `expired`，并把失败信息写入命令 payload 的 `machineAck` 字段，供员工后台审计。机器可以定期发送 `{"type":"ping"}` 刷新心跳，服务端会回复 `{"type":"pong","machineId":"..."}` 并顺带推送当前可投递命令。
+
+### 店家手动绑定玩家账号
+
+`POST /api/v1/shops/:shopCode/staff/qq-binding/confirm` 接收 `{ code, qq }`，由已登录且拥有该店玩家管理权限的负责人或管理员调用。验证码来自玩家的 QQ 绑定页面，仍按店铺隔离、五分钟有效、单次使用；只读店员和其他店铺成员不可调用。管理员确认可创建新 QQ 档案，不受自助注册开关限制；已有档案、余额和记录直接沿用。账号/QQ 冲突或停用档案仍拒绝绑定。Bot 端点与此入口共用绑定逻辑，Bot 仍遵循店铺自助注册设置。后台入口位于「玩家 → 绑定账号」。

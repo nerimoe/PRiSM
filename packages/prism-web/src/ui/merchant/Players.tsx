@@ -55,6 +55,7 @@ export function Players({ live = false }: { live?: boolean }) {
   const onSite = useResource<{ players: LivePlayer[] }>("live-players");
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState(false);
+  const [bind, setBind] = useState(false);
   const [params, setParams] = useSearchParams();
   const selected = list.data?.players.find(
     (p) => p.id === params.get("player"),
@@ -84,6 +85,11 @@ export function Players({ live = false }: { live?: boolean }) {
         <button className={button} onClick={refresh} aria-label={t("刷新")}>
           <RefreshCw size={16} />
         </button>
+        {canWrite && (
+          <button className={button} onClick={() => setBind(true)}>
+            {t("绑定账号")}
+          </button>
+        )}
         {canWrite && (
           <button className={primary} onClick={() => setCreate(true)}>
             <Plus size={16} />
@@ -218,6 +224,29 @@ export function Players({ live = false }: { live?: boolean }) {
         >
           {t("全部玩家")}
         </Link>
+      )}
+      {bind && (
+        <Modal title="绑定账号" close={() => setBind(false)}>
+          <ActionForm
+            label="确认绑定"
+            done={() => { setBind(false); refresh(); }}
+            submit={(form) => request("qq-binding/confirm", "POST", {
+              code: String(form.get("code")).trim().toUpperCase(),
+              qq: String(form.get("qq")).trim(),
+            })}
+          >
+            <Field label="玩家验证码">
+              <input className={input} name="code" required maxLength={8}
+                autoCapitalize="characters" autoComplete="off"
+                pattern="[23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz]{8}"
+                placeholder={t("玩家绑定页面上的验证码")} />
+            </Field>
+            <Field label="QQ">
+              <input className={input} name="qq" required inputMode="numeric"
+                pattern="[1-9][0-9]{4,19}" />
+            </Field>
+          </ActionForm>
+        </Modal>
       )}
       {create && (
         <Modal title="添加玩家" close={() => setCreate(false)}>

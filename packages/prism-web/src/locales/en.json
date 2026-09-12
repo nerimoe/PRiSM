@@ -670,5 +670,10 @@
   "游玩中": "Playing",
   "上桌": "Join table",
   "下桌": "Leave table",
-  "你": "You"
+  "你": "You",
+  "绑定账号": "Link account",
+  "确认绑定": "Confirm link",
+  "玩家验证码": "Player verification code",
+  "玩家绑定页面上的验证码": "Code shown on the player’s binding screen",
+  "没有玩家管理权限": "Player management permission required"
 }

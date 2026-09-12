@@ -1431,3 +1431,27 @@ test("mahjong seats persist, start together, allow replacements and settle indep
   await env.DB.prepare("UPDATE machine_tickets SET expires_at='2000-01-01' WHERE token_hash=?").bind(await sha256(tickets[0]!)).run();
   expect((await action(0,"mahjong.join")).status).toBe(410);
 },30000);
+
+test("staff can bind a player code without Bot credentials, scoped by shop and role", async () => {
+  const shop = 'manual-binding';
+  await env.DB.prepare("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES (?,?,?,35,139,80,'u')").bind(shop, shop, shop).run();
+  await env.DB.prepare("INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register) VALUES (?,1,0)").bind(shop).run();
+  const { data: { code } } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
+  const confirm = { code, qq: '987654321' };
+  const endpoint = `/api/v1/shops/${shop}/staff/qq-binding/confirm`;
+  expect((await request(endpoint, confirm)).status).toBe(403);
+  await env.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('manual-owner',?,'u','owner')").bind(shop).run();
+  await request(`/api/v1/shops/${shop}/staff/me`);
+  await env.DB.prepare("UPDATE staff_users SET role='viewer' WHERE shop_id=? AND id='account:u'").bind(shop).run();
+  expect((await request(endpoint, confirm)).status).toBe(403);
+  await env.DB.prepare("UPDATE staff_users SET role='manager' WHERE shop_id=? AND id='account:u'").bind(shop).run();
+  expect((await request(endpoint, confirm)).status).toBe(200);
+  const binding = await env.DB.prepare("SELECT player_id,qq FROM shop_player_accounts WHERE shop_id=? AND user_id='u'").bind(shop).first<{ player_id: string; qq: string }>();
+  expect(binding?.qq).toBe(confirm.qq);
+  expect((await request(endpoint, confirm)).status).toBe(410);
+  const { data: second } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
+  expect((await request(endpoint, { code: second.code, qq: '987654322' })).status).toBe(409);
+  const { data: third } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
+  expect((await request(endpoint, { code: third.code, qq: confirm.qq })).status).toBe(200);
+  expect(await env.DB.prepare("SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id='u'").bind(shop).first()).toEqual({ player_id: binding!.player_id });
+});
