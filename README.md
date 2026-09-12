@@ -75,7 +75,7 @@ Create and configure a D1 database:
 bun run db:create:d1
 ```
 
-Put the returned `database_id` in a local `.env` as `PRISM_D1_DATABASE_ID`. You can start from `.env.example`; set `PRISM_D1_DATABASE_NAME` too if the database is not named `prism`. The checked-in `wrangler.jsonc` is intentionally account-neutral, while `bun run wrangler:config` generates the ignored deployment config for the current operator.
+Put the returned `database_id` in a local `.env` as `D1_DATABASE_ID`. You can start from `.env.example`; set `D1_DATABASE_NAME` too if the database is not named `prism`. The checked-in `wrangler.jsonc` is intentionally account-neutral, while `bun run wrangler:config` generates the ignored deployment config for the current operator.
 
 Deploy:
 
@@ -92,7 +92,7 @@ For Cloudflare Workers Builds connected to a GitHub fork, configure these build 
 - Build command: `bun run wrangler:config`
 - Deploy command: `bun run deploy:worker`
 - Non-production branch deploy command: `bunx wrangler versions upload`
-- Build variables: `PRISM_D1_DATABASE_ID` (required), plus optional `PRISM_WORKER_NAME`, `PRISM_D1_DATABASE_NAME`, and `PRISM_D1_PREVIEW_DATABASE_ID`
+- Build variables: `D1_DATABASE_ID` (required), plus optional `WORKER_NAME`, `D1_DATABASE_NAME`, and `D1_PREVIEW_DATABASE_ID`
 
 Each Cloudflare project owns its build-variable values, so multiple people can deploy the same public repository without committing personal Worker or D1 identifiers. The generated config also installs Wrangler's deployment-config redirect, allowing Cloudflare's default preview command to use the same per-project settings. The selected Workers Builds API token must be allowed to apply D1 migrations; use a user token with D1 Edit permission if the automatically generated token is rejected by the migration step.
 

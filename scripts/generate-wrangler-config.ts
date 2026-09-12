@@ -8,20 +8,20 @@ const redirectPath = fileURLToPath(new URL("../.wrangler/deploy/config.json", im
 const localOnly = Bun.argv.includes("--local");
 const platform = Bun.argv.includes("--platform");
 
-const workerName = readOptional("PRISM_WORKER_NAME") ?? "prism-api";
-const databaseName = readOptional("PRISM_D1_DATABASE_NAME") ?? "prism";
-const databaseId = readOptional("PRISM_D1_DATABASE_ID") ?? (localOnly ? "00000000-0000-0000-0000-000000000000" : undefined);
-const previewDatabaseId = readOptional("PRISM_D1_PREVIEW_DATABASE_ID");
+const workerName = readOptional("WORKER_NAME") ?? "prism-api";
+const databaseName = readOptional("D1_DATABASE_NAME") ?? "prism";
+const databaseId = readOptional("D1_DATABASE_ID") ?? (localOnly ? "00000000-0000-0000-0000-000000000000" : undefined);
+const previewDatabaseId = readOptional("D1_PREVIEW_DATABASE_ID");
 
 if (!databaseId) {
   throw new Error(
-    "PRISM_D1_DATABASE_ID is required. Set it in .env locally or in Cloudflare Workers Builds variables.",
+    "D1_DATABASE_ID is required. Set it in .env locally or in Cloudflare Workers Builds variables.",
   );
 }
 
 validateWorkerName(workerName);
-validateDatabaseId("PRISM_D1_DATABASE_ID", databaseId);
-if (previewDatabaseId) validateDatabaseId("PRISM_D1_PREVIEW_DATABASE_ID", previewDatabaseId);
+validateDatabaseId("D1_DATABASE_ID", databaseId);
+if (previewDatabaseId) validateDatabaseId("D1_PREVIEW_DATABASE_ID", previewDatabaseId);
 
 const databaseBinding: Record<string, string> = {
   binding: "DB",
@@ -49,17 +49,17 @@ if (platform) {
     if (!value) throw new Error(`${name} is required in Cloudflare Workers Builds variables.`);
     return value;
   };
-  const accountId = required("PRISM_ACCOUNT_ID", "00000000000000000000000000000000");
-  const kvId = required("PRISM_KV_RATE_LIMIT_ID", "00000000000000000000000000000000");
-  for (const [name, value] of [["PRISM_ACCOUNT_ID", accountId], ["PRISM_KV_RATE_LIMIT_ID", kvId]]) {
+  const accountId = required("CLOUDFLARE_ACCOUNT_ID", "00000000000000000000000000000000");
+  const kvId = required("RATE_LIMIT_KV_ID", "00000000000000000000000000000000");
+  for (const [name, value] of [["CLOUDFLARE_ACCOUNT_ID", accountId], ["RATE_LIMIT_KV_ID", kvId]]) {
     if (!/^[0-9a-f]{32}$/i.test(value!)) throw new Error(`${name} must be a 32-character hexadecimal ID.`);
   }
-  const appOrigin = required("PRISM_APP_ORIGIN", "http://localhost:8787");
+  const appOrigin = required("APP_ORIGIN", "http://localhost:8787");
   const parsedOrigin = new URL(appOrigin);
   if (parsedOrigin.origin !== appOrigin || !["http:", "https:"].includes(parsedOrigin.protocol)) {
-    throw new Error("PRISM_APP_ORIGIN must be an HTTP(S) origin without a trailing slash.");
+    throw new Error("APP_ORIGIN must be an HTTP(S) origin without a trailing slash.");
   }
-  const route = readOptional("PRISM_ROUTE_PATTERN");
+  const route = readOptional("CUSTOM_DOMAIN");
   Object.assign(config, template, {
     name: workerName,
     ...(!localOnly ? { account_id: accountId } : {}),
@@ -70,10 +70,10 @@ if (platform) {
     routes: route ? [{ pattern: route.replace(/\/\*$/, ""), custom_domain: true }] : [],
     vars: {
       APP_ORIGIN: appOrigin,
-      MUNET_CLIENT_ID: required("PRISM_MUNET_CLIENT_ID", "local-munet-client"),
-      APPLE_TEAM_ID: required("PRISM_APPLE_TEAM_ID", "LOCALTEAM"),
-      ANDROID_CERT_FINGERPRINTS: readOptional("PRISM_ANDROID_CERT_FINGERPRINTS") ?? "",
-      EXTRA_ALLOWED_ORIGINS: readOptional("PRISM_EXTRA_ALLOWED_ORIGINS") ?? "",
+      MUNET_CLIENT_ID: required("MUNET_CLIENT_ID", "local-munet-client"),
+      APPLE_TEAM_ID: required("APPLE_TEAM_ID", "LOCALTEAM"),
+      ANDROID_CERT_FINGERPRINTS: readOptional("ANDROID_CERT_FINGERPRINTS") ?? "",
+      EXTRA_ALLOWED_ORIGINS: readOptional("EXTRA_ALLOWED_ORIGINS") ?? "",
     },
   });
 }
@@ -91,7 +91,7 @@ function readOptional(name: string): string | undefined {
 
 function validateWorkerName(value: string): void {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,253}[a-z0-9])?$/.test(value)) {
-    throw new Error("PRISM_WORKER_NAME must contain only lowercase letters, digits, and interior dashes.");
+    throw new Error("WORKER_NAME must contain only lowercase letters, digits, and interior dashes.");
   }
 }
 

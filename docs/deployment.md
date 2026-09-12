@@ -61,7 +61,7 @@ bun run dev:all
    ```bash
    bun run db:create:d1
    ```
-   系统会返回该数据库的元数据。请在本机 `.env` 中将 `database_id` 设置为 `PRISM_D1_DATABASE_ID`；可从仓库的 `.env.example` 开始填写。数据库名不是 `prism` 时，同时设置 `PRISM_D1_DATABASE_NAME`。提交到仓库的 `wrangler.jsonc` 只是不含账号信息的公共模板，不要把个人 D1 ID 写回并提交。
+   系统会返回该数据库的元数据。请在本机 `.env` 中将 `database_id` 设置为 `D1_DATABASE_ID`；可从仓库的 `.env.example` 开始填写。数据库名不是 `prism` 时，同时设置 `D1_DATABASE_NAME`。提交到仓库的 `wrangler.jsonc` 只是不含账号信息的公共模板，不要把个人 D1 ID 写回并提交。
 
    运行以下命令会生成被 Git 忽略的 `wrangler.generated.jsonc`，并配置 Wrangler 官方的生成配置重定向：
    ```bash
@@ -102,12 +102,12 @@ bun run dev:all
 
 | 变量 | 必需 | 用途 |
 | --- | --- | --- |
-| `PRISM_D1_DATABASE_ID` | 是 | 当前账号的生产 D1 UUID |
-| `PRISM_WORKER_NAME` | 否 | Worker 名称，默认 `prism-api`；建议与控制台中连接的 Worker 名称一致 |
-| `PRISM_D1_DATABASE_NAME` | 否 | D1 资源名，默认 `prism` |
-| `PRISM_D1_PREVIEW_DATABASE_ID` | 否 | 非生产分支预览使用的独立 D1 UUID |
+| `D1_DATABASE_ID` | 是 | 当前账号的生产 D1 UUID |
+| `WORKER_NAME` | 否 | Worker 名称，默认 `prism-api`；建议与控制台中连接的 Worker 名称一致 |
+| `D1_DATABASE_NAME` | 否 | D1 资源名，默认 `prism` |
+| `D1_PREVIEW_DATABASE_ID` | 否 | 非生产分支预览使用的独立 D1 UUID |
 
-Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不会进入 Git 历史，也不是 Worker 运行时变量。`PRISM_D1_DATABASE_ID` 本身不是访问凭据，但仍可标记为 secret 以减少日志暴露；真正的 API Token 或第三方凭据必须使用 Cloudflare 的运行时 **Variables & Secrets** 或 `wrangler secret` 管理。
+Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不会进入 Git 历史，也不是 Worker 运行时变量。`D1_DATABASE_ID` 本身不是访问凭据，但仍可标记为 secret 以减少日志暴露；真正的 API Token 或第三方凭据必须使用 Cloudflare 的运行时 **Variables & Secrets** 或 `wrangler secret` 管理。
 
 `bun run wrangler:config` 同时生成 `.wrangler/deploy/config.json`，因此 Cloudflare 默认的 `wrangler versions upload` 预览命令会自动使用当前项目的生成配置。生产部署命令会在 Worker 上传前自动应用新 `migrations/*.sql`；如果选中的 Workers Builds API token 没有 D1 Edit 权限，构建日志会在迁移步骤失败，需要在 Cloudflare 的 API token 设置中换成允许 D1 写入的用户 token，然后重试构建。
 

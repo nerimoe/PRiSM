@@ -54,7 +54,7 @@ PRISM_SQLITE_PATH=./data/prism-next-staging.sqlite bun run dev:local
    ```bash
    sqlite3 ./data/prism-next-staging.sqlite ".dump --data-only" > ./exports/prism-next-data.sql
    ```
-2. 在 `.env` 中设置好 `PRISM_D1_DATABASE_ID`，生成当前部署者的 Wrangler 配置并应用初始 D1 结构升级：
+2. 在 `.env` 中设置好 `D1_DATABASE_ID`，生成当前部署者的 Wrangler 配置并应用初始 D1 结构升级：
    ```bash
    bun run wrangler:config
    bun run db:migrate:remote

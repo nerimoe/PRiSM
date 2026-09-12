@@ -117,7 +117,7 @@ The `prism-link-beta` branch deploys to the separate `prism-link-beta` Worker.
 Workers Builds uses repository root `/`, build command `bun run build:web`, and
 deploy command `bun run deploy:beta`. Disable non-production branch builds.
 Deployment runs `scripts/generate-wrangler-config.ts --platform`, reading
-`PRISM_*` build variables documented in `.env.example`. The generated
+build variables documented in `.env.example`. The generated
 `wrangler.generated.jsonc` is ignored by Git. Resource IDs, domains and client
 identifiers belong in Cloudflare Workers Builds variables, not tracked files.
 Import the verified merged snapshot into its dedicated D1 database before the
@@ -132,3 +132,5 @@ OAuth callback with MuNET before testing sign-in.
 Koishi `baseUrl` is the deployed Worker origin (no `/api`
 suffix), with the shop's `shopCode` and `integrationToken`. Binding and roster
 requests use `/api/v1/shops/{shopCode}/integration/...`.
+
+Native PRiSM clients use the App Clip identifier `moe.neri.hinatago.prism` and OAuth callback scheme `hinata-prism-auth`. The Apple association response and native authentication endpoint share these identifiers with HINATA Go.

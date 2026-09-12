@@ -20,15 +20,15 @@ describe("deployment artifacts", () => {
         copyFileSync(new URL(path, projectRoot), join(root, path));
       }
       const env = {
-        PRISM_WORKER_NAME: "test-worker",
-        PRISM_D1_DATABASE_NAME: "test-db",
-        PRISM_D1_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
-        PRISM_ACCOUNT_ID: "1".repeat(32),
-        PRISM_KV_RATE_LIMIT_ID: "2".repeat(32),
-        PRISM_APP_ORIGIN: "https://test.example.com",
-        PRISM_ROUTE_PATTERN: "test.example.com",
-        PRISM_MUNET_CLIENT_ID: "test-client",
-        PRISM_APPLE_TEAM_ID: "TESTTEAM",
+        WORKER_NAME: "test-worker",
+        D1_DATABASE_NAME: "test-db",
+        D1_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
+        CLOUDFLARE_ACCOUNT_ID: "1".repeat(32),
+        RATE_LIMIT_KV_ID: "2".repeat(32),
+        APP_ORIGIN: "https://test.example.com",
+        CUSTOM_DOMAIN: "test.example.com",
+        MUNET_CLIENT_ID: "test-client",
+        APPLE_TEAM_ID: "TESTTEAM",
       };
       const run = (variables: Record<string, string>, args: string[] = ["--platform"]) =>
         Bun.spawnSync([process.execPath, join(root, "scripts/generate-wrangler-config.ts"), ...args], {
@@ -37,15 +37,15 @@ describe("deployment artifacts", () => {
       expect(run(env).exitCode).toBe(0);
       const config = await Bun.file(join(root, "wrangler.generated.jsonc")).json();
       expect(config).toMatchObject({
-        name: "test-worker", account_id: env.PRISM_ACCOUNT_ID,
+        name: "test-worker", account_id: env.CLOUDFLARE_ACCOUNT_ID,
         main: "packages/platform/src/index.ts", workers_dev: false,
         routes: [{ pattern: "test.example.com", custom_domain: true }],
-        d1_databases: [{ binding: "DB", database_id: env.PRISM_D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
-        kv_namespaces: [{ binding: "RATE_LIMIT", id: env.PRISM_KV_RATE_LIMIT_ID }],
-        vars: { APP_ORIGIN: env.PRISM_APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
+        d1_databases: [{ binding: "DB", database_id: env.D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
+        kv_namespaces: [{ binding: "RATE_LIMIT", id: env.RATE_LIMIT_KV_ID }],
+        vars: { APP_ORIGIN: env.APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
       });
-      expect(run({ ...env, PRISM_KV_RATE_LIMIT_ID: "" }).exitCode).not.toBe(0);
-      expect(run({ ...env, PRISM_APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
+      expect(run({ ...env, RATE_LIMIT_KV_ID: "" }).exitCode).not.toBe(0);
+      expect(run({ ...env, APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
       expect(run(env, []).exitCode).toBe(0);
       expect((await Bun.file(join(root, "wrangler.generated.jsonc")).json()).main).toBe("packages/runtime/src/worker.ts");
     } finally {
@@ -68,7 +68,7 @@ describe("deployment artifacts", () => {
     expect(deployment).toContain("bun run db:migrate:local");
     expect(deployment).toContain("bun run db:migrate:remote");
     expect(deployment).toContain("bun run deploy:worker");
-    expect(deployment).toContain("PRISM_D1_DATABASE_ID");
+    expect(deployment).toContain("D1_DATABASE_ID");
     expect(deployment).toContain("Cloudflare Workers Builds");
     expect(deployment).toContain("migrations/0001_initial.sql");
     expect(deployment).toContain("migrations/0012_canonical_device_targets.sql");
@@ -144,13 +144,13 @@ describe("deployment artifacts", () => {
         database_id: "replace-with-your-d1-database-id",
       },
     ]);
-    expect(envExample).toContain("PRISM_D1_DATABASE_ID=");
-    expect(envExample).toContain("PRISM_D1_PREVIEW_DATABASE_ID=");
+    expect(envExample).toContain("D1_DATABASE_ID=");
+    expect(envExample).toContain("D1_PREVIEW_DATABASE_ID=");
     expect(gitignore).toContain("/wrangler.generated.jsonc");
     expect(gitignore).toContain("exports/");
     expect(gitignore).toContain("/mmw_prism.sql");
     expect(generator).toContain(".wrangler/deploy/config.json");
-    expect(generator).toContain("PRISM_D1_DATABASE_ID");
+    expect(generator).toContain("D1_DATABASE_ID");
   });
 
   it("keeps the D1 migrations aligned with the executable SQLite schema", async () => {

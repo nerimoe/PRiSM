@@ -5,7 +5,7 @@ import { munetCardStatements, munetCredentialStatement } from "./oauth";
 import type { MunetCard, MunetTokens } from "./munet";
 import type { AppBindings } from "./types";
 
-export const appClipAuthCallbackScheme = "hinata-arcadelink-auth";
+export const appClipAuthCallbackScheme = "hinata-prism-auth";
 export const appClipAuthCallbackURL = `${appClipAuthCallbackScheme}://callback`;
 export const appClipAuthStatePurpose = "appclip-munet-state";
 export const appClipAuthCodePurpose = "appclip-munet-code";

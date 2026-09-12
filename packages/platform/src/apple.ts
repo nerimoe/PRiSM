@@ -1,4 +1,4 @@
-export const appClipBundleId = "moe.neri.hinatago.ArcadeLink";
+export const appClipBundleId = "moe.neri.hinatago.prism";
 export const fullAppBundleId = "moe.neri.hinatago";
 export const androidPackageName = "moe.neri.hinatago";
 
