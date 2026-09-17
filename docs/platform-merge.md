@@ -78,6 +78,7 @@ The player operation surface is QR/NFC → static `/t/:shop/:device` link → ex
 A bare shop code with no device segment is the standalone, device-independent shop page. It is the deep-link target for the PRiSM Link Live Activity and Dynamic Island, and it is where the Bot's 到店校验 link now lands instead of the old `/m/expired` dead end. It is still not a store dashboard: it shows only the signed-in player's own bill, redeem, history and wallet.
 
 - It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m?ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
+- `GET /api/v1/shops/:shopCode` returns `shop.heroUrl` (the same versioned `…/hero?v=<hash>` path the machine payload uses, or `null`) so the shop card matches a device card. It is derived from `hero_data`/`hero_hash`, so a shop without cover art reports `null` rather than a broken path.
 - It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
 - Players without that row see a QQ-binding explanation and the shop's Bot contact; the row is created by the Bot, not by this page.
 

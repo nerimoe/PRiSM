@@ -44,6 +44,7 @@ export type BillingShop = {
   bot_contact: string;
   time_zone: string;
   remote_entry_enabled: number;
+  hero_url: string | null;
 };
 const settingsSchema = z.object({
   billingEnabled: z.boolean(),
@@ -75,6 +76,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
     COALESCE(b.machine_geo,0) AS machine_geo, COALESCE(b.entry_pricing_ids_json,'[]') AS entry_pricing_ids_json,
     COALESCE(b.bot_contact,'') AS bot_contact,
     COALESCE(b.remote_entry_enabled,0) AS remote_entry_enabled,
+    CASE WHEN s.hero_data IS NULL OR s.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || s.public_id || '/hero?v=' || COALESCE(s.hero_hash, 'original') END AS hero_url,
     COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=s.id AND key='store.profile'),'Asia/Shanghai') AS time_zone FROM shops s LEFT JOIN shop_billing_settings b ON b.shop_id=s.id WHERE s.public_id=?`,
   )
     .bind(code)
@@ -524,6 +526,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         publicId: shop.public_id,
         name: shop.name,
         timeZone: shop.time_zone,
+        heroUrl: shop.hero_url,
         ...publicSettings(shop),
       },
       membership,

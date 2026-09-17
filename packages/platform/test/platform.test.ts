@@ -182,6 +182,25 @@ test("global v1 auth and public shop responses use the shared envelope", async (
   expect(await legacy.json()).toMatchObject({ user: { id: "u" } });
 });
 
+test("the shop page exposes the cover art a shop link needs to match a device card", async () => {
+  // Shops without cover art must report null rather than a broken path.
+  const bare = (await (await request("/api/v1/shops/card")).json()) as {
+    data: { shop: { heroUrl: string | null } };
+  };
+  expect(bare.data.shop.heroUrl).toBeNull();
+  await env.DB.prepare(
+    "UPDATE shops SET hero_data='data:image/png;base64,iVBORw0KGgo=', hero_hash='abc123' WHERE public_id='card'",
+  ).run();
+  const covered = (await (await request("/api/v1/shops/card")).json()) as {
+    data: { shop: { heroUrl: string } };
+  };
+  // The version segment keeps the URL immutable so a replaced cover is never cached.
+  expect(covered.data.shop.heroUrl).toBe("/api/v1/shops/card/hero?v=abc123");
+  await env.DB.prepare(
+    "UPDATE shops SET hero_data=NULL, hero_hash=NULL WHERE public_id='card'",
+  ).run();
+});
+
 test("QQ codes are shop-bound, single-use and grant no membership in another shop", async () => {
   const generated = (await (
     await request("/api/v1/shops/a/qq-binding", {})
