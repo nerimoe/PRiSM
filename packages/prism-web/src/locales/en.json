@@ -720,5 +720,5 @@
   "本店的玩家档案与 QQ 绑定，请在店铺机器人中完成验证后再回到这里。": "Player profiles at this shop are linked to QQ. Verify with the shop bot, then come back here.",
   "店铺联系方式": "Shop contact",
   "账户": "Account",
-  "请扫描机台上的二维码或碰一下 NFC 入场": "Scan the QR code or tap the NFC tag on the machine to check in"
+  "请碰一下 NFC 或扫描机台上的二维码入场": "Tap the NFC tag or scan the QR code on the machine to check in"
 }

@@ -133,10 +133,10 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
       )}
 
       {/* Admission belongs to a machine: only a scanned ticket proves the player is at one,
-          so this page never starts a session. It points at the QR instead. */}
+          so this page never starts a session. It points at the machine instead. */}
       {canUseAccount && !active && (
         <p className="rounded border border-ink/10 bg-panel p-5 text-sm leading-relaxed text-ink/60">
-          {t("请扫描机台上的二维码或碰一下 NFC 入场")}
+          {t("请碰一下 NFC 或扫描机台上的二维码入场")}
         </p>
       )}
 

@@ -82,7 +82,7 @@ A bare shop code with no device segment is the standalone, device-independent sh
 - It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
 - Players without that row see a QQ-binding explanation and the shop's Bot contact; the row is created by the Bot, not by this page.
 
-**Admission is deliberately absent here.** Only a scanned machine ticket proves the player is at a machine, and a shop URL carries no such proof, so this page never starts a session: it settles bills. A player who has not checked in is told to scan the machine QR code. This is the one capability a shop link does not share with a device link; bill, checkout, redeem, history and wallet are identical on both.
+**Admission is deliberately absent here.** Only a scanned machine ticket proves the player is at a machine, and a shop URL carries no such proof, so this page never starts a session: it settles bills. A player who has not checked in is told to tap the machine NFC tag or scan its QR code. This is the one capability a shop link does not share with a device link; bill, checkout, redeem, history and wallet are identical on both.
 
 A short-lived **0023_remote_entry.sql / 0024_drop_remote_entry.sql** pair added and then removed a device-free entry opt-in within the same change series, before the feature was used; `0024` drops the column, so a database that applied `0023` converges on the same schema. Admission has no server-side switch.
 
