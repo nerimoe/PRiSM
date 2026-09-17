@@ -98,6 +98,7 @@ beforeAll(async () => {
   for (const sql of readFileSync(new URL("../../../migrations/0020_mahjong_devices.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
   for (const sql of readFileSync(new URL("../../../migrations/0021_machine_aliases.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
   for (const sql of readFileSync(new URL("../../../migrations/0023_remote_entry.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
+  for (const sql of readFileSync(new URL("../../../migrations/0024_drop_remote_entry.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
   await db.prepare("INSERT INTO users(id,role) VALUES ('u','user')").run();
   await db
     .prepare(
@@ -1252,102 +1253,6 @@ test("entry requires a scanned device ticket and explicit consent; players canno
   ).toBe(409);
   expect((await request("/api/v1/shops/a/devices")).status).toBe(404);
   expect((await request("/api/v1/shops/a/player/devices")).status).toBe(409);
-});
-
-test("device-free entry needs the shop opt-in, consent and an on-site location", async () => {
-  // A dedicated shop keeps this independent of the shared `a` fixtures.
-  await env.DB.prepare(
-    "INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('remote','remote','Remote',35,139,80,'u')",
-  ).run();
-  await env.DB.prepare(
-    "INSERT INTO shop_billing_settings(shop_id,billing_enabled,checkin_geo,remote_entry_enabled) VALUES ('remote',1,1,0)",
-  ).run();
-  await env.DB.prepare(
-    "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('remote','remote-p','Player','active','2026-01-01')",
-  ).run();
-  await env.DB.prepare(
-    "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('remote','u','remote-p','880001',?)",
-  )
-    .bind(new Date().toISOString())
-    .run();
-  const located = (extra: Record<string, unknown> = {}) =>
-    request("/api/v1/shops/remote/player/remote-entry", {
-      consent: true,
-      operationId: crypto.randomUUID(),
-      location: { lat: 35, lng: 139, accuracy: 5 },
-      ...extra,
-    });
-  // checkin_geo is on, so a missing location fails before the opt-in is even consulted.
-  expect(
-    (
-      await request("/api/v1/shops/remote/player/remote-entry", {
-        consent: true,
-        operationId: crypto.randomUUID(),
-      })
-    ).status,
-  ).toBe(403);
-  // The opt-in defaults to off: a scanned machine ticket is still required.
-  const disabled = await located();
-  expect(disabled.status).toBe(403);
-  expect(await disabled.json()).toMatchObject({
-    error: { code: "DEVICE_QR_REQUIRED" },
-  });
-  await env.DB.prepare(
-    "UPDATE shop_billing_settings SET remote_entry_enabled=1 WHERE shop_id='remote'",
-  ).run();
-  const noConsent = await located({ consent: false });
-  expect(noConsent.status).toBe(409);
-  expect(await noConsent.json()).toMatchObject({
-    error: { code: "CHECKIN_CONSENT_REQUIRED" },
-  });
-  const outOfRange = await located({
-    location: { lat: 0, lng: 0, accuracy: 5 },
-  });
-  expect(outOfRange.status).toBe(403);
-  // On-site succeeds with no ticket at all.
-  const entered = await located();
-  expect(entered.status).toBe(200);
-  const activeSessions = () =>
-    env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM sessions WHERE shop_id='remote' AND ended_at IS NULL",
-    ).first("n");
-  expect(await activeSessions()).toBe(1);
-  // It is an ordinary entry session, so a second attempt reuses the running one.
-  expect((await located()).status).toBe(200);
-  expect(await activeSessions()).toBe(1);
-});
-
-test("the shop settings response exposes the remote entry opt-in and preserves it when omitted", async () => {
-  await env.DB.prepare(
-    "INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('settings','settings','Settings',35,139,80,'u')",
-  ).run();
-  await env.DB.prepare(
-    "INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('owner-settings','settings','u','owner')",
-  ).run();
-  // `request` only issues GET/POST, and this route is a PUT.
-  const putSettings = (body: unknown) =>
-    app.fetch(
-      new Request(origin + "/api/v1/shops/settings/settings", {
-        method: "PUT",
-        headers: { cookie, origin, "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      env,
-    );
-  const readSettings = async () =>
-    ((await (await request("/api/v1/shops/settings/settings")).json()) as {
-      data: Record<string, unknown>;
-    }).data;
-  // Billing stays off so this exercises the opt-in, not the Bot/asset/pricing preconditions.
-  const base = { ...(await readSettings()), billingEnabled: false };
-  expect((await putSettings({ ...base, remoteEntryEnabled: true })).status).toBe(200);
-  expect((await readSettings()).remoteEntryEnabled).toBe(true);
-  // A client that does not know the field must not silently clear the opt-in.
-  const { remoteEntryEnabled: _omitted, ...legacy } = base;
-  await putSettings(legacy);
-  expect((await readSettings()).remoteEntryEnabled).toBe(true);
-  await putSettings({ ...base, remoteEntryEnabled: false });
-  expect((await readSettings()).remoteEntryEnabled).toBe(false);
 });
 
 test("player rate schedule resolves production-style priorities, dated overnight promotions and global caps", async () => {

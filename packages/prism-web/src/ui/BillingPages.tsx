@@ -7,7 +7,6 @@ import { useI18n } from "../i18n";
 type Settings = {
   billingEnabled: boolean;
   autoRegister: boolean;
-  remoteEntryEnabled: boolean;
   locationEnabled: boolean;
   checkinGeo: boolean;
   checkoutGeo: boolean;
@@ -134,7 +133,6 @@ export function BillingSettings({
   const flags = {
     billingEnabled: "启用入场计费",
     autoRegister: "允许自动创建玩家档案",
-    remoteEntryEnabled: "允许无设备自助入场",
     locationEnabled: "启用位置校验",
   } as const;
   return (
@@ -176,10 +174,6 @@ export function BillingSettings({
       <label className="grid gap-2">
         <span className="flex items-center gap-3"><input type="checkbox" checked={settings.autoRegister} onChange={(e) => setSettings({ ...settings, autoRegister: e.target.checked })} />{t(flags.autoRegister)}</span>
         <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，验证 QQ 可创建新玩家档案；关闭后，仅可认领已有 QQ 档案。")}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.remoteEntryEnabled} onChange={(e) => setSettings({ ...settings, remoteEntryEnabled: e.target.checked })} />{t(flags.remoteEntryEnabled)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，玩家可以在店铺页面直接用手机入场，无需扫描机台二维码。入场仍须确认计费规则；若启用位置校验，也仍须在店内。")}</span>
       </label>
       <label className="grid gap-2">
         <span className="flex items-center gap-3"><input type="checkbox" checked={settings.locationEnabled} onChange={(e) => setSettings({ ...settings, locationEnabled: e.target.checked })} />{t(flags.locationEnabled)}</span>

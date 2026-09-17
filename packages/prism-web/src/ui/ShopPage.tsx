@@ -1,24 +1,18 @@
 // Standalone shop surface at /t/:shopCode — the shop code without a machine id.
 //
-// This is the deep-link target for the PRiSM Link Live Activity / Dynamic Island and the
-// page behind the Bot's "到店校验" link. It must work with no machine ticket at all, so it
-// relies only on shop-scoped player endpoints (which need a session cookie plus a
-// shop_player_accounts row) and on the shop's opt-in for device-free entry.
-import { useCallback, useEffect, useMemo, useState } from "react";
+// This is the deep-link target for the PRiSM Link Live Activity / Dynamic Island. It works
+// with no machine ticket, so it relies only on shop-scoped player endpoints (which need a
+// session cookie plus a shop_player_accounts row). Admission is deliberately absent: only a
+// scanned machine ticket proves the player is on site, so this page settles bills instead of
+// starting sessions.
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { api, playerOperation } from "../api";
+import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 import { RequireLogin } from "./RequireLogin";
-import {
-  EntryPricing,
-  operationLocation,
-  post,
-  shopApi,
-  type ShopInfo,
-  type Summary,
-} from "./BillingPages";
+import { shopApi, type ShopInfo, type Summary } from "./BillingPages";
 import { AccountContent, playerSections, type Section } from "./PlayerAccount";
 
 export default function ShopPage() {
@@ -38,8 +32,6 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   const [section, setSection] = useState<Section>("账单");
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const [consent, setConsent] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   // A deep link carries the shop in the path, so seed the shared active shop here.
@@ -74,35 +66,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   }, [load, attempt]);
 
   const active = summary?.activeSession ?? null;
-  const canEnter = useMemo(
-    () =>
-      !!info?.shop.billingEnabled &&
-      info?.membership != null &&
-      !!info.shop.remoteEntryEnabled &&
-      !active,
-    [info, active],
-  );
-
-  async function enter() {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await playerOperation(shopApi(shopCode, "player/remote-entry"), {
-        consent: true,
-        location: await operationLocation(
-          !!(info?.shop.locationEnabled ?? info?.shop.checkinGeo),
-        ),
-      });
-      setNotice(t("入场成功，计费已开始"));
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("操作失败"));
-    } finally {
-      setBusy(false);
-    }
-  }
+  const canUseAccount = !!info?.shop.billingEnabled && info?.membership != null;
 
   if (busy && !info)
     return (
@@ -145,11 +109,6 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
           {error}
         </p>
       )}
-      {notice && (
-        <p role="status" className="text-sm">
-          {notice}
-        </p>
-      )}
 
       {!info.shop.billingEnabled && (
         <p className="rounded border border-ink/10 bg-panel p-5 text-sm text-ink/60">
@@ -173,31 +132,15 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
         </section>
       )}
 
-      {canEnter && (
-        <section className="grid gap-4 rounded border border-ink/10 bg-panel p-5">
-          <h2 className="font-semibold">{t("自助入场")}</h2>
-          <EntryPricing info={info} />
-          <label className="flex items-start gap-3 text-sm leading-relaxed">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={consent}
-              onChange={(e) => setConsent(e.target.checked)}
-            />
-            <span>{t("我已阅读并同意以上计费规则。")}</span>
-          </label>
-          <button
-            className="session-action primary justify-self-start"
-            disabled={busy || !consent}
-            onClick={enter}
-          >
-            {busy && <Loader2 size={20} className="animate-spin" />}
-            {t("入场")}
-          </button>
-        </section>
+      {/* Admission belongs to a machine: only a scanned ticket proves the player is at one,
+          so this page never starts a session. It points at the QR instead. */}
+      {canUseAccount && !active && (
+        <p className="rounded border border-ink/10 bg-panel p-5 text-sm leading-relaxed text-ink/60">
+          {t("请扫描机台上的二维码入场；入场后可以在这里查看账单并结账。")}
+        </p>
       )}
 
-      {info.shop.billingEnabled && info.membership != null && (
+      {canUseAccount && (
         <section className="grid gap-4">
           <nav className="flex flex-wrap gap-2" aria-label={t("账户")}>
             {playerSections.map((item) => (

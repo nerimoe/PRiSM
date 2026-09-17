@@ -49,21 +49,20 @@ if (quantityColumn && quantityColumn.type.toUpperCase() !== "INTEGER") {
   db.transaction(() => db.exec(migration))();
   console.log("Created pre-integer-money SQLite backup:", backupPath);
 }
+// 0023 added this opt-in and 0024 removes it again; an existing local database may hold
+// either shape. DROP COLUMN fails when the column is absent, so guard on its presence.
 const billingColumns = db.query("PRAGMA table_info(shop_billing_settings)").all() as {
   name: string;
 }[];
-if (
-  billingColumns.length &&
-  !billingColumns.some((column) => column.name === "remote_entry_enabled")
-) {
+if (billingColumns.some((column) => column.name === "remote_entry_enabled")) {
   const migration = await Bun.file(
-    new URL("../../../migrations/0023_remote_entry.sql", import.meta.url),
+    new URL("../../../migrations/0024_drop_remote_entry.sql", import.meta.url),
   ).text();
-  const backupPath = `${databasePath}.before-remote-entry-${Date.now()}.sqlite`;
+  const backupPath = `${databasePath}.before-drop-remote-entry-${Date.now()}.sqlite`;
   db.run("VACUUM INTO ?", [backupPath]);
   db.run("PRAGMA foreign_keys=ON");
   db.transaction(() => db.exec(migration))();
-  console.log("Created pre-remote-entry SQLite backup:", backupPath);
+  console.log("Created pre-drop-remote-entry SQLite backup:", backupPath);
 }
 initializeSqliteSchema(db);
 

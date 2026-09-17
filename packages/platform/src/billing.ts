@@ -43,13 +43,11 @@ export type BillingShop = {
   entry_pricing_ids_json: string;
   bot_contact: string;
   time_zone: string;
-  remote_entry_enabled: number;
   hero_url: string | null;
 };
 const settingsSchema = z.object({
   billingEnabled: z.boolean(),
   autoRegister: z.boolean(),
-  remoteEntryEnabled: z.boolean().optional(),
   locationEnabled: z.boolean().optional(),
   checkinGeo: z.boolean().optional(),
   checkoutGeo: z.boolean().optional(),
@@ -75,7 +73,6 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
     COALESCE(b.checkin_geo,0) AS checkin_geo, COALESCE(b.checkout_geo,0) AS checkout_geo,
     COALESCE(b.machine_geo,0) AS machine_geo, COALESCE(b.entry_pricing_ids_json,'[]') AS entry_pricing_ids_json,
     COALESCE(b.bot_contact,'') AS bot_contact,
-    COALESCE(b.remote_entry_enabled,0) AS remote_entry_enabled,
     CASE WHEN s.hero_data IS NULL OR s.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || s.public_id || '/hero?v=' || COALESCE(s.hero_hash, 'original') END AS hero_url,
     COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=s.id AND key='store.profile'),'Asia/Shanghai') AS time_zone FROM shops s LEFT JOIN shop_billing_settings b ON b.shop_id=s.id WHERE s.public_id=?`,
   )
@@ -169,7 +166,6 @@ function publicSettings(shop: BillingShop) {
   return {
     billingEnabled: !!shop.billing_enabled,
     autoRegister: !!shop.auto_register,
-    remoteEntryEnabled: !!shop.remote_entry_enabled,
     locationEnabled: !!shop.machine_geo,
     checkinGeo: !!shop.checkin_geo,
     checkoutGeo: !!shop.checkout_geo,
@@ -582,13 +578,10 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       if (active)
         jsonError(409, "存在未结消费，不能停用计费", "UNSETTLED_SESSIONS");
     }
-    // Older clients omit the flag; keep the stored opt-in instead of silently clearing it.
-    const remoteEntryEnabled =
-      body.remoteEntryEnabled ?? !!shop.remote_entry_enabled;
     await c.env.DB.prepare(
-      `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,remote_entry_enabled)
-      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
-      checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact,remote_entry_enabled=excluded.remote_entry_enabled`,
+      `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact)
+      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
+      checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact`,
     )
       .bind(
         shop.id,
@@ -599,10 +592,9 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         +body.machineGeo,
         JSON.stringify(body.entryPricingIds),
         body.botContact,
-        +remoteEntryEnabled,
       )
       .run();
-    return c.json({ ...body, remoteEntryEnabled });
+    return c.json(body);
   });
   app.post("/api/v1/shops/:shopCode/qq-binding", async (c) => {
     const user = requireUser(c);
@@ -794,15 +786,6 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         jsonError(409, "请确认入场计费规则", "CHECKIN_CONSENT_REQUIRED");
       checkShopLocation(shop, "checkin", body?.location);
     }
-    // Device-free check-in for the standalone shop page: no machine ticket, but the shop
-    // must opt in and the player still has to be on site and accept the pricing rules.
-    if (path === "remote-entry") {
-      if (!shop.remote_entry_enabled)
-        jsonError(403, "请扫描设备二维码", "DEVICE_QR_REQUIRED");
-      if (body?.consent !== true)
-        jsonError(409, "请确认入场计费规则", "CHECKIN_CONSENT_REQUIRED");
-      checkShopLocation(shop, "checkin", body?.location);
-    }
     if (path === "checkout/confirm")
       checkShopLocation(shop, "checkout", body?.location);
     if (path === "device-commands")
@@ -810,12 +793,6 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     const deps = dependencies(c, shop);
     if (path === "devices" || path === "device-commands")
       jsonError(409, "请通过设备二维码操作", "DEVICE_QR_REQUIRED");
-    // Device-free entry reuses the machine entry command, minus the ticket.
-    const forwardPath = path === "remote-entry" ? "session/start" : path;
-    const forwardBody =
-      path === "remote-entry" && body
-        ? { ...body, ticket: undefined }
-        : body;
     const execute = () =>
       forward(
         c,
@@ -826,13 +803,11 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
             playerId: player.id,
           },
         },
-        "player/" + forwardPath,
-        forwardBody,
+        "player/" + path,
+        body,
       );
     return body &&
-      ["session/start", "remote-entry", "checkout/confirm", "redeem"].includes(
-        path,
-      )
+      ["session/start", "checkout/confirm", "redeem"].includes(path)
       ? runPlayerOperation(c, shop.id, path, body, execute)
       : execute();
   });
