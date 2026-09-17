@@ -72,6 +72,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `GET` | `/rpc/player/sessions/history` | 查询历史结账场次。 |
 | `GET` | `/rpc/player/sessions/:sessionId/history` | 查询指定场次的收费明细项及折扣调整项。 |
 | `POST` | `/rpc/player/session/start` | 启动包时结算场次。 |
+| `POST` | `/rpc/player/remote-entry` | 无设备自助入场：不携带机台 ticket，仅当店铺设置 `remoteEntryEnabled` 时可用；仍须 `consent: true`，启用位置校验时仍须店内定位。服务端复用普通入场的计费规则与幂等租约，最终转发到 `/rpc/player/session/start`。店铺未开启时返回 `DEVICE_QR_REQUIRED`。 |
 | `POST` | `/rpc/player/device-commands` | 申请设备动作。动作使用明确类型：`door.open`、`power.on`、`power.off`、`ac.set_temperature`、`coin`、`aime.scan`，并通过 `target.kind` 区分设施设备和游戏机器。 |
 | `POST` | `/rpc/player/checkout/preview` | 预览当前场次结账费用，不关单。 |
 | `POST` | `/rpc/player/checkout/confirm` | 确认当前场次结账，扣减余额并关单。 |

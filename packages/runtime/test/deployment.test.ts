@@ -153,6 +153,20 @@ describe("deployment artifacts", () => {
     expect(generator).toContain("D1_DATABASE_ID");
   });
 
+  it("routes only the two-segment /t link through the worker so the shop page stays SPA-served", async () => {
+    // `/t/:shopCode` (the ticket-free shop surface) must NOT be worker-first: Cloudflare's
+    // single-page-application fallback has to serve index.html for React Router. Adding it
+    // here would make the deep link 404 instead of rendering the bill page.
+    for (const file of ["wrangler.platform.jsonc", "wrangler.generated.jsonc"]) {
+      const source = await readProjectFile(file);
+      const match = source.match(/"run_worker_first":\s*\[([^\]]*)\]/);
+      if (!match) throw new Error(`${file} must declare run_worker_first`);
+      const patterns = [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]);
+      expect(patterns).toContain("/t/*/*");
+      expect(patterns).not.toContain("/t/*");
+    }
+  });
+
   it("keeps the D1 migrations aligned with the executable SQLite schema", async () => {
     const schemaDb = new Database(":memory:");
     const migrationDb = new Database(":memory:");

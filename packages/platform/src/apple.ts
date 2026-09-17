@@ -13,7 +13,8 @@ export function appleAppSiteAssociation(teamId: string) {
       details: [
         {
           appIDs: [fullAppId],
-          components: [{ "/": "/t/*/*" }],
+          // `/t/*` is the shop-only surface (no machine); `/t/*/*` mints a machine ticket.
+          components: [{ "/": "/t/*/*" }, { "/": "/t/*" }],
         },
       ],
     },

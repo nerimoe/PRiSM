@@ -713,5 +713,16 @@
   "已满桌": "Table full",
   "开始计费": "Billing started",
   "结束计费": "Billing stopped",
-  "切换计费规则": "Pricing rule changed"
+  "切换计费规则": "Pricing rule changed",
+  "允许无设备自助入场": "Allow self check-in without a device",
+  "开启后，玩家可以在店铺页面直接用手机入场，无需扫描机台二维码。入场仍须确认计费规则；若启用位置校验，也仍须在店内。": "When on, players can check in from the shop page on their phone without scanning a machine QR code. Check-in still requires accepting the pricing rules, and stays on-site when location checks are on.",
+  "在这里查看账单、兑换、记录与钱包。": "View your bill, redemptions, history and wallet here.",
+  "本店未启用入场计费，暂无账单功能。": "This shop has not enabled entry billing, so there is no bill yet.",
+  "先绑定 QQ 才能使用本店计费": "Link your QQ account to use this shop's billing",
+  "本店的玩家档案与 QQ 绑定，请在店铺机器人中完成验证后再回到这里。": "Player profiles at this shop are linked to QQ. Verify with the shop bot, then come back here.",
+  "店铺联系方式": "Shop contact",
+  "自助入场": "Self check-in",
+  "我已阅读并同意以上计费规则。": "I have read and accept the pricing rules above.",
+  "入场成功，计费已开始": "Checked in — billing has started",
+  "账户": "Account"
 }

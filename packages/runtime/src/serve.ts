@@ -49,6 +49,22 @@ if (quantityColumn && quantityColumn.type.toUpperCase() !== "INTEGER") {
   db.transaction(() => db.exec(migration))();
   console.log("Created pre-integer-money SQLite backup:", backupPath);
 }
+const billingColumns = db.query("PRAGMA table_info(shop_billing_settings)").all() as {
+  name: string;
+}[];
+if (
+  billingColumns.length &&
+  !billingColumns.some((column) => column.name === "remote_entry_enabled")
+) {
+  const migration = await Bun.file(
+    new URL("../../../migrations/0023_remote_entry.sql", import.meta.url),
+  ).text();
+  const backupPath = `${databasePath}.before-remote-entry-${Date.now()}.sqlite`;
+  db.run("VACUUM INTO ?", [backupPath]);
+  db.run("PRAGMA foreign_keys=ON");
+  db.transaction(() => db.exec(migration))();
+  console.log("Created pre-remote-entry SQLite backup:", backupPath);
+}
 initializeSqliteSchema(db);
 
 const dependencies = createPrismLocalDependencies({
