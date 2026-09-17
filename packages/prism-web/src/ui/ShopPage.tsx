@@ -136,7 +136,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
           so this page never starts a session. It points at the QR instead. */}
       {canUseAccount && !active && (
         <p className="rounded border border-ink/10 bg-panel p-5 text-sm leading-relaxed text-ink/60">
-          {t("请扫描机台上的二维码入场；入场后可以在这里查看账单并结账。")}
+          {t("请扫描机台上的二维码或碰一下 NFC 入场")}
         </p>
       )}
 
