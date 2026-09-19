@@ -33,7 +33,9 @@
   "vars": {
     "APP_ORIGIN": "http://localhost:8787",
     "EXTRA_ALLOWED_ORIGINS": "http://localhost:5173",
-    "MUNET_CLIENT_ID": ""
+    "MUNET_CLIENT_ID": "",
+    "APNS_KEY_ID": "",
+    "APNS_TEAM_ID": ""
   },
   "observability": {
     "enabled": true

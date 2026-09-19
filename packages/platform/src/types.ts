@@ -5,6 +5,11 @@ export type Env = Cloudflare.Env & {
   MUNET_CLIENT_ID: string;
   MUNET_CLIENT_SECRET: string;
   APPLE_TEAM_ID: string;
+  // APNs credentials for remote Live Activity delivery. When any is missing the feature
+  // stays inert, so local and beta deployments need no Apple key configured.
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY?: string;
   EXTRA_ALLOWED_ORIGINS?: string;
   ANDROID_CERT_FINGERPRINTS?: string;
 };

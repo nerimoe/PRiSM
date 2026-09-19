@@ -353,6 +353,30 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Integration 的游戏机目标使用 `target.ref`，只接受后端 Hinata IO 配置中的设备 `name` 或 `aliases`，不会把用户输入直接当内部机器 ID。`aime.scan` 的 payload 只需提供 `provider`（默认 `aime`），后端会读取该玩家已绑定的对应身份；没有绑定时返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
 
+## 实时活动推送 (Live Activity)
+
+玩家 App / App Clip 创建实时活动后会拿到一个 per-activity APNs 令牌，并上报到这里，使任意渠道发起的入场或结账都能更新该手机的灵动岛（App 不需要在运行）。这两个接口由 `packages/platform` 直接处理，不进入核心计费域；完整设计与失败处理见 `live-activity-push.md`。
+
+| 请求方法 | 路由路径 | 接口用途 |
+| --- | --- | --- |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
+
+注册请求体：
+
+```json
+{
+  "activityId": "活动 id（iOS Activity.id）",
+  "token": "APNs 实时活动令牌（十六进制）",
+  "environment": "sandbox | production",
+  "bundleId": "moe.neri.hinatago",
+  "sessionId": "当前展示的场次 id，可选",
+  "attributes": { "shopCode": "a", "shopName": "店铺名", "origin": "https://link.neri.moe" }
+}
+```
+
+未配置 `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_PRIVATE_KEY` 时推送整体退化为 no-op，但注册接口仍正常受理。
+
 ## 机器软件接口 (Machine RPC / WebSocket)
 
 本地 Bun 部署支持机器软件 WebSocket：`GET /rpc/machine/ws`，Header 使用 `Authorization: Bearer <machine-token>`。原生机器软件通过该通道接收投币、刷卡等动作并返回 ACK；后台配置的 Hinata IO 设备则由后端通过加密 relay HTTP 协议直接执行。

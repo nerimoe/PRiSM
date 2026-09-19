@@ -74,6 +74,11 @@ if (platform) {
       APPLE_TEAM_ID: required("APPLE_TEAM_ID", "LOCALTEAM"),
       ANDROID_CERT_FINGERPRINTS: readOptional("ANDROID_CERT_FINGERPRINTS") ?? "",
       EXTRA_ALLOWED_ORIGINS: readOptional("EXTRA_ALLOWED_ORIGINS") ?? "",
+      // Remote Live Activity delivery. Deliberately optional: with no key configured the
+      // feature stays inert, so local and beta deployments need no Apple credentials.
+      // The signing key itself is a `wrangler secret`, never a plain var.
+      ...(readOptional("APNS_KEY_ID") ? { APNS_KEY_ID: readOptional("APNS_KEY_ID")! } : {}),
+      ...(readOptional("APNS_TEAM_ID") ? { APNS_TEAM_ID: readOptional("APNS_TEAM_ID")! } : {}),
     },
   });
 }

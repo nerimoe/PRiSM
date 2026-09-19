@@ -20,6 +20,14 @@ import {
 import { resolveMachineSession } from "./machine-session";
 import { withOperationLease } from "@prism/application";
 import { runPlayerOperation } from "./operations";
+import {
+  forwardWithLiveActivity,
+  sessionEventForPath,
+} from "./live-activity-events";
+import {
+  isKnownLiveActivityBundle,
+  type LiveActivityEnvironment,
+} from "./live-activity-push";
 import { requireUser } from "./auth";
 import { sha256 } from "./crypto";
 import { checkLocation } from "./geo";
@@ -758,14 +766,20 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         "staff/" + path,
         body,
       );
+    // An admin starting or settling a visit must reach that player's phone even though
+    // the phone is nowhere near this request.
+    const event = sessionEventForPath(path);
+    const withPush = event
+      ? () => forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute;
     return body &&
       (path === "device-actions" ||
         /\/(wallet\/adjustment|assets\/grants|checkout\/(confirm|override))$/.test(
           path,
         ) ||
         path === "sessions/active/checkout")
-      ? runPlayerOperation(c, shop.id, "staff/" + path, body, execute)
-      : execute();
+      ? runPlayerOperation(c, shop.id, "staff/" + path, body, withPush)
+      : withPush();
   });
   app.all("/api/v1/shops/:shopCode/player/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -775,6 +789,10 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       c.req.method === "GET"
         ? undefined
         : await c.req.json<Record<string, unknown>>();
+    // Live Activity tokens are transport concerns, not billing ones, so they are handled
+    // here rather than forwarded into the core app.
+    if (path.startsWith("live-activity/"))
+      return handleLiveActivityRoute(c, shop, player, path, body);
     if (path === "session/start") {
       const { machine } = await resolveMachineSession(
         c,
@@ -806,10 +824,14 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         "player/" + path,
         body,
       );
+    const event = sessionEventForPath(path);
+    const withPush = event
+      ? () => forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute;
     return body &&
       ["session/start", "checkout/confirm", "redeem"].includes(path)
-      ? runPlayerOperation(c, shop.id, path, body, execute)
-      : execute();
+      ? runPlayerOperation(c, shop.id, path, body, withPush)
+      : withPush();
   });
   app.all("/api/v1/shops/:shopCode/integration/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -831,11 +853,93 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       body.autoRegister = !!shop.auto_register;
       body.closeSessionsBeforeBalanceCheck = false;
     }
-    const result = await forward(c, deps, "integration/" + path, body);
+    const execute = () => forward(c, deps, "integration/" + path, body);
+    // The bot channel identifies players by QQ or card rather than by account, so the
+    // player is resolved from the response inside the wrapper.
+    const event = sessionEventForPath(path);
+    const result = await (event
+      ? forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute());
     if (path === "sessions/active" && result.ok) {
       const payload = await result.json() as Record<string, unknown>;
       return c.json({ ...payload, mahjongTables: await mahjongRoster(c, shop.id) });
     }
     return result;
   });
+}
+
+/**
+ * Registers or retires the APNs token behind one on-device Live Activity.
+ *
+ * The app reports a token per activity (app and App Clip are separate bundles, and a
+ * player may hold more than one), so rows are keyed by activity id. Registration is
+ * idempotent: the app re-reports whenever ActivityKit rotates the token.
+ */
+async function handleLiveActivityRoute(
+  c: C,
+  shop: BillingShop,
+  player: { id: string },
+  path: string,
+  body: Record<string, unknown> | undefined,
+): Promise<Response> {
+  const user = requireUser(c);
+  if (path === "live-activity/register") {
+    const parsed = z
+      .object({
+        activityId: z.string().min(1).max(200),
+        token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+        environment: z.enum(["sandbox", "production"]),
+        bundleId: z.string().min(1).max(200),
+        sessionId: z.string().min(1).max(200).nullish(),
+        attributes: z.record(z.string(), z.unknown()).optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注册参数无效");
+    const input = parsed.data;
+    if (!isKnownLiveActivityBundle(input.bundleId))
+      jsonError(400, "未知的应用标识");
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO live_activity_tokens
+        (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(shop_id, user_id, activity_id) DO UPDATE SET
+         token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
+         session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        shop.id,
+        user.id,
+        input.activityId,
+        // APNs requires lowercase hex; normalising here keeps the lookup exact.
+        input.token.toLowerCase(),
+        input.environment satisfies LiveActivityEnvironment,
+        input.bundleId,
+        input.sessionId ?? null,
+        JSON.stringify(input.attributes ?? {}),
+        now,
+        now,
+      )
+      .run();
+    return c.json({ ok: true });
+  }
+
+  if (path === "live-activity/unregister") {
+    const parsed = z
+      .object({ activityId: z.string().min(1).max(200) })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注销参数无效");
+    // Scoped by user so one player can never retire another player's activity.
+    await c.env.DB.prepare(
+      "DELETE FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=?",
+    )
+      .bind(shop.id, user.id, parsed.data.activityId)
+      .run();
+    return c.json({ ok: true });
+  }
+
+  // Any other `live-activity/*` path is a client bug; answering 200 would hide it.
+  jsonError(404, "未知的实时活动操作");
 }
