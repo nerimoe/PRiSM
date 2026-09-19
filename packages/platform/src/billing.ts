@@ -321,7 +321,10 @@ async function forward(
     data?: unknown;
     error?: unknown;
   };
-  return c.json(response.ok ? payload.data : payload, response.status as 200);
+  return c.json(
+    response.ok ? (payload.data !== undefined ? payload.data : payload) : payload,
+    response.status as 200,
+  );
 }
 
 export function registerBillingRoutes(app: Hono<AppBindings>) {
@@ -406,6 +409,65 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       .bind(user.id)
       .all();
     return c.json({ shops: shops.results });
+  });
+  app.post("/api/v1/me/live-activity/start-token", async (c) => {
+    const user = requireUser(c);
+    const body = await c.req.json<Record<string, unknown>>();
+    const parsed = z
+      .object({
+        clientId: z.string().min(1).max(200),
+        token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+        environment: z.enum(["sandbox", "production"]),
+        bundleId: z.string().min(1).max(200),
+      })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动启动令牌注册参数无效");
+    const input = parsed.data;
+    if (!isKnownLiveActivityBundle(input.bundleId))
+      jsonError(400, "未知的应用标识");
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO live_activity_start_tokens
+        (id, user_id, client_id, bundle_id, environment, token, created_at, updated_at, last_seen_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(user_id, client_id) DO UPDATE SET
+         token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
+         updated_at=excluded.updated_at, last_seen_at=excluded.last_seen_at`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        user.id,
+        input.clientId,
+        input.bundleId,
+        input.environment satisfies LiveActivityEnvironment,
+        input.token.toLowerCase(),
+        now,
+        now,
+        now,
+      )
+      .run();
+    return c.json({ ok: true });
+  });
+  app.delete("/api/v1/me/live-activity/start-token/:clientId?", async (c) => {
+    const user = requireUser(c);
+    const paramId = c.req.param("clientId");
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+    const clientId = (paramId ?? (typeof body?.clientId === "string" ? body.clientId : c.req.query("clientId")))?.trim();
+    if (clientId) {
+      await c.env.DB.prepare(
+        "DELETE FROM live_activity_start_tokens WHERE user_id=? AND client_id=?",
+      )
+        .bind(user.id, clientId)
+        .run();
+    } else {
+      await c.env.DB.prepare(
+        "DELETE FROM live_activity_start_tokens WHERE user_id=?",
+      )
+        .bind(user.id)
+        .run();
+    }
+    return c.json({ ok: true });
   });
   app.get("/api/v1/shops/:shopCode", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -898,6 +960,15 @@ async function handleLiveActivityRoute(
     const input = parsed.data;
     if (!isKnownLiveActivityBundle(input.bundleId))
       jsonError(400, "未知的应用标识");
+
+    if (input.sessionId) {
+      const session = await c.env.DB.prepare(
+        "SELECT id FROM sessions WHERE id=? AND shop_id=? AND player_id=?",
+      )
+        .bind(input.sessionId, shop.id, player.id)
+        .first();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+    }
 
     const now = new Date().toISOString();
     await c.env.DB.prepare(

@@ -3,7 +3,8 @@ import {
   LiveActivityPusher,
   liveActivityConfig,
   liveActivityEndPayload,
-  liveActivityUpdatePayload,
+  liveActivityStartPayload,
+  maskToken,
   type LiveActivityPushRecord,
 } from "./live-activity-push";
 import type { AppBindings } from "./types";
@@ -22,6 +23,7 @@ type C = Context<AppBindings>;
 /** Exact paths that open a visit, relative to the `/player/` or `/integration/` mount. */
 const SESSION_START_PATHS = new Set([
   "session/start",
+  "remote-entry",
   "players/by-identity/session/start",
 ]);
 
@@ -50,6 +52,7 @@ export function sessionEventForPath(path: string): "start" | "end" | null {
 type SessionRow = {
   id: string;
   startedAt: string;
+  endedAt: string | null;
 };
 
 /**
@@ -91,7 +94,7 @@ export function extractSessionIds(
 }
 
 /**
- * Looks up the sessions a response touched, keyed by id, to recover their start times.
+ * Looks up the sessions a response touched, keyed by id, to recover their start/end times.
  * Missing rows simply yield no push rather than a wrong timer.
  */
 async function loadSessions(c: C, shopId: string, ids: string[]): Promise<Map<string, SessionRow>> {
@@ -99,7 +102,7 @@ async function loadSessions(c: C, shopId: string, ids: string[]): Promise<Map<st
   if (ids.length === 0) return found;
   const placeholders = ids.map(() => "?").join(",");
   const rows = await c.env.DB.prepare(
-    `SELECT id, started_at AS startedAt FROM sessions WHERE shop_id=? AND id IN (${placeholders})`,
+    `SELECT id, started_at AS startedAt, ended_at AS endedAt FROM sessions WHERE shop_id=? AND id IN (${placeholders})`,
   )
     .bind(shopId, ...ids)
     .all<SessionRow>();
@@ -116,20 +119,123 @@ type TokenRow = {
   created_at: string;
 };
 
+type StartTokenRow = {
+  id: string;
+  token: string;
+  environment: "sandbox" | "production";
+  bundle_id: string;
+  client_id: string;
+};
+
 /**
- * Sends the update/end for a session that a channel just opened or settled.
+ * Sends the start/end for a session that a channel just opened or settled.
  *
  * Runs inside `waitUntil`, so a slow or failing APNs call never delays the billing
  * response the player or staff member is waiting on.
  */
 export async function pushSessionEvent(
   c: C,
-  input: { shopId: string; playerId: string; sessionIds: string[]; event: "start" | "end" },
+  input: {
+    shopId: string;
+    playerId: string;
+    sessionIds: string[];
+    event: "start" | "end";
+    initiatorClientId?: string | null;
+  },
 ): Promise<void> {
   const config = liveActivityConfig(c.env);
   // No APNs credentials (local, beta, tests) means the whole feature is inert.
   if (!config) return;
 
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const pusher = new LiveActivityPusher({ config });
+
+  if (input.event === "start") {
+    // Push-to-start: users who have previously signed in on a supported iOS device
+    // registered their push-to-start tokens. We fan out APNs event=start so their
+    // Dynamic Island / Live Activity starts automatically even if the app is killed.
+    const account = await c.env.DB.prepare(
+      "SELECT user_id AS userId FROM shop_player_accounts WHERE shop_id=? AND player_id=?",
+    )
+      .bind(input.shopId, input.playerId)
+      .first<{ userId: string }>();
+    if (!account) return;
+
+    const startTokens = await c.env.DB.prepare(
+      `SELECT id, token, environment, bundle_id, client_id
+       FROM live_activity_start_tokens
+       WHERE user_id=?`,
+    )
+      .bind(account.userId)
+      .all<StartTokenRow>();
+    const tokenRows = startTokens.results ?? [];
+    if (tokenRows.length === 0) return;
+
+    const shopRow = await c.env.DB.prepare(
+      "SELECT public_id AS publicId, name FROM shops WHERE id=?",
+    )
+      .bind(input.shopId)
+      .first<{ publicId: string; name: string }>();
+    if (!shopRow) return;
+
+    const sessions = await loadSessions(c, input.shopId, input.sessionIds);
+    const sessionId = input.sessionIds[0];
+    if (!sessionId) return;
+    const sessionRow = sessions.get(sessionId);
+    if (!sessionRow) return;
+    const startedAtUnix = Math.floor(new Date(sessionRow.startedAt).getTime() / 1000);
+    if (!Number.isFinite(startedAtUnix)) return;
+
+    const origin = c.env.APP_ORIGIN || "https://link.neri.moe";
+    const payload = liveActivityStartPayload({
+      sessionId,
+      shopCode: shopRow.publicId,
+      shopName: shopRow.name,
+      origin,
+      startedAtUnix,
+      now: nowSeconds,
+    });
+
+    for (const row of tokenRows) {
+      if (input.initiatorClientId && row.client_id === input.initiatorClientId) {
+        // Skip the client that initiated this session in the foreground to avoid race
+        // condition / duplicate activity with local Activity.request().
+        continue;
+      }
+      console.log("Pushing Live Activity start", {
+        shopId: input.shopId,
+        userId: account.userId,
+        session: sessionId,
+        bundle: row.bundle_id,
+        environment: row.environment,
+        token: maskToken(row.token),
+      });
+      const outcome = await pusher.send(
+        {
+          token: row.token,
+          environment: row.environment,
+          bundleId: row.bundle_id,
+        } satisfies LiveActivityPushRecord,
+        payload,
+      );
+      if (outcome.kind === "expired") {
+        await c.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE id=?").bind(row.id).run();
+      } else if (outcome.kind === "delivered") {
+        await c.env.DB.prepare("UPDATE live_activity_start_tokens SET last_seen_at=? WHERE id=?")
+          .bind(new Date().toISOString(), row.id)
+          .run();
+      } else if (outcome.kind === "failed") {
+        console.error("Live Activity start push failed", {
+          shopId: input.shopId,
+          status: outcome.status,
+          reason: outcome.reason,
+        });
+      }
+    }
+    return;
+  }
+
+  // End event: find existing per-activity tokens
   const tokens = await c.env.DB.prepare(
     `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
      FROM live_activity_tokens t
@@ -142,24 +248,30 @@ export async function pushSessionEvent(
   if (rows.length === 0) return;
 
   const sessions = await loadSessions(c, input.shopId, input.sessionIds);
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const pusher = new LiveActivityPusher({ config });
 
   for (const row of rows) {
-    // Match each activity to the session it is actually showing. An activity created
-    // before any session existed has no session id and is only updated by `start`.
     const sessionId =
       input.sessionIds.find((id) => id === row.session_id) ?? input.sessionIds[0] ?? null;
-    const startedAt = sessionId ? sessions.get(sessionId)?.startedAt : undefined;
+    const sessionRow = sessionId ? sessions.get(sessionId) : undefined;
+    const startedAt = sessionRow?.startedAt;
     const startedAtUnix = startedAt
       ? Math.floor(new Date(startedAt).getTime() / 1000)
       : Math.floor(new Date(row.created_at).getTime() / 1000);
     if (!Number.isFinite(startedAtUnix)) continue;
 
-    const payload =
-      input.event === "start"
-        ? liveActivityUpdatePayload({ startedAtUnix, now: nowSeconds })
-        : liveActivityEndPayload({ startedAtUnix, endedAtUnix: nowSeconds });
+    // Authoritative ended_at from the database session row
+    const endedAtUnix = sessionRow?.endedAt
+      ? Math.floor(new Date(sessionRow.endedAt).getTime() / 1000)
+      : nowSeconds;
+
+    const payload = liveActivityEndPayload({ startedAtUnix, endedAtUnix });
+    console.log("Pushing Live Activity end", {
+      shopId: input.shopId,
+      session: sessionId,
+      bundle: row.bundle_id,
+      environment: row.environment,
+      token: maskToken(row.token),
+    });
 
     const outcome = await pusher.send(
       {
@@ -171,8 +283,6 @@ export async function pushSessionEvent(
     );
 
     if (outcome.kind === "expired") {
-      // The activity is gone (dismissed, or the app was deleted). Drop the row so later
-      // sessions do not keep pushing to a dead token.
       await c.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=?").bind(row.id).run();
       continue;
     }
@@ -185,9 +295,8 @@ export async function pushSessionEvent(
       continue;
     }
     if (outcome.kind === "delivered") {
-      // Track which session the activity now shows, so a later `end` reuses its timer.
-      await c.env.DB.prepare("UPDATE live_activity_tokens SET session_id=?, updated_at=? WHERE id=?")
-        .bind(input.event === "start" ? sessionId : null, new Date().toISOString(), row.id)
+      await c.env.DB.prepare("UPDATE live_activity_tokens SET session_id=NULL, updated_at=? WHERE id=?")
+        .bind(new Date().toISOString(), row.id)
         .run();
     }
   }
@@ -210,30 +319,25 @@ export async function forwardWithLiveActivity(
 
   let task: Promise<void> | null = null;
   try {
-    // The response body is cloned: the caller still returns the original, so consuming it
-    // here would hand the client an empty body.
     const payload = (await response.clone().json()) as Record<string, unknown>;
     const sessionIds = extractSessionIds(payload, input.event);
     const playerId = playerIdFromPayload(payload);
+    const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
     if (playerId && sessionIds.length > 0) {
       task = pushSessionEvent(c, {
         shopId: input.shopId,
         playerId,
         sessionIds,
         event: input.event,
+        initiatorClientId,
       });
     }
   } catch (error) {
-    // Planning failed, so nothing will be sent. Worth knowing about, but it must not fail
-    // a billing request that already succeeded.
     console.error("Live Activity dispatch planning failed", error);
     return response;
   }
   if (!task) return response;
 
-  // Delivery must never delay the billing response. `waitUntil` is the right tool, but a
-  // caller without an execution context (tests, or any non-Worker host) would throw, so
-  // fall back to letting the promise settle on its own.
   try {
     c.executionCtx.waitUntil(task);
   } catch {

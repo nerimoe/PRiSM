@@ -8,6 +8,7 @@ import {
   liveActivityConfig,
   liveActivityEndPayload,
   liveActivityHost,
+  liveActivityStartPayload,
   liveActivityTopic,
   liveActivityUpdatePayload,
 } from "../src/live-activity-push";
@@ -70,6 +71,39 @@ test("the dismissal date gives the ended activity a visible grace period", () =>
   const aps = end.aps as Record<string, unknown>;
   expect(aps["dismissal-date"]).toBe(2_000 + 60);
   expect(aps.timestamp).toBe(2_000);
+});
+
+test("start payload matches Apple Push-to-Start spec exactly", () => {
+  const start = liveActivityStartPayload({
+    sessionId: "sess-123",
+    shopCode: "shop-a",
+    shopName: "Shop Alpha",
+    origin: "https://link.neri.moe",
+    startedAtUnix: 1_000,
+    now: 1_005,
+  });
+  const aps = start.aps as Record<string, unknown>;
+  expect(aps.event).toBe("start");
+  expect(aps["attributes-type"]).toBe("StoreVisitAttributes");
+  expect(aps.attributes).toEqual({
+    sessionId: "sess-123",
+    shopCode: "shop-a",
+    shopName: "Shop Alpha",
+    origin: "https://link.neri.moe",
+  });
+  expect(aps["content-state"]).toEqual({
+    phase: "active",
+    startedAtUnix: 1_000,
+    endedAtUnix: null,
+  });
+  expect(aps.alert).toEqual({
+    title: "Shop Alpha",
+    body: "在店计费中",
+  });
+  expect(aps["input-push-token"]).toBe(1);
+  expect(aps["relevance-score"]).toBe(100);
+  expect(aps.timestamp).toBe(1_005);
+  expect(aps["stale-date"]).toBe(1_005 + 3600);
 });
 
 test("APNs headers and host are correct per environment and bundle", async () => {
@@ -290,6 +324,7 @@ beforeAll(async () => {
     "0023_remote_entry.sql",
     "0024_drop_remote_entry.sql",
     "0025_live_activity_push_tokens.sql",
+    "0026_live_activity_start_tokens.sql",
   ]) {
     statements.push(
       ...readFileSync(new URL(`../../../migrations/${file}`, import.meta.url), "utf8")
@@ -318,6 +353,11 @@ beforeAll(async () => {
   await db
     .prepare(
       "INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('a','a','Shop A',35,139,80,'u')",
+    )
+    .run();
+  await db
+    .prepare(
+      "INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('owner-a','a','u','owner')",
     )
     .run();
   await db
@@ -493,3 +533,216 @@ test("a failed checkout never notifies the phone", async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+test("a player registers, updates, and unregisters Push-to-Start tokens", async () => {
+  // 1. Unauthenticated registration returns 401
+  const unauth = await app.fetch(
+    new Request(origin + "/api/v1/me/live-activity/start-token", {
+      method: "POST",
+      headers: { origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        clientId: "client-1",
+        token: "11223344556677889900112233445566",
+        environment: "sandbox",
+        bundleId: "moe.neri.hinatago",
+      }),
+    }),
+    routeEnv,
+  );
+  expect(unauth.status).toBe(401);
+
+  // 2. Register for main app
+  const regApp = await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-main",
+    token: "AABBCCDDEEFF00112233445566778899",
+    environment: "sandbox",
+    bundleId: "moe.neri.hinatago",
+  });
+  expect(regApp.status).toBe(200);
+
+  // 3. Register for App Clip
+  const regClip = await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-clip",
+    token: "99887766554433221100FFEEDDCCBBAA",
+    environment: "production",
+    bundleId: "moe.neri.hinatago.prism",
+  });
+  expect(regClip.status).toBe(200);
+
+  // Verify rows stored in database
+  const rows = await routeEnv.DB.prepare(
+    "SELECT client_id, token, environment, bundle_id FROM live_activity_start_tokens WHERE user_id='u' ORDER BY client_id",
+  ).all<Record<string, string>>();
+  expect(rows.results).toEqual([
+    {
+      client_id: "client-clip",
+      token: "99887766554433221100ffeeddccbbaa",
+      environment: "production",
+      bundle_id: "moe.neri.hinatago.prism",
+    },
+    {
+      client_id: "client-main",
+      token: "aabbccddeeff00112233445566778899",
+      environment: "sandbox",
+      bundle_id: "moe.neri.hinatago",
+    },
+  ]);
+
+  // 4. Update existing client (upsert)
+  const regUpdate = await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-main",
+    token: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    environment: "production",
+    bundleId: "moe.neri.hinatago",
+  });
+  expect(regUpdate.status).toBe(200);
+
+  const updatedRow = await routeEnv.DB.prepare(
+    "SELECT token, environment FROM live_activity_start_tokens WHERE user_id='u' AND client_id='client-main'",
+  ).first<Record<string, string>>();
+  expect(updatedRow).toEqual({
+    token: "ffffffffffffffffffffffffffffffff",
+    environment: "production",
+  });
+
+  // 5. Validation failures
+  const badToken = await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-bad",
+    token: "not-a-hex-token",
+    environment: "sandbox",
+    bundleId: "moe.neri.hinatago",
+  });
+  expect(badToken.status).toBe(400);
+
+  const badBundle = await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-bad",
+    token: "11223344556677889900112233445566",
+    environment: "sandbox",
+    bundleId: "com.unauthorized.bundle",
+  });
+  expect(badBundle.status).toBe(400);
+
+  // 6. Delete single client
+  const deleteOne = await app.fetch(
+    new Request(origin + "/api/v1/me/live-activity/start-token/client-main", {
+      method: "DELETE",
+      headers: { cookie, origin },
+    }),
+    routeEnv,
+  );
+  expect(deleteOne.status).toBe(200);
+  const countAfterOne = await routeEnv.DB.prepare(
+    "SELECT COUNT(*) AS n FROM live_activity_start_tokens WHERE user_id='u'",
+  ).first<{ n: number }>();
+  expect(countAfterOne?.n).toBe(1);
+
+  // 7. Delete all clients for user
+  const deleteAll = await app.fetch(
+    new Request(origin + "/api/v1/me/live-activity/start-token", {
+      method: "DELETE",
+      headers: { cookie, origin },
+    }),
+    routeEnv,
+  );
+  expect(deleteAll.status).toBe(200);
+  const countAfterAll = await routeEnv.DB.prepare(
+    "SELECT COUNT(*) AS n FROM live_activity_start_tokens WHERE user_id='u'",
+  ).first<{ n: number }>();
+  expect(countAfterAll?.n).toBe(0);
+});
+
+test("external session start pushes APNs start event to registered start tokens", async () => {
+  await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-main",
+    token: "11112222333344445555666677778888",
+    environment: "sandbox",
+    bundleId: "moe.neri.hinatago",
+  });
+  await e2eRequest("/api/v1/me/live-activity/start-token", {
+    clientId: "client-clip",
+    token: "aaaabbbbccccddddeeeeffff00001111",
+    environment: "sandbox",
+    bundleId: "moe.neri.hinatago.prism",
+  });
+
+  const pushes: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    pushes.push({
+      url: String(input),
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: String(init?.body ?? ""),
+    });
+    return new Response("", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const startResponse = await e2eRequest("/api/v1/shops/a/staff/players/p/session/start", {});
+    expect(startResponse.status).toBe(200);
+    const startBody = (await startResponse.json()) as { data: { session: { id: string } } };
+    const sessionId = startBody.data.session.id;
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(pushes.length).toBe(2);
+
+    const mainPush = pushes.find((p) => p.url.includes("11112222333344445555666677778888"))!;
+    expect(mainPush).toBeDefined();
+    expect(mainPush.headers["apns-topic"]).toBe("moe.neri.hinatago.push-type.liveactivity");
+    expect(mainPush.headers["apns-push-type"]).toBe("liveactivity");
+    const mainAps = (JSON.parse(mainPush.body) as { aps: Record<string, unknown> }).aps;
+    expect(mainAps.event).toBe("start");
+    expect(mainAps["attributes-type"]).toBe("StoreVisitAttributes");
+    expect((mainAps.attributes as { sessionId: string }).sessionId).toBe(sessionId);
+    expect((mainAps["content-state"] as { phase: string }).phase).toBe("active");
+
+    const clipPush = pushes.find((p) => p.url.includes("aaaabbbbccccddddeeeeffff00001111"))!;
+    expect(clipPush).toBeDefined();
+    expect(clipPush.headers["apns-topic"]).toBe("moe.neri.hinatago.prism.push-type.liveactivity");
+
+    await routeEnv.DB.prepare("UPDATE sessions SET status='closed', ended_at=? WHERE id=?")
+      .bind(new Date().toISOString(), sessionId)
+      .run();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("initiator client id suppresses Push-to-Start only to the originating device", async () => {
+  const pushes: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    pushes.push({
+      url: String(input),
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: String(init?.body ?? ""),
+    });
+    return new Response("", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    const startResponse = await app.fetch(
+      new Request(origin + "/api/v1/shops/a/staff/players/p/session/start", {
+        method: "POST",
+        headers: {
+          cookie,
+          origin,
+          "content-type": "application/json",
+          "x-prism-client-id": "client-main",
+        },
+        body: JSON.stringify({}),
+      }),
+      routeEnv,
+    );
+    expect(startResponse.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(pushes.length).toBe(1);
+    expect(pushes[0]!.url).toContain("aaaabbbbccccddddeeeeffff00001111");
+    expect(pushes[0]!.headers["apns-topic"]).toBe("moe.neri.hinatago.prism.push-type.liveactivity");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+

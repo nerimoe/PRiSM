@@ -73,6 +73,45 @@ export function liveActivityContentState(input: {
   };
 }
 
+export function liveActivityStartPayload(input: {
+  sessionId: string;
+  shopCode: string;
+  shopName: string;
+  origin?: string | null;
+  startedAtUnix: number;
+  now: number;
+  staleAfterSeconds?: number;
+}): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {
+    sessionId: input.sessionId,
+    shopCode: input.shopCode,
+    shopName: input.shopName,
+  };
+  if (input.origin) {
+    attributes.origin = input.origin;
+  }
+  return {
+    aps: {
+      timestamp: input.now,
+      event: "start",
+      "attributes-type": "StoreVisitAttributes",
+      attributes,
+      "content-state": liveActivityContentState({
+        phase: "active",
+        startedAtUnix: input.startedAtUnix,
+        endedAtUnix: null,
+      }),
+      alert: {
+        title: input.shopName || "PRiSM",
+        body: "在店计费中",
+      },
+      "stale-date": input.now + (input.staleAfterSeconds ?? 3600),
+      "relevance-score": 100,
+      "input-push-token": 1,
+    },
+  };
+}
+
 export function liveActivityUpdatePayload(input: {
   startedAtUnix: number;
   now: number;
@@ -111,6 +150,11 @@ export function liveActivityEndPayload(input: {
   };
 }
 
+export function maskToken(token: string): string {
+  if (token.length <= 8) return "...";
+  return `${token.slice(0, 4)}...${token.slice(-4)} (${token.length} chars)`;
+}
+
 export function liveActivityHost(environment: LiveActivityEnvironment): string {
   return environment === "sandbox" ? "https://api.sandbox.push.apple.com" : "https://api.push.apple.com";
 }
@@ -124,7 +168,7 @@ export type ApnsTransport = (request: {
 
 export type LiveActivityPushOutcome =
   | { kind: "delivered" }
-  | { kind: "expired" }
+  | { kind: "expired"; reason?: string }
   | { kind: "skipped" }
   | { kind: "failed"; status?: number; reason?: string };
 
@@ -172,10 +216,23 @@ export class LiveActivityPusher {
         body: JSON.stringify(payload),
       });
       if (response.status === 200) return { kind: "delivered" };
-      // Apple reports a token that no longer maps to a live activity this way. The row is
-      // then dead weight and the caller drops it.
-      if (response.status === 410) return { kind: "expired" };
-      return { kind: "failed", status: response.status, reason: response.body.slice(0, 200) };
+      let reason: string | undefined;
+      try {
+        const parsed = JSON.parse(response.body) as { reason?: string };
+        reason = parsed.reason;
+      } catch {
+        reason = response.body.slice(0, 200);
+      }
+      // Apple reports 410 when token is expired/unregistered.
+      // Apple reports 400 BadDeviceToken / DeviceTokenNotForTopic if the token is permanently invalid.
+      if (
+        response.status === 410 ||
+        (response.status === 400 &&
+          (reason === "BadDeviceToken" || reason === "DeviceTokenNotForTopic" || reason === "Unregistered"))
+      ) {
+        return { kind: "expired" };
+      }
+      return { kind: "failed", status: response.status, reason };
     } catch (error) {
       return { kind: "failed", reason: error instanceof Error ? error.message : String(error) };
     }
