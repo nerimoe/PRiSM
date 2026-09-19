@@ -240,8 +240,7 @@ input::placeholder {
 .machine-hero > img {
   display: block;
   width: 100%;
-  aspect-ratio: 3/2;
-  object-fit: cover;
+  height: auto;
 }
 .machine-hero-info {
   position: relative;
@@ -747,6 +746,26 @@ button.credential-row:not(:disabled):active {
 .account-bill .bill-checkout { pointer-events: auto; color: white; background: rgb(0 122 255 / .9); border: 1px solid rgb(255 255 255 / .25); box-shadow: 0 2px 10px #0000000c; backdrop-filter: blur(18px) saturate(140%); }
 
 .bill-plan-name { min-width: 0; }
+.shop-session { display: grid; gap: 28px; }
+.shop-session > .machine-hero { margin-bottom: 24px; }
+.shop-session.has-checkout { padding-bottom: 120px; }
+.shop-checkout { position: fixed; bottom: max(16px, env(safe-area-inset-bottom)); left: 0; right: 0; width: min(480px, calc(100% - 48px)); margin: auto; z-index: 20; pointer-events: none; }
+.shop-checkout .bill-checkout { pointer-events: auto; color: white; background: rgb(0 122 255 / .9); border: 1px solid rgb(255 255 255 / .25); box-shadow: 0 2px 10px #0000000c; backdrop-filter: blur(18px) saturate(140%); }
+.checkout-error { pointer-events: auto; padding: 12px; margin-bottom: 12px; border-radius: 12px; background: var(--color-panel); color: var(--color-coral); }
+.checkout-success { position: fixed; inset: 0; z-index: 100; pointer-events: auto; background: var(--color-canvas); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; padding: 32px; text-align: center; }
+.player-dialog .checkout-success { position: absolute; }
+.checkout-success svg { width: 100px; height: 100px; fill: none; stroke: #23815d; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.checkout-success circle { stroke-dasharray: 271; animation: checkout-circle .5s ease-out both; }
+.checkout-success path { stroke-dasharray: 70; animation: checkout-check .35s .4s ease-out both; }
+.checkout-success h2 { font-size: 24px; font-weight: 600; }
+.checkout-success p { font-size: 14px; opacity: .65; }
+.receipt-status { display: flex; align-items: center; gap: 12px; }
+.receipt-status > span { border: 2px solid #23815d; color: #23815d; border-radius: 50%; width: 36px; height: 36px; display: grid; place-items: center; }
+.receipt-status h2 { font-weight: 600; }
+.receipt-status p { font-size: 12px; opacity: .6; margin-top: 4px; }
+@keyframes checkout-circle { from { stroke-dashoffset: 271; } to { stroke-dashoffset: 0; } }
+@keyframes checkout-check { from { stroke-dashoffset: 70; } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .checkout-success circle, .checkout-success path { animation: none; } }
 .bill-plan-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 8px; vertical-align: 2px; flex-shrink: 0; }
 .player-dialog:has(.account-bill), .player-dialog:has(.account-bill) .player-dialog-content { max-height: 100dvh; }
 @media (max-width: 600px) {

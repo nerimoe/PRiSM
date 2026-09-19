@@ -1,6 +1,7 @@
 import type {
   AssetHoldingUnavailableReason,
   Cents,
+  BillTimeline,
   DeviceCommand,
   DeviceCommandType,
   DeviceState,
@@ -95,6 +96,7 @@ export type PlayerRedeemRecordListItem = {
 };
 
 export type PlayerQueries = {
+  getLatestPlayerCheckout?(playerId: string): Promise<{ playerSettlement: { total: number; settledAt: string }; timeline: BillTimeline; chargeItems: { id: string; label: string; amount: number }[]; adjustments: { id: string; label: string; amount: number }[] } | null>;
   getPlayerSummary(playerId: string): Promise<PlayerSummary>;
   listPlayerAssets?(playerId: string): Promise<PlayerAssets>;
   listPlayerSessionHistory?(playerId: string): Promise<SessionHistoryListItem[]>;

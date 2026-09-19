@@ -71,6 +71,7 @@ export type Settlement = {
 };
 
 export type PlayerCheckout = {
+  timeline?: BillTimeline;
   id: string;
   playerId: string;
   subtotal: Cents;

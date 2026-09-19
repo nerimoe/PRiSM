@@ -651,6 +651,7 @@ describe("createSettlementService", () => {
       "session-music",
     ]);
     expect(settlements.checkouts).toEqual([{
+      timeline: expect.objectContaining({ tracks: expect.any(Array), events: expect.any(Array), totals: expect.any(Array) }),
       id: "player-checkout:session-mahjong",
       playerId: "player-1",
       subtotal: moneyFixture(105),
@@ -658,6 +659,9 @@ describe("createSettlementService", () => {
       status: "settled",
       settledAt: new Date("2026-06-07T11:30:00.000Z"),
     }]);
+    expect(settlements.checkouts[0]!.timeline?.tracks).toHaveLength(3);
+    expect(settlements.checkouts[0]!.timeline?.events.flatMap(event => event.entries).some(entry => entry.kind === "current")).toBe(false);
+    expect(settlements.checkouts[0]!.timeline?.totals.reduce((total, item) => total + item.amount, 0)).toBe(105);
     expect(assets.assetTransactions).toEqual([
       {
         id: "asset-tx:session.settlement:session-mahjong",

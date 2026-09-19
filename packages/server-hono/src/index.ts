@@ -517,6 +517,13 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerAssetsView(assets));
   });
 
+  app.get("/api/v1/player/checkout/latest", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.playerQueries.getLatestPlayerCheckout) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    return context.json({ receipt: await dependencies.playerQueries.getLatestPlayerCheckout(principal.playerId) });
+  });
+
   app.get("/api/v1/player/sessions/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {

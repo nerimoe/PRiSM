@@ -317,6 +317,7 @@ export function toPlayerCheckoutResultView(
 ): Record<string, unknown> {
   const detailsBySessionId = new Map(result.sessionDetails.map((detail) => [detail.sessionId, detail]));
   return {
+    timeline: buildBillTimeline({ at: result.playerSettlement.settledAt, sessions: result.sessionDetails.map(detail => ({ ...detail, endedAt: detail.endedAt ?? result.playerSettlement.settledAt, chargeItems: result.settlements.find(record => record.settlement.sessionId === detail.sessionId)?.chargeItems ?? [] })), adjustments: result.adjustments, globalCapWindows: result.globalCapWindows }),
     playerSettlement: {
       ...result.playerSettlement,
       subtotal: yuanOf(result.playerSettlement.subtotal),

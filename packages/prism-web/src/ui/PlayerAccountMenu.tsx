@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { useMatch, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
@@ -14,14 +15,19 @@ import {
 export { PlayerDialog };
 
 export function PlayerAccountMenu() {
+  const shopPage = useMatch("/t/:shopCode");
+  const navigate = useNavigate();
   const { user, logout, activeShop, billingActive, setBillingActive } = useAuth();
   const { t } = useI18n();
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [section, setSection] = useState<Section | null>(null);
+  const [checkoutPending, setCheckoutPending] = useState(false);
   const menu = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     let cancelled = false;
     setInfo(null);
+    setSection(null);
+    setCheckoutPending(false);
     if (user && activeShop)
       api<ShopInfo>(shopApi(activeShop))
         .then(async (result) => {
@@ -67,7 +73,7 @@ export function PlayerAccountMenu() {
         </summary>
         <div className="player-menu-items">
           {info?.shop.billingEnabled &&
-            playerSections.map((item) => (
+            playerSections.filter(item => !shopPage || item !== "账单").map((item) => (
               <button
                 key={item}
                 onClick={() => {
@@ -89,11 +95,13 @@ export function PlayerAccountMenu() {
         </div>
       </details>
       {section && info && (
-        <PlayerDialog title={t(section)} onClose={() => setSection(null)}>
+        <PlayerDialog title={t(section)} onClose={() => setSection(null)} dismissDisabled={checkoutPending}>
           <AccountContent
             key={section + activeShop}
             section={section}
             info={info}
+            onCheckoutPending={setCheckoutPending}
+            onCheckout={() => { setSection(null); setCheckoutPending(false); setBillingActive(info.shop.publicId, false); navigate(`/t/${encodeURIComponent(info.shop.publicId)}`); }}
           />
         </PlayerDialog>
       )}

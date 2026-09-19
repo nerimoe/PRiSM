@@ -1,172 +1,68 @@
-// Standalone shop surface at /t/:shopCode — the shop code without a machine id.
-//
-// This is the deep-link target for the PRiSM Link Live Activity / Dynamic Island. It works
-// with no machine ticket, so it relies only on shop-scoped player endpoints (which need a
-// session cookie plus a shop_player_accounts row). Admission is deliberately absent: only a
-// scanned machine ticket proves the player is on site, so this page settles bills instead of
-// starting sessions.
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import { RequireLogin } from "./RequireLogin";
-import { shopApi, type ShopInfo, type Summary } from "./BillingPages";
-import { AccountContent, playerSections, type Section } from "./PlayerAccount";
+import { post, shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
+import { ShopHero, SessionSignIn, QQBinding } from "./SessionContent";
+import { BillTotal, BillTimeline } from "./BillTimeline";
+import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
 
 export default function ShopPage() {
   const { shopCode = "" } = useParams();
-  return (
-    <RequireLogin>
-      <ShopSurface shopCode={shopCode} />
-    </RequireLogin>
-  );
+  const { user } = useAuth();
+  return <ShopSurface key={`${shopCode}:${user?.id ?? "guest"}`} shopCode={shopCode} />;
 }
 
 function ShopSurface({ shopCode }: { shopCode: string }) {
-  const { t } = useI18n();
-  const { user, setActiveShop, setBillingActive } = useAuth();
+  const { t, errorText } = useI18n();
+  const { user, loading, setActiveShop, setBillingActive } = useAuth();
   const [info, setInfo] = useState<ShopInfo | null>(null);
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [section, setSection] = useState<Section>("账单");
+  const [bill, setBill] = useState<Preview | null>(null);
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-
-  // A deep link carries the shop in the path, so seed the shared active shop here.
-  // MachineLoginPage is otherwise the only writer.
+  const checkoutPending = useRef(false);
+  useEffect(() => { setActiveShop(shopCode); }, [shopCode, setActiveShop]);
   useEffect(() => {
-    if (shopCode) setActiveShop(shopCode);
-  }, [shopCode, setActiveShop]);
-
-  const load = useCallback(async () => {
-    if (!shopCode) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api<ShopInfo>(shopApi(shopCode));
-      setInfo(result);
-      const canReadPlayer =
-        result.shop.billingEnabled && result.membership != null;
-      const current = canReadPlayer
-        ? await api<Summary>(shopApi(shopCode, "player/me"))
-        : null;
-      setSummary(current);
-      setBillingActive(shopCode, !!current?.activeSession);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : t("操作失败"));
-    } finally {
-      setBusy(false);
+    if (loading) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function load() {
+      setError("");
+      try {
+        const shop = await api<ShopInfo>(shopApi(shopCode));
+        if (cancelled) return;
+        setInfo(shop);
+        const current = user && shop.shop.billingEnabled && shop.membership
+          ? await api<Summary>(shopApi(shopCode, "player/me")) : null;
+        const preview = current?.activeSession ? await api<Preview>(shopApi(shopCode, "player/checkout/preview"), post()) : null;
+        const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest")) : null;
+        if (cancelled || checkoutPending.current) return;
+        setBill(preview); setReceipt(latest?.receipt ?? null);
+        setBillingActive(shopCode, !!current?.activeSession);
+        if (user && shop.shop.billingEnabled && !shop.membership) timer = setTimeout(load, 3000);
+      } catch (e) { if (!cancelled) setError(errorText(e instanceof Error ? e.message : "操作失败")); }
+      finally { if (!cancelled) setBusy(false); }
     }
-  }, [shopCode, setBillingActive, t]);
-
-  useEffect(() => {
-    void load();
-  }, [load, attempt]);
-
-  const active = summary?.activeSession ?? null;
-  const canUseAccount = !!info?.shop.billingEnabled && info?.membership != null;
-
-  if (busy && !info)
-    return (
-      <div className="rounded border border-ink/10 bg-panel p-6">
-        <Loader2 className="mx-auto animate-spin" size={24} />
-      </div>
-    );
-  if (!info)
-    return (
-      <div className="rounded border border-ink/10 bg-panel p-6">
-        <p role="alert">{error || t("没有找到这个店铺")}</p>
-        <button className="mt-3 underline" onClick={() => setAttempt((v) => v + 1)}>
-          {t("重试")}
-        </button>
-      </div>
-    );
-
-  const name = info.shop.name || shopCode;
-  return (
-    <div className="shop-surface grid gap-6">
-      <header className="grid gap-2">
-        <h1 className="text-xl font-semibold">{name}</h1>
-        {active ? (
-          <p className="inline-flex items-center gap-2 text-sm text-ink/70">
-            <span className="h-1.5 w-1.5 rounded-full bg-green-600" />
-            {t("正在计费 · 查看并结账")}
-          </p>
-        ) : (
-          <p className="text-sm text-ink/60">
-            {t("在这里查看账单、兑换、记录与钱包。")}
-          </p>
-        )}
-        <p className="text-xs text-ink/50">
-          {user?.displayName || user?.username || user?.id}
-        </p>
-      </header>
-
-      {error && (
-        <p role="alert" className="text-sm text-coral">
-          {error}
-        </p>
-      )}
-
-      {!info.shop.billingEnabled && (
-        <p className="rounded border border-ink/10 bg-panel p-5 text-sm text-ink/60">
-          {t("本店未启用入场计费，暂无账单功能。")}
-        </p>
-      )}
-
-      {info.shop.billingEnabled && info.membership == null && (
-        <section className="grid gap-3 rounded border border-ink/10 bg-panel p-5">
-          <h2 className="font-semibold">{t("先绑定 QQ 才能使用本店计费")}</h2>
-          <p className="text-sm leading-relaxed text-ink/60">
-            {t(
-              "本店的玩家档案与 QQ 绑定，请在店铺机器人中完成验证后再回到这里。",
-            )}
-          </p>
-          {info.shop.botContact && (
-            <p className="text-sm">
-              {t("店铺联系方式")}: <span className="font-mono">{info.shop.botContact}</span>
-            </p>
-          )}
-        </section>
-      )}
-
-      {/* Admission belongs to a machine: only a scanned ticket proves the player is at one,
-          so this page never starts a session. It points at the machine instead. */}
-      {canUseAccount && !active && (
-        <p className="rounded border border-ink/10 bg-panel p-5 text-sm leading-relaxed text-ink/60">
-          {t("请碰一下 NFC 或扫描机台上的二维码入场")}
-        </p>
-      )}
-
-      {canUseAccount && (
-        <section className="grid gap-4">
-          <nav className="flex flex-wrap gap-2" aria-label={t("账户")}>
-            {playerSections.map((item) => (
-              <button
-                key={item}
-                className={`focus-ring rounded-full border px-4 py-1.5 text-sm ${
-                  item === section
-                    ? "border-transparent bg-ink text-panel"
-                    : "border-ink/15"
-                }`}
-                aria-current={item === section ? "page" : undefined}
-                onClick={() => setSection(item)}
-              >
-                {t(item)}
-              </button>
-            ))}
-          </nav>
-          <div className="rounded border border-ink/10 bg-panel p-5">
-            <AccountContent
-              key={section + shopCode + (active ? "active" : "idle")}
-              section={section}
-              info={info}
-            />
-          </div>
-        </section>
-      )}
-    </div>
-  );
+    setBusy(true); void load();
+    const refresh = () => { if (!document.hidden && !checkoutPending.current) { clearTimeout(timer); setAttempt(value => value + 1); } };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    return () => { cancelled = true; clearTimeout(timer); document.removeEventListener("visibilitychange", refresh); window.removeEventListener("focus", refresh); };
+  }, [shopCode, user, loading, attempt, errorText, setBillingActive]);
+  return <section className={`machine-session shop-session ${bill ? "has-checkout" : ""}`}>
+    {info && <ShopHero name={info.shop.name || shopCode} heroUrl={info.shop.heroUrl} subtitle={!user ? "" : bill ? t("计费中") : receipt ? t("结账成功") : busy ? t("正在加载") : t("未入场")} />}
+    {error && <div role="alert" className="text-coral">{error}<button className="ml-3 underline" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></div>}
+    {loading || (busy && !info) ? <Loader2 className="mx-auto animate-spin" /> : info && !user ? <SessionSignIn next={`/t/${encodeURIComponent(shopCode)}`} /> : busy && !bill && !receipt ? <Loader2 className="mx-auto animate-spin" /> : info && user && <>
+      {!info.shop.billingEnabled ? <p className="session-subtitle">{t("本店未启用入场计费，暂无账单功能。")}</p>
+        : !info.membership ? <QQBinding code={shopCode} />
+        : bill ? <div className="grid gap-5"><BillTotal preview={bill} /><BillTimeline preview={bill} /></div>
+        : receipt ? <SettledBill receipt={receipt} />
+        : !error && <p className="session-subtitle">{t("请碰一下 NFC 或扫描机台上的二维码入场")}</p>}
+      {bill && <footer className="shop-checkout"><CheckoutButton info={info} onPendingChange={pending => { checkoutPending.current = pending; }} onComplete={result => { checkoutPending.current = false; setReceipt(result); setBill(null); setBillingActive(shopCode, false); }} /></footer>}
+    </>}
+  </section>;
 }

@@ -452,7 +452,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
   app.delete("/api/v1/me/live-activity/start-token/:clientId?", async (c) => {
     const user = requireUser(c);
     const paramId = c.req.param("clientId");
-    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+    const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({}));
     const clientId = (paramId ?? (typeof body?.clientId === "string" ? body.clientId : c.req.query("clientId")))?.trim();
     if (clientId) {
       await c.env.DB.prepare(

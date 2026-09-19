@@ -4,11 +4,12 @@ import { type Cents, addCents, isZeroCents, yuanOf, ZERO_CENTS } from "@prism/co
 /** Presentation only: amounts come from the engine, never recalculated by clients. */
 export function buildBillTimeline(input: {
   at: Date;
+  timeZone?: string;
   sessions: { sessionId: string; label: string | null; startedAt: Date; endedAt: Date | null; chargeItems: ChargeItem[] }[];
   adjustments: SettlementAdjustment[];
   globalCapWindows: TimeCapPricingWindow[];
 }): BillTimeline {
-  const timeZone = input.sessions.flatMap(s => s.chargeItems).find(i => i.pricingExplanation?.timeZone)?.pricingExplanation?.timeZone ?? "UTC";
+  const timeZone = input.sessions.flatMap(s => s.chargeItems).find(i => i.pricingExplanation?.timeZone)?.pricingExplanation?.timeZone ?? input.timeZone ?? "UTC";
   const formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const local = (at: string) => {
     const parts = formatter.formatToParts(new Date(at));

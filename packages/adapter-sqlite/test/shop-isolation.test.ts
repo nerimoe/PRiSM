@@ -1,4 +1,4 @@
-import { centsOf, yuanOf } from "@prism/core";
+import { centsOf, centsOfInteger, yuanOf } from "@prism/core";
 import { readdirSync, readFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
@@ -78,7 +78,7 @@ test("shops isolate colliding identities, wallets, reports, updates and leases",
   expect(
     (await a.playerIdentities.findPlayerByIdentity("qq", "12345"))?.displayName,
   ).toBe("A");
-  expect(yuanOf((await b.assets.listAssetHoldings("same-player"))[0]!.quantity)).toBe(
+  expect(yuanOf(centsOfInteger((await b.assets.listAssetHoldings("same-player"))[0]!.quantity))).toBe(
     200,
   );
   await a.players.updateStatus("same-player", "banned");

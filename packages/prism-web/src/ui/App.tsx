@@ -49,7 +49,7 @@ function Shell() {
   const { t } = useI18n();
   const { user } = useAuth();
   const { pathname } = useLocation();
-  const machineSession = pathname === "/m" || pathname.startsWith("/m/");
+  const machineSession = pathname === "/m" || pathname.startsWith("/m/") || /^\/t\/[^/]+\/?$/.test(pathname);
   return (
     <div className="min-h-screen bg-canvas text-ink">
       {!machineSession && (

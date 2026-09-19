@@ -1,7 +1,7 @@
+import { QQBinding } from "./SessionContent";
 import {
   useCallback,
   useEffect,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -12,7 +12,6 @@ import { useI18n } from "../i18n";
 import {
   operationLocation,
   shopApi,
-  post,
   type ShopInfo,
   type Summary,
   EntryPricing,
@@ -43,12 +42,6 @@ export function DeviceControls({
   const { setBillingActive } = useAuth();
   const [state, setState] = useState<DeviceState | null>(null);
   const [info, setInfo] = useState<ShopInfo | null>(null);
-  const [binding, setBinding] = useState<{
-    code: string;
-    expiresAt: string;
-  } | null>(null);
-  const generating = useRef(false);
-  const [bindingFailed, setBindingFailed] = useState(false);
   const [password, setPassword] = useState<{
     temporaryPassword: string;
     expiresAt: string;
@@ -110,28 +103,6 @@ export function DeviceControls({
     timer = setTimeout(poll, 3000);
     return () => { stopped = true; clearTimeout(timer); };
   }, [state?.gate, waitingPower, cardBusy, busy, refresh, failed, machine.capabilities.mahjong]);
-  useEffect(() => {
-    if (
-      state?.gate !== "qq" ||
-      generating.current ||
-      bindingFailed ||
-      (binding && Date.parse(binding.expiresAt) > Date.now())
-    )
-      return;
-    generating.current = true;
-    api<{ code: string; expiresAt: string }>(
-      shopApi(code, "qq-binding"),
-      post(),
-    )
-      .then(setBinding)
-      .catch((e) => {
-        setBindingFailed(true);
-        failed(e);
-      })
-      .finally(() => {
-        generating.current = false;
-      });
-  }, [state, binding, bindingFailed, code, failed]);
   async function act(action: string, fn: () => Promise<void>) {
     if (busy || cardBusy) return;
     setBusy(action);
@@ -192,30 +163,7 @@ export function DeviceControls({
       {!state || !info ? (
         error ? <button className="session-action" onClick={() => act("load", refresh)}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
       ) : state.gate === "qq" ? (
-        <div className="grid gap-6">
-          <h2>{t("绑定 QQ")}</h2>
-          <div className="binding-code">
-            <p>{t("在 QQ 群中发送")}</p>
-            {binding ? (
-              <>
-                <code className="select-all">prism.bind {binding.code}</code>
-                <small>
-                  {t("有效期至")}{" "}
-                  {new Date(binding.expiresAt).toLocaleTimeString()}
-                </small>
-              </>
-            ) : bindingFailed ? (
-              <button
-                className="session-action"
-                onClick={() => setBindingFailed(false)}
-              >
-                {t("重试")}
-              </button>
-            ) : (
-              spinner
-            )}
-          </div>
-        </div>
+        <QQBinding code={code} />
       ) : (
         <>
           {state.gate === "entry" && (

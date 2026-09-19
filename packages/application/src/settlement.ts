@@ -1,3 +1,4 @@
+import { buildBillTimeline } from "./bill-timeline";
 import type {
   CheckoutCommit,
   AssetDefinitionRepository,
@@ -776,6 +777,12 @@ async function persistUnifiedPlayerCheckout(
     anchorSessionId: anchorSession.id,
   });
   const sessions = details.sessionResults.map((result) => result.session);
+  checkout.timeline = buildBillTimeline({
+    at: now,
+    sessions: details.sessionResults.map(({ session, chargeItems }) => ({ sessionId: session.id, label: session.label ?? null, startedAt: session.startedAt, endedAt: session.endedAt ?? now, chargeItems })),
+    adjustments: settlements.flatMap(record => record.adjustments),
+    globalCapWindows: details.globalCapWindows,
+  });
   if (dependencies.commitCheckout) {
     await dependencies.commitCheckout({ assets: assetCommit, checkout, settlements, sessions, pricingHistory: pricingHistoryEntries, pricingCapHistory });
   } else {

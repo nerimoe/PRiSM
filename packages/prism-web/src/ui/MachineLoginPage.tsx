@@ -2,13 +2,9 @@ import { DeviceControls } from "./DeviceControls";
 import { useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronRight, Fingerprint, Loader2 } from "lucide-react";
-import {
-  browserSupportsWebAuthn,
-  startAuthentication,
-} from "@simplewebauthn/browser";
+import { ChevronRight, Loader2 } from "lucide-react";
+import { ShopHero, SessionSignIn } from "./SessionContent";
 import { Api, ApiError, type Card, type PublicMachine } from "../api";
-import { passkeyErrorMessage } from "../passkeys";
 import { useAuth } from "./AuthContext";
 
 export function MachineLoginPage() {
@@ -110,17 +106,14 @@ function MachineSessionPage({
   queryError: string | null;
 }) {
   const { t, errorText } = useI18n();
-  const { user, refresh } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [cards, setCards] = useState<Card[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
   const [cardsError, setCardsError] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "locating" | "sending" | "success">("idle");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
-  const [heroFailed, setHeroFailed] = useState(false);
-  const [munetBusy, setMunetBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const shownQueryError = useRef<string | null>(null);
 
   useEffect(() => {
@@ -159,22 +152,6 @@ function MachineSessionPage({
       cancelled = true;
     };
   }, [machine, user, reload]);
-
-  const loginWithPasskey = async () => {
-    setPasskeyBusy(true);
-    try {
-      const response = await startAuthentication({
-        optionsJSON: await Api.passkeyOptions(),
-      });
-      await Api.loginWithPasskey(response);
-      await refresh();
-    } catch (caught) {
-      const message = passkeyErrorMessage(caught);
-      if (message) window.alert(errorText(message));
-    } finally {
-      setPasskeyBusy(false);
-    }
-  };
 
   const loginWithCard = async (cardId: string) => {
     if (status !== "idle") return;
@@ -218,80 +195,10 @@ function MachineSessionPage({
   const busy = status !== "idle";
   return (
     <section className="machine-session">
-      <header className="machine-hero">
-        {machine.shop.heroUrl && !heroFailed && (
-          <img
-            src={machine.shop.heroUrl}
-            alt=""
-            decoding="async"
-            onError={() => setHeroFailed(true)}
-          />
-        )}
-        <div className="machine-hero-info">
-          {machine.shop.heroUrl && !heroFailed && (
-            <img
-              src={machine.shop.heroUrl}
-              alt=""
-              decoding="async"
-              aria-hidden="true"
-            />
-          )}
-          <h1>{machine.shop.name}</h1>
-          <p>{machine.name}</p>
-        </div>
-      </header>
+      <ShopHero name={machine.shop.name} heroUrl={machine.shop.heroUrl} subtitle={machine.name} />
 
       {!Object.values(machine.capabilities).some(Boolean) ? null : !user ? (
-        <div className="session-actions">
-          <button
-            className="session-action primary"
-            disabled={passkeyBusy || munetBusy}
-            onClick={() => {
-              setMunetBusy(true);
-              window.location.assign(
-                `/api/v1/auth/munet?next=${encodeURIComponent(munetNext)}`,
-              );
-            }}
-          >
-            {munetBusy ? (
-              <Loader2
-                size={24}
-                className="shrink-0 animate-spin"
-                aria-hidden="true"
-              />
-            ) : (
-              <img
-                src="/munet-logo.png"
-                alt=""
-                width={24}
-                height={24}
-                className="size-6 shrink-0 object-contain"
-              />
-            )}
-            {munetBusy ? t("正在连接 MuNET…") : t("使用 MuNET 登录")}
-          </button>
-          <button
-            className="session-action"
-            disabled={passkeyBusy || munetBusy || !browserSupportsWebAuthn()}
-            onClick={() => void loginWithPasskey()}
-          >
-            {passkeyBusy ? (
-              <Loader2
-                size={24}
-                className="shrink-0 animate-spin"
-                aria-hidden="true"
-              />
-            ) : (
-              <Fingerprint size={24} className="shrink-0" aria-hidden="true" />
-            )}
-            {passkeyBusy ? t("正在验证 Passkey…") : t("使用 Passkey 登录")}
-          </button>
-          {!browserSupportsWebAuthn() && (
-            <p className="session-subtitle text-center">
-              {t("当前浏览器不支持 Passkey，请使用 MuNET 登录")}
-            </p>
-          )}
-        </div>
+        <SessionSignIn next={munetNext} />
       ) : (
         <DeviceControls
           key={reload}

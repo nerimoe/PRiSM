@@ -40,7 +40,7 @@ export type ShopInfo = {
       }[];
     }[];
   };
-  shop: Settings & { publicId: string; name: string; timeZone: string };
+  shop: Settings & { publicId: string; name: string; timeZone: string; heroUrl?: string | null };
   membership: { playerId: string } | null;
 };
 export type Summary = {

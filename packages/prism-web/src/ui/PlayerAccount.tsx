@@ -1,6 +1,5 @@
-// Shared player account surfaces. Extracted from PlayerAccountMenu so the standalone
-// shop page (/t/:shopCode) can render the same bill, redeem, history and wallet UI
-// without a machine ticket and without the header menu's dropdown chrome.
+// Account sheets share their bill and checkout components with the standalone shop page.
+import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
 import { BillTotal, BillTimeline } from "./BillTimeline";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
@@ -10,7 +9,6 @@ import { useAuth } from "./AuthContext";
 import {
   shopApi,
   post,
-  operationLocation,
   type ShopInfo,
   type Summary,
   type Preview,
@@ -25,10 +23,12 @@ export function PlayerDialog({
   title,
   children,
   onClose,
+  dismissDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  dismissDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
@@ -39,9 +39,9 @@ export function PlayerDialog({
     <dialog
       ref={ref}
       className="player-dialog"
-      onCancel={onClose}
+      onCancel={event => { if (dismissDisabled) event.preventDefault(); else onClose(); }}
       onClick={(e) => {
-        if (e.target === ref.current) onClose();
+        if (!dismissDisabled && e.target === ref.current) onClose();
       }}
     >
       <div className="player-dialog-content">
@@ -50,6 +50,7 @@ export function PlayerDialog({
           <button
             className="focus-ring p-2"
             onClick={onClose}
+            disabled={dismissDisabled}
             aria-label={t("关闭")}
           >
             <X size={22} />
@@ -64,14 +65,18 @@ export function PlayerDialog({
 export function AccountContent({
   section,
   info,
+  onCheckout,
+  onCheckoutPending,
 }: {
   section: Section;
   info: ShopInfo;
+  onCheckout: () => void;
+  onCheckoutPending: (pending: boolean) => void;
 }) {
   const { t, errorText } = useI18n();
   const code = info.shop.publicId;
   const { setBillingActive } = useAuth();
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [assets, setAssets] = useState<Assets | null>(null);
   const [history, setHistory] = useState<History | null>(null);
@@ -94,9 +99,10 @@ export function AccountContent({
                 post(),
               )
             : null;
+          const latest = current.activeSession ? null : await api<{ receipt: Receipt | null }>(shopApi(code, "player/checkout/latest"));
           if (!cancelled) {
+            setReceipt(latest?.receipt ?? null);
             setBillingActive(code, !!current.activeSession);
-            setSummary(current);
             setPreview(bill);
           }
         } else if (section === "钱包") {
@@ -125,20 +131,7 @@ export function AccountContent({
     setBusy(true);
     setError("");
     try {
-      await playerOperation(
-        shopApi(
-          code,
-          section === "兑换" ? "player/redeem" : "player/checkout/confirm",
-        ),
-        section === "兑换"
-          ? { code: redeem.trim() }
-          : {
-              location: await operationLocation(
-                info.shop.locationEnabled ?? info.shop.checkoutGeo,
-              ),
-            },
-      );
-      if (section === "账单") setBillingActive(code, false);
+      await playerOperation(shopApi(code, "player/redeem"), { code: redeem.trim() });
       setDone(true);
       setPreview(null);
     } catch (e) {
@@ -170,8 +163,8 @@ export function AccountContent({
           <Loader2 className="mx-auto animate-spin" size={24} />
         )}
         {section === "账单" &&
-          (done ? (
-            <p>{t("已结账")}</p>
+          (receipt ? (
+            <SettledBill receipt={receipt} />
           ) : preview ? (
             <BillTimeline preview={preview} />
           ) : (
@@ -239,14 +232,7 @@ export function AccountContent({
       </div>
       {section === "账单" && !done && preview && (
         <footer className="account-footer">
-          <button
-            className="session-action bill-checkout w-full"
-            disabled={busy}
-            onClick={submit}
-          >
-            {busy && <Loader2 size={20} className="animate-spin" />}
-            {t("结账")}
-          </button>
+          <CheckoutButton info={info} onComplete={onCheckout} onPendingChange={onCheckoutPending} />
         </footer>
       )}
     </div>

@@ -2259,6 +2259,13 @@ async function savePlayerCheckout(
       checkout.settledAt.toISOString(),
     ],
   );
+  if (checkout.timeline) {
+    await executor.run(
+      `INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES (${sqlShop(executor)}, ?, ?)
+       ON CONFLICT(shop_id, checkout_id) DO UPDATE SET timeline_json = excluded.timeline_json`,
+      [checkout.id, JSON.stringify(checkout.timeline)],
+    );
+  }
 }
 
 export function toPricingConfig(row: PricingConfigRow): PricingConfig {

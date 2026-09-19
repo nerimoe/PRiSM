@@ -1982,8 +1982,13 @@ describe("createPrismApp", () => {
   });
 
   it("confirms player checkout through a billing view", async () => {
+    const receipt = { playerSettlement: { total: 20, settledAt: "2026-06-07T11:00:00.000Z" }, timeline: { tracks: [], events: [], totals: [] }, chargeItems: [], adjustments: [] };
     const app = createPrismApp({
       playerQueries: {
+        async getLatestPlayerCheckout(playerId) {
+          expect(playerId).toBe("player-1");
+          return receipt;
+        },
         async getPlayerSummary() {
           throw new Error("checkout route must not query summary data");
         },
@@ -2100,6 +2105,7 @@ describe("createPrismApp", () => {
         status: "settled",
         settledAt: "2026-06-07T11:00:00.000Z",
       },
+      timeline: expect.objectContaining({ tracks: expect.any(Array), events: expect.any(Array), totals: expect.any(Array) }),
       settlements: [
         {
           settlement: {
@@ -2146,6 +2152,11 @@ describe("createPrismApp", () => {
       ],
       wallet: { balanceBefore: 100, balanceAfter: 80 },
     });
+    const latest = await app.request("/rpc/player/checkout/latest", { headers: { Authorization: "Bearer player-session-token", "X-PRiSM-Player-Id": "other-player" } });
+    expect(latest.status).toBe(200);
+    expect(await latest.json()).toEqual({ receipt });
+    expect((await app.request("/rpc/player/checkout/latest")).status).toBe(403);
+    expect((await app.request("/rpc/player/checkout/latest", { headers: { Authorization: "Bearer bot-token", "X-PRiSM-Player-Id": "player-1" } })).status).toBe(403);
   });
 
   it("allows staff to checkout a player session with an override", async () => {
