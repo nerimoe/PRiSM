@@ -235,14 +235,27 @@ export async function pushSessionEvent(
     return;
   }
 
-  // End event: find existing per-activity tokens
-  const tokens = await c.env.DB.prepare(
-    `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+  // End event: find existing per-activity tokens.
+  // Match by player account, or directly by session_id when known, so tokens tied to the
+  // ending session are always resolved even if identity resolution differed across channels.
+  let tokensQuery: string;
+  let bindings: unknown[];
+  if (input.sessionIds.length > 0) {
+    const placeholders = input.sessionIds.map(() => "?").join(",");
+    tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+     FROM live_activity_tokens t
+     LEFT JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+     WHERE t.shop_id=? AND (t.session_id IN (${placeholders}) OR a.player_id=?)`;
+    bindings = [input.shopId, ...input.sessionIds, input.playerId];
+  } else {
+    tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
      FROM live_activity_tokens t
      JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
-     WHERE t.shop_id=? AND a.player_id=?`,
-  )
-    .bind(input.shopId, input.playerId)
+     WHERE t.shop_id=? AND a.player_id=?`;
+    bindings = [input.shopId, input.playerId];
+  }
+  const tokens = await c.env.DB.prepare(tokensQuery)
+    .bind(...bindings)
     .all<TokenRow>();
   const rows = tokens.results ?? [];
   if (rows.length === 0) return;

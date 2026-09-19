@@ -508,6 +508,50 @@ test("settling a visit pushes an end event to the player's phone", async () => {
   }
 });
 
+test("settling a visit pushes end to tokens registered for the session even without direct player account mapping", async () => {
+  const pushes: { url: string; headers: Record<string, string>; body: string }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    pushes.push({
+      url: String(input),
+      headers: (init?.headers ?? {}) as Record<string, string>,
+      body: String(init?.body ?? ""),
+    });
+    return new Response("", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    await routeEnv.DB.prepare("INSERT OR IGNORE INTO users(id) VALUES ('other-user')").run();
+    const startedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    await routeEnv.DB.prepare(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json,payment_status) VALUES ('a','sess-unmapped','p',?,'active','[]','unpaid')",
+    )
+      .bind(startedAt)
+      .run();
+    await routeEnv.DB.prepare(
+      "INSERT INTO live_activity_tokens(id,shop_id,user_id,activity_id,token,environment,bundle_id,session_id,attributes_json,created_at,updated_at) VALUES ('t-unmapped','a','other-user','act-unmapped','11223344556677889900112233445566','sandbox','moe.neri.hinatago','sess-unmapped','{}',?,?)",
+    )
+      .bind(startedAt, startedAt)
+      .run();
+
+    const response = await e2eRequest("/api/v1/shops/a/player/checkout/confirm", {
+      operationId: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(pushes.some((p) => p.url.includes("11223344556677889900112233445566"))).toBe(true);
+  } finally {
+    globalThis.fetch = realFetch;
+    await routeEnv.DB.prepare("DELETE FROM live_activity_tokens WHERE id='t-unmapped'").run();
+    await routeEnv.DB.prepare("UPDATE sessions SET status='closed', ended_at=? WHERE id='sess-unmapped'")
+      .bind(new Date().toISOString())
+      .run();
+    await routeEnv.DB.prepare("DELETE FROM users WHERE id='other-user'").run();
+  }
+});
+
 test("a failed checkout never notifies the phone", async () => {
   const pushes: unknown[] = [];
   const realFetch = globalThis.fetch;
