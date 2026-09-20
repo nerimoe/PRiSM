@@ -22,7 +22,7 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
     sessions.push({ sessionId: id, ...session, chargeItems });
     records.push({ settlement: { sessionId: id, subtotal: centsOf(12), total: centsOf(12), status: "settled" as const, settledAt: now() }, chargeItems, adjustments: [] });
   }
-  const timeline = { tracks: sessions.map((session, lane) => ({ id: session.id, name: session.label, lane, color: lane, startedAt: session.startedAt.toISOString(), endedAt: session.endedAt.toISOString() })), events: [], totals: [{ name: "entry", amount: 12 }, { name: "table", amount: 12 }] };
+  const timeline = { tracks: sessions.map((session, lane) => ({ id: session.id, name: `Plan ${lane}`, lane, color: lane, startedAt: session.startedAt.toISOString(), endedAt: session.endedAt.toISOString() })), events: [], totals: [{ name: "Plan 0", amount: 12 }, { name: "Plan 1", amount: 12 }] };
   await repo.settlements.saveCheckout!({ id: "player-checkout:entry", playerId: "player", subtotal: centsOf(24), total: centsOf(24), status: "settled", settledAt: now(), timeline }, records);
   await repo.assets.commitAssetTransaction({ transaction: { id: "asset-tx:session.settlement:entry", playerId: "player", kind: "session.settlement", refId: "entry", createdAt: now(), metadata: { walletBalanceAfter: centsOf(76) } }, holdingChanges: { upserts: [], deleteIds: [] }, assetLedgerEntries: [] });
   const latest = await queries("shop").getLatestPlayerCheckout!("player");
@@ -54,6 +54,18 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.amount != null).map(entry => [entry.name, entry.rule])).toEqual([["入场方案", "日间"], ["table", "日间"]]);
   expect(legacy?.timeline.events[0]?.time).toBe("19:00");
   expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "end")).toHaveLength(2);
+  db.run("UPDATE sessions SET pricing_config_ids_json = '[\"plan-entry\"]' WHERE shop_id = 'shop' AND id = 'entry'");
+  db.run("UPDATE settlement_charge_items SET source = 'old-source' WHERE shop_id = 'shop' AND session_id = 'entry'");
+  const linked = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(linked?.timeline.tracks[0]?.name).toBe("入场方案");
+  const oldSnapshot = linked!.timeline;
+  oldSnapshot.tracks[0]!.name = "entry";
+  for (const event of oldSnapshot.events) for (const entry of event.entries) if (entry.trackId === oldSnapshot.tracks[0]!.id) entry.name = "entry";
+  db.run("INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES ('shop', 'player-checkout:entry', ?)", [JSON.stringify(oldSnapshot)]);
+  const repaired = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(repaired?.timeline.tracks[0]?.name).toBe("入场方案");
+  expect(repaired?.timeline.events.flatMap(event => event.entries).some(entry => entry.name === "entry")).toBe(false);
+  expect(repaired?.timeline.totals).toContainEqual({ name: "入场方案", amount: 12 });
   await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);
   expect((await queries("shop").getLatestPlayerCheckout!("player"))?.playerSettlement.total).toBe(0);
   for (let index = 0; index < 30; index++) await repo.settlements.saveCheckout!({ id: `page-${index}`, playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-22T10:00:00Z") }, []);

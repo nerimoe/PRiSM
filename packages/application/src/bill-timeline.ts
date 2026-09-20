@@ -42,7 +42,7 @@ export function buildBillTimeline(input: {
     for (const [configId, items] of groups) {
       const id = `${session.sessionId}:${configId}`;
       const end = session.endedAt ?? input.at;
-      const name = items[0]?.pricingExplanation?.planName ?? input.planNames?.get(configId) ?? session.label ?? items[0]?.label ?? "计费";
+      const name = items[0]?.pricingExplanation?.planName ?? input.planNames?.get(configId) ?? (session.label === "entry" ? "入场计费" : session.label) ?? items[0]?.label ?? "计费";
       tracks.push({ id, name, lane: 0, color: tracks.length, startedAt: session.startedAt.toISOString(), endedAt: end.toISOString() });
       add(session.startedAt, { trackId: id, kind: "start", name });
       const sorted = [...items].sort((a, b) => (a.period?.startedAt.getTime() ?? 0) - (b.period?.startedAt.getTime() ?? 0));

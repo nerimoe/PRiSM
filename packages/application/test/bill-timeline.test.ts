@@ -7,6 +7,12 @@ const date = (clock: string) => new Date(`2026-09-13T${clock}:00Z`);
 const pricing = (unitPrice: number) => ({ unitPrice, unitMinutes: 30, roundGraceMinutes: 2, priceCap: 100 });
 const session = (id: string, start: string, end: string | null): Session => ({ id, playerId: "test", label: id, status: end ? "closed" : "active", startedAt: date(start), endedAt: end ? date(end) : null } as Session);
 
+test("the internal entry marker is never used as an unnamed admission track title", () => {
+  const timeline = buildBillTimeline({ at: date("12:00"), sessions: [{ sessionId: "visit", label: "entry", startedAt: date("11:00"), endedAt: null, chargeItems: [] }], adjustments: [], globalCapWindows: [] });
+  expect(timeline.tracks[0]?.name).toBe("入场计费");
+  expect(timeline.events.flatMap(event => event.entries).every(entry => entry.name === "入场计费")).toBe(true);
+});
+
 test("engine boundaries drive shared nodes and signed charges; disjoint pairs reuse rails", async () => {
   const at = date("12:00");
   const rules = (price: number) => [

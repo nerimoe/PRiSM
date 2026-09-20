@@ -56,23 +56,49 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
      WHERE st.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ? AND s.player_id = ? ORDER BY s.started_at, s.id`, [checkout.id, playerId]);
   const details = await Promise.all(rows.map(row => getPlayerSessionHistoryDetail(input, playerId, row.session_id)));
   const sessions = details.filter((detail): detail is SessionHistoryDetail => detail !== null);
-  const plans = checkout.timeline_json ? [] : await input.executor.all<{ id: string; name: string }>(
-    `SELECT DISTINCT p.id, p.name FROM pricing_configs p
-     JOIN settlement_charge_items ci ON ci.shop_id = p.shop_id AND ci.source = p.id
-     JOIN settlements st ON st.shop_id = ci.shop_id AND st.session_id = ci.session_id
-     WHERE p.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?`, [checkout.id]);
+  const plans = await input.executor.all<{ id: string; name: string; session_id: string }>(
+    `SELECT DISTINCT p.id, p.name, s.id AS session_id FROM pricing_configs p
+     JOIN sessions s ON s.shop_id = p.shop_id
+     JOIN settlements st ON st.shop_id = s.shop_id AND st.session_id = s.id
+     LEFT JOIN settlement_charge_items ci ON ci.shop_id = s.shop_id AND ci.session_id = s.id
+       AND ci.source = p.id
+     WHERE p.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?
+       AND (ci.id IS NOT NULL OR p.id IN (SELECT value FROM json_each(s.pricing_config_ids_json)))`, [checkout.id]);
   const labels = new Map(rows.map(row => [row.session_id, row.label]));
+  for (const row of rows) {
+    const names = [...new Set(plans.filter(plan => plan.session_id === row.session_id).map(plan => plan.name))];
+    if (names.length === 1) labels.set(row.session_id, names[0]!);
+  }
   const adjustments = sessions.flatMap(session => session.adjustments);
   const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
   const balance = checkout.metadata_json ? (JSON.parse(checkout.metadata_json) as { walletBalanceAfter?: unknown }).walletBalanceAfter : undefined;
-  return {
-    wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
-    playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
-    timeline: checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
+  const timeline = checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
       timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
       planNames: new Map(plans.map(plan => [plan.id, plan.name])),
       at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: labels.get(session.sessionId) ?? null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
-    }),
+    });
+  // Older snapshots may contain the internal admission marker instead of a display name.
+  const renamed = new Map<string, string>();
+  for (const track of timeline.tracks) {
+    if (track.name !== "entry") continue;
+    const session = rows.find(row => track.id.startsWith(`${row.session_id}:`));
+    const plan = session && plans.find(plan => plan.session_id === session.session_id && track.id === `${session.session_id}:${plan.id}`);
+    const label = session && labels.get(session.session_id);
+    track.name = plan?.name ?? (label && label !== "entry" ? label : "入场计费");
+    renamed.set(track.id, track.name);
+  }
+  if (renamed.size) {
+    const totals = new Map<string, number>();
+    for (const event of timeline.events) for (const entry of event.entries) {
+      if (entry.trackId && renamed.has(entry.trackId)) entry.name = renamed.get(entry.trackId)!;
+      if (entry.amount != null) totals.set(entry.name, (totals.get(entry.name) ?? 0) + Math.round(entry.amount * 100));
+    }
+    timeline.totals = [...totals].map(([name, amount]) => ({ name, amount: yuanOf(centsOfInteger(amount)) }));
+  }
+  return {
+    wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
+    playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
+    timeline,
     chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
   };
 }

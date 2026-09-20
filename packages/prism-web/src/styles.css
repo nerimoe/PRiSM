@@ -765,10 +765,9 @@ button.credential-row:not(:disabled):active {
 .receipt-balance { display: flex; justify-content: space-between; gap: 16px; padding: 16px 18px; border-radius: 16px; background: rgb(var(--color-ink) / .04); font-size: 14px; font-variant-numeric: tabular-nums; }
 .checkout-history { gap: 0; padding-bottom: 16px; }
 .history-record { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 20px 0; border-bottom: 1px solid rgb(var(--color-ink) / .07); }
-.history-icon { display: grid; place-items: center; width: 38px; height: 44px; border-radius: 12px; background: rgb(var(--color-ink) / .04); flex-shrink: 0; }
 .history-label { min-width: 0; flex: 1; display: grid; gap: 7px; }
 .history-label strong { font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
-.history-label small, .history-amount small { font-size: 11px; opacity: .55; }
+.history-label small { font-size: 13px; opacity: .6; }
 .history-amount { display: grid; gap: 4px; text-align: right; font-variant-numeric: tabular-nums; }
 .history-amount strong { font-size: 18px; font-weight: 600; }
 .history-record > svg { flex-shrink: 0; opacity: .35; }

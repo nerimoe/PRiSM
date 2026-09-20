@@ -46,9 +46,8 @@ export function CheckoutHistory({ code }: { code: string }) {
       </>}
     </> : <>
       {records.map(row => <button className="history-record focus-ring" key={row.id} onClick={() => { setReceipt(null); setBusy(true); setSelected(row); }}>
-        <span className="history-icon"><ReceiptText size={21} /></span>
-        <span className="history-label"><strong>{new Date(row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong><small>{t("已结账")}{row.sessionCount > 0 && ` · ${t("{count} 项计费", { count: row.sessionCount })}`}</small></span>
-        <span className="history-amount"><small>{t("结账金额")}</small><strong>{row.total.toFixed(2)}</strong></span><ChevronRight size={16} />
+        <span className="history-label"><strong>{new Date(row.startedAt ?? row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong>{row.startedAt && <small>→ {new Date(row.endedAt ?? row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>}</span>
+        <span className="history-amount"><strong>{row.total.toFixed(2)}</strong></span><ChevronRight size={16} />
       </button>)}
       {!busy && !error && !records.length && <div className="history-empty"><ReceiptText size={36} /><p>{t("暂无结账记录")}</p></div>}
     </>}
