@@ -64,6 +64,8 @@
 
 历史记录按完整结账分组，显示结账时间、金额和计费项数，点开复用结账时间轴。`GET /api/v1/shops/:shopCode/player/checkouts/history?offset=0` 返回每页 30 条 `records` 和 `nextOffset`；`GET /api/v1/shops/:shopCode/player/checkouts/:checkoutId` 返回当前玩家在该店的回执，跨玩家或跨店查询返回 404。
 
+列表不显示说明标语，详情不重复显示时间轴已有的起止时间。旧账单还原时，通过收费项的 `source` 关联同店计费方案名称（包括已归档方案），无法关联则使用会话标签；日间／夜间等规则名保留在副标题。新账单继续使用结账时保存的名称快照。
+
 结账时将扣款后的余额（分）写入同一原子事务的 `asset_transactions.metadata_json.walletBalanceAfter`，回执的可选 `wallet.balanceAfter` 以元返回。此字段复用现有存储，无需新增迁移。旧记录只展示已保存的时间、金额和明细，没有保存的字段直接省略，不显示缺失提示，也不使用当前余额替代历史余额。
 
 账单统一使用 `BillTimeline`：预览和结账响应都包含同一结构的时间轴。结账时在原有原子提交内保存 `checkout_timelines` 快照，包含规则切换、封顶、调整和实际结账时刻，读取历史账单不重新计价。部署前需应用 `0027_checkout_timelines.sql`；本地 SQLite 使用运行时 schema 创建同名表。

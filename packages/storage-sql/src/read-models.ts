@@ -51,11 +51,17 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
      WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ? ${checkoutId === undefined ? "" : "AND c.id = ?"}
      ORDER BY c.settled_at DESC, c.id DESC LIMIT 1`, checkoutId === undefined ? [playerId] : [playerId, checkoutId]);
   if (!checkout) return null;
-  const rows = await input.executor.all<{ session_id: string }>(
-    `SELECT st.session_id FROM settlements st JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id
+  const rows = await input.executor.all<{ session_id: string; label: string | null }>(
+    `SELECT st.session_id, s.label FROM settlements st JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id
      WHERE st.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ? AND s.player_id = ? ORDER BY s.started_at, s.id`, [checkout.id, playerId]);
   const details = await Promise.all(rows.map(row => getPlayerSessionHistoryDetail(input, playerId, row.session_id)));
   const sessions = details.filter((detail): detail is SessionHistoryDetail => detail !== null);
+  const plans = checkout.timeline_json ? [] : await input.executor.all<{ id: string; name: string }>(
+    `SELECT DISTINCT p.id, p.name FROM pricing_configs p
+     JOIN settlement_charge_items ci ON ci.shop_id = p.shop_id AND ci.source = p.id
+     JOIN settlements st ON st.shop_id = ci.shop_id AND st.session_id = ci.session_id
+     WHERE p.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?`, [checkout.id]);
+  const labels = new Map(rows.map(row => [row.session_id, row.label]));
   const adjustments = sessions.flatMap(session => session.adjustments);
   const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
   const balance = checkout.metadata_json ? (JSON.parse(checkout.metadata_json) as { walletBalanceAfter?: unknown }).walletBalanceAfter : undefined;
@@ -64,7 +70,8 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
     playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
     timeline: checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
       timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
-      at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
+      planNames: new Map(plans.map(plan => [plan.id, plan.name])),
+      at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: labels.get(session.sessionId) ?? null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
     }),
     chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
   };

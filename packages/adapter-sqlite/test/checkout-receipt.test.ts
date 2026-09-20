@@ -18,7 +18,7 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   for (const id of ["entry", "table"]) {
     const session = { id, playerId: "player", startedAt: new Date("2026-09-20T09:00:00Z"), endedAt: now(), status: "closed" as const, paymentStatus: "paid" as const, label: id };
     await repo.sessions.save(session);
-    const chargeItems = [{ id: `charge-${id}`, source: "time", label: id, amount: centsOf(12) }];
+    const chargeItems = [{ id: `charge-${id}`, source: `plan-${id}`, label: "日间", amount: centsOf(12) }];
     sessions.push({ sessionId: id, ...session, chargeItems });
     records.push({ settlement: { sessionId: id, subtotal: centsOf(12), total: centsOf(12), status: "settled" as const, settledAt: now() }, chargeItems, adjustments: [] });
   }
@@ -42,11 +42,16 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect(await queries("shop").getLatestPlayerCheckout!("other")).toBeNull();
   db.run("DELETE FROM checkout_timelines");
   db.run("DELETE FROM asset_transactions");
+  for (const [shop, name] of [["shop", "入场方案"], ["other", "其他店方案"]]) {
+    db.run("INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at) VALUES (?, 'plan-entry', 'time.priority', ?, 0, 'archived', '{}', ?, ?)", [shop!, name!, now().toISOString(), now().toISOString()]);
+  }
   await repo.system.setAppSetting("store.profile", { timeZone: "Asia/Tokyo" });
   const legacy = await queries("shop").getLatestPlayerCheckout!("player");
   expect(legacy?.playerSettlement.total).toBe(24);
   expect(legacy?.wallet).toBeNull();
   expect(legacy?.timeline.tracks).toHaveLength(2);
+  expect(legacy?.timeline.tracks.map(track => track.name)).toEqual(["入场方案", "table"]);
+  expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.amount != null).map(entry => [entry.name, entry.rule])).toEqual([["入场方案", "日间"], ["table", "日间"]]);
   expect(legacy?.timeline.events[0]?.time).toBe("19:00");
   expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "end")).toHaveLength(2);
   await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);

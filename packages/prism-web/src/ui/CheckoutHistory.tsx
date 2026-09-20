@@ -42,15 +42,9 @@ export function CheckoutHistory({ code }: { code: string }) {
     {selected ? <>
       <button className="history-back focus-ring" onClick={() => { setSelected(null); setReceipt(null); }}><ArrowLeft size={18} />{t("全部记录")}</button>
       {receipt && <>
-        <dl className="history-period">
-          {selected.startedAt && <div><dt>{t("开始计费")}</dt><dd>{new Date(selected.startedAt).toLocaleString()}</dd></div>}
-          {selected.endedAt && <div><dt>{t("结束计费")}</dt><dd>{new Date(selected.endedAt).toLocaleString()}</dd></div>}
-          {selected.sessionCount > 1 && <div><dt>{t("合并结账")}</dt><dd>{t("{count} 项计费", { count: selected.sessionCount })}</dd></div>}
-        </dl>
         <SettledBill receipt={receipt} />
       </>}
     </> : <>
-      <p className="history-caption">{t("每次结账，一份完整账单")}</p>
       {records.map(row => <button className="history-record focus-ring" key={row.id} onClick={() => { setReceipt(null); setBusy(true); setSelected(row); }}>
         <span className="history-icon"><ReceiptText size={21} /></span>
         <span className="history-label"><strong>{new Date(row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong><small>{t("已结账")}{row.sessionCount > 0 && ` · ${t("{count} 项计费", { count: row.sessionCount })}`}</small></span>
