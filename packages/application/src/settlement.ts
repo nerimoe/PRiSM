@@ -713,6 +713,9 @@ async function persistUnifiedPlayerCheckout(
   ];
 
   const nextHoldings = details.currentHoldings.filter((holding) => holding.quantity > 0);
+  const walletBalanceAfter = details.resolvedAvailableAssets
+    ? sumAvailableWalletBalance(details.resolvedAvailableAssets)
+    : sumCurrencyHoldings(details.availableHoldings);
   const assetCommit: CheckoutCommit["assets"] = {
     transaction: {
       id: `asset-tx:session.settlement:${anchorSession.id}`,
@@ -723,14 +726,12 @@ async function persistUnifiedPlayerCheckout(
       metadata: {
         sessions: sessionIds,
         total: finalTotal,
+        walletBalanceAfter,
       },
     },
     holdingChanges: diffAssetHoldings(details.originalHoldings, nextHoldings),
     assetLedgerEntries,
   };
-  const walletBalanceAfter = details.resolvedAvailableAssets
-    ? sumAvailableWalletBalance(details.resolvedAvailableAssets)
-    : sumCurrencyHoldings(details.availableHoldings);
 
   const settlements: SettlementRecord[] = [];
   const checkout: PlayerCheckout = {

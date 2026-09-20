@@ -672,6 +672,7 @@ describe("createSettlementService", () => {
         metadata: {
           sessions: ["session-closed", "session-music", "session-mahjong"],
           total: centsOf(105),
+          walletBalanceAfter: centsOf(95),
         },
       },
     ]);
@@ -857,6 +858,7 @@ describe("createSettlementService", () => {
         metadata: {
           sessions: ["session-1"],
           total: centsOf(25),
+          walletBalanceAfter: centsOf(10),
         },
       },
     ]);

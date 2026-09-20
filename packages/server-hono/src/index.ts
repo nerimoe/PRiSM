@@ -517,6 +517,23 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerAssetsView(assets));
   });
 
+  app.get("/api/v1/player/checkouts/history", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    const offset = Number(context.req.query("offset") ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) return context.json({ error: { code: "INVALID_OFFSET", message: "Invalid history offset." } }, 400);
+    if (!dependencies.playerQueries.listPlayerCheckouts) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    return context.json(await dependencies.playerQueries.listPlayerCheckouts(principal.playerId, offset));
+  });
+
+  app.get("/api/v1/player/checkouts/:checkoutId", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.playerQueries.getPlayerCheckout) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    const receipt = await dependencies.playerQueries.getPlayerCheckout(principal.playerId, context.req.param("checkoutId"));
+    return receipt ? context.json({ receipt }) : context.json({ error: { code: "CHECKOUT_NOT_FOUND", message: "Checkout not found." } }, 404);
+  });
+
   app.get("/api/v1/player/checkout/latest", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");

@@ -1989,6 +1989,14 @@ describe("createPrismApp", () => {
           expect(playerId).toBe("player-1");
           return receipt;
         },
+        async getPlayerCheckout(playerId, id) {
+          expect(playerId).toBe("player-1");
+          return id === "checkout" ? receipt : null;
+        },
+        async listPlayerCheckouts(playerId, offset) {
+          expect(playerId).toBe("player-1"); expect(offset).toBe(30);
+          return { records: [], nextOffset: null };
+        },
         async getPlayerSummary() {
           throw new Error("checkout route must not query summary data");
         },
@@ -2155,6 +2163,12 @@ describe("createPrismApp", () => {
     const latest = await app.request("/rpc/player/checkout/latest", { headers: { Authorization: "Bearer player-session-token", "X-PRiSM-Player-Id": "other-player" } });
     expect(latest.status).toBe(200);
     expect(await latest.json()).toEqual({ receipt });
+    const headers = { Authorization: "Bearer player-session-token", "X-PRiSM-Player-Id": "other-player" };
+    expect(await (await app.request("/rpc/player/checkouts/checkout", { headers })).json()).toEqual({ receipt });
+    expect((await app.request("/rpc/player/checkouts/foreign", { headers })).status).toBe(404);
+    expect((await app.request("/rpc/player/checkouts/history?offset=30", { headers })).status).toBe(200);
+    expect((await app.request("/rpc/player/checkouts/history?offset=-1", { headers })).status).toBe(400);
+    expect((await app.request("/rpc/player/checkouts/checkout")).status).toBe(403);
     expect((await app.request("/rpc/player/checkout/latest")).status).toBe(403);
     expect((await app.request("/rpc/player/checkout/latest", { headers: { Authorization: "Bearer bot-token", "X-PRiSM-Player-Id": "player-1" } })).status).toBe(403);
   });

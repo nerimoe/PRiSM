@@ -1,3 +1,4 @@
+import { CheckoutHistory } from "./CheckoutHistory";
 // Account sheets share their bill and checkout components with the standalone shop page.
 import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
 import { BillTotal, BillTimeline } from "./BillTimeline";
@@ -13,7 +14,6 @@ import {
   type Summary,
   type Preview,
   type Assets,
-  type History,
 } from "./BillingPages";
 
 export type Section = "账单" | "兑换" | "记录" | "钱包";
@@ -79,7 +79,6 @@ export function AccountContent({
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [assets, setAssets] = useState<Assets | null>(null);
-  const [history, setHistory] = useState<History | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -108,11 +107,7 @@ export function AccountContent({
         } else if (section === "钱包") {
           const current = await api<Assets>(shopApi(code, "player/assets"));
           if (!cancelled) setAssets(current);
-        } else if (section === "记录") {
-          const current = await api<History>(
-            shopApi(code, "player/sessions/history"),
-          );
-          if (!cancelled) setHistory(current);
+
         }
       } catch (e) {
         if (!cancelled)
@@ -126,6 +121,7 @@ export function AccountContent({
       cancelled = true;
     };
   }, [code, section, attempt, errorText, setBillingActive]);
+  if (section === "记录") return <CheckoutHistory code={code} />;
   async function submit() {
     if (busy) return;
     setBusy(true);
@@ -210,25 +206,7 @@ export function AccountContent({
           ) : (
             <p>{t("暂无资产")}</p>
           ))}
-        {section === "记录" &&
-          history &&
-          (history.sessions.length ? (
-            history.sessions.map((row) => (
-              <div className="account-row" key={row.sessionId}>
-                <div>
-                  {new Date(row.startedAt).toLocaleString()}
-                  <p className="text-xs text-ink/50">
-                    {row.endedAt
-                      ? new Date(row.endedAt).toLocaleString()
-                      : t("计费中")}
-                  </p>
-                </div>
-                <strong>{row.total?.toFixed(2) ?? "—"}</strong>
-              </div>
-            ))
-          ) : (
-            <p>{t("暂无记录")}</p>
-          ))}
+
       </div>
       {section === "账单" && !done && preview && (
         <footer className="account-footer">

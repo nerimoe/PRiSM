@@ -41,31 +41,48 @@ export function createSqlReadModels(input: CreateSqlReadModelsInput): Applicatio
   };
 }
 
+async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: string, checkoutId?: string): Promise<import("@prism/application").PlayerCheckoutReceipt | null> {
+  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null }>(
+    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json FROM player_checkouts c
+     LEFT JOIN checkout_timelines t ON t.shop_id = c.shop_id AND t.checkout_id = c.id
+     LEFT JOIN app_settings profile ON profile.shop_id = c.shop_id AND profile.key = 'store.profile'
+     LEFT JOIN asset_transactions tx ON tx.shop_id = c.shop_id AND tx.player_id = c.player_id
+       AND tx.kind = 'session.settlement' AND 'player-checkout:' || tx.ref_id = c.id
+     WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ? ${checkoutId === undefined ? "" : "AND c.id = ?"}
+     ORDER BY c.settled_at DESC, c.id DESC LIMIT 1`, checkoutId === undefined ? [playerId] : [playerId, checkoutId]);
+  if (!checkout) return null;
+  const rows = await input.executor.all<{ session_id: string }>(
+    `SELECT st.session_id FROM settlements st JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id
+     WHERE st.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ? AND s.player_id = ? ORDER BY s.started_at, s.id`, [checkout.id, playerId]);
+  const details = await Promise.all(rows.map(row => getPlayerSessionHistoryDetail(input, playerId, row.session_id)));
+  const sessions = details.filter((detail): detail is SessionHistoryDetail => detail !== null);
+  const adjustments = sessions.flatMap(session => session.adjustments);
+  const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
+  const balance = checkout.metadata_json ? (JSON.parse(checkout.metadata_json) as { walletBalanceAfter?: unknown }).walletBalanceAfter : undefined;
+  return {
+    wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
+    playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
+    timeline: checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
+      timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
+      at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
+    }),
+    chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
+  };
+}
+
 function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
   return {
-    async getLatestPlayerCheckout(playerId) {
-      const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null }>(
-        `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json FROM player_checkouts c
-         LEFT JOIN checkout_timelines t ON t.shop_id = c.shop_id AND t.checkout_id = c.id
-         LEFT JOIN app_settings profile ON profile.shop_id = c.shop_id AND profile.key = 'store.profile'
+    getLatestPlayerCheckout: playerId => getPlayerCheckout(input, playerId),
+    getPlayerCheckout: (playerId, checkoutId) => getPlayerCheckout(input, playerId, checkoutId),
+    async listPlayerCheckouts(playerId, offset) {
+      const rows = await input.executor.all<{ id: string; total: number; settled_at: string; started_at: string | null; ended_at: string | null; session_count: number }>(
+        `SELECT c.id, c.total, c.settled_at, MIN(s.started_at) AS started_at, MAX(s.ended_at) AS ended_at, COUNT(s.id) AS session_count
+         FROM player_checkouts c
+         LEFT JOIN settlements st ON st.shop_id = c.shop_id AND st.checkout_id = c.id
+         LEFT JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id AND s.player_id = c.player_id
          WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ?
-         ORDER BY c.settled_at DESC, c.id DESC LIMIT 1`, [playerId]);
-      if (!checkout) return null;
-      const rows = await input.executor.all<{ session_id: string }>(
-        `SELECT st.session_id FROM settlements st JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id
-         WHERE st.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ? AND s.player_id = ? ORDER BY s.started_at, s.id`, [checkout.id, playerId]);
-      const details = await Promise.all(rows.map(row => getPlayerSessionHistoryDetail(input, playerId, row.session_id)));
-      const sessions = details.filter((detail): detail is SessionHistoryDetail => detail !== null);
-      const adjustments = sessions.flatMap(session => session.adjustments);
-      const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
-      return {
-        playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
-        timeline: checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
-          timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
-          at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
-        }),
-        chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
-      };
+         GROUP BY c.id ORDER BY c.settled_at DESC, c.id DESC LIMIT 31 OFFSET ?`, [playerId, offset]);
+      return { records: rows.slice(0, 30).map(row => ({ id: row.id, total: yuanOf(centsOfInteger(row.total)), settledAt: row.settled_at, startedAt: row.started_at, endedAt: row.ended_at, sessionCount: row.session_count })), nextOffset: rows.length > 30 ? offset + 30 : null };
     },
     async getPlayerSummary(playerId) {
       const rows = await input.executor.all<PlayerSummaryRow>(

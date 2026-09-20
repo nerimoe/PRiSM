@@ -762,6 +762,22 @@ button.credential-row:not(:disabled):active {
 .receipt-status { display: flex; align-items: center; gap: 12px; }
 .receipt-status > span { border: 2px solid #23815d; color: #23815d; border-radius: 50%; width: 36px; height: 36px; display: grid; place-items: center; }
 .receipt-status h2 { font-weight: 600; }
+.receipt-balance { display: flex; justify-content: space-between; gap: 16px; padding: 16px 18px; border-radius: 16px; background: rgb(var(--color-ink) / .04); font-size: 14px; font-variant-numeric: tabular-nums; }
+.checkout-history { gap: 0; padding-bottom: 16px; }
+.history-caption { margin-bottom: 20px; font-size: 13px; opacity: .55; }
+.history-record { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 20px 0; border-bottom: 1px solid rgb(var(--color-ink) / .07); }
+.history-icon { display: grid; place-items: center; width: 38px; height: 44px; border-radius: 12px; background: rgb(var(--color-ink) / .04); flex-shrink: 0; }
+.history-label { min-width: 0; flex: 1; display: grid; gap: 7px; }
+.history-label strong { font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
+.history-label small, .history-amount small { font-size: 11px; opacity: .55; }
+.history-amount { display: grid; gap: 4px; text-align: right; font-variant-numeric: tabular-nums; }
+.history-amount strong { font-size: 18px; font-weight: 600; }
+.history-record > svg { flex-shrink: 0; opacity: .35; }
+.history-back { display: flex; gap: 8px; align-items: center; padding: 8px 0; margin-bottom: 20px; font-size: 14px; }
+.history-period { display: grid; gap: 10px; font-size: 12px; margin-bottom: 28px; }
+.history-period > div { display: flex; justify-content: space-between; gap: 12px; }
+.history-period dt { opacity: .55; }
+.history-empty { display: grid; justify-items: center; gap: 16px; padding: 48px 0; opacity: .55; }
 .receipt-status p { font-size: 12px; opacity: .6; margin-top: 4px; }
 @keyframes checkout-circle { from { stroke-dashoffset: 271; } to { stroke-dashoffset: 0; } }
 @keyframes checkout-check { from { stroke-dashoffset: 70; } to { stroke-dashoffset: 0; } }

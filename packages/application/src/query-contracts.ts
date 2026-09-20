@@ -95,8 +95,20 @@ export type PlayerRedeemRecordListItem = {
   redeemedAt: Date;
 };
 
+export type CheckoutHistoryRecord = {
+  id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
+};
+export type PlayerCheckoutReceipt = {
+  playerSettlement: { total: number; settledAt: string };
+  timeline: BillTimeline;
+  wallet?: { balanceAfter: number } | null;
+  chargeItems: { id: string; label: string; amount: number }[];
+  adjustments: { id: string; label: string; amount: number }[];
+};
 export type PlayerQueries = {
-  getLatestPlayerCheckout?(playerId: string): Promise<{ playerSettlement: { total: number; settledAt: string }; timeline: BillTimeline; chargeItems: { id: string; label: string; amount: number }[]; adjustments: { id: string; label: string; amount: number }[] } | null>;
+  listPlayerCheckouts?(playerId: string, offset: number): Promise<{ records: CheckoutHistoryRecord[]; nextOffset: number | null }>;
+  getPlayerCheckout?(playerId: string, checkoutId: string): Promise<PlayerCheckoutReceipt | null>;
+  getLatestPlayerCheckout?(playerId: string): Promise<PlayerCheckoutReceipt | null>;
   getPlayerSummary(playerId: string): Promise<PlayerSummary>;
   listPlayerAssets?(playerId: string): Promise<PlayerAssets>;
   listPlayerSessionHistory?(playerId: string): Promise<SessionHistoryListItem[]>;
