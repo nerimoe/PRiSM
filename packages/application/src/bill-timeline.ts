@@ -76,7 +76,7 @@ export function buildBillTimeline(input: {
     const window = history && input.globalCapWindows.find(w => w.capConfigId === history.capConfigId && w.capRuleId === history.capRuleId && w.windowStartedAt.getTime() === history.capAnchorAt.getTime());
     // Global caps are independent entries: never attribute them to one plan.
     add(window && window.windowEndedAt < input.at ? window.windowEndedAt : input.at, {
-      kind: "adjustment", name: adjustment.source.startsWith("time.cap:") ? `全局封顶（${adjustment.label}）` : adjustment.label, amount: adjustment.amount,
+      kind: "adjustment", name: adjustment.source.startsWith("time.cap:") ? `${window?.capName ?? input.planNames?.get(adjustment.source) ?? "全局封顶"}（${adjustment.label}）` : adjustment.label, amount: adjustment.amount,
       startedAt: window?.windowStartedAt.toISOString() ?? null,
       endedAt: window ? new Date(Math.min(window.windowEndedAt.getTime(), input.at.getTime())).toISOString() : null,
       cap: window?.priceCap ?? null, paidBefore: window?.paidBefore ?? null,

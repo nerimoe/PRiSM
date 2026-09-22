@@ -75,6 +75,7 @@ export type PriorityTimePricingProviderConfig = {
 
 export type TimeCapPricingProviderConfig = {
   id: string;
+  name?: string;
   pricingConfigId?: string;
   includedPricingConfigIds: readonly string[];
   rules: readonly TimeCapPricingRule[];
@@ -149,6 +150,7 @@ export type PricingSegmentExplanation = {
 
 export type TimeCapPricingWindow = {
   key: string;
+  capName?: string;
   capConfigId: string;
   capRuleId: string;
   ruleLabel: string;
@@ -426,6 +428,7 @@ export function explainTimeCapPricing(input: {
     currentPaidHistory[key] = addCents(paidBefore, maxCents(ZERO_CENTS, target));
     windows.push({
       key,
+      capName: input.config.name,
       capConfigId,
       capRuleId: bucket.rule.id,
       ruleLabel: bucket.rule.label,

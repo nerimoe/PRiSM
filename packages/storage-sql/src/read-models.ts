@@ -70,11 +70,18 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
     if (names.length === 1) labels.set(row.session_id, names[0]!);
   }
   const adjustments = sessions.flatMap(session => session.adjustments);
+  const capPlans = await input.executor.all<{ source: string; name: string }>(
+    `SELECT DISTINCT a.source, p.name FROM settlement_adjustments a
+     JOIN settlements st ON st.shop_id = a.shop_id AND st.session_id = a.session_id
+     JOIN pricing_configs p ON p.shop_id = a.shop_id AND p.kind = 'time.cap'
+       AND substr(a.source, 1, length(p.id) + 10) = 'time.cap:' || p.id || ':'
+     WHERE a.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?`, [checkout.id]);
+  const capNames = new Map(capPlans.map(plan => [plan.source, plan.name]));
   const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
   const balance = checkout.metadata_json ? (JSON.parse(checkout.metadata_json) as { walletBalanceAfter?: unknown }).walletBalanceAfter : undefined;
   const timeline = checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
       timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
-      planNames: new Map(plans.map(plan => [plan.id, plan.name])),
+      planNames: new Map([...plans.map(plan => [plan.id, plan.name] as const), ...capNames]),
       at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: labels.get(session.sessionId) ?? null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
     });
   // Older snapshots may contain the internal admission marker instead of a display name.
@@ -96,10 +103,10 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
       entry.rule = first?.item.rule ?? null;
     }
     if (entry.kind === "adjustment" && !entry.trackId) {
-      const matches = adjustments.filter(adjustment => adjustment.label === entry.name && yuanOf(adjustment.amount) === entry.amount);
+      const matches = adjustments.filter(adjustment => (adjustment.label === entry.name || `全局封顶（${adjustment.label}）` === entry.name) && yuanOf(adjustment.amount) === entry.amount);
       if (matches.length && matches.every(adjustment => adjustment.source.startsWith("time.cap:"))) {
-        entry.name = `全局封顶（${entry.name}）`;
-        changed = true;
+        const names = new Set(matches.map(adjustment => `${capNames.get(adjustment.source) ?? "全局封顶"}（${adjustment.label}）`));
+        if (names.size === 1) { entry.name = [...names][0]!; changed = true; }
       }
     }
   }

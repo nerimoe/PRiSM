@@ -24,11 +24,11 @@ test("engine boundaries drive shared nodes and signed charges; disjoint pairs re
     chargeItems: await createPriorityTimePricingProvider({ id: `p${i}`, name: `Plan ${i}`, rules: rules(i === 1 ? -1 : 6), timeZone: "UTC" }).quote({ session: s, now: at, assetHoldings: [] }),
   })));
   const chargeItems = sessions.flatMap(s => s.chargeItems);
-  const config = { id: "cap", includedPricingConfigIds: ["p0", "p1", "p2"], timeZone: "UTC", rules: [{ id: "all", label: "Combined", priority: 1, timeRange: { start: "00:00", end: "00:00" }, priceCap: 20 }] };
+  const config = { id: "cap", name: "全天优惠", includedPricingConfigIds: ["p0", "p1", "p2"], timeZone: "UTC", rules: [{ id: "all", label: "Combined", priority: 1, timeRange: { start: "00:00", end: "00:00" }, priceCap: 20 }] };
   const adjustments = applyTimeCapPricing({ config, chargeItems });
   const timeline = buildBillTimeline({ at, sessions, adjustments, globalCapWindows: explainTimeCapPricing({ config, chargeItems }) });
   expect(timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "start").every(entry => entry.rule === "A" || entry.rule === "B")).toBe(true);
-  expect(timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "adjustment").every(entry => entry.name === "全局封顶（Combined）")).toBe(true);
+  expect(timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "adjustment").every(entry => entry.name === "全天优惠（Combined）")).toBe(true);
   const switched = timeline.events.find(e => e.at === date("09:15").toISOString());
   expect(switched?.entries.filter(e => e.kind === "switch")).toHaveLength(2);
   expect(timeline.events.some(e => e.at === date("10:00").toISOString())).toBe(false);

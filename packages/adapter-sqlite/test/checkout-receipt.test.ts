@@ -71,6 +71,13 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect(repaired?.timeline.totals).toContainEqual({ name: "入场方案", amount: 12 });
   expect(repaired?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "start").every(entry => entry.rule === "日间")).toBe(true);
   expect(repaired?.timeline.totals).toContainEqual({ name: "全局封顶（日间）", amount: -3 });
+  db.run("INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at) VALUES ('shop', 'global', 'time.cap', '全天优惠', 0, 'archived', '{}', ?, ?)", [now().toISOString(), now().toISOString()]);
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
+  oldSnapshot.events[0]!.entries.find(entry => entry.kind === "adjustment")!.name = "全局封顶（日间）";
+  db.run("UPDATE checkout_timelines SET timeline_json = ? WHERE shop_id = 'shop'", [JSON.stringify(oldSnapshot)]);
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
+  db.run("DELETE FROM checkout_timelines WHERE shop_id = 'shop'");
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
   await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);
   expect((await queries("shop").getLatestPlayerCheckout!("player"))?.playerSettlement.total).toBe(0);
   for (let index = 0; index < 30; index++) await repo.settlements.saveCheckout!({ id: `page-${index}`, playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-22T10:00:00Z") }, []);

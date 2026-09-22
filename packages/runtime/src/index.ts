@@ -247,6 +247,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
         .filter((config): config is Extract<PricingConfig, { kind: "time.cap" }> => config.kind === "time.cap")
         .map((config) => ({
           ...config.provider,
+          name: config.name,
           pricingConfigId: config.id,
           timeZone: config.provider.timeZone ?? context.timeZone ?? storeTimeZone,
         }));
