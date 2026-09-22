@@ -58,7 +58,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
 
       validatePricingConfig(config);
       await dependencies.pricingConfigs.save(config);
-      return config;
+      return await dependencies.pricingConfigs.findById(config.id) ?? config;
     },
 
     async updatePricingConfig(input) {
@@ -84,7 +84,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
 
       validatePricingConfig(config);
       await dependencies.pricingConfigs.save(config);
-      return config;
+      return await dependencies.pricingConfigs.findById(config.id) ?? config;
     },
 
     async archivePricingConfig(input) {
@@ -99,7 +99,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
         updatedAt: dependencies.now(),
       };
       await dependencies.pricingConfigs.save(archived);
-      return archived;
+      return await dependencies.pricingConfigs.findById(archived.id) ?? archived;
     },
 
     async restorePricingConfig(input) {
@@ -114,7 +114,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
         updatedAt: dependencies.now(),
       };
       await dependencies.pricingConfigs.save(restored);
-      return restored;
+      return await dependencies.pricingConfigs.findById(restored.id) ?? restored;
     },
 
     async listPricingConfigs() {

@@ -1,3 +1,5 @@
+import { pricingVersionSchema } from "./pricing-version-schema";
+
 export const sqliteSchema = [
   `CREATE TABLE IF NOT EXISTS staff_users (
     shop_id TEXT NOT NULL DEFAULT 'legacy',
@@ -402,6 +404,7 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(shop_id, token_hash)`,
   `CREATE INDEX IF NOT EXISTS idx_api_tokens_role_status ON api_tokens(shop_id, role, status)`,
   `CREATE INDEX IF NOT EXISTS idx_operation_locks_expires_at ON operation_locks(shop_id, expires_at)`,
+  ...pricingVersionSchema,
 ] as const;
 
 export * from "./repositories";

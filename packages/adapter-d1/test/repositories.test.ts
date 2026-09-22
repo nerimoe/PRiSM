@@ -212,6 +212,7 @@ describe("createD1Repositories", () => {
     await expect(repositories.pricingConfigs.listEnabled()).resolves.toEqual([
       {
         id: "pricing-2",
+        versionId: expect.any(String), version: 1,
         kind: "charge.fixed",
         name: "D1 fixed charge",
         enabled: true,
@@ -226,6 +227,7 @@ describe("createD1Repositories", () => {
       },
       {
         id: "pricing-1",
+        versionId: expect.any(String), version: 1,
         kind: "time.priority",
         name: "D1 time pricing",
         enabled: true,

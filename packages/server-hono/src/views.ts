@@ -555,6 +555,8 @@ export function toPricingConfigManagementView(
 
   return {
     id: config.id,
+    versionId: config.versionId,
+    version: config.version,
     kind: config.kind,
     name: config.name,
     enabled: config.enabled,

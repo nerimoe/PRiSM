@@ -385,6 +385,7 @@ describe("createSqliteRepositories", () => {
       repositories.pricingConfigs.findById("pricing-1"),
     ).resolves.toEqual({
       id: "pricing-1",
+      versionId: expect.any(String), version: 1,
       kind: "time.priority",
       name: "Default time pricing",
       enabled: true,
@@ -417,6 +418,7 @@ describe("createSqliteRepositories", () => {
       repositories.pricingConfigs.findById("pricing-4"),
     ).resolves.toEqual({
       id: "pricing-4",
+      versionId: expect.any(String), version: 1,
       kind: "charge.fixed",
       name: "Entry ticket",
       enabled: true,
@@ -432,6 +434,7 @@ describe("createSqliteRepositories", () => {
     await expect(repositories.pricingConfigs.listEnabled()).resolves.toEqual([
       {
         id: "pricing-4",
+        versionId: expect.any(String), version: 1,
         kind: "charge.fixed",
         name: "Entry ticket",
         enabled: true,
@@ -446,6 +449,7 @@ describe("createSqliteRepositories", () => {
       },
       {
         id: "pricing-1",
+        versionId: expect.any(String), version: 1,
         kind: "time.priority",
         name: "Default time pricing",
         enabled: true,
@@ -878,6 +882,7 @@ describe("createSqliteRepositories", () => {
     ).resolves.toEqual([
       {
         id: "session-1",
+        pricingReleaseId: expect.any(String),
         playerId: "player-1",
         startedAt: new Date("2026-06-07T10:00:00.000Z"),
         endedAt: undefined,

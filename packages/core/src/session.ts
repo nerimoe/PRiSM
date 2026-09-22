@@ -9,6 +9,7 @@ export type Session = {
   endedAt?: Date;
   status?: "active" | "closed";
   pricingConfigIds?: string[];
+  pricingReleaseId?: string;
   paymentStatus?: SessionPaymentStatus;
   label?: string;
   metadata?: Record<string, unknown>;

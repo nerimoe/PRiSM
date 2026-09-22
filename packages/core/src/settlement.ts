@@ -393,6 +393,7 @@ function normalizeCurrencyCode(assetCode: string): string {
 }
 
 export type BillTimeline = {
+  pricingReleaseIds?: string[];
   totals: { name: string; amount: number }[];
   tracks: { id: string; name: string; lane: number; color: number; startedAt: string; endedAt: string }[];
   events: { at: string; time: string; date: string; entries: BillTimelineEntry[] }[];

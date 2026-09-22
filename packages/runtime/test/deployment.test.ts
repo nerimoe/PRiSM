@@ -179,9 +179,7 @@ describe("deployment artifacts", () => {
 
     for (const fileName of readdirSync(new URL("migrations", projectRoot)).filter((name) => name.endsWith(".sql")).sort()) {
       const migrationSql = await readProjectFile(`migrations/${fileName}`);
-      for (const statement of migrationSql.split(";").map((item) => item.trim()).filter(Boolean)) {
-        migrationDb.run(statement);
-      }
+      migrationDb.exec(migrationSql);
     }
 
     const tableNames = schemaDb

@@ -698,7 +698,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
   return {
     async findActiveByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'active'`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND player_id = ? AND status = 'active'`,
         [playerId],
       );
       return rows.map(toSession);
@@ -706,7 +706,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findById(sessionId) {
       const row = await executor.first<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE id = ?`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND id = ?`,
         [sessionId],
       );
       return row ? toSession(row) : null;
@@ -714,14 +714,20 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findUnpaidClosedByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'closed' AND payment_status = 'unpaid'`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND player_id = ? AND status = 'closed' AND payment_status = 'unpaid'`,
         [playerId],
       );
       return rows.map(toSession);
     },
 
     async save(session) {
-      await saveMany([session]);
+      try { await saveMany([session]); }
+      catch (error) {
+        if (String(error).includes("PRICING_CONFIG_NOT_IN_RELEASE")) {
+          throw new PrismDomainError("当前入场版本不包含此计费方案，请先结账后重新入场", "PRICING_CONFIG_NOT_IN_RELEASE");
+        }
+        throw error;
+      }
     },
 
     async saveMany(sessions) {
@@ -1309,6 +1315,17 @@ function createPricingConfigRepository(
   executor: SqlExecutor,
 ): PricingConfigRepository {
   return {
+    async findRelease(releaseId) {
+      const release = await executor.first<{ id: string; time_zone: string }>(
+        `SELECT id,time_zone FROM pricing_releases WHERE shop_id = ${sqlShop(executor)} AND id = ?`, [releaseId]);
+      if (!release) return null;
+      const rows = await executor.all<PricingConfigRow>(
+        `SELECT v.*, v.config_id AS id FROM pricing_config_versions v
+         JOIN pricing_releases r ON r.shop_id=v.shop_id
+         WHERE r.shop_id = ${sqlShop(executor)} AND r.id = ?
+         AND v.version_id IN (SELECT value FROM json_each(r.version_ids_json)) ORDER BY v.config_id`, [releaseId]);
+      return { id: release.id, timeZone: release.time_zone, configs: rows.map(toPricingConfig) };
+    },
     async save(config) {
       await executor.run(
         `INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at)
@@ -1335,7 +1352,7 @@ function createPricingConfigRepository(
 
     async findById(configId) {
       const row = await executor.first<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) WHERE config_id = ? LIMIT 1`,
         [configId],
       );
       return row ? toPricingConfig(row) : null;
@@ -1343,14 +1360,14 @@ function createPricingConfigRepository(
 
     async listAll() {
       const rows = await executor.all<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) ORDER BY updated_at DESC, id`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) ORDER BY updated_at DESC, config_id`,
       );
       return rows.map(toPricingConfig);
     },
 
     async listEnabled() {
       const rows = await executor.all<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, id`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, config_id`,
       );
       return rows.map(toPricingConfig);
     },
@@ -1677,6 +1694,7 @@ function createBusinessItemOrderRepository(
 }
 
 type SessionRow = {
+  pricing_release_id?: string | null;
   id: string;
   player_id: string;
   started_at: string;
@@ -1857,6 +1875,8 @@ type SettlementDetailRow = SettlementRow & {
 };
 
 export type PricingConfigRow = {
+  version_id?: string;
+  version?: number;
   id: string;
   kind: PricingConfig["kind"];
   name: string;
@@ -1962,6 +1982,7 @@ function toSession(row: SessionRow): Session {
     endedAt: row.ended_at ? new Date(row.ended_at) : undefined,
     status: row.status,
     pricingConfigIds: JSON.parse(row.pricing_config_ids_json ?? "[]"),
+    pricingReleaseId: row.pricing_release_id ?? undefined,
     paymentStatus: row.payment_status,
     label: row.label ?? undefined,
     metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : undefined,
@@ -2270,6 +2291,8 @@ async function savePlayerCheckout(
 
 export function toPricingConfig(row: PricingConfigRow): PricingConfig {
   const base = {
+    versionId: row.version_id,
+    version: row.version,
     id: row.id,
     name: row.name,
     enabled: row.enabled === 1,

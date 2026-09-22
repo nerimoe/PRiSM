@@ -804,13 +804,6 @@ describe("runtime entrypoints", () => {
       "currency",
       "currency.paid", 100000,
     ]);
-    db.run("INSERT INTO sessions (id, player_id, started_at, ended_at, status) VALUES (?, ?, ?, ?, ?)", [
-      "session-1",
-      "player-1",
-      "2026-06-07T10:00:00.000Z",
-      null,
-      "active",
-    ]);
     const repositories = RuntimeRepositories.fromBunSqlite({
       db,
       id: () => "unused",
@@ -830,6 +823,13 @@ describe("runtime entrypoints", () => {
       createdAt: new Date("2026-06-07T10:00:00.000Z"),
       updatedAt: new Date("2026-06-07T10:00:00.000Z"),
     });
+    db.run("INSERT INTO sessions (id, player_id, started_at, ended_at, status) VALUES (?, ?, ?, ?, ?)", [
+      "session-1",
+      "player-1",
+      "2026-06-07T10:00:00.000Z",
+      null,
+      "active",
+    ]);
     const dependencies = createPrismRuntimeDependencies({
       repositories,
       queries: RuntimeRepositories.queriesFromBunSqlite({

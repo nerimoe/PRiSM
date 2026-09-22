@@ -55,11 +55,15 @@ describe("sqliteSchema", () => {
       "players",
       "presents",
       "pricing_cap_history_entries",
+      "pricing_config_versions",
       "pricing_configs",
       "pricing_effects",
       "pricing_history_entries",
+      "pricing_release_heads",
+      "pricing_releases",
       "redeem_codes",
       "redeem_records",
+      "session_pricing_releases",
       "sessions",
       "settlement_adjustments",
       "settlement_charge_items",
@@ -73,9 +77,7 @@ describe("sqliteSchema", () => {
     db.run("PRAGMA foreign_keys = ON");
     for (const fileName of readdirSync(resolve(import.meta.dir, "../../../migrations")).filter((name) => name.endsWith(".sql")).sort()) {
       const migrationSql = readFileSync(resolve(import.meta.dir, "../../../migrations", fileName), "utf8");
-      for (const statement of migrationSql.split(";").map((item) => item.trim()).filter(Boolean)) {
-        db.run(statement);
-      }
+      db.exec(migrationSql);
     }
 
     const columns = (tableName: string) =>
@@ -435,7 +437,5 @@ describe("sqliteSchema", () => {
 
 function runMigrationFile(db: Database, filePath: string): void {
   const sql = readFileSync(filePath, "utf8");
-  for (const statement of sql.split(";").map((item) => item.trim()).filter(Boolean)) {
-    db.run(statement);
-  }
+  db.exec(sql);
 }

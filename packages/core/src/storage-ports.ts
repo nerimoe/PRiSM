@@ -255,6 +255,7 @@ export type SettlementRepository = {
 };
 
 export type PricingConfigRepository = {
+  findRelease?(releaseId: string): Promise<import("./pricing-config").PricingRelease | null>;
   save(config: PricingConfig): Promise<void>;
   findById(configId: string): Promise<PricingConfig | null>;
   listAll(): Promise<PricingConfig[]>;

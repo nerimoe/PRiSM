@@ -784,6 +784,7 @@ async function persistUnifiedPlayerCheckout(
     adjustments: settlements.flatMap(record => record.adjustments),
     globalCapWindows: details.globalCapWindows,
   });
+  checkout.timeline.pricingReleaseIds = [...new Set(sessions.flatMap(session => session.pricingReleaseId ? [session.pricingReleaseId] : []))];
   if (dependencies.commitCheckout) {
     await dependencies.commitCheckout({ assets: assetCommit, checkout, settlements, sessions, pricingHistory: pricingHistoryEntries, pricingCapHistory });
   } else {

@@ -45,7 +45,9 @@ export type TimeCapPricingConfig = {
   updatedAt: Date;
 };
 
-export type PricingConfig = TimePriorityPricingConfig | TimeCapPricingConfig | FixedChargePricingConfig;
+export type PricingConfig = (TimePriorityPricingConfig | TimeCapPricingConfig | FixedChargePricingConfig) & { versionId?: string; version?: number };
+
+export type PricingRelease = { id: string; timeZone: string; configs: PricingConfig[] };
 
 export type PricingConfigStatus = "active" | "archived";
 

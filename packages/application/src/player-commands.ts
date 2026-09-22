@@ -15,6 +15,7 @@ export type PlayerCommandServiceDependencies = {
   sessions: SessionRepository;
   deviceCommands: DeviceCommandRepository;
   pricingConfigs?: PricingConfigRepository;
+  resolvePricingConfigs?: (playerId: string) => Promise<import("@prism/core").PricingConfig[]>;
   playerIdentities?: PlayerIdentityRepository;
   now: () => Date;
   id: () => string;
@@ -57,12 +58,16 @@ export function createPlayerCommandService(dependencies: PlayerCommandServiceDep
       }
 
       let pricingConfigIds = input.pricingConfigIds ?? [];
+      const pinnedConfigs = await dependencies.resolvePricingConfigs?.(input.playerId);
       if (pricingConfigIds.length === 0 && dependencies.pricingConfigs) {
-        const enabled = await dependencies.pricingConfigs.listEnabled();
+        const enabled = pinnedConfigs ?? await dependencies.pricingConfigs.listEnabled();
         pricingConfigIds = enabled.filter((c) => c.kind === "time.priority").map((c) => c.id);
       }
       if (pricingConfigIds.length === 0) {
         pricingConfigIds = ["default"];
+      }
+      if (pinnedConfigs?.length && pricingConfigIds.some(id => id !== "default" && !pinnedConfigs.some(config => config.id === id && config.kind !== "time.cap"))) {
+        throw new PrismDomainError("当前入场版本不包含此计费方案，请先结账后重新入场", "PRICING_CONFIG_NOT_IN_RELEASE");
       }
 
       if (input.label) {
@@ -86,7 +91,8 @@ export function createPlayerCommandService(dependencies: PlayerCommandServiceDep
       });
 
       await dependencies.sessions.save(session);
-      return session;
+      const saved = await dependencies.sessions.findById(session.id);
+      return { ...session, pricingReleaseId: saved?.pricingReleaseId };
     },
 
     async requestDeviceCommand(input) {
