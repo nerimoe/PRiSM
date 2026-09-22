@@ -59,6 +59,9 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   const linked = await queries("shop").getLatestPlayerCheckout!("player");
   expect(linked?.timeline.tracks[0]?.name).toBe("入场方案");
   const oldSnapshot = linked!.timeline;
+  for (const event of oldSnapshot.events) for (const entry of event.entries) if (entry.kind === "start") entry.rule = null;
+  db.run("INSERT INTO settlement_adjustments (shop_id, id, session_id, adjustment_order, source, label, amount) VALUES ('shop', 'cap', 'entry', 0, 'time.cap:global:day', '日间', -300)");
+  oldSnapshot.events[0]!.entries.push({ ...oldSnapshot.events[0]!.entries[0]!, trackId: null, kind: "adjustment", name: "日间", rule: null, amount: -3 });
   oldSnapshot.tracks[0]!.name = "entry";
   for (const event of oldSnapshot.events) for (const entry of event.entries) if (entry.trackId === oldSnapshot.tracks[0]!.id) entry.name = "entry";
   db.run("INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES ('shop', 'player-checkout:entry', ?)", [JSON.stringify(oldSnapshot)]);
@@ -66,6 +69,8 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect(repaired?.timeline.tracks[0]?.name).toBe("入场方案");
   expect(repaired?.timeline.events.flatMap(event => event.entries).some(entry => entry.name === "entry")).toBe(false);
   expect(repaired?.timeline.totals).toContainEqual({ name: "入场方案", amount: 12 });
+  expect(repaired?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "start").every(entry => entry.rule === "日间")).toBe(true);
+  expect(repaired?.timeline.totals).toContainEqual({ name: "全局封顶（日间）", amount: -3 });
   await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);
   expect((await queries("shop").getLatestPlayerCheckout!("player"))?.playerSettlement.total).toBe(0);
   for (let index = 0; index < 30; index++) await repo.settlements.saveCheckout!({ id: `page-${index}`, playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-22T10:00:00Z") }, []);

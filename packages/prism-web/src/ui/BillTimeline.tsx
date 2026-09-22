@@ -34,8 +34,8 @@ export function BillTimeline({ preview }: { preview: BillPreview }) {
       })}</div>
       <div className="bill-event-heading"><strong><time dateTime={event.at}>{event.time}</time>{kinds.length === 1 && ` · ${t(labels[kinds[0]!]!)}`}</strong><span>{date(event.date + "T12:00:00")}</span></div>
       {event.entries.map((entry, i) => <div className={`bill-entry ${entry.trackId == null ? "bill-adjustment" : ""}`} key={i}>
-        <div className="bill-entry-heading"><span className="bill-plan-name">{entry.trackId && <i aria-hidden="true" className="bill-plan-dot" style={{ background: colors[(timeline.tracks.find(track => track.id === entry.trackId)?.color ?? 0) % colors.length] }} />}{entry.name}{kinds.length > 1 && entry.trackId && <small> · {t(labels[entry.kind])}</small>}</span>{entry.amount != null && <strong className={entry.amount < 0 ? "bill-negative" : ""}>{entry.amount.toFixed(2)}</strong>}</div>
-        {entry.rule && <p>{entry.rule}{entry.nextRule && ` → ${entry.nextRule}`}</p>}
+        <div className="bill-entry-heading"><span className="bill-plan-name">{entry.trackId && <i aria-hidden="true" className="bill-plan-dot" style={{ background: colors[(timeline.tracks.find(track => track.id === entry.trackId)?.color ?? 0) % colors.length] }} />}{entry.name}{entry.rule && `（${entry.rule}）`}{kinds.length > 1 && entry.trackId && <small> · {t(labels[entry.kind])}</small>}</span>{entry.amount != null && <strong className={entry.amount < 0 ? "bill-negative" : ""}>{entry.amount.toFixed(2)}</strong>}</div>
+        {entry.nextRule && <p>{entry.rule} → {entry.nextRule}</p>}
         {entry.startedAt && entry.endedAt && <p>{entry.periodLabel} · {Math.round((Date.parse(entry.endedAt) - Date.parse(entry.startedAt)) / 60000)} {t("分钟")}</p>}
         {entry.unitMinutes != null && <p>{entry.unitPrice?.toFixed(2)} / {entry.unitMinutes} {t("分钟")}{entry.units != null && ` × ${entry.units}`}</p>}
         {entry.cap != null && <p>{t(entry.trackId ? "时段封顶" : "跨方案封顶")} {entry.cap.toFixed(2)}{entry.paidBefore ? ` · ${t("历史已计入")} ${entry.paidBefore.toFixed(2)}` : ""}</p>}

@@ -44,8 +44,8 @@ export function buildBillTimeline(input: {
       const end = session.endedAt ?? input.at;
       const name = items[0]?.pricingExplanation?.planName ?? input.planNames?.get(configId) ?? (session.label === "entry" ? "入场计费" : session.label) ?? items[0]?.label ?? "计费";
       tracks.push({ id, name, lane: 0, color: tracks.length, startedAt: session.startedAt.toISOString(), endedAt: end.toISOString() });
-      add(session.startedAt, { trackId: id, kind: "start", name });
       const sorted = [...items].sort((a, b) => (a.period?.startedAt.getTime() ?? 0) - (b.period?.startedAt.getTime() ?? 0));
+      add(session.startedAt, { trackId: id, kind: "start", name, rule: sorted[0]?.label ?? null });
       sorted.forEach((item, index) => {
         const explanation = item.pricingExplanation;
         const period = explanation?.period ?? item.period;
@@ -66,7 +66,7 @@ export function buildBillTimeline(input: {
         });
       });
       if (session.endedAt && !sorted.some(item => Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) === end.getTime())) {
-        add(end, { trackId: id, name, kind: session.endedAt ? "end" : "current" });
+        add(end, { trackId: id, name, rule: sorted.at(-1)?.label ?? null, kind: session.endedAt ? "end" : "current" });
       }
     }
   }
@@ -76,7 +76,7 @@ export function buildBillTimeline(input: {
     const window = history && input.globalCapWindows.find(w => w.capConfigId === history.capConfigId && w.capRuleId === history.capRuleId && w.windowStartedAt.getTime() === history.capAnchorAt.getTime());
     // Global caps are independent entries: never attribute them to one plan.
     add(window && window.windowEndedAt < input.at ? window.windowEndedAt : input.at, {
-      kind: "adjustment", name: adjustment.label, amount: adjustment.amount,
+      kind: "adjustment", name: adjustment.source.startsWith("time.cap:") ? `全局封顶（${adjustment.label}）` : adjustment.label, amount: adjustment.amount,
       startedAt: window?.windowStartedAt.toISOString() ?? null,
       endedAt: window ? new Date(Math.min(window.windowEndedAt.getTime(), input.at.getTime())).toISOString() : null,
       cap: window?.priceCap ?? null, paidBefore: window?.paidBefore ?? null,

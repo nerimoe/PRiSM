@@ -87,7 +87,23 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
     track.name = plan?.name ?? (label && label !== "entry" ? label : "入场计费");
     renamed.set(track.id, track.name);
   }
-  if (renamed.size) {
+  let changed = renamed.size > 0;
+  for (const event of timeline.events) for (const entry of event.entries) {
+    if (entry.kind === "start" && entry.trackId && !entry.rule) {
+      const first = timeline.events.flatMap(event => event.entries.map(item => ({ item, at: item.startedAt ?? event.at })))
+        .filter(({ item }) => item.trackId === entry.trackId && item.amount != null && item.rule)
+        .sort((a, b) => a.at.localeCompare(b.at))[0];
+      entry.rule = first?.item.rule ?? null;
+    }
+    if (entry.kind === "adjustment" && !entry.trackId) {
+      const matches = adjustments.filter(adjustment => adjustment.label === entry.name && yuanOf(adjustment.amount) === entry.amount);
+      if (matches.length && matches.every(adjustment => adjustment.source.startsWith("time.cap:"))) {
+        entry.name = `全局封顶（${entry.name}）`;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
     const totals = new Map<string, number>();
     for (const event of timeline.events) for (const entry of event.entries) {
       if (entry.trackId && renamed.has(entry.trackId)) entry.name = renamed.get(entry.trackId)!;
