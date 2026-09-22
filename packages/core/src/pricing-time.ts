@@ -14,6 +14,7 @@ import {
   ZERO_CENTS,
 } from "./money";
 import type { ChargeItem, PricingProvider, SettlementAdjustment } from "./settlement";
+import type { Session } from "./session";
 
 export type UnitPricingConfig = {
   unitMinutes: number;
@@ -632,6 +633,52 @@ function calculateUnits(durationMinutes: number, config: UnitPricingConfig, inva
   }
 
   return units;
+}
+
+// Uses the same rule priority, timezone and minute rounding as quote().
+export function nextTimePricingEvent(input: {
+  config: PriorityTimePricingProviderConfig | TimeCapPricingProviderConfig;
+  session: Session;
+  now: Date;
+  intervalCapReached?: boolean;
+  intervalStartedAt?: Date;
+}): { ruleLabel: string | null; ruleAt: Date | null; chargeAt: Date | null } {
+  const { config, session, now } = input;
+  const rules = activeRules<PriorityTimePricingRule | TimeCapPricingRule>(config.rules).sort((a, b) => b.priority - a.priority);
+  const zone = config.timeZone ?? "UTC";
+  const horizon = new Date(now.getTime() + 8 * 60 * 60_000);
+  let cursor = session.startedAt;
+  // Recover the current segment's start; rounding restarts at each rule boundary.
+  while (cursor < now) {
+    const rule = findActiveRule(cursor, rules, zone);
+    const boundary = rule ? findNextPriorityBoundary(cursor, horizon, rule, rules, zone)
+      : findNextAnyRuleActivationAfter(cursor, horizon, rules, zone);
+    if (boundary > now || boundary <= cursor) break;
+    cursor = boundary;
+  }
+  const rule = findActiveRule(now, rules, zone);
+  const boundary = rule ? findNextPriorityBoundary(now, horizon, rule, rules, zone)
+    : findNextAnyRuleActivationAfter(now, horizon, rules, zone);
+  const ruleAt = boundary < horizon ? boundary : null;
+  let chargeAt: Date | null = null;
+  const capped = input.intervalCapReached && (!input.intervalStartedAt || input.intervalStartedAt.getTime() === cursor.getTime());
+  if (rule && "pricing" in rule && !capped && rule.pricing.unitPrice > 0) {
+    const pricing = rule.pricing;
+    const operated = Boolean(session.metadata?.deviceOperated || session.metadata?.hasDeviceActivity);
+    let minutes = Math.max(0, Math.floor((now.getTime() - cursor.getTime()) / 60_000));
+    const units = calculateUnits(minutes, pricing, operated);
+    // At most two thresholds: grace expiry and the next whole unit.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const cycle = Math.floor(minutes / pricing.unitMinutes) * pricing.unitMinutes;
+      const graceEnd = cycle + pricing.roundGraceMinutes + 1;
+      minutes = Math.min(cycle + pricing.unitMinutes, graceEnd > minutes ? graceEnd : Infinity);
+      if (calculateUnits(minutes, pricing, operated) <= units) continue;
+      const candidate = new Date(cursor.getTime() + minutes * 60_000);
+      if (candidate <= boundary && candidate > now) chargeAt = candidate;
+      break;
+    }
+  }
+  return { ruleLabel: rule?.label ?? null, ruleAt, chargeAt };
 }
 
 function findActiveRule<T extends TimeRuleLike>(

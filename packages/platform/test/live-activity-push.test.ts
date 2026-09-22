@@ -16,6 +16,7 @@ import {
   extractSessionIds,
   playerIdFromPayload,
   sessionEventForPath,
+  playerIdsFromPayload,
 } from "../src/live-activity-events";
 
 // A throwaway P-256 key so the JWT path is exercised for real without APNs credentials.
@@ -377,6 +378,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mf.dispose();
+});
+
+test("live bill endpoint requires the player and returns no invented bill for an empty visit", async () => {
+  const response = await e2eRequest("/api/v1/shops/a/player/live-activity/bill");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ data: { bill: null, nextCheckAtUnix: null } });
+  const anonymous = await app.fetch(new Request(origin + "/api/v1/shops/a/player/live-activity/bill"), routeEnv);
+  expect(anonymous.status).toBe(401);
+  expect(playerIdsFromPayload({ settlements: [{ playerSettlement: { playerId: "one" } }, { playerSettlement: { playerId: "two" } }] })).toEqual(["one", "two"]);
 });
 
 test("a player registers and retires a Live Activity token", async () => {
@@ -789,4 +799,3 @@ test("initiator client id suppresses Push-to-Start only to the originating devic
     globalThis.fetch = realFetch;
   }
 });
-

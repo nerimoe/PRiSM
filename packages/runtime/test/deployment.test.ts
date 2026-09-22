@@ -38,7 +38,7 @@ describe("deployment artifacts", () => {
       const config = await Bun.file(join(root, "wrangler.generated.jsonc")).json();
       expect(config).toMatchObject({
         name: "test-worker", account_id: env.CLOUDFLARE_ACCOUNT_ID,
-        main: "packages/platform/src/index.ts", workers_dev: false,
+        main: "packages/platform/src/worker.ts", workers_dev: false,
         routes: [{ pattern: "test.example.com", custom_domain: true }],
         d1_databases: [{ binding: "DB", database_id: env.D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
         kv_namespaces: [{ binding: "RATE_LIMIT", id: env.RATE_LIMIT_KV_ID }],

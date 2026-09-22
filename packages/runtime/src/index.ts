@@ -655,6 +655,7 @@ export type CreatePrismLocalAppInput = {
 
 export type CreatePrismWorkerAppOptions = {
   shopId?: string;
+  now?: () => Date;
   plugins?: readonly PrismRuntimePlugin[];
   logicalDeviceResolver?: CreatePrismRuntimeDependenciesInput["logicalDeviceResolver"];
 };
@@ -665,6 +666,7 @@ export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWo
 
 export function createPrismWorkerDependencies(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): PrismAppDependencies {
   const runtime = createDefaultRuntimeConfig();
+  if (options.now) runtime.now = options.now;
   return {
       ...createPrismRuntimeDependencies({
       repositories: RuntimeRepositories.fromD1({

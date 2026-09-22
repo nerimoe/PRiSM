@@ -53,7 +53,7 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 
 **运输层关注点不得下沉到核心域。**
 
-APNs 实时活动推送是这条原则的一个具体例子。三个写渠道（玩家、员工、机器人）都在 `packages/platform/src/billing.ts` 的 `forward()` 汇聚，因此推送钩子加在 platform 层的 `forward()` 外层，`server-hono` / `application` / `core` 完全不知道 APNs 的存在，核心域的代码与测试保持零改动。实时活动令牌的注册与注销同样由 platform 直接处理，不转发给核心应用。设计与失败处理见 `live-activity-push.md`。
+APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操作经 `forward()` 通知店铺／玩家对应的 Durable Object，麻将与设备操作也通知同一对象。核心域只提供与原计价一致的下一计费／规则边界计算，不依赖 APNs 或 Cloudflare。实时活动令牌与账单摘要接口由 platform 处理，设计与失败处理见 `live-activity-push.md`。
 
 ## 资产模型
 

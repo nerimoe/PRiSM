@@ -725,6 +725,11 @@ async function handleMachineLogin(
       );
   }
   await c.env.DB.batch(writes);
+  if (result.ok && playerId) {
+    const sync = import("./live-activity-billing").then(({ refreshActivityBill }) => refreshActivityBill(c.env, shop.id, playerId))
+      .catch(error => console.error("Login live bill sync failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+  }
   if (!result.ok)
     jsonError(
       502,

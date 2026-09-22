@@ -1,5 +1,6 @@
 import { toBase64Url } from "./crypto";
 import { appClipBundleId, fullAppBundleId } from "./apple";
+import type { ActivityBill } from "./live-activity-billing";
 
 /**
  * Remote Live Activity delivery over APNs.
@@ -65,15 +66,18 @@ export function liveActivityContentState(input: {
   phase: "active" | "ended";
   startedAtUnix: number;
   endedAtUnix?: number | null;
+  bill?: ActivityBill;
 }): Record<string, unknown> {
   return {
     phase: input.phase,
     startedAtUnix: input.startedAtUnix,
     endedAtUnix: input.endedAtUnix ?? null,
+    ...(input.bill ? { bill: input.bill } : {}),
   };
 }
 
 export function liveActivityStartPayload(input: {
+  bill?: ActivityBill;
   sessionId: string;
   shopCode: string;
   shopName: string;
@@ -100,6 +104,7 @@ export function liveActivityStartPayload(input: {
         phase: "active",
         startedAtUnix: input.startedAtUnix,
         endedAtUnix: null,
+        bill: input.bill,
       }),
       alert: {
         title: input.shopName || "PRiSM",
@@ -114,7 +119,9 @@ export function liveActivityStartPayload(input: {
 
 export function liveActivityUpdatePayload(input: {
   startedAtUnix: number;
+  endedAtUnix?: number | null;
   now: number;
+  bill?: ActivityBill;
   staleAfterSeconds?: number;
 }): Record<string, unknown> {
   return {
@@ -124,6 +131,8 @@ export function liveActivityUpdatePayload(input: {
       "content-state": liveActivityContentState({
         phase: "active",
         startedAtUnix: input.startedAtUnix,
+        endedAtUnix: input.endedAtUnix,
+        bill: input.bill,
       }),
       "stale-date": input.now + (input.staleAfterSeconds ?? 3600),
       "relevance-score": 100,
@@ -134,18 +143,21 @@ export function liveActivityUpdatePayload(input: {
 export function liveActivityEndPayload(input: {
   startedAtUnix: number;
   endedAtUnix: number;
+  now?: number;
+  bill?: ActivityBill;
   dismissalAfterSeconds?: number;
 }): Record<string, unknown> {
   return {
     aps: {
-      timestamp: input.endedAtUnix,
+      timestamp: input.now ?? input.endedAtUnix,
       event: "end",
       "content-state": liveActivityContentState({
         phase: "ended",
         startedAtUnix: input.startedAtUnix,
         endedAtUnix: input.endedAtUnix,
+        bill: input.bill,
       }),
-      "dismissal-date": input.endedAtUnix + (input.dismissalAfterSeconds ?? 60),
+      "dismissal-date": (input.now ?? input.endedAtUnix) + (input.dismissalAfterSeconds ?? 60),
     },
   };
 }

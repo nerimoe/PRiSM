@@ -10,6 +10,7 @@ export type Env = Cloudflare.Env & {
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_PRIVATE_KEY?: string;
+  LIVE_BILLING?: DurableObjectNamespace<import("./live-billing-object").LiveBilling>;
   EXTRA_ALLOWED_ORIGINS?: string;
   ANDROID_CERT_FINGERPRINTS?: string;
 };

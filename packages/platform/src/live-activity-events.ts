@@ -8,6 +8,7 @@ import {
   type LiveActivityPushRecord,
 } from "./live-activity-push";
 import type { AppBindings } from "./types";
+import { activityBill, refreshActivityBill } from "./live-activity-billing";
 
 type C = Context<AppBindings>;
 
@@ -147,10 +148,21 @@ export async function pushSessionEvent(
   // No APNs credentials (local, beta, tests) means the whole feature is inert.
   if (!config) return;
 
+  if (c.env.LIVE_BILLING) {
+    await refreshActivityBill(c.env, input.shopId, input.playerId);
+    // The scheduler checks all remaining sessions before ending the visit.
+    if (input.event === "end") return;
+  }
+
   const nowSeconds = Math.floor(Date.now() / 1000);
   const pusher = new LiveActivityPusher({ config });
 
   if (input.event === "start") {
+    if (c.env.LIVE_BILLING) {
+      const first = await c.env.DB.prepare("SELECT id FROM sessions WHERE shop_id=? AND player_id=? AND payment_status='unpaid' ORDER BY started_at,id LIMIT 1")
+        .bind(input.shopId, input.playerId).first<{ id: string }>();
+      if (first && !input.sessionIds.includes(first.id)) return;
+    }
     // Push-to-start: users who have previously signed in on a supported iOS device
     // registered their push-to-start tokens. We fan out APNs event=start so their
     // Dynamic Island / Live Activity starts automatically even if the app is killed.
@@ -187,6 +199,7 @@ export async function pushSessionEvent(
     if (!Number.isFinite(startedAtUnix)) return;
 
     const origin = c.env.APP_ORIGIN || "https://link.neri.moe";
+    const snapshot = c.env.LIVE_BILLING ? await activityBill(c.env, input.shopId, input.playerId) : null;
     const payload = liveActivityStartPayload({
       sessionId,
       shopCode: shopRow.publicId,
@@ -194,6 +207,8 @@ export async function pushSessionEvent(
       origin,
       startedAtUnix,
       now: nowSeconds,
+      bill: snapshot?.bill,
+      staleAfterSeconds: snapshot?.nextCheckAt ? Math.max(1, Math.ceil(snapshot.nextCheckAt / 1000 - nowSeconds)) : undefined,
     });
 
     for (const row of tokenRows) {
@@ -381,4 +396,21 @@ export function playerIdFromPayload(payload: Record<string, unknown>): string | 
     }
   }
   return null;
+}
+
+export function playerIdsFromPayload(payload: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  const visit = (item: Record<string, unknown>) => {
+    const id = playerIdFromPayload(item);
+    if (id) ids.add(id);
+    for (const key of ["settlements", "sessions", "sessionDetails"] as const) {
+      if (Array.isArray(item[key])) for (const child of item[key]) {
+        if (child && typeof child === "object") visit(child as Record<string, unknown>);
+      }
+    }
+    const preview = item.settlementPreview as { playerId?: unknown } | undefined;
+    if (typeof preview?.playerId === "string") ids.add(preview.playerId);
+  };
+  visit(payload);
+  return [...ids];
 }

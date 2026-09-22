@@ -74,7 +74,7 @@ Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身�
 
 ## 推送内容
 
-`content-state` 的键名必须与 Swift 侧 `StoreVisitAttributes.ContentState` **逐字段一致**（`phase` / `startedAtUnix` / `endedAtUnix`）。ActivityKit 在 `content-state` 无法解码时会**静默丢弃整条推送且不返回任何错误**，所以这一点由单测锁死（`live-activity-push.test.ts`）。
+`content-state` 的键名必须与 Swift 侧 `StoreVisitAttributes.ContentState` **逐字段一致**（`phase` / `startedAtUnix` / `endedAtUnix` / 可选的 `bill`）。旧版状态没有 bill 时仍可解码。ActivityKit 在无法解码时会静默丢弃推送，测试同时验证字段兼容与 4 KB 大小限制。
 
 - 入场 → `event: "update"`，`phase: "active"`，`startedAtUnix` 取场次真实开始时间；
 - 结账 → `event: "end"`，`phase: "ended"`，带 `dismissal-date`（60 秒后消失）。
@@ -82,6 +82,20 @@ Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身�
 `startedAtUnix` 是绝对时间戳，落锁屏后由 `Text(timerInterval:)` 在本地渲染，因此跨时区安全。
 
 ## 配置
+
+平台入口为 `packages/platform/src/worker.ts`，导出 Hono 应用和 `LiveBilling` Durable Object。`wrangler.platform.jsonc` 声明 `LIVE_BILLING` SQLite namespace 和 `live-billing-v1` 类迁移；生成的部署配置继承它们。上线前计费数据库须已应用 `0028_pricing_versions.sql`。未配置绑定时保留原 start/end 推送行为。
+
+## 金额与倒计时更新
+
+每个店铺／玩家一个 Durable Object，只为已注册实时活动的玩家安排任务。保存玩家标识和修订号，金额与方案始终从真实未结账会话及其锁定版本读取，不修改账单和资产。Alarm 到期后使用现有统一账单预览计算，发送摘要，再安排下一边界；没有全店轮询，也不挂常驻 Future。
+
+`nextTimePricingEvent` 复用计价引擎的优先级、时区、分钟取整、宽限和分段起点，合并多个会话与全局封顶规则的边界。已达到区间或全局封顶的部分不再产生收费倒计时。最近的收费候选点会经统一预览确认；若优惠抵消了金额增长，隐藏该收费倒计时，仍在候选点重新评估后续变化。规则切换与收费同刻时客户端合并标签。
+
+入场、子会话增减、麻将开局／离桌、取消宽限的设备操作、结账和账单预览均触发同步。普通 GET 概览不触发重新计费。短时间事件合并，内容不变不重复推送；批量结账逐玩家同步。新增子会话更新原活动，不另开一份入场活动。回调读取最新状态，修订号变化则放弃旧结果，推送失败通过 Alarm 重试；成功令牌分别记账去重。结账的最终金额读取该会话对应的已保存 checkout，避免混入后一次入场的账单。
+
+本地请求只用于初次创建或恢复已过期内容，也会恢复后台调度。Swift 不复刻计费引擎，倒计时通过系统时间组件持续显示。到下一次检查时间设为 stale；更新尚未到达时隐藏旧倒计时，保留账单金额和时间。全部会话关闭但尚未付款时保留活动，设置 `endedAtUnix` 停止计时并显示“待结账”；成功付款后再结束活动。推送受系统与网络影响，不保证准点到达。无令牌或活动已超过八小时则清理调度状态。
+
+验证：`bun test packages/core/test/live-pricing-event.test.ts packages/platform/test/live-billing.test.ts`，后者在 workerd 中运行真实 Durable Object Alarm，并覆盖 APNs 暂时失败重试、金额去重、结账和令牌清理。
 
 | 变量 | 说明 |
 | --- | --- |

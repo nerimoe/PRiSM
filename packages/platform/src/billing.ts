@@ -1,4 +1,5 @@
 import { mahjongRoster } from "./mahjong";
+import { activityBill, refreshActivityBill } from "./live-activity-billing";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { createD1Repositories } from "@prism/adapter-d1";
@@ -23,6 +24,7 @@ import { runPlayerOperation } from "./operations";
 import {
   forwardWithLiveActivity,
   sessionEventForPath,
+  playerIdsFromPayload,
 } from "./live-activity-events";
 import {
   isKnownLiveActivityBundle,
@@ -303,6 +305,7 @@ async function forward(
   deps: PrismAppDependencies,
   path: string,
   body?: unknown,
+  activity?: { shopId: string; playerId?: string },
 ): Promise<Response> {
   const url = new URL(c.req.url);
   url.pathname = `/api/v1/${path}`;
@@ -321,6 +324,14 @@ async function forward(
     data?: unknown;
     error?: unknown;
   };
+  if (response.ok && activity && c.env.LIVE_BILLING && (c.req.method !== "GET" || path.endsWith("checkout/preview"))) {
+    const data = (payload.data ?? payload) as Record<string, unknown>;
+    const playerIds = activity.playerId ? [activity.playerId] : playerIdsFromPayload(data);
+    if (playerIds.length) {
+      const sync = Promise.all(playerIds.map(playerId => refreshActivityBill(c.env, activity.shopId, playerId))).catch(error => console.error("Live bill sync failed", error));
+      try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+    }
+  }
   return c.json(
     response.ok ? (payload.data !== undefined ? payload.data : payload) : payload,
     response.status as 200,
@@ -827,6 +838,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         { ...dependencies(c, shop), authenticatedPrincipal: principal },
         "staff/" + path,
         body,
+        { shopId: shop.id, playerId: path.match(/^players\/([^/]+)\//)?.[1] },
       );
     // An admin starting or settling a visit must reach that player's phone even though
     // the phone is nowhere near this request.
@@ -885,6 +897,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         },
         "player/" + path,
         body,
+        { shopId: shop.id, playerId: player.id },
       );
     const event = sessionEventForPath(path);
     const withPush = event
@@ -915,7 +928,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       body.autoRegister = !!shop.auto_register;
       body.closeSessionsBeforeBalanceCheck = false;
     }
-    const execute = () => forward(c, deps, "integration/" + path, body);
+    const execute = () => forward(c, deps, "integration/" + path, body, { shopId: shop.id });
     // The bot channel identifies players by QQ or card rather than by account, so the
     // player is resolved from the response inside the wrapper.
     const event = sessionEventForPath(path);
@@ -945,6 +958,12 @@ async function handleLiveActivityRoute(
   body: Record<string, unknown> | undefined,
 ): Promise<Response> {
   const user = requireUser(c);
+  if (path === "live-activity/bill" && c.req.method === "GET") {
+    const snapshot = await activityBill(c.env, shop.id, player.id);
+    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+    return c.json({ bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
+  }
   if (path === "live-activity/register") {
     const parsed = z
       .object({
@@ -994,6 +1013,7 @@ async function handleLiveActivityRoute(
         now,
       )
       .run();
+    await refreshActivityBill(c.env, shop.id, player.id);
     return c.json({ ok: true });
   }
 
