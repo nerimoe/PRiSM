@@ -86,6 +86,8 @@ bun run dev:all
      ```
    初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。`migrations/0014_hinata_io_executor.sql` 扩展 Hinata IO 执行器约束，并保留设备状态按上报时间查询所需的索引。`migrations/0023_remote_entry.sql` 曾为 `shop_billing_settings` 增加 `remote_entry_enabled`，`migrations/0024_drop_remote_entry.sql` 又在同一次未发布的改动中移除它——无设备入场不再支持，入场只能由扫码 ticket 授权。
 
+   **迁移内触发器的限制**：远程迁移经由 D1 `/query` 接口应用，其服务端拆分器按 `BEGIN`/`END` 配对划分 `CREATE TRIGGER` 体，但不识别 `CASE` 表达式结尾的 `END`。触发器体内一旦出现 `CASE`，拆分器会把触发器从中间截断，SQLite 报 `incomplete input: SQLITE_ERROR [code: 7500]` 并中止部署。条件抛错请用 `SELECT RAISE(ABORT,'...') WHERE <条件>`，不要用 `SELECT CASE WHEN ... THEN RAISE(...) END`；同时保持 `BEGIN` 大写，小写 `begin` 同样无法被识别。本地 sqlite3、wrangler 客户端拆分器和 `d1 execute --file` 都不会复现该错误，只有远程应用迁移才会暴露。`0028_pricing_versions.sql` 曾因此无法部署。`bun test packages/storage-sql/test/d1-migration-splitter.test.ts` 会按服务端拆分方式回放全部迁移并守住这条约束。
+
 3. **部署 Worker**：
    ```bash
    bun run deploy:worker

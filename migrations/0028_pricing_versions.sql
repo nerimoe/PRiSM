@@ -142,14 +142,14 @@ CREATE TRIGGER IF NOT EXISTS session_pricing_bind AFTER INSERT ON sessions
  WHERE s.shop_id=NEW.shop_id AND s.player_id=NEW.player_id AND s.payment_status='unpaid'
  ORDER BY s.started_at,s.id LIMIT 1),
  (SELECT release_id FROM pricing_release_heads WHERE shop_id=NEW.shop_id));
- SELECT CASE WHEN EXISTS(SELECT 1 FROM pricing_configs WHERE shop_id=NEW.shop_id)
+ SELECT RAISE(ABORT,'PRICING_CONFIG_NOT_IN_RELEASE') WHERE
+ EXISTS(SELECT 1 FROM pricing_configs WHERE shop_id=NEW.shop_id)
  AND EXISTS(SELECT 1 FROM json_each(NEW.pricing_config_ids_json) selected
  WHERE selected.value != 'default' AND NOT EXISTS(
  SELECT 1 FROM session_pricing_releases b JOIN pricing_releases r ON r.shop_id=b.shop_id AND r.id=b.release_id
  JOIN pricing_config_versions v ON v.shop_id=r.shop_id AND v.version_id IN (SELECT value FROM json_each(r.version_ids_json))
  WHERE b.shop_id=NEW.shop_id AND b.session_id=NEW.id AND v.config_id=selected.value
- AND v.enabled=1 AND v.status='active' AND v.kind!='time.cap'))
- THEN RAISE(ABORT,'PRICING_CONFIG_NOT_IN_RELEASE') END;
+ AND v.enabled=1 AND v.status='active' AND v.kind!='time.cap'));
  END;
 
 CREATE TRIGGER IF NOT EXISTS pricing_config_versions_immutable_update
