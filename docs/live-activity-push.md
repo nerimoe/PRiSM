@@ -67,7 +67,7 @@ Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身�
 | `token` | APNs 实时活动令牌（小写十六进制） |
 | `environment` | `sandbox` / `production`，决定 APNs 主机 |
 | `bundle_id` | 决定 `apns-topic`（App 与 App Clip bundle id 不同） |
-| `session_id` | 该活动当前展示的场次；结账后置 `NULL` |
+| `session_id` | 该活动关联的场次；调度器成功结束后删除令牌，旧推送路径结账后置 `NULL` |
 | `attributes_json` | 创建活动时的 `ActivityAttributes`，回存备查 |
 
 唯一键 `UNIQUE(shop_id, user_id, activity_id)`：App 在令牌轮换后会重复上报，注册接口以 upsert 处理，不会产生重复行。
@@ -156,6 +156,14 @@ bun run typecheck
 
 - `ios/LiveActivityShared/StoreVisitLiveActivityManager.swift`：`pushType: .token`，监听 `pushTokenUpdates` 上报令牌，结束与登出时解绑；
 - `ios/PrismClip/PrismAPI.swift`：`registerLiveActivity` / `unregisterLiveActivity`；
-- `ios/PrismClip/MachineLoginViewModel.swift`：登出时调用 `unregisterAllPushTokens()`；结账后经由既有的 `reconcile(session: nil, ...)` 结束活动并解绑。
+- `ios/PrismClip/MachineLoginViewModel.swift`：登出时调用 `unregisterAllPushTokens()`；结账后经由 `reconcile(session: nil, ...)` 查询活动所属会话的结算结果，再结束活动并解绑。
 
 验证：`sh test/native/run-prism-visit-check.sh`。
+
+## 客户端恢复与注销
+
+普通前台账单预览仍由后端触发同步，不直接覆盖活动内容。客户端仅在活动缺失/内容过期时拉取摘要；App 内结账成功直接复用结账响应结束活动；原活动不再出现在 activeSession 时，先复用页面已取得的最近结算单，按 settlements 中的 sessionId 精确匹配。只有缺少匹配且完整的结算数据时，才使用 `live-activity/bill?sessionId=...` 查询该活动所属会话。接口校验店铺及玩家归属。确认已付款才以已保存 checkout 金额、sessions.ended_at 结束活动；查询失败保留原活动，关闭未付款仍保持 active。后台结束推送同样使用实际停止时间，不将等待付款的时间计入时长。本次不改变付款失败继续计费的业务规则。
+
+客户端注销先等待启动令牌 DELETE 及活动令牌注销，再调用 auth/logout，并立即移除当前部署的本地活动。恢复、去重和退出清理不影响另一部署同编号的活动。注销网络失败会记录日志，令牌仍可能需要后续 APNs 失效清理。
+
+新增回归覆盖：按会话恢复最终金额/停止时间、后一次入场不污染前一次结算、关闭未付款状态、原生注销顺序和 DELETE 方法，以及生产 Swift manager 在请求失败时保留活动。

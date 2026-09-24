@@ -959,10 +959,30 @@ async function handleLiveActivityRoute(
 ): Promise<Response> {
   const user = requireUser(c);
   if (path === "live-activity/bill" && c.req.method === "GET") {
+    // A local activity must recover its own checkout, never the player's latest visit.
+    const sessionId = c.req.query("sessionId");
+    if (sessionId) {
+      const session = await c.env.DB.prepare(`SELECT s.started_at, s.ended_at, s.payment_status,
+        pc.total, pc.settled_at FROM sessions s
+        LEFT JOIN settlements st ON st.shop_id=s.shop_id AND st.session_id=s.id
+        LEFT JOIN player_checkouts pc ON pc.shop_id=st.shop_id AND pc.id=st.checkout_id
+        WHERE s.shop_id=? AND s.player_id=? AND s.id=?`)
+        .bind(shop.id, player.id, sessionId)
+        .first<{ started_at: string; ended_at: string | null; payment_status: string; total: number | null; settled_at: string | null }>();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+      if (session.payment_status === "paid") {
+        if (session.total === null || !session.ended_at || !session.settled_at)
+          jsonError(409, "结算账单尚不可用");
+        return c.json({ phase: "ended", startedAtUnix: Date.parse(session.started_at) / 1000,
+          endedAtUnix: Date.parse(session.ended_at) / 1000, nextCheckAtUnix: null,
+          bill: { amountCents: session.total, planLabel: "", nextChargeAtUnix: null,
+            nextRuleAtUnix: null, asOfUnix: Date.parse(session.settled_at) / 1000 } });
+      }
+    }
     const snapshot = await activityBill(c.env, shop.id, player.id);
     const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
     try { c.executionCtx.waitUntil(sync); } catch { void sync; }
-    return c.json({ bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
+    return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
   }
   if (path === "live-activity/register") {
     const parsed = z

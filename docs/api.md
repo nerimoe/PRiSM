@@ -361,7 +361,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 | --- | --- | --- |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
-| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ bill, nextCheckAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`nextChargeAtUnix`、`nextRuleAtUnix`、`asOfUnix`。时间均为 Unix 秒；客户端选两个倒计时中较早者。 |
+| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`nextChargeAtUnix`、`nextRuleAtUnix`、`asOfUnix`。时间均为 Unix 秒；客户端选两个倒计时中较早者。 |
 
 注册请求体：
 
@@ -440,3 +440,9 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 ### 店家手动绑定玩家账号
 
 `POST /api/v1/shops/:shopCode/staff/qq-binding/confirm` 接收 `{ code, qq }`，由已登录且拥有该店玩家管理权限的负责人或管理员调用。验证码来自玩家的 QQ 绑定页面，仍按店铺隔离、五分钟有效、单次使用；只读店员和其他店铺成员不可调用。管理员确认可创建新 QQ 档案，不受自助注册开关限制；已有档案、余额和记录直接沿用。账号/QQ 冲突或停用档案仍拒绝绑定。Bot 端点与此入口共用绑定逻辑，Bot 仍遵循店铺自助注册设置。后台入口位于「玩家 → 绑定账号」。
+
+### 实时活动按会话恢复
+
+`GET /api/v1/shops/:shopCode/player/live-activity/bill?sessionId=...` 校验该会话属于当前店铺与玩家。未付款时返回当前统一账单，`phase: active`；已付款时只读取该会话关联的已保存 checkout，返回 `phase: ended`、最终金额及实际会话开始/结束时间，不会混入下一次入场。找不到会话返回 404，已付款但结算记录不完整返回 409，客户端应保留活动重试。省略 sessionId 时仍返回当前未结账摘要，无账单时各字段为 null。
+
+结算单查询（latest 和按 checkoutId 查询）现在附带 `settlements: [{ settlement: { sessionId, startedAt, endedAt } }]`，与结账确认响应中的会话字段一致。客户端可复用已取得的结算单结束匹配的活动，只有缺少匹配且完整的数据时才调用按会话恢复接口。历史账单仍可解码，缺失结束时间时不猜测。

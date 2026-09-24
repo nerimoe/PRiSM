@@ -121,6 +121,8 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
   return {
     wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
     playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
+    settlements: sessions.map(session => ({ settlement: { sessionId: session.sessionId,
+      startedAt: session.startedAt.toISOString(), endedAt: session.endedAt?.toISOString() ?? null } })),
     timeline,
     chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
   };

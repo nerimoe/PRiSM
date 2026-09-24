@@ -485,6 +485,14 @@ test("settling a visit pushes an end event to the player's phone", async () => {
       .bind(startedAt, startedAt)
       .run();
 
+    // Stopping without payment must remain an active, recoverable bill.
+    const stoppedAt = new Date().toISOString();
+    await routeEnv.DB.prepare("UPDATE sessions SET status='closed', ended_at=? WHERE id='sess-1'").bind(stoppedAt).run();
+    const pending = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=sess-1");
+    expect(await pending.json()).toMatchObject({ data: { phase: "active", endedAtUnix: Date.parse(stoppedAt) / 1000 } });
+    const missing = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=another-players-session");
+    expect(missing.status).toBe(404);
+
     const response = await e2eRequest("/api/v1/shops/a/player/checkout/confirm", {
       operationId: crypto.randomUUID(),
     });
@@ -492,6 +500,16 @@ test("settling a visit pushes an end event to the player's phone", async () => {
     // The response body must still be readable: the push hook clones rather than consumes.
     const payload = (await response.json()) as Record<string, unknown>;
     expect(payload).toHaveProperty("data");
+    const recovered = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=sess-1");
+    const finalBill = (await recovered.json() as any).data;
+    expect(finalBill).toMatchObject({ phase: "ended", startedAtUnix: Date.parse(startedAt) / 1000,
+      endedAtUnix: Date.parse(stoppedAt) / 1000,
+      bill: { amountCents: Math.round((payload as any).data.playerSettlement.total * 100), nextChargeAtUnix: null } });
+    await routeEnv.DB.prepare("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json,payment_status) VALUES ('a','next-visit','p',?,'active','[]','unpaid')").bind(new Date().toISOString()).run();
+    const again = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=sess-1");
+    expect((await again.json() as any).data).toEqual(finalBill);
+
+
 
     // `waitUntil` work is not awaited by the test harness, so allow the microtask to land.
     await new Promise((resolve) => setTimeout(resolve, 250));

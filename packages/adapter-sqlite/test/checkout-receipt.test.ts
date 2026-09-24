@@ -27,6 +27,9 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   await repo.assets.commitAssetTransaction({ transaction: { id: "asset-tx:session.settlement:entry", playerId: "player", kind: "session.settlement", refId: "entry", createdAt: now(), metadata: { walletBalanceAfter: centsOf(76) } }, holdingChanges: { upserts: [], deleteIds: [] }, assetLedgerEntries: [] });
   const latest = await queries("shop").getLatestPlayerCheckout!("player");
   expect(latest?.playerSettlement.total).toBe(24);
+  expect(latest?.settlements).toEqual(["entry", "table"].map(sessionId => ({ settlement: {
+    sessionId, startedAt: "2026-09-20T09:00:00.000Z", endedAt: "2026-09-20T10:00:00.000Z",
+  } })));
   expect(latest?.chargeItems).toHaveLength(2);
   expect(latest?.timeline).toEqual(timeline);
   expect(latest?.wallet?.balanceAfter).toBe(76);

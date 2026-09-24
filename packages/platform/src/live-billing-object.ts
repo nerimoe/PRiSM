@@ -4,7 +4,7 @@ import { LiveActivityPusher, liveActivityConfig, liveActivityEndPayload, liveAct
 import type { Env } from "./types";
 
 type Visit = { shopId: string; playerId: string; revision: number };
-type Token = { id: string; token: string; environment: "sandbox" | "production"; bundle_id: string; session_id: string; created_at: string; started_at: string; payment_status: string; checkout_total: number | null; settled_at: string | null };
+type Token = { id: string; token: string; environment: "sandbox" | "production"; bundle_id: string; session_id: string; created_at: string; started_at: string; ended_at: string | null; payment_status: string; checkout_total: number | null; settled_at: string | null };
 
 export class LiveBilling extends DurableObject<Env> {
   async refresh(shopId: string, playerId: string) {
@@ -20,7 +20,7 @@ export class LiveBilling extends DurableObject<Env> {
     const config = liveActivityConfig(this.env);
     if (!visit || !config) return;
     const { shopId, playerId } = visit;
-    const tokens = (await this.env.DB.prepare(`SELECT t.id,t.token,t.environment,t.bundle_id,t.session_id,t.created_at,s.started_at,s.payment_status,
+    const tokens = (await this.env.DB.prepare(`SELECT t.id,t.token,t.environment,t.bundle_id,t.session_id,t.created_at,s.started_at,s.ended_at,s.payment_status,
       pc.total AS checkout_total,pc.settled_at
       FROM live_activity_tokens t JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
       JOIN sessions s ON s.shop_id=t.shop_id AND s.id=t.session_id AND s.player_id=a.player_id
@@ -45,7 +45,7 @@ export class LiveBilling extends DurableObject<Env> {
       } : snapshot?.bill;
       const startedAtUnix = new Date(token.started_at).getTime() / 1000;
       const payload = ended
-        ? liveActivityEndPayload({ startedAtUnix, endedAtUnix: token.settled_at ? new Date(token.settled_at).getTime() / 1000 : now / 1000, now: Math.floor(now / 1000), bill })
+        ? liveActivityEndPayload({ startedAtUnix, endedAtUnix: token.ended_at ? new Date(token.ended_at).getTime() / 1000 : now / 1000, now: Math.floor(now / 1000), bill })
         : liveActivityUpdatePayload({ startedAtUnix, endedAtUnix: snapshot?.endedAtUnix, now: Math.floor(now / 1000), bill,
           staleAfterSeconds: snapshot?.nextCheckAt ? Math.max(1, Math.ceil((snapshot.nextCheckAt - now) / 1000)) : 3600 });
       // Exclude asOf/timestamp from deduplication, but include token rotation.

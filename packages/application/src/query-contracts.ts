@@ -99,6 +99,7 @@ export type CheckoutHistoryRecord = {
   id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
 };
 export type PlayerCheckoutReceipt = {
+  settlements?: Array<{ settlement: { sessionId: string; startedAt: string; endedAt: string | null } }>;
   playerSettlement: { total: number; settledAt: string };
   timeline: BillTimeline;
   wallet?: { balanceAfter: number } | null;
