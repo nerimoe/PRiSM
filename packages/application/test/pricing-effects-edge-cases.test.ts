@@ -1,11 +1,14 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { describe, expect, it } from "bun:test";
-import type {
+import {
   AssetDefinitionRepository,
   AssetRepository,
   PricingEffect,
   Session,
   SessionRepository,
   SettlementRepository,
+  centsOf,
+  yuanOf,
 } from "@prism/core";
 import {
   calculateAssetEffectDiscount,
@@ -15,11 +18,11 @@ import {
 
 describe("pricing effects edge cases", () => {
   it("preserves two-decimal precision for percentage discounts", () => {
-    const discount = calculateAssetEffectDiscount(15.5, {
+    const discount = calculateAssetEffectDiscount(moneyFixture(15.5), {
       type: "percentage-discount",
       value: 10,
     });
-    expect(discount).toBe(1.55);
+    expect(discount).toBe(moneyFixture(1.55));
   });
 
   it("generates unique adjustment IDs for multiple holdings of the same asset", async () => {
@@ -54,18 +57,18 @@ describe("pricing effects edge cases", () => {
         status: "active",
         paymentStatus: "unpaid",
       },
-      subtotal: 30,
+      subtotal: centsOf(30),
       chargeItems: [],
       assetHoldings: [
-        { id: "holding-a", assetType: "coupon", assetCode: "five-off", quantity: 1 },
-        { id: "holding-b", assetType: "coupon", assetCode: "five-off", quantity: 1 },
+        { id: "holding-a", assetType: "coupon", assetCode: "five-off", quantity: integerFixture(1) },
+        { id: "holding-b", assetType: "coupon", assetCode: "five-off", quantity: integerFixture(1) },
       ],
       now: new Date("2026-09-01T10:00:00.000Z"),
     });
 
     expect(adjustments).toHaveLength(2);
     expect(adjustments[0].id).not.toBe(adjustments[1].id);
-    expect(adjustments.map((a) => a.amount)).toEqual([-5, -5]);
+    expect(adjustments.map((a) => a.amount)).toEqual([moneyFixture(-5), moneyFixture(-5)]);
   });
 
   it("caps multiple targeted coupons to the eligible charges without spilling into unrelated fees", async () => {
@@ -102,31 +105,31 @@ describe("pricing effects edge cases", () => {
         status: "active",
         paymentStatus: "unpaid",
       },
-      subtotal: 65,
+      subtotal: centsOf(65),
       chargeItems: [
         {
           id: "charge-music",
           source: "config-music",
           label: "音游机",
-          amount: 15,
+          amount: moneyFixture(15),
           pricingHistory: {
             pricingConfigId: "config-music",
             ruleId: "rule-1",
             providerId: "config-music",
             ruleAnchorAt: new Date("2026-09-01T10:00:00.000Z"),
-            amount: 15,
+            amount: moneyFixture(15),
           },
         },
         {
           id: "charge-general",
           source: "config-general",
           label: "散台",
-          amount: 50,
+          amount: moneyFixture(50),
         },
       ],
       assetHoldings: [
-        { id: "holding-1", assetType: "coupon", assetCode: "music-ten", quantity: 1 },
-        { id: "holding-2", assetType: "coupon", assetCode: "music-ten", quantity: 1 },
+        { id: "holding-1", assetType: "coupon", assetCode: "music-ten", quantity: integerFixture(1) },
+        { id: "holding-2", assetType: "coupon", assetCode: "music-ten", quantity: integerFixture(1) },
       ],
       now: new Date("2026-09-01T10:00:00.000Z"),
     });
@@ -134,8 +137,8 @@ describe("pricing effects edge cases", () => {
     // Total music charge is 15.
     // Coupon 1 can take 10. Coupon 2 must be capped to remaining 5, not 10!
     expect(adjustments).toHaveLength(2);
-    expect(adjustments[0].amount).toBe(-10);
-    expect(adjustments[1].amount).toBe(-5);
+    expect(adjustments[0].amount).toBe(moneyFixture(-10));
+    expect(adjustments[1].amount).toBe(moneyFixture(-5));
   });
 
   it("allows coupons active at checkout time even if session started before coupon was active", async () => {
@@ -173,16 +176,16 @@ describe("pricing effects edge cases", () => {
         status: "active",
         paymentStatus: "unpaid",
       },
-      subtotal: 50,
+      subtotal: centsOf(50),
       chargeItems: [],
       assetHoldings: [
-        { id: "holding-1", assetType: "coupon", assetCode: "ten-off", quantity: 1 },
+        { id: "holding-1", assetType: "coupon", assetCode: "ten-off", quantity: integerFixture(1) },
       ],
       now: new Date("2026-09-01T12:00:00.000Z"),
     });
 
     expect(adjustments).toHaveLength(1);
-    expect(adjustments[0].amount).toBe(-10);
+    expect(adjustments[0].amount).toBe(moneyFixture(-10));
   });
 
   it("does not reuse a consumed coupon across multiple sessions in unified checkout", async () => {
@@ -210,7 +213,7 @@ describe("pricing effects edge cases", () => {
         id: "h-currency",
         assetType: "currency",
         assetCode: "paid",
-        quantity: 1000,
+        quantity: centsOf(1000),
         activeAt: null,
         expiresAt: null,
       },
@@ -218,7 +221,7 @@ describe("pricing effects edge cases", () => {
         id: "h-coupon",
         assetType: "coupon",
         assetCode: "ten-off",
-        quantity: 1, // Only 1 coupon!
+        quantity: integerFixture(1), // Only 1 coupon!
         activeAt: null,
         expiresAt: null,
       },
@@ -291,7 +294,7 @@ describe("pricing effects edge cases", () => {
     const pricingProvider = {
       id: "fixed-pricing",
       async quote(context: any) {
-        return [{ id: `${context.session.id}:charge`, source: "fixed", label: "时长费", amount: 30 }];
+        return [{ id: `${context.session.id}:charge`, source: "fixed", label: "时长费", amount: centsOf(30) }];
       },
     };
 
@@ -312,10 +315,10 @@ describe("pricing effects edge cases", () => {
     // s1 subtotal: 30, discount: -10 -> total: 20
     // s2 subtotal: 30, discount: 0 -> total: 30 (because the coupon was consumed by s1!)
     // Overall total should be 50, NOT 40!
-    expect(preview.settlementPreview.subtotal).toBe(60);
-    expect(preview.settlementPreview.total).toBe(50);
+    expect(yuanOf(preview.settlementPreview.subtotal)).toBe(60);
+    expect(yuanOf(preview.settlementPreview.total)).toBe(50);
     expect(preview.adjustments).toHaveLength(1);
-    expect(preview.adjustments[0].amount).toBe(-10);
+    expect(preview.adjustments[0].amount).toBe(moneyFixture(-10));
   });
 
   it("skips discount when eligible subtotal is below minSubtotal threshold", async () => {
@@ -353,10 +356,10 @@ describe("pricing effects edge cases", () => {
         status: "active",
         paymentStatus: "unpaid",
       },
-      subtotal: 40,
+      subtotal: centsOf(40),
       chargeItems: [],
       assetHoldings: [
-        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: 1 },
+        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: integerFixture(1) },
       ],
       now: new Date("2026-09-01T10:00:00.000Z"),
     });
@@ -372,15 +375,15 @@ describe("pricing effects edge cases", () => {
         status: "active",
         paymentStatus: "unpaid",
       },
-      subtotal: 60,
+      subtotal: centsOf(60),
       chargeItems: [],
       assetHoldings: [
-        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: 1 },
+        { id: "holding-1", assetType: "coupon", assetCode: "spend-50-minus-10", quantity: integerFixture(1) },
       ],
       now: new Date("2026-09-01T10:00:00.000Z"),
     });
 
     expect(adjustmentsAbove).toHaveLength(1);
-    expect(adjustmentsAbove[0].amount).toBe(-10);
+    expect(adjustmentsAbove[0].amount).toBe(moneyFixture(-10));
   });
 });

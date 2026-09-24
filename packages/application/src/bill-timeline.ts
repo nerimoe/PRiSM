@@ -1,13 +1,16 @@
 import type { BillTimeline, BillTimelineEntry, ChargeItem, SettlementAdjustment, TimeCapPricingWindow } from "@prism/core";
+import { type Cents, addCents, isZeroCents, yuanOf, ZERO_CENTS } from "@prism/core";
 
 /** Presentation only: amounts come from the engine, never recalculated by clients. */
 export function buildBillTimeline(input: {
   at: Date;
+  timeZone?: string;
+  planNames?: ReadonlyMap<string, string>;
   sessions: { sessionId: string; label: string | null; startedAt: Date; endedAt: Date | null; chargeItems: ChargeItem[] }[];
   adjustments: SettlementAdjustment[];
   globalCapWindows: TimeCapPricingWindow[];
 }): BillTimeline {
-  const timeZone = input.sessions.flatMap(s => s.chargeItems).find(i => i.pricingExplanation?.timeZone)?.pricingExplanation?.timeZone ?? "UTC";
+  const timeZone = input.sessions.flatMap(s => s.chargeItems).find(i => i.pricingExplanation?.timeZone)?.pricingExplanation?.timeZone ?? input.timeZone ?? "UTC";
   const formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const local = (at: string) => {
     const parts = formatter.formatToParts(new Date(at));
@@ -39,10 +42,10 @@ export function buildBillTimeline(input: {
     for (const [configId, items] of groups) {
       const id = `${session.sessionId}:${configId}`;
       const end = session.endedAt ?? input.at;
-      const name = items[0]?.pricingExplanation?.planName ?? session.label ?? items[0]?.label ?? "计费";
+      const name = items[0]?.pricingExplanation?.planName ?? input.planNames?.get(configId) ?? (session.label === "entry" ? "入场计费" : session.label) ?? items[0]?.label ?? "计费";
       tracks.push({ id, name, lane: 0, color: tracks.length, startedAt: session.startedAt.toISOString(), endedAt: end.toISOString() });
-      add(session.startedAt, { trackId: id, kind: "start", name });
       const sorted = [...items].sort((a, b) => (a.period?.startedAt.getTime() ?? 0) - (b.period?.startedAt.getTime() ?? 0));
+      add(session.startedAt, { trackId: id, kind: "start", name, rule: sorted[0]?.label ?? null });
       sorted.forEach((item, index) => {
         const explanation = item.pricingExplanation;
         const period = explanation?.period ?? item.period;
@@ -63,17 +66,17 @@ export function buildBillTimeline(input: {
         });
       });
       if (session.endedAt && !sorted.some(item => Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) === end.getTime())) {
-        add(end, { trackId: id, name, kind: session.endedAt ? "end" : "current" });
+        add(end, { trackId: id, name, rule: sorted.at(-1)?.label ?? null, kind: session.endedAt ? "end" : "current" });
       }
     }
   }
   for (const adjustment of input.adjustments) {
-    if (adjustment.amount === 0) continue;
+    if (isZeroCents(adjustment.amount)) continue;
     const history = adjustment.pricingCapHistory;
     const window = history && input.globalCapWindows.find(w => w.capConfigId === history.capConfigId && w.capRuleId === history.capRuleId && w.windowStartedAt.getTime() === history.capAnchorAt.getTime());
     // Global caps are independent entries: never attribute them to one plan.
     add(window && window.windowEndedAt < input.at ? window.windowEndedAt : input.at, {
-      kind: "adjustment", name: adjustment.label, amount: adjustment.amount,
+      kind: "adjustment", name: adjustment.source.startsWith("time.cap:") ? `${window?.capName ?? input.planNames?.get(adjustment.source) ?? "全局封顶"}（${adjustment.label}）` : adjustment.label, amount: adjustment.amount,
       startedAt: window?.windowStartedAt.toISOString() ?? null,
       endedAt: window ? new Date(Math.min(window.windowEndedAt.getTime(), input.at.getTime())).toISOString() : null,
       cap: window?.priceCap ?? null, paidBefore: window?.paidBefore ?? null,
@@ -86,9 +89,20 @@ export function buildBillTimeline(input: {
     track.lane = lane;
     lanes[lane] = track.endedAt;
   }
-  const totals = new Map<string, number>();
+  const totals = new Map<string, Cents>();
   for (const entries of events.values()) for (const entry of entries) {
-    if (entry.amount != null) totals.set(entry.name, (totals.get(entry.name) ?? 0) + entry.amount);
+    if (entry.amount != null) totals.set(entry.name, addCents(totals.get(entry.name) ?? ZERO_CENTS, entry.amount as Cents));
   }
-  return { totals: [...totals].map(([name, amount]) => ({ name, amount })), tracks, events: [...events].sort(([a], [b]) => b.localeCompare(a)).map(([at, entries]) => ({ at, ...local(at), entries })) };
+  return {
+    totals: [...totals].map(([name, amount]) => ({ name, amount: yuanOf(amount) })),
+    tracks,
+    events: [...events].sort(([a], [b]) => b.localeCompare(a)).map(([at, entries]) => ({
+      at, ...local(at), entries: entries.map(entry => ({
+        ...entry,
+        amount: entry.amount == null ? null : yuanOf(entry.amount as Cents),
+        cap: entry.kind === "adjustment" && entry.cap != null ? yuanOf(entry.cap as Cents) : entry.cap,
+        paidBefore: entry.kind === "adjustment" && entry.paidBefore != null ? yuanOf(entry.paidBefore as Cents) : entry.paidBefore,
+      })),
+    })),
+  };
 }

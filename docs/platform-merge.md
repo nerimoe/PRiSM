@@ -73,6 +73,19 @@ Nonbilling TTLock acceptance also verifies that QQ is still required, the passwo
 
 The player operation surface is QR/NFC → static `/t/:shop/:device` link → expiring `/m?ticket=…` session. Player shop/device lists and all UI links that mint another device session have been removed. Native clients no longer renew expired tickets. `/t/:shop` no longer opens a store dashboard; public player device-list endpoints no longer return operation destinations. Public static links are not physical-presence proof; stores can additionally require geolocation for entry, machine actions and checkout.
 
+### Shop-only surface (`/t/:shopCode`)
+
+A bare shop code with no device segment is the standalone, device-independent shop page. It is the deep-link target for the PRiSM Link Live Activity and Dynamic Island. It is still not a store dashboard: it shows only the signed-in player's own bill, redeem, history and wallet.
+
+- It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m?ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
+- `GET /api/v1/shops/:shopCode` returns `shop.heroUrl` (the same versioned `…/hero?v=<hash>` path the machine payload uses, or `null`) so the shop card matches a device card. It is derived from `hero_data`/`hero_hash`, so a shop without cover art reports `null` rather than a broken path.
+- It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
+- Players without that row see a QQ-binding explanation and the shop's Bot contact; the row is created by the Bot, not by this page.
+
+**Admission is deliberately absent here.** Only a scanned machine ticket proves the player is at a machine, and a shop URL carries no such proof, so this page never starts a session: it settles bills. A player who has not checked in is told to tap the machine NFC tag or scan its QR code. This is the one capability a shop link does not share with a device link; bill, checkout, redeem, history and wallet are identical on both.
+
+A short-lived **0023_remote_entry.sql / 0024_drop_remote_entry.sql** pair added and then removed a device-free entry opt-in within the same change series, before the feature was used; `0024` drops the column, so a database that applied `0023` converges on the same schema. Admission has no server-side switch.
+
 The top-right account name opens logout and, for billed shops, Bill / Redeem / History / Wallet. Each opens a focused dialog or native sheet. Bill loads a preview before checkout. The menu remains available after device ticket consumption so users can settle. There is no combined spending page or bottom spending link. QQ codes generate automatically on the binding gate; only the group command and expiry appear, without Bot contact or enrollment copy. Any configured device can show admission consent; non-door admission requires its ticket, matching shop and explicit consent. Door admission additionally retrieves a temporary password, with a new-password action remaining available.
 
 Migration **0019_ticket_coin.sql** adds the atomic per-ticket coin claim. A manual coin ticket allows one coin; afterward the disabled button says “已投币”. Card delivery consumes the ticket for every further device action, whether accepted, failed or uncertain. Automatic coin is server-only on auto-enabled devices, follows accepted card delivery, and claims the same per-ticket coin slot. Staff operations retain the existing per-device cooldown. Unknown device actions expire the ticket and preserve pending command records. Power requests use button progress; no action notices are placed above the controls.

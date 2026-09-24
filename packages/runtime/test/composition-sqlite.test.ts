@@ -1,11 +1,27 @@
+import { serializePricingProviderConfig, serializePresentGrants } from "@prism/storage-sql";
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf, yuanOf } from "@prism/core";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { sqliteSchema } from "@prism/storage-sql";
 import {
   createPrismRuntimeDependencies,
+  initializeSqliteSchema,
   RuntimeRepositories,
 } from "../src/index";
 import { createPrismApp } from "./test-app";
+
+it("refuses to start billing against a pre-integer SQLite schema", () => {
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE players(shop_id TEXT); CREATE TABLE asset_holdings(quantity REAL)");
+  expect(() => initializeSqliteSchema(db)).toThrow("migration 0022");
+  db.close();
+  const fresh = new Database(":memory:");
+  initializeSqliteSchema(fresh);
+  expect(fresh.query("SELECT type FROM pragma_table_info('asset_holdings') WHERE name='quantity'").get())
+    .toEqual({ type: "INTEGER" });
+  fresh.close();
+});
 
 function createDb() {
   const db = new Database(":memory:");
@@ -26,7 +42,7 @@ function createDb() {
   );
   db.run(
     "INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)",
-    ["holding-1", "player-1", "currency", "currency.paid", 100],
+    ["holding-1", "player-1", "currency", "currency.paid", 10000],
   );
   db.run(
     "INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity, active_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -34,8 +50,7 @@ function createDb() {
       "future-free",
       "player-1",
       "currency",
-      "currency.free",
-      999,
+      "currency.free", 99900,
       "2026-06-08T00:00:00.000Z",
       null,
     ],
@@ -46,8 +61,7 @@ function createDb() {
       "expired-free",
       "player-1",
       "currency",
-      "currency.free",
-      999,
+      "currency.free", 99900,
       "2026-06-01T00:00:00.000Z",
       "2026-06-07T09:59:59.000Z",
     ],
@@ -84,11 +98,11 @@ function insertEffectAssetDefinition(
       input.assetName,
       input.effectType,
       input.scope,
-      input.value ?? null,
+      input.value == null ? null : centsOf(input.value),
       input.consumable ? 1 : 0,
       input.limitPerDay ?? null,
       "active",
-      input.config ? JSON.stringify(input.config) : null,
+      input.config ? JSON.stringify({ ...input.config, ...(typeof input.config.minSubtotal === "number" ? { minSubtotal: centsOf(input.config.minSubtotal) } : {}) }) : null,
     ],
   );
   db.run(
@@ -187,7 +201,7 @@ describe("createPrismRuntimeDependencies", () => {
         null,
         null,
         "active",
-        JSON.stringify([
+        JSON.stringify(serializePresentGrants([
           {
             assetType: "currency",
             assetCode: "currency.paid",
@@ -196,7 +210,7 @@ describe("createPrismRuntimeDependencies", () => {
             activeAt: null,
             expiresAt: null,
           },
-        ]),
+        ])),
       ],
     );
 
@@ -218,7 +232,7 @@ describe("createPrismRuntimeDependencies", () => {
         {
           asset_type: "currency",
           asset_code: "currency.paid",
-          quantity: 80,
+          quantity: centsOf(80),
         },
       ]);
   });
@@ -232,7 +246,7 @@ describe("createPrismRuntimeDependencies", () => {
     bindTestIdentity(db, "player-2");
     db.run(
       "INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)",
-      ["holding-player-2", "player-2", "currency", "currency.paid", 100],
+      ["holding-player-2", "player-2", "currency", "currency.paid", 10000],
     );
     db.run(
       `INSERT INTO pricing_configs (id, kind, name, enabled, provider_json, created_at, updated_at)
@@ -242,7 +256,7 @@ describe("createPrismRuntimeDependencies", () => {
         "time.priority",
         "标准日夜计费",
         1,
-        JSON.stringify({
+        JSON.stringify(serializePricingProviderConfig({
           id: "time.day-night",
           timeZone: "Asia/Tokyo",
           rules: [
@@ -277,7 +291,7 @@ describe("createPrismRuntimeDependencies", () => {
               },
             },
           ],
-        }),
+        })),
         "2026-06-07T00:00:00.000Z",
         "2026-06-07T00:00:00.000Z",
       ],
@@ -367,7 +381,7 @@ describe("createPrismRuntimeDependencies", () => {
         player_id: "player-1",
         rule_id: "day",
         rule_anchor_at: "2026-06-07T01:00:00.000Z",
-        amount: 40,
+        amount: centsOf(40),
       },
       {
         player_id: "player-1",
@@ -379,7 +393,7 @@ describe("createPrismRuntimeDependencies", () => {
         player_id: "player-2",
         rule_id: "day",
         rule_anchor_at: "2026-06-07T01:00:00.000Z",
-        amount: 16,
+        amount: centsOf(16),
       },
     ]);
   });
@@ -445,7 +459,7 @@ describe("createPrismRuntimeDependencies", () => {
           item.kind,
           item.name,
           item.status,
-          item.price,
+          centsOf(item.price),
           null,
           null,
           item.activeAt,
@@ -539,8 +553,7 @@ describe("createPrismRuntimeDependencies", () => {
         "holding-pass",
         "player-1",
         "pass",
-        "pass.monthly",
-        1,
+        "pass.monthly", 100,
         "2026-06-01T00:00:00.000Z",
         "2026-07-01T00:00:00.000Z",
       ],
@@ -571,7 +584,7 @@ describe("createPrismRuntimeDependencies", () => {
                 id: `${context.session.id}:manual-time`,
                 source: "manual-time",
                 label: "按时计费",
-                amount: 80,
+                amount: moneyFixture(80),
               },
             ];
           },
@@ -630,8 +643,7 @@ describe("createPrismRuntimeDependencies", () => {
         "holding-coupon",
         "player-1",
         "coupon",
-        "coupon.weekday-gold",
-        2,
+        "coupon.weekday-gold", 2,
         "2026-06-01T00:00:00.000Z",
         "2026-07-01T00:00:00.000Z",
       ],
@@ -671,13 +683,13 @@ describe("createPrismRuntimeDependencies", () => {
                 id: `${context.session.id}:gaming-charge`,
                 source: "pc-gaming",
                 label: "游戏计费",
-                amount: 80,
+                amount: moneyFixture(80),
                 pricingHistory: {
                   pricingConfigId: "pc-gaming",
                   providerId: "pc-gaming",
                   ruleId: "pc-gaming-rule",
                   ruleAnchorAt: context.session.startedAt,
-                  amount: 80,
+                  amount: moneyFixture(80),
                 },
               },
             ];
@@ -744,8 +756,7 @@ describe("createPrismRuntimeDependencies", () => {
         "holding-coupon",
         "player-1",
         "coupon",
-        "coupon.date-limited",
-        2,
+        "coupon.date-limited", 2,
         "2026-06-01T00:00:00.000Z",
         "2026-07-01T00:00:00.000Z",
       ],
@@ -784,7 +795,7 @@ describe("createPrismRuntimeDependencies", () => {
                 id: `${context.session.id}:gaming-charge`,
                 source: "pc-gaming",
                 label: "游戏计费",
-                amount: 80,
+                amount: moneyFixture(80),
               },
             ];
           },
@@ -867,8 +878,7 @@ describe("createPrismRuntimeDependencies", () => {
         "holding-vip",
         "player-1",
         "pass",
-        "pass.vip-monthly",
-        1,
+        "pass.vip-monthly", 100,
         "2026-06-01T00:00:00.000Z",
         "2026-07-01T00:00:00.000Z",
       ],
@@ -880,8 +890,7 @@ describe("createPrismRuntimeDependencies", () => {
         "holding-coin",
         "player-1",
         "currency",
-        "currency.paid",
-        1000,
+        "currency.paid", 100000,
         "2026-06-01T00:00:00.000Z",
         "2026-07-01T00:00:00.000Z",
       ],
@@ -921,13 +930,13 @@ describe("createPrismRuntimeDependencies", () => {
                 id: `${context.session.id}:gaming-charge`,
                 source: "pc-gaming",
                 label: "游戏计费",
-                amount: 80,
+                amount: moneyFixture(80),
                 pricingHistory: {
                   pricingConfigId: "pc-gaming",
                   providerId: "pc-gaming",
                   ruleId: "pc-gaming-rule",
                   ruleAnchorAt: context.session.startedAt,
-                  amount: 80,
+                  amount: moneyFixture(80),
                 },
               },
             ];
@@ -1006,7 +1015,7 @@ describe("createPrismRuntimeDependencies", () => {
                     id: `${context.session.id}:exam-ticket`,
                     source: "plugin.exam-ticket",
                     label: "准考证活动",
-                    amount: 120,
+                    amount: moneyFixture(120),
                   },
                 ];
               },
@@ -1027,7 +1036,7 @@ describe("createPrismRuntimeDependencies", () => {
                     id: `${context.session.id}:exam-ticket-discount`,
                     source: "plugin.exam-ticket",
                     label: "准考证活动券",
-                    amount: -20,
+                    amount: moneyFixture(-20),
                   },
                 ];
               },
@@ -1146,7 +1155,7 @@ describe("createPrismRuntimeDependencies", () => {
                 id: `${context.session.id}:flat-test`,
                 source: "flat-test",
                 label: "Flat test",
-                amount: 999,
+                amount: moneyFixture(999),
               },
             ];
           },
@@ -2462,7 +2471,7 @@ describe("createPrismRuntimeDependencies", () => {
     );
     db.run(
       "INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)",
-      ["holding-free-active", "player-1", "currency", "currency.free", 50],
+      ["holding-free-active", "player-1", "currency", "currency.free", 5000],
     );
     db.run(
       `INSERT INTO business_items (id, kind, name, status, price, asset_type, asset_code, active_at, expires_at, metadata_json, created_at, updated_at)
@@ -2472,7 +2481,7 @@ describe("createPrismRuntimeDependencies", () => {
         "event.entry",
         "周末挑战赛报名",
         "active",
-        120,
+        centsOf(120),
         "ticket",
         "event.weekend",
         "2026-06-07T00:00:00.000Z",
@@ -2601,16 +2610,16 @@ describe("createPrismRuntimeDependencies", () => {
         "迁移礼物",
         0,
         "active",
-        JSON.stringify([
+        JSON.stringify(serializePresentGrants([
           {
             assetType: "currency",
             assetCode: "currency.free",
             amount: 10,
             mergeStrategy: "stack",
             activeAt: null,
-            expiresAt: "2026-06-30T00:00:00.000Z",
+            expiresAt: new Date("2026-06-30T00:00:00.000Z"),
           },
-        ]),
+        ])),
       ],
     );
     const app = createPrismApp(

@@ -1,5 +1,6 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { describe, expect, it } from "bun:test";
-import type {
+import {
   AssetHolding,
   DeviceCommand,
   DeviceCommandRepository,
@@ -9,6 +10,8 @@ import type {
   PlayerRepository,
   Session,
   SessionRepository,
+  centsOf,
+  yuanOf,
 } from "@prism/core";
 import { PrismDomainError } from "@prism/core";
 import { createDeviceActionService, createIntegrationService } from "../src/index";
@@ -575,7 +578,7 @@ describe("createIntegrationService", () => {
       id: "holding-1",
       assetType: "currency",
       assetCode: "currency.paid",
-      quantity: 120,
+      quantity: centsOf(120),
     } satisfies AssetHolding;
     const service = createIntegrationService({
       players,
@@ -595,8 +598,8 @@ describe("createIntegrationService", () => {
             settlementPreview: {
               playerId: input.playerId,
               sessionIds: ["session-1"],
-              subtotal: 30,
-              total: 30,
+              subtotal: centsOf(30),
+              total: centsOf(30),
               status: "preview",
               previewedAt: new Date("2026-07-07T12:00:00.000Z"),
             },
@@ -607,8 +610,8 @@ describe("createIntegrationService", () => {
                 startedAt: new Date("2026-07-07T11:00:00.000Z"),
                 endedAt: new Date("2026-07-07T12:00:00.000Z"),
                 status: "closed",
-                subtotal: 30,
-                total: 30,
+                subtotal: centsOf(30),
+                total: centsOf(30),
                 chargeItems: [],
                 adjustments: [],
               },
@@ -617,7 +620,7 @@ describe("createIntegrationService", () => {
             adjustments: [],
             checkoutAdjustments: [],
             pricingCapAdjustments: [],
-            wallet: { balanceBefore: 120, balanceAfter: 90 },
+            wallet: { balanceBefore: centsOf(120), balanceAfter: centsOf(90) },
             globalCapWindows: [],
           };
         },
@@ -627,8 +630,8 @@ describe("createIntegrationService", () => {
             playerSettlement: {
               playerId: input.playerId,
               sessionIds: ["session-1"],
-              subtotal: 30,
-              total: 30,
+              subtotal: centsOf(30),
+              total: centsOf(30),
               status: "settled",
               settledAt: new Date("2026-07-07T12:00:00.000Z"),
             },
@@ -636,8 +639,8 @@ describe("createIntegrationService", () => {
               {
                 settlement: {
                   sessionId: "session-1",
-                  subtotal: 30,
-                  total: 30,
+                  subtotal: centsOf(30),
+                  total: centsOf(30),
                   status: "settled",
                   settledAt: new Date("2026-07-07T12:00:00.000Z"),
                 },
@@ -658,7 +661,7 @@ describe("createIntegrationService", () => {
             checkoutAdjustments: [],
             pricingCapAdjustments: [],
             assetLedgerEntries: [],
-            wallet: { balanceBefore: 120, balanceAfter: 90 },
+            wallet: { balanceBefore: centsOf(120), balanceAfter: centsOf(90) },
             globalCapWindows: [],
           };
         },
@@ -688,7 +691,7 @@ describe("createIntegrationService", () => {
           calls.push(`summary:${playerId}`);
           return {
             player,
-            wallet: [{ assetCode: "currency.paid", quantity: 120 }],
+            wallet: [{ assetCode: "currency.paid", quantity: centsOf(120) }],
             activeSession: null,
           };
         },
@@ -708,7 +711,7 @@ describe("createIntegrationService", () => {
     await expect(service.getWalletByIdentity({ identityKey: "qq:123456" })).resolves.toEqual([
       {
         assetCode: "currency.paid",
-        quantity: 120,
+        quantity: centsOf(120),
       },
     ]);
     await expect(service.getAssetsByIdentity({ identityKey: "qq:123456" })).resolves.toEqual({
@@ -717,10 +720,10 @@ describe("createIntegrationService", () => {
     });
     await expect(service.getHistoryByIdentity({ identityKey: "qq:123456" })).resolves.toEqual([]);
     await expect(service.previewCheckoutByIdentity({ identityKey: "qq:123456" })).resolves.toMatchObject({
-      settlementPreview: { total: 30 },
+      settlementPreview: { total: moneyFixture(30) },
     });
     await expect(service.confirmCheckoutByIdentity({ identityKey: "qq:123456" })).resolves.toMatchObject({
-      playerSettlement: { total: 30 },
+      playerSettlement: { total: moneyFixture(30) },
     });
     await expect(service.redeemByIdentity({ identityKey: "qq:123456", code: "GIFT" })).resolves.toMatchObject({
       redeemRecord: { playerId: "player-1" },
@@ -841,7 +844,7 @@ describe("createIntegrationService", () => {
     expect(sessions.saved).toContainEqual(stopped);
   });
 
-  it("does not stop sessions belonging to another player or sessions not created by integration", async () => {
+  it("stops the referenced player's session whichever channel opened it, but never another player's", async () => {
     const player = {
       id: "player-1",
       displayName: "A",
@@ -876,6 +879,7 @@ describe("createIntegrationService", () => {
         paymentStatus: "unpaid",
       },
     ]);
+    const stopped: Array<{ playerId: string; sessionId: string }> = [];
     const service = createIntegrationService({
       players,
       playerIdentities: identities,
@@ -895,8 +899,17 @@ describe("createIntegrationService", () => {
         async checkout() {
           throw new Error("not used");
         },
-        async stopSession() {
-          throw new Error("integration stop should reject before stopSession");
+        async stopSession(input: { playerId: string; sessionId: string }) {
+          stopped.push(input);
+          return {
+            id: input.sessionId,
+            playerId: input.playerId,
+            startedAt: new Date("2026-07-07T10:00:00.000Z"),
+            endedAt: new Date("2026-07-07T10:30:00.000Z"),
+            status: "closed" as const,
+            pricingConfigIds: ["music"],
+            paymentStatus: "unpaid" as const,
+          };
         },
       },
       now: () => new Date("2026-07-07T10:30:00.000Z"),
@@ -906,9 +919,15 @@ describe("createIntegrationService", () => {
     await expect(
       service.stopSessionByIdentity({ identityKey: "qq:123456", sessionId: "other-player-session" }),
     ).rejects.toMatchObject({ code: "INTEGRATION_SESSION_NOT_FOUND" });
-    await expect(
-      service.stopSessionByIdentity({ identityKey: "qq:123456", sessionId: "staff-created-session" }),
-    ).rejects.toMatchObject({ code: "INTEGRATION_SESSION_NOT_OWNED" });
+
+    // Which channel opened a session is not an authorisation boundary here — only who
+    // the session belongs to is. A staff-opened session for the same player is stoppable.
+    const result = await service.stopSessionByIdentity({
+      identityKey: "qq:123456",
+      sessionId: "staff-created-session",
+    });
+    expect(result.status).toBe("closed");
+    expect(stopped).toEqual([{ playerId: "player-1", sessionId: "staff-created-session" }]);
   });
 
   it("updates player display name when identity is resolved with a different displayName", async () => {

@@ -1,3 +1,4 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { expect, test } from "bun:test";
 import { createPriorityTimePricingProvider, applyTimeCapPricing, explainTimeCapPricing, type Session } from "@prism/core";
 import { buildBillTimeline } from "../src/bill-timeline";
@@ -5,6 +6,12 @@ import { buildBillTimeline } from "../src/bill-timeline";
 const date = (clock: string) => new Date(`2026-09-13T${clock}:00Z`);
 const pricing = (unitPrice: number) => ({ unitPrice, unitMinutes: 30, roundGraceMinutes: 2, priceCap: 100 });
 const session = (id: string, start: string, end: string | null): Session => ({ id, playerId: "test", label: id, status: end ? "closed" : "active", startedAt: date(start), endedAt: end ? date(end) : null } as Session);
+
+test("the internal entry marker is never used as an unnamed admission track title", () => {
+  const timeline = buildBillTimeline({ at: date("12:00"), sessions: [{ sessionId: "visit", label: "entry", startedAt: date("11:00"), endedAt: null, chargeItems: [] }], adjustments: [], globalCapWindows: [] });
+  expect(timeline.tracks[0]?.name).toBe("入场计费");
+  expect(timeline.events.flatMap(event => event.entries).every(entry => entry.name === "入场计费")).toBe(true);
+});
 
 test("engine boundaries drive shared nodes and signed charges; disjoint pairs reuse rails", async () => {
   const at = date("12:00");
@@ -17,16 +24,18 @@ test("engine boundaries drive shared nodes and signed charges; disjoint pairs re
     chargeItems: await createPriorityTimePricingProvider({ id: `p${i}`, name: `Plan ${i}`, rules: rules(i === 1 ? -1 : 6), timeZone: "UTC" }).quote({ session: s, now: at, assetHoldings: [] }),
   })));
   const chargeItems = sessions.flatMap(s => s.chargeItems);
-  const config = { id: "cap", includedPricingConfigIds: ["p0", "p1", "p2"], timeZone: "UTC", rules: [{ id: "all", label: "Combined", priority: 1, timeRange: { start: "00:00", end: "00:00" }, priceCap: 20 }] };
+  const config = { id: "cap", name: "全天优惠", includedPricingConfigIds: ["p0", "p1", "p2"], timeZone: "UTC", rules: [{ id: "all", label: "Combined", priority: 1, timeRange: { start: "00:00", end: "00:00" }, priceCap: 20 }] };
   const adjustments = applyTimeCapPricing({ config, chargeItems });
   const timeline = buildBillTimeline({ at, sessions, adjustments, globalCapWindows: explainTimeCapPricing({ config, chargeItems }) });
+  expect(timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "start").every(entry => entry.rule === "A" || entry.rule === "B")).toBe(true);
+  expect(timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "adjustment").every(entry => entry.name === "全天优惠（Combined）")).toBe(true);
   const switched = timeline.events.find(e => e.at === date("09:15").toISOString());
   expect(switched?.entries.filter(e => e.kind === "switch")).toHaveLength(2);
   expect(timeline.events.some(e => e.at === date("10:00").toISOString())).toBe(false);
   expect(timeline.tracks[1]?.lane).toBe(timeline.tracks[2]?.lane);
   expect(timeline.tracks[0]?.lane).not.toBe(timeline.tracks[1]?.lane);
   expect(timeline.events.flatMap(e => e.entries).some(e => (e.amount ?? 0) < 0)).toBe(true);
-  expect(timeline.events.flatMap(e => e.entries).reduce((n, e) => n + (e.amount ?? 0), 0)).toBeCloseTo(chargeItems.reduce((n, i) => n + i.amount, 0) + adjustments.reduce((n, i) => n + i.amount, 0));
+  expect(Math.round(timeline.events.flatMap(e => e.entries).reduce((n, e) => n + (e.amount ?? 0), 0) * 100)).toBe(chargeItems.reduce((n, i) => n + i.amount, 0) + adjustments.reduce((n, i) => n + i.amount, 0));
   expect(timeline.events.flatMap(e => e.entries).filter(e => e.kind === "adjustment").every(e => e.trackId == null)).toBe(true);
 });
 
@@ -55,7 +64,7 @@ test("active tail rounded before preview time stays current", () => {
         sessionId: "active",
         source: "plan",
         label: "日间",
-        amount: 2,
+        amount: moneyFixture(2),
         period: { startedAt, endedAt: roundedEnd },
       }],
     }],

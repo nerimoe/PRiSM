@@ -1,4 +1,4 @@
-import { PrismDomainError } from "@prism/core";
+import { centsOf, PrismDomainError } from "@prism/core";
 import type { BusinessItem, BusinessItemRepository } from "@prism/core";
 
 export type StaffCreateBusinessItemInput = {
@@ -30,6 +30,7 @@ export function createStaffBusinessItemService(
 ): StaffBusinessItemService {
   return {
     async createBusinessItem(input) {
+      const price = centsOf(input.price);
       validateBusinessItemInput(input);
       const now = dependencies.now();
       const item: BusinessItem = {
@@ -37,7 +38,7 @@ export function createStaffBusinessItemService(
         kind: input.kind,
         name: input.name,
         status: "active",
-        price: input.price,
+        price,
         assetType: input.assetType,
         assetCode: input.assetCode,
         activeAt: input.activeAt,

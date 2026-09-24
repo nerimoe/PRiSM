@@ -1,11 +1,14 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { describe, expect, it } from "bun:test";
-import type {
+import {
   AssetDefinition,
   AssetDefinitionRepository,
   AssetHolding,
   AssetLedgerEntry,
   AssetRepository,
   AssetTransaction,
+  centsOf,
+  yuanOf,
 } from "@prism/core";
 import { createAvailableAssetReader, sumAvailableWalletBalance, toAvailableAssetView } from "../src";
 
@@ -67,7 +70,7 @@ describe("createAvailableAssetReader", () => {
         id: "holding-available",
         assetType: "test",
         assetCode: "available",
-        quantity: 2,
+        quantity: integerFixture(2),
         activeAt: null,
         expiresAt: null,
         assetName: "可用资产",
@@ -100,8 +103,8 @@ describe("createAvailableAssetReader", () => {
     const at = new Date("2026-07-14T12:00:00.000Z");
     const reader = createAvailableAssetReader({
       assets: new MemoryAssetRepository([
-        { ...holding("paid", 10), assetType: "currency" },
-        { ...holding("expired", 5, { expiresAt: at }), assetType: "currency" },
+        { ...holding("paid", 10), assetType: "currency", quantity: centsOf(10) },
+        { ...holding("expired", 5, { expiresAt: at }), assetType: "currency", quantity: centsOf(5) },
         { ...holding("ticket", 1), assetType: "ticket" },
       ]),
       assetDefinitions: new MemoryAssetDefinitionRepository([
@@ -113,7 +116,7 @@ describe("createAvailableAssetReader", () => {
     });
 
     const available = await reader.listPlayerAvailableAssets("player-1", { includeHidden: true });
-    expect(sumAvailableWalletBalance(available)).toBe(10);
+    expect(yuanOf(sumAvailableWalletBalance(available))).toBe(10);
   });
 });
 
@@ -126,7 +129,7 @@ function holding(
     id: `holding-${assetCode}`,
     assetType: "test",
     assetCode,
-    quantity,
+    quantity: integerFixture(quantity),
     activeAt: dates.activeAt ?? null,
     expiresAt: dates.expiresAt ?? null,
   };

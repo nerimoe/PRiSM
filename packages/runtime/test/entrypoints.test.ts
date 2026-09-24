@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf } from "@prism/core";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adapter-d1";
@@ -214,7 +216,7 @@ describe("runtime entrypoints", () => {
                     id: `${context.session.id}:locker`,
                     source: "plugin.locker",
                     label: "储物柜",
-                    amount: 30,
+                    amount: moneyFixture(30),
                   },
                 ];
               },
@@ -386,7 +388,7 @@ describe("runtime entrypoints", () => {
                       id: `${context.session.id}:entry-ticket`,
                       source: "plugin.entry-ticket",
                       label: "入场票",
-                      amount: 45,
+                      amount: moneyFixture(45),
                     },
                   ];
                 },
@@ -652,8 +654,7 @@ describe("runtime entrypoints", () => {
       "holding-1",
       "player-1",
       "currency",
-      "currency.paid",
-      1000,
+      "currency.paid", 100000,
     ]);
     const repositories = RuntimeRepositories.fromBunSqlite({
       db,
@@ -801,15 +802,7 @@ describe("runtime entrypoints", () => {
       "holding-1",
       "player-1",
       "currency",
-      "currency.paid",
-      1000,
-    ]);
-    db.run("INSERT INTO sessions (id, player_id, started_at, ended_at, status) VALUES (?, ?, ?, ?, ?)", [
-      "session-1",
-      "player-1",
-      "2026-06-07T10:00:00.000Z",
-      null,
-      "active",
+      "currency.paid", 100000,
     ]);
     const repositories = RuntimeRepositories.fromBunSqlite({
       db,
@@ -830,6 +823,13 @@ describe("runtime entrypoints", () => {
       createdAt: new Date("2026-06-07T10:00:00.000Z"),
       updatedAt: new Date("2026-06-07T10:00:00.000Z"),
     });
+    db.run("INSERT INTO sessions (id, player_id, started_at, ended_at, status) VALUES (?, ?, ?, ?, ?)", [
+      "session-1",
+      "player-1",
+      "2026-06-07T10:00:00.000Z",
+      null,
+      "active",
+    ]);
     const dependencies = createPrismRuntimeDependencies({
       repositories,
       queries: RuntimeRepositories.queriesFromBunSqlite({

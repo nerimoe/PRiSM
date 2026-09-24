@@ -1,7 +1,7 @@
 import { wrapApiResponse, unwrapLegacyResponse } from "./api-contract";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { PrismDomainError } from "@prism/core";
+import { PrismDomainError, yuanOf, assetQuantityToNatural } from "@prism/core";
 import { authenticate, forbidden } from "./auth";
 import type {
   AdminLoginBody,
@@ -203,17 +203,6 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
             },
           },
           404,
-        );
-      }
-      if (error instanceof PrismDomainError && error.code === "INTEGRATION_SESSION_NOT_OWNED") {
-        return context.json(
-          {
-            error: {
-              code: error.code,
-              message: error.message,
-            },
-          },
-          403,
         );
       }
       throw error;
@@ -528,6 +517,30 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json(toPlayerAssetsView(assets));
   });
 
+  app.get("/api/v1/player/checkouts/history", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    const offset = Number(context.req.query("offset") ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) return context.json({ error: { code: "INVALID_OFFSET", message: "Invalid history offset." } }, 400);
+    if (!dependencies.playerQueries.listPlayerCheckouts) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    return context.json(await dependencies.playerQueries.listPlayerCheckouts(principal.playerId, offset));
+  });
+
+  app.get("/api/v1/player/checkouts/:checkoutId", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.playerQueries.getPlayerCheckout) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    const receipt = await dependencies.playerQueries.getPlayerCheckout(principal.playerId, context.req.param("checkoutId"));
+    return receipt ? context.json({ receipt }) : context.json({ error: { code: "CHECKOUT_NOT_FOUND", message: "Checkout not found." } }, 404);
+  });
+
+  app.get("/api/v1/player/checkout/latest", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.playerQueries.getLatestPlayerCheckout) return context.json({ error: { code: "CHECKOUT_QUERIES_NOT_CONFIGURED", message: "Checkout queries are not configured." } }, 503);
+    return context.json({ receipt: await dependencies.playerQueries.getLatestPlayerCheckout(principal.playerId) });
+  });
+
   app.get("/api/v1/player/sessions/history", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
@@ -746,7 +759,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
     return context.json({
       businessItemOrder: toBusinessItemOrderView(result.order),
-      assetLedgerEntries: result.assetLedgerEntries,
+      assetLedgerEntries: result.assetLedgerEntries.map(entry => ({ ...entry, delta: assetQuantityToNatural(entry.assetType, entry.delta) })),
     });
   });
 
@@ -911,7 +924,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     const body = await context.req.json<IntegrationIdentityBody>();
     return withIntegrationDomainErrors(context, async () => {
       const wallet = await integrationCommands.getWalletByIdentity(body);
-      return context.json({ wallet });
+      return context.json({ wallet: wallet.map((entry) => ({ ...entry, quantity: yuanOf(entry.quantity) })) });
     });
   });
 
@@ -1177,7 +1190,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
 
     const players = await dependencies.staffQueries.listPlayers();
     return context.json({
-      players,
+      players: players.map((player) => ({ ...player, walletTotal: yuanOf(player.walletTotal) })),
     });
   });
 

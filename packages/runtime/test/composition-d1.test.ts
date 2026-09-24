@@ -1,3 +1,6 @@
+import { serializePricingProviderConfig, serializePresentGrants } from "@prism/storage-sql";
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf } from "@prism/core";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { sqliteSchema } from "@prism/storage-sql";
@@ -70,8 +73,7 @@ function createD1Db(): InMemoryD1Fixture {
     "holding-1",
     "player-1",
     "currency",
-    "currency.paid",
-    2000,
+    "currency.paid", 200000,
   ]);
   return {
     d1: new InMemoryD1Database(db),
@@ -100,8 +102,7 @@ function createD1Fixture(): InMemoryD1Fixture {
     "holding-1",
     "player-1",
     "currency",
-    "currency.paid",
-    200,
+    "currency.paid", 20000,
   ]);
   return {
     d1: new InMemoryD1Database(db),
@@ -189,7 +190,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
         "time.priority",
         "标准日夜计费",
         1,
-        JSON.stringify({
+        JSON.stringify(serializePricingProviderConfig({
           id: "time.day-night",
           timeZone: "Asia/Tokyo",
           rules: [
@@ -224,7 +225,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
               },
             },
           ],
-        }),
+        })),
         "2026-06-07T00:00:00.000Z",
         "2026-06-07T00:00:00.000Z",
       ],
@@ -262,7 +263,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
       fixture.sqlite
         .query<{ total: number }, []>("SELECT COALESCE(SUM(amount), 0) AS total FROM pricing_history_entries")
         .get(),
-    ).toEqual({ total: 40 });
+    ).toEqual({ total: centsOf(40) });
   });
 
   it("composes the Hono app dependencies for a Cloudflare D1 deployment", async () => {
@@ -289,7 +290,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
                 id: `${context.session.id}:flat-test`,
                 source: "flat-test",
                 label: "Flat test",
-                amount: 999,
+                amount: moneyFixture(999),
               },
             ];
           },

@@ -1,5 +1,5 @@
 import type { PricingEffect, PricingEffectRepository } from "@prism/core";
-import { PrismDomainError } from "@prism/core";
+import { PrismDomainError, quantizeMoney } from "@prism/core";
 
 export type StaffPricingEffectServiceDependencies = {
   pricingEffects: PricingEffectRepository;
@@ -32,13 +32,15 @@ export function createStaffPricingEffectService(
         name: input.name,
         type: input.type,
         scope: input.scope,
-        value: input.value,
+        value: input.value === null ? null : quantizeMoney(input.value),
         consumable: input.consumable,
         limitPerDay: input.limitPerDay,
         activeAt: input.activeAt ?? null,
         expiresAt: input.expiresAt ?? null,
         status: input.status ?? "active",
-        config: input.config,
+        config: input.config && typeof input.config.minSubtotal === "number"
+          ? { ...input.config, minSubtotal: quantizeMoney(input.config.minSubtotal) }
+          : input.config,
       };
 
       await dependencies.pricingEffects.save(effect);

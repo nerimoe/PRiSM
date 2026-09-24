@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
+import { centsOf } from "@prism/core";
 import { sqliteSchema } from "../src/index";
 
 describe("sqliteSchema", () => {
@@ -43,6 +44,7 @@ describe("sqliteSchema", () => {
       "asset_transactions",
       "business_item_orders",
       "business_items",
+      "checkout_timelines",
       "device_commands",
       "device_states",
       "machine_connections",
@@ -53,11 +55,15 @@ describe("sqliteSchema", () => {
       "players",
       "presents",
       "pricing_cap_history_entries",
+      "pricing_config_versions",
       "pricing_configs",
       "pricing_effects",
       "pricing_history_entries",
+      "pricing_release_heads",
+      "pricing_releases",
       "redeem_codes",
       "redeem_records",
+      "session_pricing_releases",
       "sessions",
       "settlement_adjustments",
       "settlement_charge_items",
@@ -71,9 +77,7 @@ describe("sqliteSchema", () => {
     db.run("PRAGMA foreign_keys = ON");
     for (const fileName of readdirSync(resolve(import.meta.dir, "../../../migrations")).filter((name) => name.endsWith(".sql")).sort()) {
       const migrationSql = readFileSync(resolve(import.meta.dir, "../../../migrations", fileName), "utf8");
-      for (const statement of migrationSql.split(";").map((item) => item.trim()).filter(Boolean)) {
-        db.run(statement);
-      }
+      db.exec(migrationSql);
     }
 
     const columns = (tableName: string) =>
@@ -201,7 +205,7 @@ describe("sqliteSchema", () => {
     expect(db.query("SELECT COUNT(DISTINCT checkout_id) AS count FROM settlements").get()).toEqual({ count: 1 });
   });
 
-  it("declares money and balance columns as decimal-capable values", () => {
+  it("declares money and balance columns as integer values", () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");
     for (const statement of sqliteSchema) {
@@ -215,16 +219,16 @@ describe("sqliteSchema", () => {
         )
         .get(tableName, columnName)?.type;
 
-    expect(columnType("asset_holdings", "quantity")).toBe("REAL");
-    expect(columnType("asset_ledger_entries", "delta")).toBe("REAL");
-    expect(columnType("pricing_effects", "value")).toBe("REAL");
-    expect(columnType("settlements", "subtotal")).toBe("REAL");
-    expect(columnType("settlements", "total")).toBe("REAL");
-    expect(columnType("settlement_charge_items", "amount")).toBe("REAL");
-    expect(columnType("settlement_adjustments", "amount")).toBe("REAL");
-    expect(columnType("pricing_history_entries", "amount")).toBe("REAL");
-    expect(columnType("business_items", "price")).toBe("REAL");
-    expect(columnType("business_item_orders", "price")).toBe("REAL");
+    expect(columnType("asset_holdings", "quantity")).toBe("INTEGER");
+    expect(columnType("asset_ledger_entries", "delta")).toBe("INTEGER");
+    expect(columnType("pricing_effects", "value")).toBe("INTEGER");
+    expect(columnType("settlements", "subtotal")).toBe("INTEGER");
+    expect(columnType("settlements", "total")).toBe("INTEGER");
+    expect(columnType("settlement_charge_items", "amount")).toBe("INTEGER");
+    expect(columnType("settlement_adjustments", "amount")).toBe("INTEGER");
+    expect(columnType("pricing_history_entries", "amount")).toBe("INTEGER");
+    expect(columnType("business_items", "price")).toBe("INTEGER");
+    expect(columnType("business_item_orders", "price")).toBe("INTEGER");
   });
 
   it("persists sessions, asset holdings, ledger entries, redeem records, and device commands", () => {
@@ -433,7 +437,5 @@ describe("sqliteSchema", () => {
 
 function runMigrationFile(db: Database, filePath: string): void {
   const sql = readFileSync(filePath, "utf8");
-  for (const statement of sql.split(";").map((item) => item.trim()).filter(Boolean)) {
-    db.run(statement);
-  }
+  db.exec(sql);
 }

@@ -1,0 +1,94 @@
+import { Database } from "bun:sqlite";
+import { expect, test } from "bun:test";
+import { centsOf } from "@prism/core";
+import { createSqlReadModels, sqliteSchema } from "@prism/storage-sql";
+import { createBunSqliteExecutor, createSqliteRepositories } from "../src";
+
+test("latest receipt persists a complete checkout, isolates players and shops, and supports pre-snapshot bills", async () => {
+  const db = new Database(":memory:");
+  db.run("PRAGMA foreign_keys = ON");
+  for (const sql of sqliteSchema) db.run(sql);
+  const now = () => new Date("2026-09-20T10:00:00Z");
+  const queries = (shopId: string) => createSqlReadModels({ executor: createBunSqliteExecutor(db, shopId), now }).playerQueries;
+  const repo = createSqliteRepositories({ db, shopId: "shop", now, id: () => crypto.randomUUID() });
+  await repo.players.save({ id: "player", displayName: "Player", status: "active", createdAt: now() });
+  expect(await queries("shop").getLatestPlayerCheckout!("player")).toBeNull();
+  const records = [];
+  const sessions = [];
+  for (const id of ["entry", "table"]) {
+    const session = { id, playerId: "player", startedAt: new Date("2026-09-20T09:00:00Z"), endedAt: now(), status: "closed" as const, paymentStatus: "paid" as const, label: id };
+    await repo.sessions.save(session);
+    const chargeItems = [{ id: `charge-${id}`, source: `plan-${id}`, label: "日间", amount: centsOf(12) }];
+    sessions.push({ sessionId: id, ...session, chargeItems });
+    records.push({ settlement: { sessionId: id, subtotal: centsOf(12), total: centsOf(12), status: "settled" as const, settledAt: now() }, chargeItems, adjustments: [] });
+  }
+  const timeline = { tracks: sessions.map((session, lane) => ({ id: session.id, name: `Plan ${lane}`, lane, color: lane, startedAt: session.startedAt.toISOString(), endedAt: session.endedAt.toISOString() })), events: [], totals: [{ name: "Plan 0", amount: 12 }, { name: "Plan 1", amount: 12 }] };
+  await repo.settlements.saveCheckout!({ id: "player-checkout:entry", playerId: "player", subtotal: centsOf(24), total: centsOf(24), status: "settled", settledAt: now(), timeline }, records);
+  await repo.assets.commitAssetTransaction({ transaction: { id: "asset-tx:session.settlement:entry", playerId: "player", kind: "session.settlement", refId: "entry", createdAt: now(), metadata: { walletBalanceAfter: centsOf(76) } }, holdingChanges: { upserts: [], deleteIds: [] }, assetLedgerEntries: [] });
+  const latest = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(latest?.playerSettlement.total).toBe(24);
+  expect(latest?.settlements).toEqual(["entry", "table"].map(sessionId => ({ settlement: {
+    sessionId, startedAt: "2026-09-20T09:00:00.000Z", endedAt: "2026-09-20T10:00:00.000Z",
+  } })));
+  expect(latest?.chargeItems).toHaveLength(2);
+  expect(latest?.timeline).toEqual(timeline);
+  expect(latest?.wallet?.balanceAfter).toBe(76);
+  expect(await queries("shop").getPlayerCheckout!("player", "player-checkout:entry")).toEqual(latest);
+  expect(await queries("shop").getPlayerCheckout!("other", "player-checkout:entry")).toBeNull();
+  expect(await queries("other").getPlayerCheckout!("player", "player-checkout:entry")).toBeNull();
+  const history = await queries("shop").listPlayerCheckouts!("player", 0);
+  expect(history.records).toHaveLength(1);
+  expect(history.records[0]).toMatchObject({ total: 24, sessionCount: 2, startedAt: "2026-09-20T09:00:00.000Z", endedAt: "2026-09-20T10:00:00.000Z" });
+  expect((await queries("other").listPlayerCheckouts!("player", 0)).records).toHaveLength(0);
+  expect((await queries("shop").listPlayerCheckouts!("other", 0)).records).toHaveLength(0);
+  expect(await queries("other").getLatestPlayerCheckout!("player")).toBeNull();
+  expect(await queries("shop").getLatestPlayerCheckout!("other")).toBeNull();
+  db.run("DELETE FROM checkout_timelines");
+  db.run("DELETE FROM asset_transactions");
+  for (const [shop, name] of [["shop", "入场方案"], ["other", "其他店方案"]]) {
+    db.run("INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at) VALUES (?, 'plan-entry', 'time.priority', ?, 0, 'archived', '{}', ?, ?)", [shop!, name!, now().toISOString(), now().toISOString()]);
+  }
+  await repo.system.setAppSetting("store.profile", { timeZone: "Asia/Tokyo" });
+  const legacy = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(legacy?.playerSettlement.total).toBe(24);
+  expect(legacy?.wallet).toBeNull();
+  expect(legacy?.timeline.tracks).toHaveLength(2);
+  expect(legacy?.timeline.tracks.map(track => track.name)).toEqual(["入场方案", "table"]);
+  expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.amount != null).map(entry => [entry.name, entry.rule])).toEqual([["入场方案", "日间"], ["table", "日间"]]);
+  expect(legacy?.timeline.events[0]?.time).toBe("19:00");
+  expect(legacy?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "end")).toHaveLength(2);
+  db.run("UPDATE sessions SET pricing_config_ids_json = '[\"plan-entry\"]' WHERE shop_id = 'shop' AND id = 'entry'");
+  db.run("UPDATE settlement_charge_items SET source = 'old-source' WHERE shop_id = 'shop' AND session_id = 'entry'");
+  const linked = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(linked?.timeline.tracks[0]?.name).toBe("入场方案");
+  const oldSnapshot = linked!.timeline;
+  for (const event of oldSnapshot.events) for (const entry of event.entries) if (entry.kind === "start") entry.rule = null;
+  db.run("INSERT INTO settlement_adjustments (shop_id, id, session_id, adjustment_order, source, label, amount) VALUES ('shop', 'cap', 'entry', 0, 'time.cap:global:day', '日间', -300)");
+  oldSnapshot.events[0]!.entries.push({ ...oldSnapshot.events[0]!.entries[0]!, trackId: null, kind: "adjustment", name: "日间", rule: null, amount: -3 });
+  oldSnapshot.tracks[0]!.name = "entry";
+  for (const event of oldSnapshot.events) for (const entry of event.entries) if (entry.trackId === oldSnapshot.tracks[0]!.id) entry.name = "entry";
+  db.run("INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES ('shop', 'player-checkout:entry', ?)", [JSON.stringify(oldSnapshot)]);
+  const repaired = await queries("shop").getLatestPlayerCheckout!("player");
+  expect(repaired?.timeline.tracks[0]?.name).toBe("入场方案");
+  expect(repaired?.timeline.events.flatMap(event => event.entries).some(entry => entry.name === "entry")).toBe(false);
+  expect(repaired?.timeline.totals).toContainEqual({ name: "入场方案", amount: 12 });
+  expect(repaired?.timeline.events.flatMap(event => event.entries).filter(entry => entry.kind === "start").every(entry => entry.rule === "日间")).toBe(true);
+  expect(repaired?.timeline.totals).toContainEqual({ name: "全局封顶（日间）", amount: -3 });
+  db.run("INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at) VALUES ('shop', 'global', 'time.cap', '全天优惠', 0, 'archived', '{}', ?, ?)", [now().toISOString(), now().toISOString()]);
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
+  oldSnapshot.events[0]!.entries.find(entry => entry.kind === "adjustment")!.name = "全局封顶（日间）";
+  db.run("UPDATE checkout_timelines SET timeline_json = ? WHERE shop_id = 'shop'", [JSON.stringify(oldSnapshot)]);
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
+  db.run("DELETE FROM checkout_timelines WHERE shop_id = 'shop'");
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
+  await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);
+  expect((await queries("shop").getLatestPlayerCheckout!("player"))?.playerSettlement.total).toBe(0);
+  for (let index = 0; index < 30; index++) await repo.settlements.saveCheckout!({ id: `page-${index}`, playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-22T10:00:00Z") }, []);
+  const first = await queries("shop").listPlayerCheckouts!("player", 0);
+  const second = await queries("shop").listPlayerCheckouts!("player", first.nextOffset!);
+  expect(first.records).toHaveLength(30);
+  expect(second.records).toHaveLength(2);
+  expect(second.nextOffset).toBeNull();
+  expect(new Set([...first.records, ...second.records].map(record => record.id)).size).toBe(32);
+  db.close();
+});

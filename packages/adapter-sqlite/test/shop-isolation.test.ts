@@ -1,3 +1,4 @@
+import { centsOf, centsOfInteger, yuanOf } from "@prism/core";
 import { readdirSync, readFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
@@ -56,7 +57,7 @@ test("shops isolate colliding identities, wallets, reports, updates and leases",
             id: "same-holding",
             assetType: "currency",
             assetCode: "balance",
-            quantity,
+            quantity: centsOf(quantity),
           },
         ],
         deleteIds: [],
@@ -77,7 +78,7 @@ test("shops isolate colliding identities, wallets, reports, updates and leases",
   expect(
     (await a.playerIdentities.findPlayerByIdentity("qq", "12345"))?.displayName,
   ).toBe("A");
-  expect((await b.assets.listAssetHoldings("same-player"))[0]?.quantity).toBe(
+  expect(yuanOf(centsOfInteger((await b.assets.listAssetHoldings("same-player"))[0]!.quantity))).toBe(
     200,
   );
   await a.players.updateStatus("same-player", "banned");
@@ -90,7 +91,7 @@ test("shops isolate colliding identities, wallets, reports, updates and leases",
   expect(await queries.staffQueries.listPlayers()).toHaveLength(1);
   expect(
     (await queries.playerQueries.getPlayerSummary("same-player")).wallet,
-  ).toEqual([{ assetCode: "balance", quantity: 200 }]);
+  ).toEqual([{ assetCode: "balance", quantity: centsOf(200) }]);
   await a.players.save({
     id: "only-a",
     displayName: "Only A",

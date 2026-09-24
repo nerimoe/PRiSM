@@ -7,6 +7,7 @@ import {
   claimDeviceCoin,
 } from "./devices";
 import { PrismDomainError } from "@prism/core";
+import { serializePricingProviderConfig } from "@prism/storage-sql";
 import {
   registerBillingRoutes,
   getBillingShop,
@@ -724,6 +725,11 @@ async function handleMachineLogin(
       );
   }
   await c.env.DB.batch(writes);
+  if (result.ok && playerId) {
+    const sync = import("./live-activity-billing").then(({ refreshActivityBill }) => refreshActivityBill(c.env, shop.id, playerId))
+      .catch(error => console.error("Login live bill sync failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+  }
   if (!result.ok)
     jsonError(
       502,
@@ -860,7 +866,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
     statements.push(
       c.env.DB.prepare(
         "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES (?,?,'time.priority','标准入场',1,'active',?,?,?)",
-      ).bind(shopId, ruleId, JSON.stringify(provider), now, now),
+      ).bind(shopId, ruleId, JSON.stringify(serializePricingProviderConfig(provider)), now, now),
     );
     statements.push(
       c.env.DB.prepare(

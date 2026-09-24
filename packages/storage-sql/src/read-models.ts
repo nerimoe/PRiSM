@@ -1,3 +1,5 @@
+import { type Cents, type BillTimeline, yuanOf, assetQuantityFromStored, centsOfInteger, sumCents, ZERO_CENTS } from "@prism/core";
+import { buildBillTimeline } from "@prism/application";
 import { sqlShop } from "./shop-scope";
 import type {
   ApplicationQueries,
@@ -39,8 +41,107 @@ export function createSqlReadModels(input: CreateSqlReadModelsInput): Applicatio
   };
 }
 
+async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: string, checkoutId?: string): Promise<import("@prism/application").PlayerCheckoutReceipt | null> {
+  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null }>(
+    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json FROM player_checkouts c
+     LEFT JOIN checkout_timelines t ON t.shop_id = c.shop_id AND t.checkout_id = c.id
+     LEFT JOIN app_settings profile ON profile.shop_id = c.shop_id AND profile.key = 'store.profile'
+     LEFT JOIN asset_transactions tx ON tx.shop_id = c.shop_id AND tx.player_id = c.player_id
+       AND tx.kind = 'session.settlement' AND 'player-checkout:' || tx.ref_id = c.id
+     WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ? ${checkoutId === undefined ? "" : "AND c.id = ?"}
+     ORDER BY c.settled_at DESC, c.id DESC LIMIT 1`, checkoutId === undefined ? [playerId] : [playerId, checkoutId]);
+  if (!checkout) return null;
+  const rows = await input.executor.all<{ session_id: string; label: string | null }>(
+    `SELECT st.session_id, s.label FROM settlements st JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id
+     WHERE st.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ? AND s.player_id = ? ORDER BY s.started_at, s.id`, [checkout.id, playerId]);
+  const details = await Promise.all(rows.map(row => getPlayerSessionHistoryDetail(input, playerId, row.session_id)));
+  const sessions = details.filter((detail): detail is SessionHistoryDetail => detail !== null);
+  const plans = await input.executor.all<{ id: string; name: string; session_id: string }>(
+    `SELECT DISTINCT p.id, p.name, s.id AS session_id FROM pricing_configs p
+     JOIN sessions s ON s.shop_id = p.shop_id
+     JOIN settlements st ON st.shop_id = s.shop_id AND st.session_id = s.id
+     LEFT JOIN settlement_charge_items ci ON ci.shop_id = s.shop_id AND ci.session_id = s.id
+       AND ci.source = p.id
+     WHERE p.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?
+       AND (ci.id IS NOT NULL OR p.id IN (SELECT value FROM json_each(s.pricing_config_ids_json)))`, [checkout.id]);
+  const labels = new Map(rows.map(row => [row.session_id, row.label]));
+  for (const row of rows) {
+    const names = [...new Set(plans.filter(plan => plan.session_id === row.session_id).map(plan => plan.name))];
+    if (names.length === 1) labels.set(row.session_id, names[0]!);
+  }
+  const adjustments = sessions.flatMap(session => session.adjustments);
+  const capPlans = await input.executor.all<{ source: string; name: string }>(
+    `SELECT DISTINCT a.source, p.name FROM settlement_adjustments a
+     JOIN settlements st ON st.shop_id = a.shop_id AND st.session_id = a.session_id
+     JOIN pricing_configs p ON p.shop_id = a.shop_id AND p.kind = 'time.cap'
+       AND substr(a.source, 1, length(p.id) + 10) = 'time.cap:' || p.id || ':'
+     WHERE a.shop_id = ${sqlShop(input.executor)} AND st.checkout_id = ?`, [checkout.id]);
+  const capNames = new Map(capPlans.map(plan => [plan.source, plan.name]));
+  const money = (item: { id: string; label: string; amount: Cents }) => ({ ...item, amount: yuanOf(item.amount) });
+  const balance = checkout.metadata_json ? (JSON.parse(checkout.metadata_json) as { walletBalanceAfter?: unknown }).walletBalanceAfter : undefined;
+  const timeline = checkout.timeline_json ? JSON.parse(checkout.timeline_json) as BillTimeline : buildBillTimeline({
+      timeZone: checkout.profile_json ? (JSON.parse(checkout.profile_json) as { timeZone?: string }).timeZone : undefined,
+      planNames: new Map([...plans.map(plan => [plan.id, plan.name] as const), ...capNames]),
+      at: new Date(checkout.settled_at), sessions: sessions.map(session => ({ ...session, label: labels.get(session.sessionId) ?? null, endedAt: session.endedAt ?? new Date(checkout.settled_at) })), adjustments, globalCapWindows: [],
+    });
+  // Older snapshots may contain the internal admission marker instead of a display name.
+  const renamed = new Map<string, string>();
+  for (const track of timeline.tracks) {
+    if (track.name !== "entry") continue;
+    const session = rows.find(row => track.id.startsWith(`${row.session_id}:`));
+    const plan = session && plans.find(plan => plan.session_id === session.session_id && track.id === `${session.session_id}:${plan.id}`);
+    const label = session && labels.get(session.session_id);
+    track.name = plan?.name ?? (label && label !== "entry" ? label : "入场计费");
+    renamed.set(track.id, track.name);
+  }
+  let changed = renamed.size > 0;
+  for (const event of timeline.events) for (const entry of event.entries) {
+    if (entry.kind === "start" && entry.trackId && !entry.rule) {
+      const first = timeline.events.flatMap(event => event.entries.map(item => ({ item, at: item.startedAt ?? event.at })))
+        .filter(({ item }) => item.trackId === entry.trackId && item.amount != null && item.rule)
+        .sort((a, b) => a.at.localeCompare(b.at))[0];
+      entry.rule = first?.item.rule ?? null;
+    }
+    if (entry.kind === "adjustment" && !entry.trackId) {
+      const matches = adjustments.filter(adjustment => (adjustment.label === entry.name || `全局封顶（${adjustment.label}）` === entry.name) && yuanOf(adjustment.amount) === entry.amount);
+      if (matches.length && matches.every(adjustment => adjustment.source.startsWith("time.cap:"))) {
+        const names = new Set(matches.map(adjustment => `${capNames.get(adjustment.source) ?? "全局封顶"}（${adjustment.label}）`));
+        if (names.size === 1) { entry.name = [...names][0]!; changed = true; }
+      }
+    }
+  }
+  if (changed) {
+    const totals = new Map<string, number>();
+    for (const event of timeline.events) for (const entry of event.entries) {
+      if (entry.trackId && renamed.has(entry.trackId)) entry.name = renamed.get(entry.trackId)!;
+      if (entry.amount != null) totals.set(entry.name, (totals.get(entry.name) ?? 0) + Math.round(entry.amount * 100));
+    }
+    timeline.totals = [...totals].map(([name, amount]) => ({ name, amount: yuanOf(centsOfInteger(amount)) }));
+  }
+  return {
+    wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
+    playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
+    settlements: sessions.map(session => ({ settlement: { sessionId: session.sessionId,
+      startedAt: session.startedAt.toISOString(), endedAt: session.endedAt?.toISOString() ?? null } })),
+    timeline,
+    chargeItems: sessions.flatMap(session => session.chargeItems).map(money), adjustments: adjustments.map(money),
+  };
+}
+
 function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
   return {
+    getLatestPlayerCheckout: playerId => getPlayerCheckout(input, playerId),
+    getPlayerCheckout: (playerId, checkoutId) => getPlayerCheckout(input, playerId, checkoutId),
+    async listPlayerCheckouts(playerId, offset) {
+      const rows = await input.executor.all<{ id: string; total: number; settled_at: string; started_at: string | null; ended_at: string | null; session_count: number }>(
+        `SELECT c.id, c.total, c.settled_at, MIN(s.started_at) AS started_at, MAX(s.ended_at) AS ended_at, COUNT(s.id) AS session_count
+         FROM player_checkouts c
+         LEFT JOIN settlements st ON st.shop_id = c.shop_id AND st.checkout_id = c.id
+         LEFT JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id AND s.player_id = c.player_id
+         WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ?
+         GROUP BY c.id ORDER BY c.settled_at DESC, c.id DESC LIMIT 31 OFFSET ?`, [playerId, offset]);
+      return { records: rows.slice(0, 30).map(row => ({ id: row.id, total: yuanOf(centsOfInteger(row.total)), settledAt: row.settled_at, startedAt: row.started_at, endedAt: row.ended_at, sessionCount: row.session_count })), nextOffset: rows.length > 30 ? offset + 30 : null };
+    },
     async getPlayerSummary(playerId) {
       const rows = await input.executor.all<PlayerSummaryRow>(
         `SELECT
@@ -80,15 +181,15 @@ function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
         throw new Error(`Player not found: ${playerId}`);
       }
       const at = input.now();
-      const walletByCode = new Map<string, number>();
+      const walletByCode = new Map<string, Cents>();
       for (const row of rows) {
         if (!row.holding_id || row.asset_type !== "currency") continue;
         const assessment = assessAssetHoldingRow(row, at, false);
         if (assessment.availability !== "available") continue;
-        walletByCode.set(
-          row.asset_code!,
-          (walletByCode.get(row.asset_code!) ?? 0) + row.quantity!,
-        );
+        walletByCode.set(row.asset_code!, sumCents([
+          walletByCode.get(row.asset_code!) ?? ZERO_CENTS,
+          centsOfInteger(row.quantity!),
+        ]));
       }
 
       return {
@@ -368,7 +469,7 @@ async function getReportsSummary(
   return {
     from: query.from,
     to: query.to,
-    revenueTotal: row?.revenue_total ?? 0,
+    revenueTotal: centsOfInteger(row?.revenue_total ?? 0),
     sessionCount: row?.session_count ?? 0,
     assetGrantTotal: row?.asset_grant_total ?? 0,
     coinCommandCount: row?.coin_command_count ?? 0,
@@ -412,8 +513,8 @@ async function listReportSettlements(
       endedAt,
       settledAt: new Date(row.settled_at),
       durationMinutes: endedAt ? Math.floor((endedAt.getTime() - startedAt.getTime()) / 60_000) : null,
-      subtotal: row.subtotal,
-      total: row.total,
+      subtotal: centsOfInteger(row.subtotal),
+      total: centsOfInteger(row.total),
     };
   });
 }
@@ -474,7 +575,7 @@ async function listReportPlayers(
       playerDisplayName: row.player_display_name,
       settlementCount: row.settlement_count,
       totalDurationMinutes: row.total_duration_minutes,
-      revenueTotal: row.revenue_total,
+      revenueTotal: centsOfInteger(row.revenue_total),
       lastSettledAt: new Date(row.last_settled_at),
     }),
   );
@@ -565,12 +666,12 @@ async function getPlayerSessionHistoryDetail(
     ...toSessionHistoryListItem(sessionRow),
     chargeItems: rows.flatMap((row) =>
       row.row_kind === "charge" && row.item_id && row.item_amount !== null
-        ? [{ id: row.item_id, source: row.item_source!, label: row.item_label!, amount: row.item_amount }]
+        ? [{ id: row.item_id, source: row.item_source!, label: row.item_label!, amount: centsOfInteger(row.item_amount) }]
         : [],
     ),
     adjustments: rows.flatMap((row) =>
       row.row_kind === "adjustment" && row.item_id && row.item_amount !== null
-        ? [{ id: row.item_id, source: row.item_source!, label: row.item_label!, amount: row.item_amount }]
+        ? [{ id: row.item_id, source: row.item_source!, label: row.item_label!, amount: centsOfInteger(row.item_amount) }]
         : [],
     ),
   };
@@ -610,8 +711,8 @@ function toSessionHistoryListItem(row: SessionHistoryRow): SessionHistoryListIte
     startedAt,
     endedAt,
     durationMinutes: endedAt ? Math.floor((endedAt.getTime() - startedAt.getTime()) / 60_000) : null,
-    subtotal: row.subtotal,
-    total: row.total,
+    subtotal: row.subtotal === null ? null : centsOfInteger(row.subtotal),
+    total: row.total === null ? null : centsOfInteger(row.total),
     status: row.settlement_status === "settled" ? "settled" : row.session_status,
     settledAt: row.settled_at ? new Date(row.settled_at) : null,
   };
@@ -725,7 +826,7 @@ async function listPlayerAssets(
       assetType: row.asset_type,
       assetCode: row.asset_code,
       assetName: row.asset_name,
-      delta: row.delta,
+      delta: assetQuantityFromStored(row.asset_type, row.delta),
       reason: row.reason,
       refId: row.ref_id,
       transactionId: row.transaction_id,
@@ -777,7 +878,7 @@ function assessAssetHoldingRow(
     id: row.holding_id ?? row.id,
     assetType: row.asset_type!,
     assetCode: row.asset_code!,
-    quantity: row.quantity!,
+    quantity: assetQuantityFromStored(row.asset_type!, row.quantity!),
     activeAt: row.holding_active_at ? new Date(row.holding_active_at) : null,
     expiresAt: row.holding_expires_at ? new Date(row.holding_expires_at) : null,
   };
@@ -832,8 +933,8 @@ function groupStaffPlayers(
   return [...players.values()];
 }
 
-function availableCurrencyTotal(rowsJson: string | null, at: Date): number {
-  if (!rowsJson) return 0;
+function availableCurrencyTotal(rowsJson: string | null, at: Date): Cents {
+  if (!rowsJson) return ZERO_CENTS;
   const rows = JSON.parse(rowsJson) as AssetHoldingAssessmentRow[];
   const availableHoldings = rows.flatMap((row) => {
     const assessment = assessAssetHoldingRow(row, at, false);

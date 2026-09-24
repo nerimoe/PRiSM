@@ -1,4 +1,11 @@
 import { PrismDomainError } from "./errors";
+import {
+  type Cents,
+  centsOfInteger,
+  assetQuantityFromStored,
+  assetQuantityOf,
+  sumCents,
+} from "./money";
 
 export type AssetDefinition = {
   type: string;
@@ -68,6 +75,9 @@ export type AssetHoldingChanges = {
 /**
  * Builds the write set for a current-holdings projection without treating a
  * player's complete inventory as a replaceable document.
+ *
+ * Quantities are already integers in their asset's unit, so persistence detects
+ * changes with exact comparison and never needs a floating-point tolerance.
  */
 export function diffAssetHoldings(
   before: readonly AssetHolding[],
@@ -98,10 +108,11 @@ function sameHolding(left: AssetHolding, right: AssetHolding): boolean {
 /** Sums currency holdings that have already passed the caller's availability checks. */
 export function sumCurrencyHoldings(
   holdings: readonly Pick<AssetHolding, "assetType" | "quantity">[],
-): number {
-  return holdings.reduce(
-    (total, holding) => total + (holding.assetType === "currency" ? holding.quantity : 0),
-    0,
+): Cents {
+  return sumCents(
+    holdings
+      .filter((holding) => holding.assetType === "currency")
+      .map((holding) => centsOfInteger(holding.quantity)),
   );
 }
 
@@ -228,21 +239,22 @@ export function grantAssets(input: GrantAssetsInput): GrantAssetsResult {
   const assetLedgerEntries: AssetLedgerEntry[] = [];
 
   for (const grant of input.grants) {
-    if (grant.amount <= 0) {
+    const amount = assetQuantityOf(grant.assetType, grant.amount);
+    if (amount <= 0) {
       throw new PrismDomainError("Asset grant amount must be positive.", "INVALID_ASSET_GRANT_AMOUNT");
     }
 
     if (grant.mergeStrategy === "stack") {
       const target = holdings.find((asset) => canStackAsset(asset, grant));
       if (target) {
-        target.quantity += grant.amount;
+        target.quantity = assetQuantityFromStored(target.assetType, target.quantity + amount);
       } else {
-        holdings.push(createGrantedAsset(input.idFactory(), grant));
+        holdings.push(createGrantedAsset(input.idFactory(), grant, amount));
       }
     } else if (grant.mergeStrategy === "extend-time") {
-      applyExtendTimeGrant(holdings, grant, input.idFactory, input.now ?? new Date(0));
+      applyExtendTimeGrant(holdings, grant, input.idFactory, input.now ?? new Date(0), amount);
     } else if (grant.mergeStrategy === "replace") {
-      applyReplaceGrant(holdings, grant, input.idFactory);
+      applyReplaceGrant(holdings, grant, input.idFactory, amount);
     } else {
       throw new PrismDomainError("Unsupported asset merge strategy.", "UNSUPPORTED_ASSET_MERGE_STRATEGY");
     }
@@ -250,7 +262,7 @@ export function grantAssets(input: GrantAssetsInput): GrantAssetsResult {
     assetLedgerEntries.push({
       assetType: grant.assetType,
       assetCode: grant.assetCode,
-      delta: grant.amount,
+      delta: amount,
       reason: grant.reason,
       refId: grant.refId,
     });
@@ -269,7 +281,11 @@ export function adjustAssets(input: AdjustAssetsInput): GrantAssetsResult {
       throw new PrismDomainError("Asset holding not found.", "ASSET_HOLDING_NOT_FOUND");
     }
 
-    const nextQuantity = target.quantity + adjustment.quantityDelta;
+    if (target.assetType !== adjustment.assetType || target.assetCode !== adjustment.assetCode) {
+      throw new PrismDomainError("Asset type and code must match the holding.", "ASSET_HOLDING_TYPE_MISMATCH");
+    }
+    const quantityDelta = assetQuantityOf(target.assetType, adjustment.quantityDelta);
+    const nextQuantity = assetQuantityFromStored(target.assetType, target.quantity + quantityDelta);
     if (nextQuantity < 0) {
       throw new PrismDomainError("Insufficient asset quantity.", "INSUFFICIENT_ASSET_QUANTITY");
     }
@@ -279,9 +295,9 @@ export function adjustAssets(input: AdjustAssetsInput): GrantAssetsResult {
     if ("expiresAt" in adjustment) target.expiresAt = adjustment.expiresAt ?? null;
 
     assetLedgerEntries.push({
-      assetType: adjustment.assetType,
-      assetCode: adjustment.assetCode,
-      delta: adjustment.quantityDelta,
+      assetType: target.assetType,
+      assetCode: target.assetCode,
+      delta: quantityDelta,
       reason: adjustment.reason,
       refId: adjustment.refId,
     });
@@ -293,15 +309,20 @@ export function adjustAssets(input: AdjustAssetsInput): GrantAssetsResult {
   };
 }
 
-function applyReplaceGrant(holdings: AssetHolding[], grant: AssetGrant, idFactory: () => string): void {
+function applyReplaceGrant(
+  holdings: AssetHolding[],
+  grant: AssetGrant,
+  idFactory: () => string,
+  amount: number,
+): void {
   const target = holdings.find((asset) => asset.assetType === grant.assetType && asset.assetCode === grant.assetCode);
 
   if (!target) {
-    holdings.push(createGrantedAsset(idFactory(), grant));
+    holdings.push(createGrantedAsset(idFactory(), grant, amount));
     return;
   }
 
-  target.quantity = grant.amount;
+  target.quantity = amount;
   target.activeAt = grant.activeAt;
   target.expiresAt = grant.expiresAt;
 }
@@ -311,6 +332,7 @@ function applyExtendTimeGrant(
   grant: AssetGrant,
   idFactory: () => string,
   now: Date,
+  amount: number,
 ): void {
   if (!grant.durationMs || grant.durationMs <= 0) {
     throw new PrismDomainError("Extend-time asset grant requires a positive duration.", "INVALID_ASSET_GRANT_DURATION");
@@ -326,7 +348,7 @@ function applyExtendTimeGrant(
       id: idFactory(),
       assetType: grant.assetType,
       assetCode: grant.assetCode,
-      quantity: grant.amount,
+      quantity: amount,
       activeAt: grant.activeAt ?? now,
       expiresAt: new Date(base.getTime() + grant.durationMs),
     });
@@ -356,12 +378,12 @@ function canAdjustAsset(asset: AssetHolding, adjustment: AssetAdjustment): boole
   );
 }
 
-function createGrantedAsset(id: string, grant: AssetGrant): AssetHolding {
+function createGrantedAsset(id: string, grant: AssetGrant, amount: number): AssetHolding {
   return {
     id,
     assetType: grant.assetType,
     assetCode: grant.assetCode,
-    quantity: grant.amount,
+    quantity: amount,
     activeAt: grant.activeAt,
     expiresAt: grant.expiresAt,
   };

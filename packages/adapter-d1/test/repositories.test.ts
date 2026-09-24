@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf, yuanOf } from "@prism/core";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { sqliteSchema } from "@prism/storage-sql";
@@ -210,6 +212,7 @@ describe("createD1Repositories", () => {
     await expect(repositories.pricingConfigs.listEnabled()).resolves.toEqual([
       {
         id: "pricing-2",
+        versionId: expect.any(String), version: 1,
         kind: "charge.fixed",
         name: "D1 fixed charge",
         enabled: true,
@@ -224,6 +227,7 @@ describe("createD1Repositories", () => {
       },
       {
         id: "pricing-1",
+        versionId: expect.any(String), version: 1,
         kind: "time.priority",
         name: "D1 time pricing",
         enabled: true,
@@ -271,7 +275,7 @@ describe("createD1Repositories", () => {
         ruleId: "day",
         ruleAnchorAt: new Date("2026-06-07T01:00:00.000Z"),
         sessionId: "session-1",
-        amount: 24,
+        amount: moneyFixture(24),
         createdAt: new Date("2026-06-07T04:00:00.000Z"),
         metadata: null,
       },
@@ -283,7 +287,7 @@ describe("createD1Repositories", () => {
         ruleId: "day",
         ruleAnchorAt: new Date("2026-06-07T01:00:00.000Z"),
         sessionId: "session-2",
-        amount: 16,
+        amount: moneyFixture(16),
         createdAt: new Date("2026-06-07T08:00:00.000Z"),
         metadata: null,
       },
@@ -299,7 +303,7 @@ describe("createD1Repositories", () => {
         },
       ]),
     ).resolves.toEqual({
-      "pricing-day-night@time.day-night@day@2026-06-07T01:00:00.000Z": 40,
+      "pricing-day-night@time.day-night@day@2026-06-07T01:00:00.000Z": moneyFixture(40),
     });
   });
 
@@ -319,7 +323,7 @@ describe("createD1Repositories", () => {
         capAnchorAt: new Date("2026-06-07T01:00:00.000Z"),
         includedPricingConfigIds: ["pricing-base"],
         sessionIds: ["session-1"],
-        amount: 30,
+        amount: moneyFixture(30),
         createdAt: new Date("2026-06-07T04:00:00.000Z"),
         metadata: null,
       },
@@ -331,7 +335,7 @@ describe("createD1Repositories", () => {
         capAnchorAt: new Date("2026-06-07T01:00:00.000Z"),
         includedPricingConfigIds: ["pricing-base", "pricing-discount"],
         sessionIds: ["session-2"],
-        amount: 10,
+        amount: moneyFixture(10),
         createdAt: new Date("2026-06-07T08:00:00.000Z"),
         metadata: null,
       },
@@ -347,7 +351,7 @@ describe("createD1Repositories", () => {
         },
       ]),
     ).resolves.toEqual({
-      "cap-config@day@2026-06-07T01:00:00.000Z": 40,
+      "cap-config@day@2026-06-07T01:00:00.000Z": moneyFixture(40),
     });
   });
 
@@ -363,7 +367,7 @@ describe("createD1Repositories", () => {
       kind: "event.entry",
       name: "预约活动报名",
       status: "active",
-      price: 900,
+      price: moneyFixture(900),
       assetType: "ticket",
       assetCode: "reservation",
       activeAt: new Date("2026-06-08T01:00:00.000Z"),
@@ -379,7 +383,7 @@ describe("createD1Repositories", () => {
       kind: "service.fee",
       name: "现场服务费",
       status: "archived",
-      price: 300,
+      price: moneyFixture(300),
       assetType: null,
       assetCode: null,
       activeAt: null,
@@ -396,7 +400,7 @@ describe("createD1Repositories", () => {
       kind: "event.entry",
       name: "预约活动报名",
       status: "active",
-      price: 900,
+      price: moneyFixture(900),
       assetType: "ticket",
       assetCode: "reservation",
       activeAt: new Date("2026-06-08T01:00:00.000Z"),
@@ -413,7 +417,7 @@ describe("createD1Repositories", () => {
         kind: "event.entry",
         name: "预约活动报名",
         status: "active",
-        price: 900,
+        price: moneyFixture(900),
         assetType: "ticket",
         assetCode: "reservation",
         activeAt: new Date("2026-06-08T01:00:00.000Z"),
@@ -429,7 +433,7 @@ describe("createD1Repositories", () => {
         kind: "service.fee",
         name: "现场服务费",
         status: "archived",
-        price: 300,
+        price: moneyFixture(300),
         assetType: null,
         assetCode: null,
         activeAt: null,
@@ -458,7 +462,7 @@ describe("createD1Repositories", () => {
       kind: "service.fee",
       name: "现场服务费",
       status: "active",
-      price: 300,
+      price: moneyFixture(300),
       assetType: null,
       assetCode: null,
       activeAt: null,
@@ -476,7 +480,7 @@ describe("createD1Repositories", () => {
       playerId: "player-1",
       sessionId: "session-1",
       status: "fulfilled",
-      price: 300,
+      price: moneyFixture(300),
       assetType: null,
       assetCode: null,
       metadata: null,
@@ -588,7 +592,7 @@ describe("createD1Repositories", () => {
         upserts: [{
           assetType: "currency",
           assetCode: "currency.paid",
-          quantity: 100,
+          quantity: centsOf(100),
         }],
         deleteIds: [],
       },
@@ -625,7 +629,7 @@ describe("createD1Repositories", () => {
         id: "id-1",
         assetType: "currency",
         assetCode: "currency.paid",
-        quantity: 100,
+        quantity: centsOf(100),
         activeAt: null,
         expiresAt: null,
       },
@@ -704,8 +708,8 @@ describe("createD1Repositories", () => {
     await repositories.settlements.saveSettlement({
       settlement: {
         sessionId: "session-1",
-        subtotal: 20,
-        total: 15,
+        subtotal: centsOf(20),
+        total: centsOf(15),
         status: "settled",
         settledAt: new Date("2026-06-07T11:00:00.000Z"),
       },
@@ -714,7 +718,7 @@ describe("createD1Repositories", () => {
           id: "charge-time",
           source: "time.d1",
           label: "D1 time",
-          amount: 20,
+          amount: moneyFixture(20),
         },
       ],
       adjustments: [
@@ -722,7 +726,7 @@ describe("createD1Repositories", () => {
           id: "adjustment-coupon",
           source: "coupon.d1",
           label: "D1 coupon",
-          amount: -5,
+          amount: moneyFixture(-5),
         },
       ],
     });
@@ -731,8 +735,8 @@ describe("createD1Repositories", () => {
     ).resolves.toEqual({
       settlement: {
         sessionId: "session-1",
-        subtotal: 20,
-        total: 15,
+        subtotal: centsOf(20),
+        total: centsOf(15),
         status: "settled",
         settledAt: new Date("2026-06-07T11:00:00.000Z"),
       },
@@ -741,7 +745,7 @@ describe("createD1Repositories", () => {
           id: "charge-time",
           source: "time.d1",
           label: "D1 time",
-          amount: 20,
+          amount: moneyFixture(20),
         },
       ],
       adjustments: [
@@ -749,7 +753,7 @@ describe("createD1Repositories", () => {
           id: "adjustment-coupon",
           source: "coupon.d1",
           label: "D1 coupon",
-          amount: -5,
+          amount: moneyFixture(-5),
         },
       ],
     });
@@ -873,14 +877,14 @@ describe("createD1Repositories", () => {
           id: "holding-valid",
           assetType: "currency",
           assetCode: "currency.paid",
-          quantity: 10,
+          quantity: centsOf(10),
         }],
         deleteIds: [],
       },
       assetLedgerEntries: [{
         assetType: "currency",
         assetCode: "currency.missing",
-        delta: 10,
+        delta: centsOf(10),
         reason: "gift.redeem",
         refId: "code-invalid",
       }],

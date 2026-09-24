@@ -1,5 +1,6 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { describe, expect, it } from "bun:test";
-import type {
+import {
   AssetDefinition,
   AssetDefinitionRepository,
   AssetHolding,
@@ -12,6 +13,8 @@ import type {
   BusinessItemRepository,
   Session,
   SessionRepository,
+  centsOf,
+  yuanOf,
 } from "@prism/core";
 import { createAvailableAssetReader, createBusinessItemOrderService } from "../src/index";
 
@@ -130,7 +133,7 @@ describe("createBusinessItemOrderService", () => {
       kind: "event.entry",
       name: "周末挑战赛报名",
       status: "active",
-      price: 1200,
+      price: moneyFixture(1200),
       assetType: "ticket",
       assetCode: "event.weekend",
       activeAt: new Date("2026-06-08T00:00:00.000Z"),
@@ -146,8 +149,8 @@ describe("createBusinessItemOrderService", () => {
       status: "active",
     });
     assets.holdings["player-1"] = [
-      { id: "holding-free", assetType: "currency", assetCode: "free", quantity: 500, activeAt: null, expiresAt: null },
-      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: 1000, activeAt: null, expiresAt: null },
+      { id: "holding-free", assetType: "currency", assetCode: "free", quantity: centsOf(500), activeAt: null, expiresAt: null },
+      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: centsOf(1000), activeAt: null, expiresAt: null },
     ];
     const service = createBusinessItemOrderService({
       businessItems,
@@ -172,7 +175,7 @@ describe("createBusinessItemOrderService", () => {
       playerId: "player-1",
       sessionId: "session-1",
       status: "paid",
-      price: 1200,
+      price: moneyFixture(1200),
       assetType: "ticket",
       assetCode: "event.weekend",
       metadata: { note: "bot purchase" },
@@ -182,11 +185,11 @@ describe("createBusinessItemOrderService", () => {
       cancelledAt: null,
     });
     expect(result.assetLedgerEntries).toEqual([
-      { assetType: "currency", assetCode: "free", delta: -500, reason: "business-item.purchase", refId: "order-1" },
-      { assetType: "currency", assetCode: "paid", delta: -700, reason: "business-item.purchase", refId: "order-1" },
+      { assetType: "currency", assetCode: "free", delta: centsOf(-500), reason: "business-item.purchase", refId: "order-1" },
+      { assetType: "currency", assetCode: "paid", delta: centsOf(-700), reason: "business-item.purchase", refId: "order-1" },
     ]);
     expect(assets.holdings["player-1"]).toEqual([
-      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: 300, activeAt: null, expiresAt: null },
+      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: centsOf(300), activeAt: null, expiresAt: null },
     ]);
     expect(assets.transactions).toEqual([
       {
@@ -200,7 +203,7 @@ describe("createBusinessItemOrderService", () => {
           metadata: {
             businessItemId: "business-item-1",
             businessItemName: "周末挑战赛报名",
-            price: 1200,
+            price: centsOf(1200),
             sessionId: "session-1",
           },
         },
@@ -220,7 +223,7 @@ describe("createBusinessItemOrderService", () => {
       kind: "reservation.slot",
       name: "晚间预约",
       status: "active",
-      price: 100,
+      price: moneyFixture(100),
       assetType: null,
       assetCode: null,
       activeAt: null,
@@ -255,7 +258,7 @@ describe("createBusinessItemOrderService", () => {
       status: "active",
     });
     assets.holdings["player-1"] = [
-      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: 1000, activeAt: null, expiresAt: null },
+      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: centsOf(1000), activeAt: null, expiresAt: null },
     ];
     await orders.save({
       id: "existing-order",
@@ -265,7 +268,7 @@ describe("createBusinessItemOrderService", () => {
       playerId: "player-2",
       sessionId: "session-2",
       status: "paid",
-      price: 100,
+      price: moneyFixture(100),
       assetType: null,
       assetCode: null,
       metadata: null,
@@ -307,7 +310,7 @@ describe("createBusinessItemOrderService", () => {
       kind: "event.entry",
       name: "测试报名",
       status: "active",
-      price: 100,
+      price: moneyFixture(100),
       assetType: null,
       assetCode: null,
       activeAt: null,
@@ -323,7 +326,7 @@ describe("createBusinessItemOrderService", () => {
       status: "active",
     });
     assets.holdings["player-1"] = [
-      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: 1000 },
+      { id: "holding-paid", assetType: "currency", assetCode: "paid", quantity: centsOf(1000) },
     ];
     const availableAssets = createAvailableAssetReader({
       assets,

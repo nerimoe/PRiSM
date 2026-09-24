@@ -38,7 +38,7 @@ describe("deployment artifacts", () => {
       const config = await Bun.file(join(root, "wrangler.generated.jsonc")).json();
       expect(config).toMatchObject({
         name: "test-worker", account_id: env.CLOUDFLARE_ACCOUNT_ID,
-        main: "packages/platform/src/index.ts", workers_dev: false,
+        main: "packages/platform/src/worker.ts", workers_dev: false,
         routes: [{ pattern: "test.example.com", custom_domain: true }],
         d1_databases: [{ binding: "DB", database_id: env.D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
         kv_namespaces: [{ binding: "RATE_LIMIT", id: env.RATE_LIMIT_KV_ID }],
@@ -153,6 +153,20 @@ describe("deployment artifacts", () => {
     expect(generator).toContain("D1_DATABASE_ID");
   });
 
+  it("routes only the two-segment /t link through the worker so the shop page stays SPA-served", async () => {
+    // `/t/:shopCode` (the ticket-free shop surface) must NOT be worker-first: Cloudflare's
+    // single-page-application fallback has to serve index.html for React Router. Adding it
+    // here would make the deep link 404 instead of rendering the bill page.
+    for (const file of ["wrangler.platform.jsonc", "wrangler.generated.jsonc"]) {
+      const source = await readProjectFile(file);
+      const match = source.match(/"run_worker_first":\s*\[([^\]]*)\]/);
+      if (!match) throw new Error(`${file} must declare run_worker_first`);
+      const patterns = [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]);
+      expect(patterns).toContain("/t/*/*");
+      expect(patterns).not.toContain("/t/*");
+    }
+  });
+
   it("keeps the D1 migrations aligned with the executable SQLite schema", async () => {
     const schemaDb = new Database(":memory:");
     const migrationDb = new Database(":memory:");
@@ -165,9 +179,7 @@ describe("deployment artifacts", () => {
 
     for (const fileName of readdirSync(new URL("migrations", projectRoot)).filter((name) => name.endsWith(".sql")).sort()) {
       const migrationSql = await readProjectFile(`migrations/${fileName}`);
-      for (const statement of migrationSql.split(";").map((item) => item.trim()).filter(Boolean)) {
-        migrationDb.run(statement);
-      }
+      migrationDb.exec(migrationSql);
     }
 
     const tableNames = schemaDb

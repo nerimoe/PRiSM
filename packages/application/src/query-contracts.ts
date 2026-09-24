@@ -1,5 +1,7 @@
 import type {
   AssetHoldingUnavailableReason,
+  Cents,
+  BillTimeline,
   DeviceCommand,
   DeviceCommandType,
   DeviceState,
@@ -14,7 +16,7 @@ export type PlayerSummary = {
   };
   wallet: Array<{
     assetCode: string;
-    quantity: number;
+    quantity: Cents;
   }>;
   activeSession: {
     id: string;
@@ -57,8 +59,8 @@ export type SessionHistoryListItem = {
   startedAt: Date;
   endedAt: Date | null;
   durationMinutes: number | null;
-  subtotal: number | null;
-  total: number | null;
+  subtotal: Cents | null;
+  total: Cents | null;
   status: "active" | "closed" | "settled";
   settledAt: Date | null;
 };
@@ -68,13 +70,13 @@ export type SessionHistoryDetail = SessionHistoryListItem & {
     id: string;
     source: string;
     label: string;
-    amount: number;
+    amount: Cents;
   }>;
   adjustments: Array<{
     id: string;
     source: string;
     label: string;
-    amount: number;
+    amount: Cents;
   }>;
 };
 
@@ -93,7 +95,21 @@ export type PlayerRedeemRecordListItem = {
   redeemedAt: Date;
 };
 
+export type CheckoutHistoryRecord = {
+  id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
+};
+export type PlayerCheckoutReceipt = {
+  settlements?: Array<{ settlement: { sessionId: string; startedAt: string; endedAt: string | null } }>;
+  playerSettlement: { total: number; settledAt: string };
+  timeline: BillTimeline;
+  wallet?: { balanceAfter: number } | null;
+  chargeItems: { id: string; label: string; amount: number }[];
+  adjustments: { id: string; label: string; amount: number }[];
+};
 export type PlayerQueries = {
+  listPlayerCheckouts?(playerId: string, offset: number): Promise<{ records: CheckoutHistoryRecord[]; nextOffset: number | null }>;
+  getPlayerCheckout?(playerId: string, checkoutId: string): Promise<PlayerCheckoutReceipt | null>;
+  getLatestPlayerCheckout?(playerId: string): Promise<PlayerCheckoutReceipt | null>;
   getPlayerSummary(playerId: string): Promise<PlayerSummary>;
   listPlayerAssets?(playerId: string): Promise<PlayerAssets>;
   listPlayerSessionHistory?(playerId: string): Promise<SessionHistoryListItem[]>;
@@ -104,7 +120,7 @@ export type StaffPlayerListItem = {
   id: string;
   displayName: string;
   status: "active" | "disabled" | "banned";
-  walletTotal: number;
+  walletTotal: Cents;
   activeSessionId: string | null;
   hasUnpaidSession?: boolean;
   identities?: Array<{
@@ -150,7 +166,7 @@ export type StaffReportsSummaryInput = {
 };
 
 export type StaffReportsSummary = StaffReportsSummaryInput & {
-  revenueTotal: number;
+  revenueTotal: Cents;
   sessionCount: number;
   assetGrantTotal: number;
   coinCommandCount: number;
@@ -165,8 +181,8 @@ export type StaffReportSettlementListItem = {
   endedAt: Date | null;
   settledAt: Date;
   durationMinutes: number | null;
-  subtotal: number;
-  total: number;
+  subtotal: Cents;
+  total: Cents;
 };
 
 export type StaffReportPlayerListItem = {
@@ -174,7 +190,7 @@ export type StaffReportPlayerListItem = {
   playerDisplayName: string;
   settlementCount: number;
   totalDurationMinutes: number;
-  revenueTotal: number;
+  revenueTotal: Cents;
   lastSettledAt: Date;
 };
 

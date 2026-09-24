@@ -1,4 +1,5 @@
 import { mahjongConfig, mahjongState, operateMahjong } from "./mahjong";
+import { refreshActivityBill } from "./live-activity-billing";
 import type { Context, Hono } from "hono";
 import type { DeviceCommandType } from "@prism/core";
 import { z } from "zod";
@@ -707,6 +708,10 @@ async function executeDeviceAction(
           "UPDATE sessions SET metadata_json=json_set(COALESCE(metadata_json,'{}'),'$.deviceOperated',json('true')) WHERE shop_id=? AND player_id=? AND status='active'",
         ).bind(shop.id, player?.id ?? ""),
       ]);
+      if (player) {
+        const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Device live bill sync failed", error));
+        try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+      }
       return c.json({ operationId: body.operationId, ...result });
     },
   );

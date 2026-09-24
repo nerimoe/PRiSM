@@ -1,7 +1,9 @@
 import { mahjongRoster } from "./mahjong";
+import { activityBill, refreshActivityBill } from "./live-activity-billing";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { createD1Repositories } from "@prism/adapter-d1";
+import { toPricingConfig, type PricingConfigRow } from "@prism/storage-sql";
 import { createPrismWorkerDependencies } from "@prism/runtime";
 import {
   createPrismApp,
@@ -19,6 +21,15 @@ import {
 import { resolveMachineSession } from "./machine-session";
 import { withOperationLease } from "@prism/application";
 import { runPlayerOperation } from "./operations";
+import {
+  forwardWithLiveActivity,
+  sessionEventForPath,
+  playerIdsFromPayload,
+} from "./live-activity-events";
+import {
+  isKnownLiveActivityBundle,
+  type LiveActivityEnvironment,
+} from "./live-activity-push";
 import { requireUser } from "./auth";
 import { sha256 } from "./crypto";
 import { checkLocation } from "./geo";
@@ -42,6 +53,7 @@ export type BillingShop = {
   entry_pricing_ids_json: string;
   bot_contact: string;
   time_zone: string;
+  hero_url: string | null;
 };
 const settingsSchema = z.object({
   billingEnabled: z.boolean(),
@@ -71,6 +83,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
     COALESCE(b.checkin_geo,0) AS checkin_geo, COALESCE(b.checkout_geo,0) AS checkout_geo,
     COALESCE(b.machine_geo,0) AS machine_geo, COALESCE(b.entry_pricing_ids_json,'[]') AS entry_pricing_ids_json,
     COALESCE(b.bot_contact,'') AS bot_contact,
+    CASE WHEN s.hero_data IS NULL OR s.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || s.public_id || '/hero?v=' || COALESCE(s.hero_hash, 'original') END AS hero_url,
     COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=s.id AND key='store.profile'),'Asia/Shanghai') AS time_zone FROM shops s LEFT JOIN shop_billing_settings b ON b.shop_id=s.id WHERE s.public_id=?`,
   )
     .bind(code)
@@ -267,7 +280,14 @@ export function dependencies(c: C, shop: BillingShop): PrismAppDependencies {
           ...input,
           autoRegister: !!shop.auto_register,
         });
-        return startEntry({ ...input, playerId: player.id });
+        // Keep the audit trail consistent with the specialist branch below: every Bot
+        // entry session should record that a Bot opened it. Authorisation is scoped by
+        // player, never by this marker.
+        return startEntry({
+          ...input,
+          playerId: player.id,
+          metadata: { createdBy: "integration" },
+        });
       },
     };
   const checkout = deps.playerCheckoutCommands;
@@ -285,6 +305,7 @@ async function forward(
   deps: PrismAppDependencies,
   path: string,
   body?: unknown,
+  activity?: { shopId: string; playerId?: string },
 ): Promise<Response> {
   const url = new URL(c.req.url);
   url.pathname = `/api/v1/${path}`;
@@ -303,7 +324,18 @@ async function forward(
     data?: unknown;
     error?: unknown;
   };
-  return c.json(response.ok ? payload.data : payload, response.status as 200);
+  if (response.ok && activity && c.env.LIVE_BILLING && (c.req.method !== "GET" || path.endsWith("checkout/preview"))) {
+    const data = (payload.data ?? payload) as Record<string, unknown>;
+    const playerIds = activity.playerId ? [activity.playerId] : playerIdsFromPayload(data);
+    if (playerIds.length) {
+      const sync = Promise.all(playerIds.map(playerId => refreshActivityBill(c.env, activity.shopId, playerId))).catch(error => console.error("Live bill sync failed", error));
+      try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+    }
+  }
+  return c.json(
+    response.ok ? (payload.data !== undefined ? payload.data : payload) : payload,
+    response.status as 200,
+  );
 }
 
 export function registerBillingRoutes(app: Hono<AppBindings>) {
@@ -389,6 +421,65 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       .all();
     return c.json({ shops: shops.results });
   });
+  app.post("/api/v1/me/live-activity/start-token", async (c) => {
+    const user = requireUser(c);
+    const body = await c.req.json<Record<string, unknown>>();
+    const parsed = z
+      .object({
+        clientId: z.string().min(1).max(200),
+        token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+        environment: z.enum(["sandbox", "production"]),
+        bundleId: z.string().min(1).max(200),
+      })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动启动令牌注册参数无效");
+    const input = parsed.data;
+    if (!isKnownLiveActivityBundle(input.bundleId))
+      jsonError(400, "未知的应用标识");
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO live_activity_start_tokens
+        (id, user_id, client_id, bundle_id, environment, token, created_at, updated_at, last_seen_at)
+       VALUES (?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(user_id, client_id) DO UPDATE SET
+         token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
+         updated_at=excluded.updated_at, last_seen_at=excluded.last_seen_at`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        user.id,
+        input.clientId,
+        input.bundleId,
+        input.environment satisfies LiveActivityEnvironment,
+        input.token.toLowerCase(),
+        now,
+        now,
+        now,
+      )
+      .run();
+    return c.json({ ok: true });
+  });
+  app.delete("/api/v1/me/live-activity/start-token/:clientId?", async (c) => {
+    const user = requireUser(c);
+    const paramId = c.req.param("clientId");
+    const body: Record<string, unknown> = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+    const clientId = (paramId ?? (typeof body?.clientId === "string" ? body.clientId : c.req.query("clientId")))?.trim();
+    if (clientId) {
+      await c.env.DB.prepare(
+        "DELETE FROM live_activity_start_tokens WHERE user_id=? AND client_id=?",
+      )
+        .bind(user.id, clientId)
+        .run();
+    } else {
+      await c.env.DB.prepare(
+        "DELETE FROM live_activity_start_tokens WHERE user_id=?",
+      )
+        .bind(user.id)
+        .run();
+    }
+    return c.json({ ok: true });
+  });
   app.get("/api/v1/shops/:shopCode", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
     const user = c.get("user");
@@ -401,15 +492,10 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       : null;
     const pricing = shop.billing_enabled
       ? await c.env.DB.prepare(
-          "SELECT id,name,kind,provider_json FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active' AND (id IN (SELECT value FROM json_each(?)) OR kind='time.cap')",
+          "SELECT id,name,kind,enabled,status,provider_json,created_at,updated_at FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active' AND (id IN (SELECT value FROM json_each(?)) OR kind='time.cap')",
         )
           .bind(shop.id, shop.entry_pricing_ids_json)
-          .all<{
-            id: string;
-            name: string;
-            kind: string;
-            provider_json: string;
-          }>()
+          .all<PricingConfigRow>()
       : { results: [] };
     const localDate =
       c.req.query("date") ?? formatLocalDate(new Date(), shop.time_zone);
@@ -421,36 +507,20 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       jsonError(400, "日期无效", "INVALID_DATE");
     const ids = JSON.parse(shop.entry_pricing_ids_json) as string[];
     const configs = pricing.results
-      .map(({ provider_json, ...row }) => ({
-        ...row,
-        provider: JSON.parse(provider_json),
-      }))
+      .map(toPricingConfig)
       .filter(
         (row) =>
           row.kind !== "time.cap" ||
-          row.provider.includedPricingConfigIds.some((id: string) =>
+          ("includedPricingConfigIds" in row.provider && row.provider.includedPricingConfigIds.some((id: string) =>
             ids.includes(id),
-          ),
+          )),
       );
     const groups = configs.map((row) => {
       const config = {
         ...row,
         provider: {
           ...row.provider,
-          timeZone: row.provider.timeZone ?? shop.time_zone,
-          rules: row.provider.rules?.map(
-            (rule: { dateTimeRange?: { start: string; end: string } }) => ({
-              ...rule,
-              ...(rule.dateTimeRange
-                ? {
-                    dateTimeRange: {
-                      start: new Date(rule.dateTimeRange.start),
-                      end: new Date(rule.dateTimeRange.end),
-                    },
-                  }
-                : {}),
-            }),
-          ),
+          timeZone: ("timeZone" in row.provider ? row.provider.timeZone : undefined) ?? shop.time_zone,
         },
       } as PricingConfig;
       if (config.kind === "charge.fixed")
@@ -481,16 +551,18 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
             .map((segment) => segment.ruleId),
         );
         const dateTime = new Intl.DateTimeFormat("sv-SE", {
-          timeZone: row.provider.timeZone ?? shop.time_zone,
+          timeZone: ("timeZone" in row.provider ? row.provider.timeZone : undefined) ?? shop.time_zone,
           dateStyle: "short",
           timeStyle: "medium",
           hourCycle: "h23",
         });
         return {
-          ...row,
+          id: row.id,
+          name: row.name,
+          kind: row.kind,
           provider: {
             ...row.provider,
-            rules: row.provider.rules
+            rules: ("rules" in row.provider ? row.provider.rules : undefined)
               ?.filter(
                 (rule: { id: string; status?: string }) =>
                   (rule.status ?? "active") === "active" &&
@@ -501,7 +573,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
                   b.priority - a.priority,
               )
               .map(
-                (rule: { dateTimeRange?: { start: string; end: string } }) => ({
+                (rule) => ({
                   ...rule,
                   ...(rule.dateTimeRange
                     ? {
@@ -531,6 +603,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         publicId: shop.public_id,
         name: shop.name,
         timeZone: shop.time_zone,
+        heroUrl: shop.hero_url,
         ...publicSettings(shop),
       },
       membership,
@@ -765,15 +838,22 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         { ...dependencies(c, shop), authenticatedPrincipal: principal },
         "staff/" + path,
         body,
+        { shopId: shop.id, playerId: path.match(/^players\/([^/]+)\//)?.[1] },
       );
+    // An admin starting or settling a visit must reach that player's phone even though
+    // the phone is nowhere near this request.
+    const event = sessionEventForPath(path);
+    const withPush = event
+      ? () => forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute;
     return body &&
       (path === "device-actions" ||
         /\/(wallet\/adjustment|assets\/grants|checkout\/(confirm|override))$/.test(
           path,
         ) ||
         path === "sessions/active/checkout")
-      ? runPlayerOperation(c, shop.id, "staff/" + path, body, execute)
-      : execute();
+      ? runPlayerOperation(c, shop.id, "staff/" + path, body, withPush)
+      : withPush();
   });
   app.all("/api/v1/shops/:shopCode/player/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -783,6 +863,10 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       c.req.method === "GET"
         ? undefined
         : await c.req.json<Record<string, unknown>>();
+    // Live Activity tokens are transport concerns, not billing ones, so they are handled
+    // here rather than forwarded into the core app.
+    if (path.startsWith("live-activity/"))
+      return handleLiveActivityRoute(c, shop, player, path, body);
     if (path === "session/start") {
       const { machine } = await resolveMachineSession(
         c,
@@ -813,11 +897,16 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         },
         "player/" + path,
         body,
+        { shopId: shop.id, playerId: player.id },
       );
+    const event = sessionEventForPath(path);
+    const withPush = event
+      ? () => forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute;
     return body &&
       ["session/start", "checkout/confirm", "redeem"].includes(path)
-      ? runPlayerOperation(c, shop.id, path, body, execute)
-      : execute();
+      ? runPlayerOperation(c, shop.id, path, body, withPush)
+      : withPush();
   });
   app.all("/api/v1/shops/:shopCode/integration/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -839,11 +928,129 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       body.autoRegister = !!shop.auto_register;
       body.closeSessionsBeforeBalanceCheck = false;
     }
-    const result = await forward(c, deps, "integration/" + path, body);
+    const execute = () => forward(c, deps, "integration/" + path, body, { shopId: shop.id });
+    // The bot channel identifies players by QQ or card rather than by account, so the
+    // player is resolved from the response inside the wrapper.
+    const event = sessionEventForPath(path);
+    const result = await (event
+      ? forwardWithLiveActivity(c, { shopId: shop.id, event }, execute)
+      : execute());
     if (path === "sessions/active" && result.ok) {
       const payload = await result.json() as Record<string, unknown>;
       return c.json({ ...payload, mahjongTables: await mahjongRoster(c, shop.id) });
     }
     return result;
   });
+}
+
+/**
+ * Registers or retires the APNs token behind one on-device Live Activity.
+ *
+ * The app reports a token per activity (app and App Clip are separate bundles, and a
+ * player may hold more than one), so rows are keyed by activity id. Registration is
+ * idempotent: the app re-reports whenever ActivityKit rotates the token.
+ */
+async function handleLiveActivityRoute(
+  c: C,
+  shop: BillingShop,
+  player: { id: string },
+  path: string,
+  body: Record<string, unknown> | undefined,
+): Promise<Response> {
+  const user = requireUser(c);
+  if (path === "live-activity/bill" && c.req.method === "GET") {
+    // A local activity must recover its own checkout, never the player's latest visit.
+    const sessionId = c.req.query("sessionId");
+    if (sessionId) {
+      const session = await c.env.DB.prepare(`SELECT s.started_at, s.ended_at, s.payment_status,
+        pc.total, pc.settled_at FROM sessions s
+        LEFT JOIN settlements st ON st.shop_id=s.shop_id AND st.session_id=s.id
+        LEFT JOIN player_checkouts pc ON pc.shop_id=st.shop_id AND pc.id=st.checkout_id
+        WHERE s.shop_id=? AND s.player_id=? AND s.id=?`)
+        .bind(shop.id, player.id, sessionId)
+        .first<{ started_at: string; ended_at: string | null; payment_status: string; total: number | null; settled_at: string | null }>();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+      if (session.payment_status === "paid") {
+        if (session.total === null || !session.ended_at || !session.settled_at)
+          jsonError(409, "结算账单尚不可用");
+        return c.json({ phase: "ended", startedAtUnix: Date.parse(session.started_at) / 1000,
+          endedAtUnix: Date.parse(session.ended_at) / 1000, nextCheckAtUnix: null,
+          bill: { amountCents: session.total, planLabel: "", nextChargeAtUnix: null,
+            nextRuleAtUnix: null, asOfUnix: Date.parse(session.settled_at) / 1000 } });
+      }
+    }
+    const snapshot = await activityBill(c.env, shop.id, player.id);
+    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+    return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
+  }
+  if (path === "live-activity/register") {
+    const parsed = z
+      .object({
+        activityId: z.string().min(1).max(200),
+        token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+        environment: z.enum(["sandbox", "production"]),
+        bundleId: z.string().min(1).max(200),
+        sessionId: z.string().min(1).max(200).nullish(),
+        attributes: z.record(z.string(), z.unknown()).optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注册参数无效");
+    const input = parsed.data;
+    if (!isKnownLiveActivityBundle(input.bundleId))
+      jsonError(400, "未知的应用标识");
+
+    if (input.sessionId) {
+      const session = await c.env.DB.prepare(
+        "SELECT id FROM sessions WHERE id=? AND shop_id=? AND player_id=?",
+      )
+        .bind(input.sessionId, shop.id, player.id)
+        .first();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+    }
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO live_activity_tokens
+        (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(shop_id, user_id, activity_id) DO UPDATE SET
+         token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
+         session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        shop.id,
+        user.id,
+        input.activityId,
+        // APNs requires lowercase hex; normalising here keeps the lookup exact.
+        input.token.toLowerCase(),
+        input.environment satisfies LiveActivityEnvironment,
+        input.bundleId,
+        input.sessionId ?? null,
+        JSON.stringify(input.attributes ?? {}),
+        now,
+        now,
+      )
+      .run();
+    await refreshActivityBill(c.env, shop.id, player.id);
+    return c.json({ ok: true });
+  }
+
+  if (path === "live-activity/unregister") {
+    const parsed = z
+      .object({ activityId: z.string().min(1).max(200) })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注销参数无效");
+    // Scoped by user so one player can never retire another player's activity.
+    await c.env.DB.prepare(
+      "DELETE FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=?",
+    )
+      .bind(shop.id, user.id, parsed.data.activityId)
+      .run();
+    return c.json({ ok: true });
+  }
+
+  // Any other `live-activity/*` path is a client bug; answering 200 would hide it.
+  jsonError(404, "未知的实时活动操作");
 }

@@ -123,7 +123,8 @@ export type PlayerAuthCommands = {
   loginByIdentity(input: PlayerAuthIdentityBody): Promise<{ token: string; player: Player }>;
 };
 
-export type PlayerSummaryView = Omit<PlayerSummary, "activeSession"> & {
+export type PlayerSummaryView = Omit<PlayerSummary, "activeSession" | "wallet"> & {
+  wallet: Array<{ assetCode: string; quantity: number }>;
   activeSession: {
     id: string;
     startedAt: string;
@@ -399,6 +400,8 @@ export type StartPlayerSessionInput = {
   playerId: string;
   pricingConfigIds?: string[];
   label?: string;
+  /** Free-form session metadata. `createdBy: "integration"` marks Bot-owned sessions. */
+  metadata?: Record<string, unknown>;
 };
 
 export type RequestPlayerDeviceCommandInput = {
@@ -510,6 +513,7 @@ export type IntegrationWalletAdjustmentBody = IntegrationIdentityBody & {
 export type IntegrationCheckoutOverrideBody = IntegrationIdentityBody & {
   total: number;
   reason: string;
+  closeSessionsBeforeBalanceCheck?: boolean;
 };
 
 export type IntegrationDeviceActionBody = IntegrationIdentityBody & {

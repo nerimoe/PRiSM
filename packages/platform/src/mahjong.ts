@@ -96,9 +96,15 @@ export async function operateMahjong(c:C, machine:MachineRow, body:Record<string
         db.prepare("DELETE FROM mahjong_seats WHERE shop_id=? AND player_id=? AND machine_id=?").bind(shop.id,player.id,machine.id),
       ]);
     }
+    const sync = import("./live-activity-billing").then(({ refreshActivityBill }) =>
+      Promise.all(ids.map(id => refreshActivityBill(c.env, shop.id, id))))
+      .catch(error => console.error("Mahjong live bill sync failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     return c.json({mahjong:await mahjongState(c,machine)});
     });
   }).catch(error => {
+    if (String(error).includes("PRICING_CONFIG_NOT_IN_RELEASE"))
+      jsonError(409,"当前入场版本不包含此计费方案，请先结账后重新入场","PRICING_CONFIG_NOT_IN_RELEASE");
     if (error && typeof error === "object" && "code" in error && error.code === "OPERATION_IN_PROGRESS")
       jsonError(409,"其他操作正在进行，请重试","OPERATION_IN_PROGRESS");
     throw error;

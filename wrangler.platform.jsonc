@@ -1,7 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "prism-platform",
-  "main": "packages/platform/src/index.ts",
+  "main": "packages/platform/src/worker.ts",
+  "durable_objects": {
+    "bindings": [{ "name": "LIVE_BILLING", "class_name": "LiveBilling" }]
+  },
+  "migrations": [{ "tag": "live-billing-v1", "new_sqlite_classes": ["LiveBilling"] }],
   "compatibility_date": "2026-06-07",
   "compatibility_flags": [
     "nodejs_compat"
@@ -33,7 +37,9 @@
   "vars": {
     "APP_ORIGIN": "http://localhost:8787",
     "EXTRA_ALLOWED_ORIGINS": "http://localhost:5173",
-    "MUNET_CLIENT_ID": ""
+    "MUNET_CLIENT_ID": "",
+    "APNS_KEY_ID": "",
+    "APNS_TEAM_ID": ""
   },
   "observability": {
     "enabled": true

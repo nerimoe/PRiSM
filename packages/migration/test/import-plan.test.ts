@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf, yuanOf } from "@prism/core";
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createBunSqliteExecutor, createSqliteRepositories } from "@prism/adapter-sqlite";
@@ -87,7 +89,7 @@ describe("importPrismNeoMigrationPlan", () => {
           playerId: "legacy:user:7",
           assetType: "currency",
           assetCode: "paid",
-          quantity: 500,
+          quantity: centsOf(500),
           activeAt: null,
           expiresAt: null,
         },
@@ -98,7 +100,7 @@ describe("importPrismNeoMigrationPlan", () => {
           playerId: "legacy:user:7",
           assetType: "currency",
           assetCode: "paid",
-          delta: 500,
+          delta: centsOf(500),
           reason: "legacy.ADMIN_GRANT",
           refId: "legacy:user-asset:101",
           createdAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -118,8 +120,8 @@ describe("importPrismNeoMigrationPlan", () => {
         {
           settlement: {
             sessionId: "legacy:session:51",
-            subtotal: 120,
-            total: 90,
+            subtotal: centsOf(120),
+            total: centsOf(90),
             status: "settled",
             settledAt: new Date("2026-01-03T11:30:00.000Z"),
           },
@@ -128,7 +130,7 @@ describe("importPrismNeoMigrationPlan", () => {
               id: "legacy:billing-record:401",
               source: "legacy.billing-rule.2",
               label: "Legacy billing record 401",
-              amount: 90,
+              amount: moneyFixture(90),
             },
           ],
           adjustments: [
@@ -136,7 +138,7 @@ describe("importPrismNeoMigrationPlan", () => {
               id: "legacy:session-cost-delta:51",
               source: "legacy.session",
               label: "Legacy final cost delta",
-              amount: -30,
+              amount: moneyFixture(-30),
             },
           ],
         },
@@ -173,7 +175,7 @@ describe("importPrismNeoMigrationPlan", () => {
           ruleId: "legacy.rule.2",
           ruleAnchorAt: new Date("2026-01-01T00:00:00.000Z"),
           sessionId: "legacy:billing-record:401",
-          amount: 90,
+          amount: moneyFixture(90),
           createdAt: new Date("2026-01-03T11:30:00.000Z"),
           metadata: null,
         },
@@ -257,7 +259,7 @@ describe("importPrismNeoMigrationPlan", () => {
         id: "legacy:user-asset:101",
         assetType: "currency",
         assetCode: "paid",
-        quantity: 500,
+        quantity: centsOf(500),
         activeAt: null,
         expiresAt: null,
       },
@@ -266,13 +268,13 @@ describe("importPrismNeoMigrationPlan", () => {
       {
         assetType: "currency",
         assetCode: "paid",
-        delta: 500,
+        delta: centsOf(500),
         reason: "legacy.ADMIN_GRANT",
         refId: "legacy:user-asset:101",
       },
     ]);
     expect(session?.paymentStatus).toBe("paid");
-    expect(settlement?.settlement.total).toBe(90);
+    expect(yuanOf(settlement!.settlement.total)).toBe(90);
     expect(settlement?.chargeItems).toHaveLength(1);
     expect(settlement?.adjustments).toHaveLength(1);
     const legacyPricingConfig = pricingConfigs[0];
@@ -289,7 +291,7 @@ describe("importPrismNeoMigrationPlan", () => {
         },
       ]),
     ).resolves.toEqual({
-      [`${legacyPricingConfig.id}@legacy.time-priority@legacy.rule.2@2026-01-01T00:00:00.000Z`]: 90,
+      [`${legacyPricingConfig.id}@legacy.time-priority@legacy.rule.2@2026-01-01T00:00:00.000Z`]: moneyFixture(90),
     });
     expect(redeemCodes[0]?.code).toBe("ABC123");
     expect(present?.grants[0]?.assetCode).toBe("paid");
@@ -304,10 +306,10 @@ describe("importPrismNeoMigrationPlan", () => {
     expect(commands[0]?.payload).toEqual({ count: 2, legacyCoinRecordId: 91 });
 
     const summary = await queries.playerQueries.getPlayerSummary("legacy:user:7");
-    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: 500 }]);
+    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: centsOf(500) }]);
     const getHistoryDetail = queries.playerQueries.getPlayerSessionHistoryDetail;
     if (!getHistoryDetail) throw new Error("Expected session history detail query to be configured.");
     const history = await getHistoryDetail("legacy:user:7", "legacy:session:51");
-    expect(history?.total).toBe(90);
+    expect(yuanOf(history!.total!)).toBe(90);
   });
 });

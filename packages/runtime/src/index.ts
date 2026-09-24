@@ -177,6 +177,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
   const playerCommands = createPlayerCommandService({
     sessions: input.repositories.sessions,
     pricingConfigs: input.repositories.pricingConfigs,
+    resolvePricingConfigs: async playerId => (await playerPricing(playerId)).configs,
     deviceCommands: input.repositories.deviceCommands,
     playerIdentities: input.repositories.playerIdentities,
     coinCooldownMs: input.coinCooldownMs,
@@ -185,12 +186,13 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
       return normalizeNonNegativeInteger(operations?.coinCooldownMs, input.coinCooldownMs);
     },
     resolveFacilityTarget,
-    canStartSessionAt: async ({ at }) => {
-      const configs = await input.repositories.pricingConfigs.listEnabled();
+    canStartSessionAt: async ({ at, playerId }) => {
+      const pinned = await playerPricing(playerId);
+      const configs = pinned.configs;
       const timeConfigs = configs.filter((config): config is Extract<PricingConfig, { kind: "time.priority" }> => config.kind === "time.priority");
       if (timeConfigs.length === 0) return true;
       const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined;
+      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
       return timeConfigs.some((config) =>
         canStartPriorityTimePricingSession({
           config: {
@@ -204,6 +206,22 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     id: input.id,
     now: input.now,
   });
+  const sessionPricing = async (session: import("@prism/core").Session) => {
+    if (!session.pricingReleaseId) return { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+    const release = await input.repositories.pricingConfigs.findRelease?.(session.pricingReleaseId);
+    if (!release) throw new PrismDomainError("Pinned pricing release not found.", "PRICING_RELEASE_NOT_FOUND");
+    return { configs: release.configs.filter(config => config.enabled && config.status !== "archived"), timeZone: release.timeZone };
+  };
+  const versioned = (config: PricingConfig): PricingConfig => {
+    // Version 1 keeps the pre-migration history key so an upgrade cannot reset caps.
+    if (!config.versionId || config.version === 1) return config;
+    return { ...config, provider: { ...config.provider, id: config.versionId } } as PricingConfig;
+  };
+  const playerPricing = async (playerId: string) => {
+    const sessions = [...await input.repositories.sessions.findActiveByPlayerId(playerId), ...await input.repositories.sessions.findUnpaidClosedByPlayerId!(playerId)];
+    const first = sessions.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || a.id.localeCompare(b.id))[0];
+    return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+  };
   const playerCheckoutCommands = createSettlementService({
     commitCheckout: input.repositories.commitCheckout,
     sessions: input.repositories.sessions,
@@ -218,15 +236,16 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     deviceCommands: input.repositories.deviceCommands,
     pricingProviders: [...fallbackPricingProviders, ...pluginPricingProviders],
     async pricingProviderResolver(context) {
-      const allConfigs = await input.repositories.pricingConfigs.listEnabled();
+      const pinned = await sessionPricing(context.session);
+      const allConfigs = pinned.configs;
       const sessionConfigIds = context.session.pricingConfigIds ?? [];
       const configs = (sessionConfigIds.length > 0
         ? allConfigs.filter((config) => sessionConfigIds.includes(config.id))
-        : allConfigs).filter((config) => config.kind !== "time.cap");
+        : allConfigs).filter((config) => config.kind !== "time.cap").map(versioned);
 
       if (configs.length === 0) return [...fallbackPricingProviders, ...pluginPricingProviders];
       const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined;
+      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
       const resolvedConfigs = await withRuntimePricingHistory(configs, {
         playerId: context.playerId,
         startedAt: context.session.startedAt,
@@ -240,16 +259,23 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
       ];
     },
     async globalCapResolver(context) {
-      const allConfigs = await input.repositories.pricingConfigs.listEnabled();
       const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
       const storeTimeZone = typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined;
-      return allConfigs
-        .filter((config): config is Extract<PricingConfig, { kind: "time.cap" }> => config.kind === "time.cap")
-        .map((config) => ({
-          ...config.provider,
-          pricingConfigId: config.id,
-          timeZone: config.provider.timeZone ?? context.timeZone ?? storeTimeZone,
-        }));
+      const releases = new Map(context.sessions.map(session => [session.pricingReleaseId ?? "legacy", session]));
+      if (releases.size > 1) throw new PrismDomainError("Unsettled sessions use different pricing releases.", "PRICING_RELEASE_MISMATCH");
+      const result: import("@prism/core").TimeCapPricingProviderConfig[] = [];
+      for (const session of releases.values()) {
+        const pinned = await sessionPricing(session);
+        for (const config of pinned.configs) {
+          if (config.kind !== "time.cap") continue;
+          result.push({ ...config.provider, name: config.name,
+            // A publication pins both the cap and its included plan versions.
+            pricingConfigId: config.version === 1 ? config.id : (config.versionId ?? config.id),
+            includedPricingConfigIds: config.provider.includedPricingConfigIds,
+            timeZone: config.provider.timeZone ?? pinned.timeZone ?? context.timeZone ?? storeTimeZone });
+        }
+      }
+      return result;
     },
     assetEffectProviders,
     id: input.id,
@@ -629,6 +655,7 @@ export type CreatePrismLocalAppInput = {
 
 export type CreatePrismWorkerAppOptions = {
   shopId?: string;
+  now?: () => Date;
   plugins?: readonly PrismRuntimePlugin[];
   logicalDeviceResolver?: CreatePrismRuntimeDependenciesInput["logicalDeviceResolver"];
 };
@@ -639,6 +666,7 @@ export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWo
 
 export function createPrismWorkerDependencies(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): PrismAppDependencies {
   const runtime = createDefaultRuntimeConfig();
+  if (options.now) runtime.now = options.now;
   return {
       ...createPrismRuntimeDependencies({
       repositories: RuntimeRepositories.fromD1({
@@ -700,6 +728,11 @@ export function initializeSqliteSchema(db: Database): void {
   const columns = db.query("PRAGMA table_info(players)").all() as {name:string}[];
   if (columns.length && !columns.some(column => column.name === "shop_id")) {
     throw new Error("SQLite schema requires migration 0016; start with dev:local to create a backup and upgrade.");
+  }
+  const quantity = db.query<{ name: string; type: string }, []>("PRAGMA table_info(asset_holdings)").all()
+    .find(column => column.name === "quantity");
+  if (quantity && quantity.type.toUpperCase() !== "INTEGER") {
+    throw new Error("SQLite schema requires migration 0022; start with dev:local to create a backup and upgrade.");
   }
   db.run("PRAGMA foreign_keys = ON");
   for (const statement of sqliteSchema) db.run(statement);

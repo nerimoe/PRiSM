@@ -36,6 +36,34 @@ if (
   db.transaction(() => db.exec(migration))();
   console.log("Created pre-migration SQLite backup:", backupPath);
 }
+const quantityColumn = db.query<{ name: string; type: string }, []>(
+  "PRAGMA table_info(asset_holdings)",
+).all().find(column => column.name === "quantity");
+if (quantityColumn && quantityColumn.type.toUpperCase() !== "INTEGER") {
+  const migration = await Bun.file(new URL(
+    "../../../migrations/0022_integer_money_columns.sql", import.meta.url,
+  )).text();
+  const backupPath = `${databasePath}.before-integer-money-${Date.now()}.sqlite`;
+  db.run("VACUUM INTO ?", [backupPath]);
+  db.run("PRAGMA foreign_keys=ON");
+  db.transaction(() => db.exec(migration))();
+  console.log("Created pre-integer-money SQLite backup:", backupPath);
+}
+// 0023 added this opt-in and 0024 removes it again; an existing local database may hold
+// either shape. DROP COLUMN fails when the column is absent, so guard on its presence.
+const billingColumns = db.query("PRAGMA table_info(shop_billing_settings)").all() as {
+  name: string;
+}[];
+if (billingColumns.some((column) => column.name === "remote_entry_enabled")) {
+  const migration = await Bun.file(
+    new URL("../../../migrations/0024_drop_remote_entry.sql", import.meta.url),
+  ).text();
+  const backupPath = `${databasePath}.before-drop-remote-entry-${Date.now()}.sqlite`;
+  db.run("VACUUM INTO ?", [backupPath]);
+  db.run("PRAGMA foreign_keys=ON");
+  db.transaction(() => db.exec(migration))();
+  console.log("Created pre-drop-remote-entry SQLite backup:", backupPath);
+}
 initializeSqliteSchema(db);
 
 const dependencies = createPrismLocalDependencies({

@@ -1,4 +1,13 @@
-import { PrismDomainError } from "@prism/core";
+import {
+  centsOf,
+  assetQuantityOf,
+  assetQuantityFromStored,
+  assetQuantityToNatural,
+  centsOfInteger,
+  type Cents,
+  yuanOf,
+  PrismDomainError,
+} from "@prism/core";
 import { sqlShop, shopValues } from "./shop-scope";
 import type {
   CheckoutCommit,
@@ -482,13 +491,13 @@ function createPricingEffectRepository(
           effect.name,
           effect.type,
           effect.scope,
-          effect.value,
+          effect.value == null ? null : centsOf(effect.value),
           effect.consumable ? 1 : 0,
           effect.limitPerDay,
           effect.activeAt?.toISOString() ?? null,
           effect.expiresAt?.toISOString() ?? null,
           effect.status ?? "active",
-          effect.config ? JSON.stringify(effect.config) : null,
+          effect.config ? JSON.stringify(mapEffectConfigMoney(effect.config, centsOf)) : null,
         ],
       );
     },
@@ -689,7 +698,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
   return {
     async findActiveByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'active'`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND player_id = ? AND status = 'active'`,
         [playerId],
       );
       return rows.map(toSession);
@@ -697,7 +706,7 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findById(sessionId) {
       const row = await executor.first<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE id = ?`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND id = ?`,
         [sessionId],
       );
       return row ? toSession(row) : null;
@@ -705,14 +714,20 @@ function createSessionRepository(executor: SqlExecutor): SessionRepository {
 
     async findUnpaidClosedByPlayerId(playerId) {
       const rows = await executor.all<SessionRow>(
-        `SELECT id, player_id, started_at, ended_at, status, pricing_config_ids_json, payment_status, label, metadata_json FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(executor)}) WHERE player_id = ? AND status = 'closed' AND payment_status = 'unpaid'`,
+        `SELECT s.*, b.release_id AS pricing_release_id FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id WHERE s.shop_id = ${sqlShop(executor)} AND player_id = ? AND status = 'closed' AND payment_status = 'unpaid'`,
         [playerId],
       );
       return rows.map(toSession);
     },
 
     async save(session) {
-      await saveMany([session]);
+      try { await saveMany([session]); }
+      catch (error) {
+        if (String(error).includes("PRICING_CONFIG_NOT_IN_RELEASE")) {
+          throw new PrismDomainError("当前入场版本不包含此计费方案，请先结账后重新入场", "PRICING_CONFIG_NOT_IN_RELEASE");
+        }
+        throw error;
+      }
     },
 
     async saveMany(sessions) {
@@ -1098,7 +1113,7 @@ function createRedeemRepository(
           present.activeAt?.toISOString() ?? null,
           present.expiresAt?.toISOString() ?? null,
           present.status ?? "active",
-          JSON.stringify(present.grants),
+          JSON.stringify(serializePresentGrants(present.grants)),
         ],
       );
     },
@@ -1269,10 +1284,10 @@ function createSettlementRepository(
         ? {
             settlement: toSettlement(row),
             chargeItems: rows.flatMap((item) => item.row_kind === "charge" && item.item_id
-              ? [{ id: item.item_id, source: item.item_source!, label: item.item_label!, amount: item.item_amount! }]
+              ? [{ id: item.item_id, source: item.item_source!, label: item.item_label!, amount: centsOfInteger(item.item_amount!) }]
               : []),
             adjustments: rows.flatMap((item) => item.row_kind === "adjustment" && item.item_id
-              ? [{ id: item.item_id, source: item.item_source!, label: item.item_label!, amount: item.item_amount! }]
+              ? [{ id: item.item_id, source: item.item_source!, label: item.item_label!, amount: centsOfInteger(item.item_amount!) }]
               : []),
           }
         : null;
@@ -1300,6 +1315,17 @@ function createPricingConfigRepository(
   executor: SqlExecutor,
 ): PricingConfigRepository {
   return {
+    async findRelease(releaseId) {
+      const release = await executor.first<{ id: string; time_zone: string }>(
+        `SELECT id,time_zone FROM pricing_releases WHERE shop_id = ${sqlShop(executor)} AND id = ?`, [releaseId]);
+      if (!release) return null;
+      const rows = await executor.all<PricingConfigRow>(
+        `SELECT v.*, v.config_id AS id FROM pricing_config_versions v
+         JOIN pricing_releases r ON r.shop_id=v.shop_id
+         WHERE r.shop_id = ${sqlShop(executor)} AND r.id = ?
+         AND v.version_id IN (SELECT value FROM json_each(r.version_ids_json)) ORDER BY v.config_id`, [releaseId]);
+      return { id: release.id, timeZone: release.time_zone, configs: rows.map(toPricingConfig) };
+    },
     async save(config) {
       await executor.run(
         `INSERT INTO pricing_configs (shop_id, id, kind, name, enabled, status, provider_json, created_at, updated_at)
@@ -1326,7 +1352,7 @@ function createPricingConfigRepository(
 
     async findById(configId) {
       const row = await executor.first<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) WHERE config_id = ? LIMIT 1`,
         [configId],
       );
       return row ? toPricingConfig(row) : null;
@@ -1334,14 +1360,14 @@ function createPricingConfigRepository(
 
     async listAll() {
       const rows = await executor.all<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) ORDER BY updated_at DESC, id`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) ORDER BY updated_at DESC, config_id`,
       );
       return rows.map(toPricingConfig);
     },
 
     async listEnabled() {
       const rows = await executor.all<PricingConfigRow>(
-        `SELECT id, kind, name, enabled, status, provider_json, created_at, updated_at FROM (SELECT * FROM pricing_configs WHERE shop_id = ${sqlShop(executor)}) WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, id`,
+        `SELECT config_id AS id, kind, name, enabled, status, provider_json, created_at, updated_at, version_id, version FROM (SELECT v.* FROM pricing_config_versions v JOIN pricing_configs c ON c.shop_id=v.shop_id AND c.id=v.config_id WHERE v.shop_id = ${sqlShop(executor)} AND v.version=(SELECT MAX(x.version) FROM pricing_config_versions x WHERE x.shop_id=v.shop_id AND x.config_id=v.config_id)) WHERE enabled = 1 AND status = 'active' ORDER BY updated_at DESC, config_id`,
       );
       return rows.map(toPricingConfig);
     },
@@ -1355,7 +1381,7 @@ function createPricingHistoryRepository(
     async sumByPlayerAndKeys(playerId, keys) {
       if (keys.length === 0) return {};
 
-      const totals: Record<string, number> = {};
+      const totals: Record<string, Cents> = {};
       const uniqueKeys = new Map<string, PricingHistoryLookupKey>();
       for (const key of keys) {
         uniqueKeys.set(pricingHistoryKey(key), key);
@@ -1399,7 +1425,7 @@ function createPricingHistoryRepository(
             providerId: row.provider_id,
             ruleId: row.rule_id,
             ruleAnchorAt: new Date(row.rule_anchor_at),
-          })] = row.total;
+          })] = centsOfInteger(row.total);
         }
       }
 
@@ -1445,7 +1471,7 @@ function createPricingCapHistoryRepository(
     async sumByPlayerAndKeys(playerId, keys) {
       if (keys.length === 0) return {};
 
-      const totals: Record<string, number> = {};
+      const totals: Record<string, Cents> = {};
       const uniqueKeys = new Map<string, PricingCapHistoryLookupKey>();
       for (const key of keys) {
         uniqueKeys.set(pricingCapHistoryKey(key), key);
@@ -1481,7 +1507,7 @@ function createPricingCapHistoryRepository(
           ],
         );
         for (const row of rows) {
-          totals[`${row.cap_config_id}@${row.cap_rule_id}@${new Date(row.cap_anchor_at).toISOString()}`] = row.total;
+          totals[`${row.cap_config_id}@${row.cap_rule_id}@${new Date(row.cap_anchor_at).toISOString()}`] = centsOfInteger(row.total);
         }
       }
 
@@ -1668,6 +1694,7 @@ function createBusinessItemOrderRepository(
 }
 
 type SessionRow = {
+  pricing_release_id?: string | null;
   id: string;
   player_id: string;
   started_at: string;
@@ -1847,7 +1874,9 @@ type SettlementDetailRow = SettlementRow & {
   item_amount: number | null;
 };
 
-type PricingConfigRow = {
+export type PricingConfigRow = {
+  version_id?: string;
+  version?: number;
   id: string;
   kind: PricingConfig["kind"];
   name: string;
@@ -1953,6 +1982,7 @@ function toSession(row: SessionRow): Session {
     endedAt: row.ended_at ? new Date(row.ended_at) : undefined,
     status: row.status,
     pricingConfigIds: JSON.parse(row.pricing_config_ids_json ?? "[]"),
+    pricingReleaseId: row.pricing_release_id ?? undefined,
     paymentStatus: row.payment_status,
     label: row.label ?? undefined,
     metadata: row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : undefined,
@@ -1994,7 +2024,7 @@ function toAssetHolding(row: AssetHoldingRow): AssetHolding {
     id: row.id,
     assetType: row.asset_type,
     assetCode: row.asset_code,
-    quantity: row.quantity,
+    quantity: assetQuantityFromStored(row.asset_type, row.quantity),
     activeAt: row.active_at ? new Date(row.active_at) : null,
     expiresAt: row.expires_at ? new Date(row.expires_at) : null,
   };
@@ -2037,14 +2067,14 @@ function toPricingEffect(row: PricingEffectRow): PricingEffect {
     name: row.name,
     type: row.type,
     scope: row.scope,
-    value: row.value,
+    value: row.value == null ? null : yuanOf(centsOfInteger(row.value)),
     consumable: row.consumable === 1,
     limitPerDay: row.limit_per_day,
     activeAt: row.active_at ? new Date(row.active_at) : null,
     expiresAt: row.expires_at ? new Date(row.expires_at) : null,
     status: row.status ?? "active",
     config: row.config_json
-      ? (JSON.parse(row.config_json) as Record<string, unknown>)
+      ? mapEffectConfigMoney(JSON.parse(row.config_json), value => yuanOf(centsOfInteger(value)))
       : null,
   };
 }
@@ -2079,7 +2109,7 @@ function toAssetLedgerEntry(row: AssetLedgerEntryRow): AssetLedgerEntry {
   return {
     assetType: row.asset_type,
     assetCode: row.asset_code,
-    delta: row.delta,
+    delta: assetQuantityFromStored(row.asset_type, row.delta),
     reason: row.reason,
     refId: row.ref_id,
     ...(row.transaction_id ? { transactionId: row.transaction_id } : {}),
@@ -2174,7 +2204,9 @@ function toPresent(row: PresentRow): Present {
     activeAt: row.active_at ? new Date(row.active_at) : null,
     expiresAt: row.expires_at ? new Date(row.expires_at) : null,
     status: row.status ?? "active",
-    grants: normalizePresentGrants(JSON.parse(row.grants_json)),
+    grants: normalizePresentGrants(JSON.parse(row.grants_json)).map(grant => ({
+      ...grant, amount: assetQuantityToNatural(grant.assetType, assetQuantityFromStored(grant.assetType, grant.amount)),
+    })),
   };
 }
 
@@ -2219,8 +2251,8 @@ function toRedeemRecord(row: RedeemRecordRow): RedeemRecord {
 function toSettlement(row: SettlementRow): SettlementRecord["settlement"] {
   return {
     sessionId: row.session_id,
-    subtotal: row.subtotal,
-    total: row.total,
+    subtotal: centsOfInteger(row.subtotal),
+    total: centsOfInteger(row.total),
     status: row.status,
     settledAt: new Date(row.settled_at),
   };
@@ -2248,10 +2280,19 @@ async function savePlayerCheckout(
       checkout.settledAt.toISOString(),
     ],
   );
+  if (checkout.timeline) {
+    await executor.run(
+      `INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES (${sqlShop(executor)}, ?, ?)
+       ON CONFLICT(shop_id, checkout_id) DO UPDATE SET timeline_json = excluded.timeline_json`,
+      [checkout.id, JSON.stringify(checkout.timeline)],
+    );
+  }
 }
 
-function toPricingConfig(row: PricingConfigRow): PricingConfig {
+export function toPricingConfig(row: PricingConfigRow): PricingConfig {
   const base = {
+    versionId: row.version_id,
+    version: row.version,
     id: row.id,
     name: row.name,
     enabled: row.enabled === 1,
@@ -2259,7 +2300,7 @@ function toPricingConfig(row: PricingConfigRow): PricingConfig {
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
   };
-  const provider = JSON.parse(row.provider_json) as PricingConfig["provider"];
+  const provider = mapPricingProviderMoney(JSON.parse(row.provider_json), value => yuanOf(centsOfInteger(value)));
 
   switch (row.kind) {
     case "time.priority":
@@ -2302,7 +2343,7 @@ function toBusinessItem(row: BusinessItemRow): BusinessItem {
     kind: row.kind,
     name: row.name,
     status: row.status,
-    price: row.price,
+    price: centsOfInteger(row.price),
     assetType: row.asset_type,
     assetCode: row.asset_code,
     activeAt: row.active_at ? new Date(row.active_at) : null,
@@ -2324,7 +2365,7 @@ function toBusinessItemOrder(row: BusinessItemOrderRow): BusinessItemOrder {
     playerId: row.player_id,
     sessionId: row.session_id,
     status: row.status,
-    price: row.price,
+    price: centsOfInteger(row.price),
     assetType: row.asset_type,
     assetCode: row.asset_code,
     metadata: row.metadata_json
@@ -2376,9 +2417,10 @@ function toApiToken(row: ApiTokenRow): ApiToken {
   };
 }
 
-function serializePricingProviderConfig(
+export function serializePricingProviderConfig(
   provider: PricingConfig["provider"],
 ): unknown {
+  provider = mapPricingProviderMoney(provider, centsOf);
   if (!("rules" in provider)) return provider;
   return {
     ...provider,
@@ -2397,6 +2439,24 @@ function serializePricingProviderConfig(
       };
     }),
   };
+}
+
+function mapPricingProviderMoney(provider: PricingConfig["provider"], convert: (value: number) => number): PricingConfig["provider"] {
+  if ("amount" in provider) return { ...provider, amount: convert(provider.amount) };
+  if ("includedPricingConfigIds" in provider) return {
+    ...provider, rules: provider.rules.map(rule => ({ ...rule, priceCap: convert(rule.priceCap) })),
+  };
+  return { ...provider, rules: provider.rules.map(rule => ({
+    ...rule, pricing: { ...rule.pricing, unitPrice: convert(rule.pricing.unitPrice), priceCap: convert(rule.pricing.priceCap) },
+  })) };
+}
+
+function mapEffectConfigMoney(config: Record<string, unknown>, convert: (value: number) => number): Record<string, unknown> {
+  return typeof config.minSubtotal === "number" ? { ...config, minSubtotal: convert(config.minSubtotal) } : config;
+}
+
+export function serializePresentGrants(grants: Present["grants"]): Present["grants"] {
+  return grants.map(grant => ({ ...grant, amount: assetQuantityOf(grant.assetType, grant.amount) }));
 }
 
 function pricingHistoryKey(key: PricingHistoryLookupKey): string {

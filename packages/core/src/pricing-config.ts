@@ -1,6 +1,7 @@
 import type { PriorityTimePricingProviderConfig, TimeCapPricingProviderConfig } from "./pricing-time";
 import { createPriorityTimePricingProvider } from "./pricing-time";
 import { PrismDomainError } from "./errors";
+import { centsOf, quantizeMoney } from "./money";
 import type { PricingProvider } from "./settlement";
 
 export type PricingConfigKind = "time.priority" | "time.cap" | "charge.fixed";
@@ -44,9 +45,74 @@ export type TimeCapPricingConfig = {
   updatedAt: Date;
 };
 
-export type PricingConfig = TimePriorityPricingConfig | TimeCapPricingConfig | FixedChargePricingConfig;
+export type PricingConfig = (TimePriorityPricingConfig | TimeCapPricingConfig | FixedChargePricingConfig) & { versionId?: string; version?: number };
+
+export type PricingRelease = { id: string; timeZone: string; configs: PricingConfig[] };
 
 export type PricingConfigStatus = "active" | "archived";
+
+/**
+ * Snaps every monetary field of a pricing provider to whole cents.
+ *
+ * Pricing values are the *basis* of every later charge: a `unitPrice` such as
+ * `0.1` or `6.6` has no exact binary representation, and a single such value
+ * makes every downstream product, cap and deduction carry error. Quantising here
+ * — once, at the write boundary, before the config is validated and persisted —
+ * keeps the whole charging pipeline working with values that are exact in the
+ * sense that matters (a whole number of cents).
+ *
+ * Time fields (`unitMinutes`, `roundGraceMinutes`) are deliberately untouched:
+ * minutes are counts, not money.
+ */
+export function quantizePricingProvider(
+  provider: PriorityTimePricingProviderConfig,
+): PriorityTimePricingProviderConfig;
+export function quantizePricingProvider(
+  provider: TimeCapPricingProviderConfig,
+): TimeCapPricingProviderConfig;
+export function quantizePricingProvider(
+  provider: FixedChargePricingProviderConfig,
+): FixedChargePricingProviderConfig;
+export function quantizePricingProvider(
+  provider: PricingConfig["provider"],
+): PricingConfig["provider"] {
+  if ("amount" in provider) {
+    assertNonNegativePrice(provider.amount);
+    return { ...provider, amount: quantizeMoney(provider.amount) };
+  }
+
+  if ("includedPricingConfigIds" in provider) {
+    for (const rule of provider.rules) assertNonNegativePrice(rule.priceCap);
+    return {
+      ...provider,
+      rules: provider.rules.map((rule) => ({ ...rule, priceCap: quantizeMoney(rule.priceCap) })),
+      paidHistory: provider.paidHistory,
+    };
+  }
+
+  for (const rule of provider.rules) {
+    assertNonNegativePrice(rule.pricing.unitPrice);
+    assertNonNegativePrice(rule.pricing.priceCap);
+  }
+  return {
+    ...provider,
+    rules: provider.rules.map((rule) => ({
+      ...rule,
+      pricing: {
+        ...rule.pricing,
+        unitPrice: quantizeMoney(rule.pricing.unitPrice),
+        priceCap: quantizeMoney(rule.pricing.priceCap),
+      },
+    })),
+    paidHistory: provider.paidHistory,
+  };
+}
+
+function assertNonNegativePrice(value: number): void {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new PrismDomainError("Price must be a non-negative finite number.", "INVALID_PRICING_AMOUNT");
+  }
+}
 
 export function createPricingProviderFromConfig(config: PricingConfig): PricingProvider {
   switch (config.kind) {
@@ -121,7 +187,7 @@ function createFixedChargePricingProvider(config: FixedChargePricingProviderConf
           id: `${context.session.id}:${config.id}`,
           source: config.id,
           label: config.label,
-          amount: config.amount,
+          amount: centsOf(config.amount),
         },
       ];
     },

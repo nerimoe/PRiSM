@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { yuanOf } from "@prism/core";
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
@@ -114,8 +116,8 @@ describe("migration CLI", () => {
     const commands = await repositories.deviceCommands.listByPlayerId("legacy:user:7");
 
     expect(player?.displayName).toBe("Player 7");
-    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: 500 }]);
-    expect(detail?.total).toBe(90);
+    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: moneyFixture(500) }]);
+    expect(yuanOf(detail!.total!)).toBe(90);
     expect(commands[0]?.payload).toEqual({ count: 2, legacyCoinRecordId: 91 });
     db.close();
   });
@@ -235,8 +237,8 @@ describe("migration CLI", () => {
     const commands = await repositories.deviceCommands.listByPlayerId("legacy:user:7");
 
     expect(player?.displayName).toBe("Player 7");
-    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: 500 }]);
-    expect(detail?.total).toBe(90);
+    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: moneyFixture(500) }]);
+    expect(yuanOf(detail!.total!)).toBe(90);
     expect(commands[0]?.payload).toEqual({ count: 2, legacyCoinRecordId: 91 });
     db.close();
   });
@@ -338,8 +340,8 @@ describe("migration CLI", () => {
     const detail = await queries.playerQueries.getPlayerSessionHistoryDetail?.("legacy:user:7", "legacy:session:51");
 
     expect(player?.displayName).toBe("Player 7");
-    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: 500 }]);
-    expect(detail?.total).toBe(90);
+    expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: moneyFixture(500) }]);
+    expect(yuanOf(detail!.total!)).toBe(90);
     db.close();
   });
 });

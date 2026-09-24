@@ -7,7 +7,20 @@ import type {
   OperationLockRepository,
   GrantAssetsResult,
 } from "@prism/core";
-import { diffAssetHoldings, PrismDomainError, adjustAssets, deductCurrency, grantAssets, isActiveInWindow } from "@prism/core";
+import {
+  adjustAssets,
+  addCents,
+  centsOf,
+  deductCurrency,
+  diffAssetHoldings,
+  grantAssets,
+  isActiveInWindow,
+  isPositiveCents,
+  isZeroCents,
+  negCents,
+  type Cents,
+  PrismDomainError,
+} from "@prism/core";
 import { withOperationLease } from "./operation-lock";
 import { sumAvailableWalletBalance, type AvailableAssetReader } from "./available-assets";
 
@@ -57,8 +70,8 @@ export type StaffWalletAdjustmentInput = {
 };
 
 export type StaffWalletAdjustmentResult = GrantAssetsResult & {
-  balanceBefore: number;
-  balanceAfter: number;
+  balanceBefore: Cents;
+  balanceAfter: Cents;
 };
 
 export type StaffAssetService = {
@@ -158,7 +171,11 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
 
     async adjustWallet(input) {
       return withPlayerAssetLease(dependencies, input.playerId, async () => {
-      if (!Number.isFinite(input.amount) || input.amount === 0) {
+      if (!Number.isFinite(input.amount)) {
+        throw new PrismDomainError("Wallet adjustment amount must be non-zero.", "INVALID_WALLET_ADJUSTMENT_AMOUNT");
+      }
+      const amount = centsOf(input.amount);
+      if (isZeroCents(amount)) {
         throw new PrismDomainError("Wallet adjustment amount must be non-zero.", "INVALID_WALLET_ADJUSTMENT_AMOUNT");
       }
       const now = dependencies.now();
@@ -170,7 +187,7 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
       });
       const balanceBefore = sumAvailableWalletBalance(availableHoldings);
       let result: GrantAssetsResult;
-      if (input.amount > 0) {
+      if (isPositiveCents(amount)) {
         await assertGrantAssetDefinitionsActive(dependencies, [{
           assetType: "currency",
           assetCode: "free",
@@ -193,7 +210,7 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
         });
       } else {
         const assetLedgerEntries = deductCurrency(availableHoldings.map((asset) => asset.holding), {
-          amount: -input.amount,
+          amount: negCents(amount),
           reason: input.reason,
           refId: input.staffId,
           now,
@@ -214,12 +231,12 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
           kind: "staff.wallet.adjust",
           refId: input.staffId,
           createdAt: now,
-          metadata: { staffId: input.staffId, amount: input.amount, reason: input.reason },
+          metadata: { staffId: input.staffId, amount, reason: input.reason },
         },
         holdingChanges: diffAssetHoldings(existingHoldings, result.holdings),
         assetLedgerEntries: result.assetLedgerEntries,
       });
-      return { ...result, balanceBefore, balanceAfter: balanceBefore + input.amount };
+      return { ...result, balanceBefore, balanceAfter: addCents(balanceBefore, amount) };
       });
     },
   };

@@ -1,5 +1,21 @@
 import type { AssetHolding, AssetLedgerEntry } from "./assets";
 import { PrismDomainError } from "./errors";
+import {
+  type Cents,
+  addCents,
+  maxCents,
+  centsOf,
+  centsOfInteger,
+  compareCents,
+  isNegativeCents,
+  isPositiveCents,
+  isZeroCents,
+  minCents,
+  negCents,
+  subCents,
+  sumCents,
+  ZERO_CENTS,
+} from "./money";
 import type { PricingSegmentExplanation } from "./pricing-time";
 import type { Session } from "./session";
 
@@ -8,7 +24,7 @@ export type ChargeItem = {
   sessionId?: string;
   source: string;
   label: string;
-  amount: number;
+  amount: Cents;
   period?: {
     startedAt: Date;
     endedAt: Date;
@@ -22,14 +38,14 @@ export type PricingHistoryContribution = {
   providerId: string;
   ruleId: string;
   ruleAnchorAt: Date;
-  amount: number;
+  amount: Cents;
 };
 
 export type SettlementAdjustment = {
   id: string;
   source: string;
   label: string;
-  amount: number;
+  amount: Cents;
   pricingCapHistory?: PricingCapHistoryContribution;
 };
 
@@ -38,7 +54,7 @@ export type PricingCapHistoryContribution = {
   capRuleId: string;
   capAnchorAt: Date;
   includedPricingConfigIds: string[];
-  amount: number;
+  amount: Cents;
 };
 
 export type PastAppliedAdjustment = {
@@ -48,17 +64,18 @@ export type PastAppliedAdjustment = {
 
 export type Settlement = {
   sessionId: string;
-  subtotal: number;
-  total: number;
+  subtotal: Cents;
+  total: Cents;
   status: "settled";
   settledAt: Date;
 };
 
 export type PlayerCheckout = {
+  timeline?: BillTimeline;
   id: string;
   playerId: string;
-  subtotal: number;
-  total: number;
+  subtotal: Cents;
+  total: Cents;
   status: "settled";
   settledAt: Date;
 };
@@ -71,8 +88,8 @@ export type SettlementRecord = {
 
 export type SettlementPreview = {
   sessionId: string;
-  subtotal: number;
-  total: number;
+  subtotal: Cents;
+  total: Cents;
   status: "preview";
   previewedAt: Date;
 };
@@ -92,7 +109,7 @@ export type AssetEffectContext = {
   session: Session;
   chargeItems: readonly ChargeItem[];
   assetHoldings: readonly AssetHolding[];
-  subtotal: number;
+  subtotal: Cents;
   now: Date;
   timeZone?: string;
   pastAppliedAdjustments?: readonly PastAppliedAdjustment[];
@@ -187,22 +204,24 @@ function applyOverride(
   input: SettleSessionInput,
   quote: {
     chargeItems: ChargeItem[];
-    subtotal: number;
+    subtotal: Cents;
     adjustments: SettlementAdjustment[];
-    total: number;
+    total: Cents;
   },
 ): {
   chargeItems: ChargeItem[];
-  subtotal: number;
+  subtotal: Cents;
   adjustments: SettlementAdjustment[];
-  total: number;
+  total: Cents;
 } {
   if (!input.overrideTotal) return quote;
-  if (!Number.isFinite(input.overrideTotal.total) || input.overrideTotal.total < 0) {
+
+  const overrideTotal = centsOf(input.overrideTotal.total);
+  if (isNegativeCents(overrideTotal)) {
     throw new PrismDomainError("Override total must be a non-negative finite number.", "INVALID_OVERRIDE_TOTAL");
   }
 
-  const amount = input.overrideTotal.total - quote.total;
+  const amount = subCents(overrideTotal, quote.total);
   return {
     chargeItems: quote.chargeItems,
     subtotal: quote.subtotal,
@@ -215,7 +234,7 @@ function applyOverride(
         amount,
       },
     ],
-    total: input.overrideTotal.total,
+    total: overrideTotal,
   };
 }
 
@@ -224,9 +243,9 @@ async function quoteSessionSettlement(
   assetHoldings: readonly AssetHolding[],
 ): Promise<{
   chargeItems: ChargeItem[];
-  subtotal: number;
+  subtotal: Cents;
   adjustments: SettlementAdjustment[];
-  total: number;
+  total: Cents;
 }> {
   const chargeItems = await collectChargeItems(input, assetHoldings);
   const subtotal = sumCharges(chargeItems);
@@ -257,7 +276,7 @@ async function collectAdjustments(
   input: SettleSessionInput,
   assetHoldings: readonly AssetHolding[],
   chargeItems: readonly ChargeItem[],
-  subtotal: number,
+  subtotal: Cents,
 ): Promise<SettlementAdjustment[]> {
   const adjustments: SettlementAdjustment[] = [];
 
@@ -277,65 +296,75 @@ async function collectAdjustments(
   return adjustments;
 }
 
-function sumCharges(chargeItems: readonly ChargeItem[]): number {
-  let total = 0;
+function sumCharges(chargeItems: readonly ChargeItem[]): Cents {
   for (const item of chargeItems) {
-    if (!Number.isFinite(item.amount)) {
+    if (!Number.isSafeInteger(item.amount)) {
       throw new PrismDomainError("Charge item amount must be a finite number.", "INVALID_CHARGE_AMOUNT");
     }
-    total += item.amount;
   }
-  return total;
+  return sumCents(chargeItems.map((item) => item.amount));
 }
 
-function applyAdjustments(subtotal: number, adjustments: readonly SettlementAdjustment[]): number {
+function applyAdjustments(subtotal: Cents, adjustments: readonly SettlementAdjustment[]): Cents {
   let total = subtotal;
   for (const adjustment of adjustments) {
-    if (!Number.isFinite(adjustment.amount)) {
+    if (!Number.isSafeInteger(adjustment.amount)) {
       throw new PrismDomainError("Settlement adjustment amount must be finite.", "INVALID_ADJUSTMENT_AMOUNT");
     }
-    total += adjustment.amount;
+    total = addCents(total, adjustment.amount);
   }
-  return Math.max(0, total);
+  return maxCents(ZERO_CENTS, total);
 }
 
 export function deductCurrency(
   assetHoldings: AssetHolding[],
   input: {
-    amount: number;
+    amount: Cents;
     reason: string;
     refId: string;
     now: Date;
   },
 ): AssetLedgerEntry[] {
-  if (input.amount === 0) return [];
+  const requested = input.amount;
+  if (isZeroCents(requested)) return [];
 
-  const currencyAccounts = assetHoldings
-    .filter((account) => account.assetType === "currency" && account.quantity > 0 && isHoldingAvailableAt(account, input.now))
-    .sort((a, b) => {
-      const aIndex = CURRENCY_DEDUCTION_ORDER.indexOf(normalizeCurrencyCode(a.assetCode));
-      const bIndex = CURRENCY_DEDUCTION_ORDER.indexOf(normalizeCurrencyCode(b.assetCode));
-      return normalizeOrder(aIndex) - normalizeOrder(bIndex);
-    });
+  const currencyAccounts: AssetHolding[] = [];
+  for (const account of assetHoldings) {
+    if (account.assetType !== "currency") continue;
+    // Quantities are exact integers now, so there is no residue to canonicalise:
+    // a balance of zero is zero, and every positive balance is spendable.
+    if (account.quantity <= 0) continue;
+    if (!isHoldingAvailableAt(account, input.now)) continue;
+    currencyAccounts.push(account);
+  }
 
-  const available = currencyAccounts.reduce((sum, account) => sum + account.quantity, 0);
-  if (available < input.amount) {
+  currencyAccounts.sort((a, b) => {
+    const aIndex = CURRENCY_DEDUCTION_ORDER.indexOf(normalizeCurrencyCode(a.assetCode));
+    const bIndex = CURRENCY_DEDUCTION_ORDER.indexOf(normalizeCurrencyCode(b.assetCode));
+    return normalizeOrder(aIndex) - normalizeOrder(bIndex);
+  });
+
+  // Exact integer comparison: no tolerance, because two integers cannot be
+  // "close but unequal".
+  const available = sumCents(currencyAccounts.map((account) => centsOfInteger(account.quantity)));
+  if (compareCents(available, requested) < 0) {
     throw new PrismDomainError("Insufficient currency holdings for this operation.", "INSUFFICIENT_BALANCE");
   }
 
-  let remaining = input.amount;
+  let remaining = requested;
   const entries: AssetLedgerEntry[] = [];
 
   for (const account of currencyAccounts) {
-    if (remaining <= 0) break;
+    if (!isPositiveCents(remaining)) break;
 
-    const deducted = Math.min(account.quantity, remaining);
-    account.quantity -= deducted;
-    remaining -= deducted;
+    const balance = centsOfInteger(account.quantity);
+    const deducted = minCents(balance, remaining);
+    account.quantity = subCents(balance, deducted);
+    remaining = subCents(remaining, deducted);
     entries.push({
       assetType: account.assetType,
       assetCode: account.assetCode,
-      delta: -deducted,
+      delta: negCents(deducted),
       reason: input.reason,
       refId: input.refId,
     });
@@ -364,6 +393,7 @@ function normalizeCurrencyCode(assetCode: string): string {
 }
 
 export type BillTimeline = {
+  pricingReleaseIds?: string[];
   totals: { name: string; amount: number }[];
   tracks: { id: string; name: string; lane: number; color: number; startedAt: string; endedAt: string }[];
   events: { at: string; time: string; date: string; entries: BillTimelineEntry[] }[];

@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf } from "@prism/core";
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
@@ -21,13 +23,13 @@ test("runtime read models execute one SQL statement each", async () => {
     "currency", "legacy", "旧余额", 1, "archived",
   ]);
   db.run("INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)", [
-    "holding-1", "player-1", "currency", "paid", 10,
+    "holding-1", "player-1", "currency", "paid", 1000,
   ]);
   db.run("INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)", [
-    "holding-2", "player-1", "currency", "legacy", 99,
+    "holding-2", "player-1", "currency", "legacy", 9900,
   ]);
   db.run("INSERT INTO asset_ledger_entries (id, player_id, asset_type, asset_code, delta, reason, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
-    "ledger-1", "player-1", "currency", "paid", 10, "test", "ref-1", now.toISOString(),
+    "ledger-1", "player-1", "currency", "paid", 1000, "test", "ref-1", now.toISOString(),
   ]);
   db.run("INSERT INTO sessions (id, player_id, started_at, ended_at, status, payment_status) VALUES (?, ?, ?, ?, ?, ?)", [
     "session-1", "player-1", now.toISOString(), null, "active", "unpaid",
@@ -70,9 +72,9 @@ test("runtime read models execute one SQL statement each", async () => {
   }));
 
   const summary = await queries.playerQueries.getPlayerSummary("player-1");
-  expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: 10 }]);
+  expect(summary.wallet).toEqual([{ assetCode: "paid", quantity: moneyFixture(10) }]);
   await expect(queries.staffQueries.listPlayers()).resolves.toEqual([
-    expect.objectContaining({ id: "player-1", walletTotal: 10 }),
+    expect.objectContaining({ id: "player-1", walletTotal: centsOf(10) }),
   ]);
   const playerAssets = await queries.playerQueries.listPlayerAssets!("player-1");
   expect(playerAssets.holdings.map((holding) => holding.assetName)).toEqual(["余额"]);
@@ -101,16 +103,16 @@ test("reports use persisted unified checkout totals instead of inferring batches
     );
     db.run(
       "INSERT INTO settlements (id, session_id, subtotal, total, status, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [`settlement-${sessionId}`, sessionId, total, total, "settled", settledAt],
+      [`settlement-${sessionId}`, sessionId, centsOf(total), centsOf(total), "settled", settledAt],
     );
   }
   db.run(
     "INSERT INTO player_checkouts (id, player_id, subtotal, total, status, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ["checkout-main", "player-1", 7, 7, "settled", "2026-07-14T10:00:00.000Z"],
+    ["checkout-main", "player-1", centsOf(7), centsOf(7), "settled", "2026-07-14T10:00:00.000Z"],
   );
   db.run(
     "INSERT INTO player_checkouts (id, player_id, subtotal, total, status, settled_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ["checkout-zero", "player-1", -4, 0, "settled", "2026-07-14T11:00:00.000Z"],
+    ["checkout-zero", "player-1", centsOf(-4), 0, "settled", "2026-07-14T11:00:00.000Z"],
   );
   db.run(
     "UPDATE settlements SET checkout_id = ? WHERE session_id IN (?, ?)",
@@ -131,7 +133,7 @@ test("reports use persisted unified checkout totals instead of inferring batches
   };
 
   await expect(queries.staffQueries.getReportsSummary!(range)).resolves.toMatchObject({
-    revenueTotal: 7,
+    revenueTotal: moneyFixture(7),
     sessionCount: 3,
   });
   await expect(queries.staffQueries.listReportPlayers!({
@@ -139,7 +141,7 @@ test("reports use persisted unified checkout totals instead of inferring batches
     limit: 10,
   })).resolves.toEqual([expect.objectContaining({
     playerId: "player-1",
-    revenueTotal: 7,
+    revenueTotal: moneyFixture(7),
     settlementCount: 3,
   })]);
 });

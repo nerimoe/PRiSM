@@ -1,3 +1,5 @@
+import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
+import { centsOf } from "@prism/core";
 import { describe, expect, it } from "bun:test";
 import { createStaffOperationsService } from "../src/staff-operations";
 
@@ -59,7 +61,7 @@ it('live list skips empty venues and bounds preview concurrency to four players'
         playerReads++;
         expect(input?.playerIds).toEqual(ids);
         return ids.map(id => ({id, displayName: id, status: 'active' as const,
-          walletTotal: 10, activeSessionId: `s-${id}`,
+          walletTotal: centsOf(10), activeSessionId: `s-${id}`,
           identities: [{provider: 'qq', subject: id, createdAt: now}],
         }));
       },
@@ -71,7 +73,7 @@ it('live list skips empty venues and bounds preview concurrency to four players'
         peak = Math.max(peak, ++running);
         await new Promise(resolve => setTimeout(resolve, 5));
         running--;
-        return {settlementPreview: {total: 3}, sessionPreviews: []};
+        return {settlementPreview: {total: moneyFixture(3)}, sessionPreviews: []};
       },
     },
   });

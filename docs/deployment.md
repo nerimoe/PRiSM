@@ -9,6 +9,12 @@ PRiSM Next 采用 **完全解耦** 的“单店单部署”架构设计。整个
 
 ## 1. 部署前置条件
 
+### 0022 整数计费升级注意事项
+
+金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。首次升级前备份目标库，暂停访问并等待在途写入结束，再执行迁移并部署新 Worker。自动部署脚本按「迁移 → 部署」顺序执行，本身不提供维护窗口。详见 [计费整数与单位约定](money.md)。
+
+本地 `dev:local` 会在升级前生成 `.before-integer-money-*.sqlite` 备份并在事务内执行 0022；直接调用 `initializeSqliteSchema` 遇到旧金额 schema 会拒绝启动，防止误读。升级后核对金额、券票数量、JSON 定价和外键；回滚必须同时协调数据库与代码。
+
 在进行任何部署之前，请确保您的宿主机环境已安装：
 - **Bun**：版本 1.3 或以上。
 - **Wrangler**（云端部署需要）：版本 4.x。
@@ -78,7 +84,9 @@ bun run dev:all
      ```bash
      bun run db:migrate:remote
      ```
-   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。`migrations/0014_hinata_io_executor.sql` 扩展 Hinata IO 执行器约束，并保留设备状态按上报时间查询所需的索引。
+   初始 D1 架构迁移脚本位于 `migrations/0001_initial.sql`。`migrations/0012_canonical_device_targets.sql` 会把历史设施批量目标 `device_id = 'all'` 迁移为 `NULL`，并允许新的批量命令不伪造设备 ID。`migrations/0013_player_checkouts.sql` 新增统一结账批次并关联每条 session settlement，报表据此保留跨 session 抵扣后的最终金额；迁移会为旧结算生成兼容批次。`migrations/0014_hinata_io_executor.sql` 扩展 Hinata IO 执行器约束，并保留设备状态按上报时间查询所需的索引。`migrations/0023_remote_entry.sql` 曾为 `shop_billing_settings` 增加 `remote_entry_enabled`，`migrations/0024_drop_remote_entry.sql` 又在同一次未发布的改动中移除它——无设备入场不再支持，入场只能由扫码 ticket 授权。
+
+   **迁移内触发器的限制**：远程迁移经由 D1 `/query` 接口应用，其服务端拆分器按 `BEGIN`/`END` 配对划分 `CREATE TRIGGER` 体，但不识别 `CASE` 表达式结尾的 `END`。触发器体内一旦出现 `CASE`，拆分器会把触发器从中间截断，SQLite 报 `incomplete input: SQLITE_ERROR [code: 7500]` 并中止部署。条件抛错请用 `SELECT RAISE(ABORT,'...') WHERE <条件>`，不要用 `SELECT CASE WHEN ... THEN RAISE(...) END`；同时保持 `BEGIN` 大写，小写 `begin` 同样无法被识别。本地 sqlite3、wrangler 客户端拆分器和 `d1 execute --file` 都不会复现该错误，只有远程应用迁移才会暴露。`0028_pricing_versions.sql` 曾因此无法部署。`bun test packages/storage-sql/test/d1-migration-splitter.test.ts` 会按服务端拆分方式回放全部迁移并守住这条约束。
 
 3. **部署 Worker**：
    ```bash

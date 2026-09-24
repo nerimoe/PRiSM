@@ -35,6 +35,7 @@ const MerchantPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import("./SettingsPage").then((module) => ({ default: module.SettingsPage })),
 );
+const ShopPage = lazy(() => import("./ShopPage"));
 
 export function App() {
   return (
@@ -48,7 +49,7 @@ function Shell() {
   const { t } = useI18n();
   const { user } = useAuth();
   const { pathname } = useLocation();
-  const machineSession = pathname === "/m" || pathname.startsWith("/m/");
+  const machineSession = pathname === "/m" || pathname.startsWith("/m/") || /^\/t\/[^/]+\/?$/.test(pathname);
   return (
     <div className="min-h-screen bg-canvas text-ink">
       {!machineSession && (
@@ -116,10 +117,8 @@ function Shell() {
         >
           <Routes>
             <Route path="/" element={<Navigate to="/cards" replace />} />
-            <Route
-              path="/t/:shopCode"
-              element={<Navigate to="/m/expired" replace />}
-            />
+            {/* Shop code without a machine id: the standalone, ticket-free shop surface. */}
+            <Route path="/t/:shopCode" element={<ShopPage />} />
             <Route path="/login" element={<AuthPage />} />
             <Route
               path="/register"

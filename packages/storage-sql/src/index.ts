@@ -1,3 +1,5 @@
+import { pricingVersionSchema } from "./pricing-version-schema";
+
 export const sqliteSchema = [
   `CREATE TABLE IF NOT EXISTS staff_users (
     shop_id TEXT NOT NULL DEFAULT 'legacy',
@@ -96,7 +98,7 @@ export const sqliteSchema = [
     name TEXT NOT NULL,
     type TEXT NOT NULL CHECK (type IN ('free', 'discount', 'percentage-discount', 'surcharge')),
     scope TEXT NOT NULL CHECK (scope IN ('session', 'unified')),
-    value REAL,
+    value INTEGER CHECK (value IS NULL OR typeof(value) = 'integer'),
     consumable INTEGER NOT NULL DEFAULT 0 CHECK (consumable IN (0, 1)),
     limit_per_day INTEGER,
     active_at TEXT,
@@ -125,7 +127,7 @@ export const sqliteSchema = [
     player_id TEXT NOT NULL,
     asset_type TEXT NOT NULL,
     asset_code TEXT NOT NULL,
-    quantity REAL NOT NULL,
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer'),
     active_at TEXT,
     expires_at TEXT,
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id),
@@ -150,7 +152,7 @@ export const sqliteSchema = [
     transaction_id TEXT,
     asset_type TEXT NOT NULL,
     asset_code TEXT NOT NULL,
-    delta REAL NOT NULL,
+    delta INTEGER NOT NULL CHECK (typeof(delta) = 'integer'),
     reason TEXT NOT NULL,
     ref_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -237,20 +239,27 @@ export const sqliteSchema = [
     shop_id TEXT NOT NULL DEFAULT 'legacy',
     id TEXT NOT NULL,
     player_id TEXT NOT NULL,
-    subtotal REAL NOT NULL,
-    total REAL NOT NULL,
+    subtotal INTEGER NOT NULL CHECK (typeof(subtotal) = 'integer'),
+    total INTEGER NOT NULL CHECK (typeof(total) = 'integer'),
     status TEXT NOT NULL CHECK (status IN ('settled')),
     settled_at TEXT NOT NULL,
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id),
     PRIMARY KEY (shop_id, id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS checkout_timelines (
+    shop_id TEXT NOT NULL DEFAULT 'legacy',
+    checkout_id TEXT NOT NULL,
+    timeline_json TEXT NOT NULL,
+    PRIMARY KEY (shop_id, checkout_id),
+    FOREIGN KEY (shop_id, checkout_id) REFERENCES player_checkouts(shop_id, id)
   )`,
   `CREATE TABLE IF NOT EXISTS settlements (
     shop_id TEXT NOT NULL DEFAULT 'legacy',
     id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     checkout_id TEXT,
-    subtotal REAL NOT NULL,
-    total REAL NOT NULL,
+    subtotal INTEGER NOT NULL CHECK (typeof(subtotal) = 'integer'),
+    total INTEGER NOT NULL CHECK (typeof(total) = 'integer'),
     status TEXT NOT NULL CHECK (status IN ('settled')),
     settled_at TEXT NOT NULL,
     FOREIGN KEY (shop_id, session_id) REFERENCES sessions(shop_id, id),
@@ -265,7 +274,7 @@ export const sqliteSchema = [
     item_order INTEGER NOT NULL,
     source TEXT NOT NULL,
     label TEXT NOT NULL,
-    amount REAL NOT NULL,
+    amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer'),
     PRIMARY KEY (shop_id, session_id, id),
     FOREIGN KEY (shop_id, session_id) REFERENCES sessions(shop_id, id)
   )`,
@@ -276,7 +285,7 @@ export const sqliteSchema = [
     adjustment_order INTEGER NOT NULL,
     source TEXT NOT NULL,
     label TEXT NOT NULL,
-    amount REAL NOT NULL,
+    amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer'),
     PRIMARY KEY (shop_id, session_id, id),
     FOREIGN KEY (shop_id, session_id) REFERENCES sessions(shop_id, id)
   )`,
@@ -289,7 +298,7 @@ export const sqliteSchema = [
     rule_id TEXT NOT NULL,
     rule_anchor_at TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    amount REAL NOT NULL,
+    amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer'),
     created_at TEXT NOT NULL,
     metadata_json TEXT,
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id),
@@ -316,7 +325,7 @@ export const sqliteSchema = [
     cap_anchor_at TEXT NOT NULL,
     included_pricing_config_ids_json TEXT NOT NULL,
     session_ids_json TEXT NOT NULL,
-    amount REAL NOT NULL,
+    amount INTEGER NOT NULL CHECK (typeof(amount) = 'integer'),
     created_at TEXT NOT NULL,
     metadata_json TEXT,
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id),
@@ -328,7 +337,7 @@ export const sqliteSchema = [
     kind TEXT NOT NULL,
     name TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-    price REAL NOT NULL,
+    price INTEGER NOT NULL CHECK (typeof(price) = 'integer'),
     asset_type TEXT,
     asset_code TEXT,
     active_at TEXT,
@@ -347,7 +356,7 @@ export const sqliteSchema = [
     player_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('paid', 'fulfilled', 'cancelled')),
-    price REAL NOT NULL,
+    price INTEGER NOT NULL CHECK (typeof(price) = 'integer'),
     asset_type TEXT,
     asset_code TEXT,
     metadata_json TEXT,
@@ -395,6 +404,7 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_admin_sessions_token ON admin_sessions(shop_id, token_hash)`,
   `CREATE INDEX IF NOT EXISTS idx_api_tokens_role_status ON api_tokens(shop_id, role, status)`,
   `CREATE INDEX IF NOT EXISTS idx_operation_locks_expires_at ON operation_locks(shop_id, expires_at)`,
+  ...pricingVersionSchema,
 ] as const;
 
 export * from "./repositories";

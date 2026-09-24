@@ -1,5 +1,15 @@
 import {
+  centsOf,
+  compareCents,
   isActiveInWindow,
+  isPositiveCents,
+  minCents,
+  negCents,
+  mulDivRound,
+  subCents,
+  sumCents,
+  ZERO_CENTS,
+  type Cents,
   type AssetDefinition,
   type AssetDefinitionRepository,
   type AssetEffectProvider,
@@ -30,7 +40,7 @@ export function createAssetDefinitionEffectProvider(
   return {
     id: "asset-definition.metadata-effects",
     async apply(context) {
-      if (context.subtotal <= 0) return [];
+      if (!isPositiveCents(context.subtotal)) return [];
 
       const adjustments: SettlementAdjustment[] = [];
       let remainingSubtotal = context.subtotal;
@@ -45,7 +55,7 @@ export function createAssetDefinitionEffectProvider(
       const remainingChargeAmounts = new Map(context.chargeItems.map((item) => [item.id, item.amount]));
 
       for (let holdingIndex = 0; holdingIndex < context.assetHoldings.length; holdingIndex++) {
-        if (remainingSubtotal <= 0) break;
+        if (!isPositiveCents(remainingSubtotal)) break;
         const holding = context.assetHoldings[holdingIndex];
         if (holding.quantity <= 0) continue;
 
@@ -74,14 +84,13 @@ export function createAssetDefinitionEffectProvider(
           ? context.chargeItems.filter((item) => isChargeItemEligibleForAssetEffect(item, config))
           : null;
         if (targetedCharges) {
-          const targetedRemaining = targetedCharges.reduce(
-            (sum, item) => sum + (remainingChargeAmounts.get(item.id) ?? 0),
-            0,
+          const targetedRemaining = sumCents(
+            targetedCharges.map((item) => remainingChargeAmounts.get(item.id) ?? ZERO_CENTS),
           );
-          eligibleSubtotal = Math.min(remainingSubtotal, targetedRemaining);
+          eligibleSubtotal = minCents(remainingSubtotal, targetedRemaining);
         }
-        if (eligibleSubtotal <= 0) continue;
-        if (config.minSubtotal && eligibleSubtotal < config.minSubtotal) continue;
+        if (!isPositiveCents(eligibleSubtotal)) continue;
+        if (config.minSubtotal && compareCents(eligibleSubtotal, centsOf(config.minSubtotal)) < 0) continue;
 
         if (config.limitPerDay) {
           const today = calendarDayAt(effectiveAt, timeZone);
@@ -94,16 +103,16 @@ export function createAssetDefinitionEffectProvider(
         }
 
         const discountAmount = calculateAssetEffectDiscount(eligibleSubtotal, config);
-        if (discountAmount <= 0) continue;
+        if (!isPositiveCents(discountAmount)) continue;
 
         if (targetedCharges) {
           let toDeduct = discountAmount;
           for (const item of targetedCharges) {
-            if (toDeduct <= 0) break;
-            const current = remainingChargeAmounts.get(item.id) ?? 0;
-            const deducted = Math.min(current, toDeduct);
-            remainingChargeAmounts.set(item.id, current - deducted);
-            toDeduct -= deducted;
+            if (!isPositiveCents(toDeduct)) break;
+            const current = remainingChargeAmounts.get(item.id) ?? ZERO_CENTS;
+            const deducted = minCents(current, toDeduct);
+            remainingChargeAmounts.set(item.id, subCents(current, deducted));
+            toDeduct = subCents(toDeduct, deducted);
           }
         }
 
@@ -116,9 +125,9 @@ export function createAssetDefinitionEffectProvider(
           id: adjId,
           source: assetDefinitionEffectSource(holding.assetType, holding.assetCode),
           label: definition.name,
-          amount: -discountAmount,
+          amount: negCents(discountAmount),
         });
-        remainingSubtotal -= discountAmount;
+        remainingSubtotal = subCents(remainingSubtotal, discountAmount);
       }
 
       return adjustments;
@@ -162,16 +171,16 @@ export function isAssetEffectConfigAvailable(
 }
 
 export function calculateAssetEffectDiscount(
-  subtotal: number,
+  subtotal: Cents,
   config: AssetSettlementEffectConfig,
-): number {
+): Cents {
   if (config.type === "free") return subtotal;
-  if (config.type === "discount") return Math.min(subtotal, config.value ?? 0);
+  if (config.type === "discount") return minCents(subtotal, centsOf(config.value ?? 0));
   if (config.type === "percentage-discount") {
-    const discount = subtotal * ((config.value ?? 0) / 100);
-    return Math.round(discount * 100) / 100;
+    const percentageBasisPoints = centsOf(config.value ?? 0);
+    return mulDivRound(subtotal, percentageBasisPoints, 10_000, "half");
   }
-  return 0;
+  return centsOf(0);
 }
 
 export function isChargeItemEligibleForAssetEffect(

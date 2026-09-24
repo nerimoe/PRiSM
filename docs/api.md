@@ -287,7 +287,7 @@ Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外�
 | `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开启一条计费 session，可传 `pricingConfigIds` 与 `label`。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/preview` | 按外部身份预览玩家当前 session 结算。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/confirm` | 按外部身份确认玩家当前 session 结算。 |
-| `POST` | `/rpc/integration/players/by-identity/sessions/:sessionId/stop` | 按外部身份停止这名玩家由 Integration 创建的单条 session，只结束计时并保留待结算，不立即扣款。 |
+| `POST` | `/rpc/integration/players/by-identity/sessions/:sessionId/stop` | 按外部身份停止这名玩家名下的单条 session，只结束计时并保留待结算，不立即扣款。授权按玩家归属校验，不区分 session 由哪个渠道开启。 |
 | `POST` | `/rpc/integration/players/by-identity/wallet` | 按外部身份读取玩家钱包总览。 |
 | `POST` | `/rpc/integration/players/by-identity/assets` | 按外部身份读取玩家资产持有与流水。 |
 | `POST` | `/rpc/integration/players/by-identity/history` | 按外部身份读取玩家计时记录。 |
@@ -353,6 +353,31 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Integration 的游戏机目标使用 `target.ref`，只接受后端 Hinata IO 配置中的设备 `name` 或 `aliases`，不会把用户输入直接当内部机器 ID。`aime.scan` 的 payload 只需提供 `provider`（默认 `aime`），后端会读取该玩家已绑定的对应身份；没有绑定时返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
 
+## 实时活动推送 (Live Activity)
+
+玩家 App / App Clip 创建实时活动后会拿到一个 per-activity APNs 令牌，并上报到这里，使任意渠道发起的入场或结账都能更新该手机的灵动岛（App 不需要在运行）。这两个接口由 `packages/platform` 直接处理，不进入核心计费域；完整设计与失败处理见 `live-activity-push.md`。
+
+| 请求方法 | 路由路径 | 接口用途 |
+| --- | --- | --- |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
+| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`nextChargeAtUnix`、`nextRuleAtUnix`、`asOfUnix`。时间均为 Unix 秒；客户端选两个倒计时中较早者。 |
+
+注册请求体：
+
+```json
+{
+  "activityId": "活动 id（iOS Activity.id）",
+  "token": "APNs 实时活动令牌（十六进制）",
+  "environment": "sandbox | production",
+  "bundleId": "moe.neri.hinatago",
+  "sessionId": "当前展示的场次 id，可选",
+  "attributes": { "shopCode": "a", "shopName": "店铺名", "origin": "https://link.neri.moe" }
+}
+```
+
+未配置 `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_PRIVATE_KEY` 时推送整体退化为 no-op，但注册接口仍正常受理。
+
 ## 机器软件接口 (Machine RPC / WebSocket)
 
 本地 Bun 部署支持机器软件 WebSocket：`GET /rpc/machine/ws`，Header 使用 `Authorization: Bearer <machine-token>`。原生机器软件通过该通道接收投币、刷卡等动作并返回 ACK；后台配置的 Hinata IO 设备则由后端通过加密 relay HTTP 协议直接执行。
@@ -415,3 +440,9 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 ### 店家手动绑定玩家账号
 
 `POST /api/v1/shops/:shopCode/staff/qq-binding/confirm` 接收 `{ code, qq }`，由已登录且拥有该店玩家管理权限的负责人或管理员调用。验证码来自玩家的 QQ 绑定页面，仍按店铺隔离、五分钟有效、单次使用；只读店员和其他店铺成员不可调用。管理员确认可创建新 QQ 档案，不受自助注册开关限制；已有档案、余额和记录直接沿用。账号/QQ 冲突或停用档案仍拒绝绑定。Bot 端点与此入口共用绑定逻辑，Bot 仍遵循店铺自助注册设置。后台入口位于「玩家 → 绑定账号」。
+
+### 实时活动按会话恢复
+
+`GET /api/v1/shops/:shopCode/player/live-activity/bill?sessionId=...` 校验该会话属于当前店铺与玩家。未付款时返回当前统一账单，`phase: active`；已付款时只读取该会话关联的已保存 checkout，返回 `phase: ended`、最终金额及实际会话开始/结束时间，不会混入下一次入场。找不到会话返回 404，已付款但结算记录不完整返回 409，客户端应保留活动重试。省略 sessionId 时仍返回当前未结账摘要，无账单时各字段为 null。
+
+结算单查询（latest 和按 checkoutId 查询）现在附带 `settlements: [{ settlement: { sessionId, startedAt, endedAt } }]`，与结账确认响应中的会话字段一致。客户端可复用已取得的结算单结束匹配的活动，只有缺少匹配且完整的数据时才调用按会话恢复接口。历史账单仍可解码，缺失结束时间时不猜测。
