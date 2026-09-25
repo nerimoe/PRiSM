@@ -504,7 +504,7 @@ test("settling a visit pushes an end event to the player's phone", async () => {
     const finalBill = (await recovered.json() as any).data;
     expect(finalBill).toMatchObject({ phase: "ended", startedAtUnix: Date.parse(startedAt) / 1000,
       endedAtUnix: Date.parse(stoppedAt) / 1000,
-      bill: { amountCents: Math.round((payload as any).data.playerSettlement.total * 100), nextChargeAtUnix: null } });
+      bill: { amountCents: Math.round((payload as any).data.playerSettlement.total * 100), nextEvent: null } });
     await routeEnv.DB.prepare("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json,payment_status) VALUES ('a','next-visit','p',?,'active','[]','unpaid')").bind(new Date().toISOString()).run();
     const again = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=sess-1");
     expect((await again.json() as any).data).toEqual(finalBill);

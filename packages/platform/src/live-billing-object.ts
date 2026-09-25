@@ -41,7 +41,7 @@ export class LiveBilling extends DurableObject<Env> {
       if ((await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision) return;
       const ended = token.payment_status === "paid" || !snapshot;
       const bill: ActivityBill | undefined = ended && token.checkout_total !== null ? {
-        amountCents: token.checkout_total, planLabel: "", nextChargeAtUnix: null, nextRuleAtUnix: null, asOfUnix: now / 1000,
+        amountCents: token.checkout_total, planLabel: "", nextEvent: null, asOfUnix: now / 1000,
       } : snapshot?.bill;
       const startedAtUnix = new Date(token.started_at).getTime() / 1000;
       const payload = ended

@@ -4,11 +4,15 @@ import { createPrismWorkerDependencies } from "@prism/runtime";
 import type { Env } from "./types";
 import { liveActivityConfig } from "./live-activity-push";
 
+export type ActivityNextEvent = {
+  atUnix: number;
+  label: string;
+};
+
 export type ActivityBill = {
   amountCents: number;
   planLabel: string;
-  nextChargeAtUnix: number | null;
-  nextRuleAtUnix: number | null;
+  nextEvent: ActivityNextEvent | null;
   asOfUnix: number;
 };
 
@@ -21,7 +25,7 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
     .playerCheckoutCommands!.previewCheckout({ playerId });
   const releases = new Map<string, { configs: PricingConfig[]; timeZone: string }>();
   const labels = new Set<string>();
-  let charge = Infinity, rule = Infinity;
+  const candidates: { at: number; label: string }[] = [];
   for (const session of active) {
     const key = session.pricingReleaseId ?? "legacy";
     if (!releases.has(key)) {
@@ -45,25 +49,31 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
         intervalStartedAt: globallyCapped ? undefined : segment?.period?.startedAt,
       });
       if (config.kind !== "time.cap" && next.ruleLabel) labels.add(`${config.name}（${next.ruleLabel}）`);
-      if (next.chargeAt) charge = Math.min(charge, next.chargeAt.getTime());
-      if (next.ruleAt) rule = Math.min(rule, next.ruleAt.getTime());
+      // Every event candidate is a peer — charges and rule switches alike —
+      // because each one triggers a full recompute and push.
+      if (next.chargeAt) candidates.push({ at: next.chargeAt.getTime(), label: "下次计费" });
+      if (next.ruleAt) candidates.push({ at: next.ruleAt.getTime(), label: "规则切换" });
     }
   }
   // Confirm a candidate against the real unified bill (coupons and overlapping caps included).
-  // Schedule the candidate even if a discount hides its amount change.
-  const nextCheckAt = Math.min(charge, rule);
-  let nextChargeAtUnix: number | null = Number.isFinite(charge) ? charge / 1000 : null;
-  if (nextChargeAtUnix !== null) {
-    const future = await createPrismWorkerDependencies(env, { shopId, now: () => new Date(charge) })
-      .playerCheckoutCommands!.previewCheckout({ playerId });
-    if (future.settlementPreview.total <= preview.settlementPreview.total) nextChargeAtUnix = null;
+  // Every candidate is a peer: the earliest one is both the next alarm and the
+  // displayed next event, and coincident candidates with different labels merge
+  // into the combined text.
+  const nextCheckAt = candidates.reduce((min, candidate) => Math.min(min, candidate.at), Infinity);
+  let nextEvent: ActivityNextEvent | null = null;
+  if (candidates.length) {
+    const earliest = candidates.reduce((a, b) => (b.at < a.at ? b : a));
+    const earliestLabels = new Set(candidates.filter(candidate => candidate.at === earliest.at).map(candidate => candidate.label));
+    nextEvent = {
+      atUnix: earliest.at / 1000,
+      label: earliestLabels.size > 1 ? "计费与规则切换" : earliest.label,
+    };
   }
   const names = [...labels];
   const bill: ActivityBill = {
     amountCents: preview.settlementPreview.total,
     planLabel: (names.slice(0, 2).join(" · ") + (names.length > 2 ? ` 等 ${names.length} 项` : "")).slice(0, 160),
-    nextChargeAtUnix,
-    nextRuleAtUnix: Number.isFinite(rule) ? rule / 1000 : null,
+    nextEvent,
     asOfUnix: now.getTime() / 1000,
   };
   return { bill, nextCheckAt: Number.isFinite(nextCheckAt) ? nextCheckAt : null,

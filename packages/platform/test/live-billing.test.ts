@@ -48,8 +48,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   const env = { DB: db } as Parameters<typeof activityBill>[0];
   const initial = await activityBill(env, "shop", "p", now);
   expect(initial?.bill.amountCents).toBe(600);
-  expect(initial?.bill.nextChargeAtUnix).toBe((+now + 5 * 60_000) / 1000);
-  expect(initial?.bill.nextRuleAtUnix).toBe((+now + 3600_000) / 1000);
+  expect(initial?.bill.nextEvent).toEqual({ atUnix: (+now + 5 * 60_000) / 1000, label: "下次计费" });
   expect(initial?.bill.planLabel).toBe("标准方案（日间）");
   await repos.pricingConfigs.save({ id: "cap", kind: "time.cap", name: "全局封顶", enabled: true, createdAt: now, updatedAt: now,
     provider: { id: "cap", includedPricingConfigIds: ["rate"], rules: [{ id: "cap-day", label: "日间", priority: 1, dateTimeRange: { start: new Date(+now - 3600_000), end: new Date(+now + 3600_000) }, priceCap: 6 }] } });
@@ -57,8 +56,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   await repos.sessions.save({ id: "capped-visit", playerId: "capped", status: "active", paymentStatus: "unpaid", startedAt: new Date(+now - 40 * 60_000), pricingConfigIds: ["rate"] });
   const capped = await activityBill(env, "shop", "capped", now);
   expect(capped?.bill.amountCents).toBe(600);
-  expect(capped?.bill.nextChargeAtUnix).toBeNull();
-  expect(capped?.bill.nextRuleAtUnix).toBe((+now + 3600_000) / 1000);
+  expect(capped?.bill.nextEvent).toEqual({ atUnix: (+now + 3600_000) / 1000, label: "规则切换" });
   await db.prepare(`INSERT INTO live_activity_tokens(id,shop_id,user_id,activity_id,token,environment,bundle_id,session_id,attributes_json,created_at,updated_at)
     VALUES('token','shop','u','activity',?,'sandbox','moe.neri.hinatago','entry','{}',?,?)`).bind("a".repeat(64), now.toISOString(), now.toISOString()).run();
   const namespace = await mf.getDurableObjectNamespace("LIVE_BILLING");
@@ -92,7 +90,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   await waitPush(4);
   expect(pushes[3]!.aps.event).toBe("update");
   expect(pushes[3]!.aps["content-state"].endedAtUnix).toBeNumber();
-  expect(pushes[3]!.aps["content-state"].bill.nextChargeAtUnix).toBeNull();
+  expect(pushes[3]!.aps["content-state"].bill.nextEvent).toBeNull();
 
   const checkout = await createPrismWorkerDependencies({ DB: db }, { shopId: "shop" }).playerCheckoutCommands!.checkout({ playerId: "p", closeSessionsBeforeBalanceCheck: false });
   await (stub as any).refresh("shop", "p");

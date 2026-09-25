@@ -975,8 +975,8 @@ async function handleLiveActivityRoute(
           jsonError(409, "结算账单尚不可用");
         return c.json({ phase: "ended", startedAtUnix: Date.parse(session.started_at) / 1000,
           endedAtUnix: Date.parse(session.ended_at) / 1000, nextCheckAtUnix: null,
-          bill: { amountCents: session.total, planLabel: "", nextChargeAtUnix: null,
-            nextRuleAtUnix: null, asOfUnix: Date.parse(session.settled_at) / 1000 } });
+          bill: { amountCents: session.total, planLabel: "", nextEvent: null,
+            asOfUnix: Date.parse(session.settled_at) / 1000 } });
       }
     }
     const snapshot = await activityBill(c.env, shop.id, player.id);
