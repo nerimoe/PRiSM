@@ -625,7 +625,10 @@ function calculateRawUnitPrice(
 
 function calculateUnits(durationMinutes: number, config: UnitPricingConfig, invalidateFirstGrace?: boolean): number {
   let units = Math.floor(Math.max(0, durationMinutes) / config.unitMinutes);
-  if (durationMinutes % config.unitMinutes > config.roundGraceMinutes) {
+  const leftover = durationMinutes % config.unitMinutes;
+  // A partial unit rounds up once the leftover reaches the grace. Zero grace
+  // still charges any nonzero leftover, while exact unit multiples never do.
+  if (leftover > 0 && leftover >= config.roundGraceMinutes) {
     units += 1;
   }
   if (invalidateFirstGrace && units === 0) {
@@ -667,10 +670,13 @@ export function nextTimePricingEvent(input: {
     const operated = Boolean(session.metadata?.deviceOperated || session.metadata?.hasDeviceActivity);
     let minutes = Math.max(0, Math.floor((now.getTime() - cursor.getTime()) / 60_000));
     const units = calculateUnits(minutes, pricing, operated);
-    // At most two thresholds: grace expiry and the next whole unit.
+    // At most two thresholds: grace expiry and the next whole unit. The unit
+    // count rises once the leftover reaches the grace, so the grace boundary
+    // is `cycle + max(grace, 1)` on the floored-minute grid (zero grace still
+    // charges from the first whole minute).
     for (let attempt = 0; attempt < 3; attempt++) {
       const cycle = Math.floor(minutes / pricing.unitMinutes) * pricing.unitMinutes;
-      const graceEnd = cycle + pricing.roundGraceMinutes + 1;
+      const graceEnd = cycle + Math.max(pricing.roundGraceMinutes, 1);
       minutes = Math.min(cycle + pricing.unitMinutes, graceEnd > minutes ? graceEnd : Infinity);
       if (calculateUnits(minutes, pricing, operated) <= units) continue;
       const candidate = new Date(cursor.getTime() + minutes * 60_000);

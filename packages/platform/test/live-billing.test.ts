@@ -48,7 +48,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   const env = { DB: db } as Parameters<typeof activityBill>[0];
   const initial = await activityBill(env, "shop", "p", now);
   expect(initial?.bill.amountCents).toBe(600);
-  expect(initial?.bill.nextEvent).toEqual({ atUnix: (+now + 5 * 60_000) / 1000, label: "下次计费" });
+  expect(initial?.bill.nextEvent).toEqual({ atUnix: (+now + 4 * 60_000) / 1000, label: "下次计费" });
   expect(initial?.bill.planLabel).toBe("标准方案（日间）");
   await repos.pricingConfigs.save({ id: "cap", kind: "time.cap", name: "全局封顶", enabled: true, createdAt: now, updatedAt: now,
     provider: { id: "cap", includedPricingConfigIds: ["rate"], rules: [{ id: "cap-day", label: "日间", priority: 1, dateTimeRange: { start: new Date(+now - 3600_000), end: new Date(+now + 3600_000) }, priceCap: 6 }] } });
