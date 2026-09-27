@@ -50,6 +50,9 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   expect(initial?.bill.amountCents).toBe(600);
   expect(initial?.bill.nextEvent).toEqual({ atUnix: (+now + 4 * 60_000) / 1000, label: "下次计费" });
   expect(initial?.bill.planLabel).toBe("标准方案（日间）");
+  // No cap config exists yet at this point, so the field must be absent rather
+  // than 0 -- the client has to be able to tell "no cap" from "capped".
+  expect(initial?.bill.remainingToCapCents).toBeUndefined();
   await repos.pricingConfigs.save({ id: "cap", kind: "time.cap", name: "全局封顶", enabled: true, createdAt: now, updatedAt: now,
     provider: { id: "cap", includedPricingConfigIds: ["rate"], rules: [{ id: "cap-day", label: "日间", priority: 1, dateTimeRange: { start: new Date(+now - 3600_000), end: new Date(+now + 3600_000) }, priceCap: 6 }] } });
   await db.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES('shop','capped','Capped','active',?)").bind(now.toISOString()).run();
@@ -57,6 +60,10 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   const capped = await activityBill(env, "shop", "capped", now);
   expect(capped?.bill.amountCents).toBe(600);
   expect(capped?.bill.nextEvent).toEqual({ atUnix: (+now + 3600_000) / 1000, label: "规则切换" });
+  // The global cap is 6.00 and the visit already owes exactly that, so the
+  // headroom is 0 and the island is allowed to say it is capped.
+  expect(capped?.bill.remainingToCapCents).toBe(0);
+  expect(capped?.bill.billable).toBe(true);
   await db.prepare(`INSERT INTO live_activity_tokens(id,shop_id,user_id,activity_id,token,environment,bundle_id,session_id,attributes_json,created_at,updated_at)
     VALUES('token','shop','u','activity',?,'sandbox','moe.neri.hinatago','entry','{}',?,?)`).bind("a".repeat(64), now.toISOString(), now.toISOString()).run();
   const namespace = await mf.getDurableObjectNamespace("LIVE_BILLING");

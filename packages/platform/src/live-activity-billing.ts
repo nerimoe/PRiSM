@@ -1,5 +1,15 @@
 import { createD1Repositories } from "@prism/adapter-d1";
-import { nextTimePricingEvent, type PricingConfig } from "@prism/core";
+import {
+  addCents,
+  canStartPriorityTimePricingSession,
+  compareCents,
+  maxCents,
+  nextTimePricingEvent,
+  subCents,
+  ZERO_CENTS,
+  type Cents,
+  type PricingConfig,
+} from "@prism/core";
 import { createPrismWorkerDependencies } from "@prism/runtime";
 import type { Env } from "./types";
 import { liveActivityConfig } from "./live-activity-push";
@@ -14,6 +24,15 @@ export type ActivityBill = {
   planLabel: string;
   nextEvent: ActivityNextEvent | null;
   asOfUnix: number;
+  /** Amount still chargeable before the effective cap: the minimum over every
+   *  cap window covering `now` that this session contributes to. 0 means capped.
+   *  Omitted when no cap is in force, so the client can tell "capped" from "no
+   *  cap configured" instead of having to guess. */
+  remainingToCapCents?: Cents;
+  /** False while no stacked plan of the visit is billable ("非营业") at this
+   *  moment. Omitted once every session is closed, because billing is over and
+   *  the question no longer applies. */
+  billable?: boolean;
 };
 
 export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerId: string, now = new Date()) {
@@ -26,6 +45,8 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
   const releases = new Map<string, { configs: PricingConfig[]; timeZone: string }>();
   const labels = new Set<string>();
   const candidates: { at: number; label: string }[] = [];
+  const capHeadrooms: Cents[] = [];
+  const billableNow: boolean[] = [];
   for (const session of active) {
     const key = session.pricingReleaseId ?? "legacy";
     if (!releases.has(key)) {
@@ -43,6 +64,33 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
         window.windowStartedAt <= now && window.windowEndedAt > now &&
         window.paidBefore + window.currentAmount >= window.priceCap &&
         window.contributions.some(item => item.sessionId === session.id && item.pricingConfigId === config.id));
+      // Headroom to the tightest cap window that covers `now` and that this
+      // session contributes to -- the same windows `globallyCapped` reads, so
+      // the bar and the countdown can never disagree.
+      if (config.kind === "time.cap") {
+        for (const window of preview.globalCapWindows ?? []) {
+          const inForce = window.windowStartedAt <= now && window.windowEndedAt > now;
+          // The window's contributions are keyed by the *pricing* config that
+          // charged the session, not by the cap config itself, so matching on
+          // `config.id` here would never fire (that is also why the existing
+          // `globallyCapped` predicate above reads narrower than it looks).
+          const involves = window.contributions.some(item =>
+            item.sessionId === session.id &&
+            (session.pricingConfigIds ?? []).includes(item.pricingConfigId));
+          if (inForce && involves) {
+            capHeadrooms.push(subCents(window.priceCap, addCents(window.paidBefore, window.currentAmount)));
+          }
+        }
+      }
+      // Business hours: a plan with no active rule at `now` is not billable, so
+      // the island may say billing stopped rather than keep counting.
+      if (config.kind === "time.priority") {
+        const priority = config as Extract<PricingConfig, { kind: "time.priority" }>;
+        billableNow.push(canStartPriorityTimePricingSession({
+          config: { ...priority.provider, timeZone: priority.provider.timeZone ?? release.timeZone },
+          at: now,
+        }));
+      }
       const next = nextTimePricingEvent({
         config: { ...config.provider, timeZone: config.provider.timeZone ?? release.timeZone }, session, now,
         intervalCapReached: segment?.pricingExplanation?.intervalCapReached || globallyCapped,
@@ -69,12 +117,26 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
       label: earliestLabels.size > 1 ? "计费与规则切换" : earliest.label,
     };
   }
+  // Both aggregates are additive and optional so older clients keep decoding:
+  // remainingToCapCents is omitted when no cap is in force (which must not be
+  // confused with capped), and billable is omitted once billing is over.
+  let remainingToCapCents: Cents | undefined;
+  if (capHeadrooms.length) {
+    const tightest = capHeadrooms.reduce((min, value) => (compareCents(value, min) < 0 ? value : min));
+    remainingToCapCents = maxCents(tightest, ZERO_CENTS);
+  }
+  const billable = active.length === 0
+    ? undefined
+    : billableNow.length === 0 ? true : billableNow.some(value => value);
+
   const names = [...labels];
   const bill: ActivityBill = {
     amountCents: preview.settlementPreview.total,
     planLabel: (names.slice(0, 2).join(" · ") + (names.length > 2 ? ` 等 ${names.length} 项` : "")).slice(0, 160),
     nextEvent,
     asOfUnix: now.getTime() / 1000,
+    ...(remainingToCapCents !== undefined ? { remainingToCapCents } : {}),
+    ...(billable !== undefined ? { billable } : {}),
   };
   return { bill, nextCheckAt: Number.isFinite(nextCheckAt) ? nextCheckAt : null,
     endedAtUnix: active.length ? null : Math.max(...unpaid.map(session => (session.endedAt ?? now).getTime())) / 1000,
