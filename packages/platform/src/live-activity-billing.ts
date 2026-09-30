@@ -5,6 +5,7 @@ import {
   compareCents,
   maxCents,
   nextTimePricingEvent,
+  previousBillingEvent,
   subCents,
   ZERO_CENTS,
   type Cents,
@@ -23,6 +24,8 @@ export type ActivityBill = {
   amountCents: number;
   planLabel: string;
   nextEvent: ActivityNextEvent | null;
+  /** Last resolved pricing/rule/session event. Refresh timestamps are not events. */
+  previousEvent?: ActivityNextEvent | null;
   asOfUnix: number;
   /** Amount still chargeable before the effective cap: the minimum over every
    *  cap window covering `now` that this session contributes to. 0 means capped.
@@ -45,6 +48,7 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
   const releases = new Map<string, { configs: PricingConfig[]; timeZone: string }>();
   const labels = new Set<string>();
   const candidates: { at: number; label: string }[] = [];
+  const ruleBoundaries: Date[] = [];
   const capHeadrooms: Cents[] = [];
   const billableNow: boolean[] = [];
   for (const session of active) {
@@ -96,6 +100,7 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
         intervalCapReached: segment?.pricingExplanation?.intervalCapReached || globallyCapped,
         intervalStartedAt: globallyCapped ? undefined : segment?.period?.startedAt,
       });
+      ruleBoundaries.push(next.intervalStartedAt);
       if (config.kind !== "time.cap" && next.ruleLabel) labels.add(`${config.name}（${next.ruleLabel}）`);
       // Every event candidate is a peer — charges and rule switches alike —
       // because each one triggers a full recompute and push.
@@ -130,10 +135,13 @@ export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerI
     : billableNow.length === 0 ? true : billableNow.some(value => value);
 
   const names = [...labels];
+  const previous = previousBillingEvent({ now, sessions: unpaid, chargeItems: preview.chargeItems,
+    globalCapWindows: preview.globalCapWindows, ruleBoundaries });
   const bill: ActivityBill = {
     amountCents: preview.settlementPreview.total,
     planLabel: (names.slice(0, 2).join(" · ") + (names.length > 2 ? ` 等 ${names.length} 项` : "")).slice(0, 160),
     nextEvent,
+    previousEvent: previous ? { atUnix: previous.at.getTime() / 1000, label: previous.label } : null,
     asOfUnix: now.getTime() / 1000,
     ...(remainingToCapCents !== undefined ? { remainingToCapCents } : {}),
     ...(billable !== undefined ? { billable } : {}),

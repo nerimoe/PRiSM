@@ -42,7 +42,7 @@
 三个渠道（`/player/*`、`/staff/*`、`/integration/*`）全部经过 `packages/platform/src/billing.ts` 的 `forward()` 进入 `packages/server-hono` 的核心应用。因此：
 
 - 在 `forward()` 外层包一层即可覆盖**所有**渠道，将来新增渠道也不会漏掉；
-- APNs 令牌属于**传输层**关注点，`server-hono` / `application` / `core` 核心域不应知道 APNs 的存在，其代码与测试保持零改动；
+- APNs 令牌属于**传输层**关注点，`server-hono` / `application` / `core` 核心域不应知道 APNs 的存在，传输埋点不进入这些层；计费节点计算仍复用 core 的纯函数；
 - 反过来若埋点在 `application/src/player-commands.ts` 与 `settlement.ts` 的 `sessions.save` 处，虽然更集中，但需要给核心域新增端口，侵入性更大。
 
 `live-activity/register` 与 `live-activity/unregister` 两个路由同样**不进入** `forward()`，由 platform 直接处理。
@@ -81,6 +81,25 @@ Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身�
 
 `startedAtUnix` 是绝对时间戳，落锁屏后由 `Text(timerInterval:)` 在本地渲染，因此跨时区安全。
 
+### 时间轴事件契约
+
+REST 快照与 APNs `content-state.bill` 使用同一个 `activityBill()`，均返回 `previousEvent: { atUnix, label } | null`。这是可选扩展字段，旧客户端可以忽略，旧载荷没有该字段仍可解码。它表示最近入场、结束计费、计费规则切换或收费节点；`asOfUnix` 仅是快照计算时间，不是时间轴起点。没有收费节点时以真实入场为起点。
+
+`previousBillingEvent()` 复用优先级计价的分钟取整、宽限失效、已付历史及单方案封顶；对多个会话和方案共享的全局封顶，使用同一封顶引擎的区间重叠分摊寻找达到封顶的时间，封顶后的原始单位跳点不再成为上一事件；重叠的较宽松封顶不重置已封顶轨道，其他尚未封顶的叠加方案仍可产生收费节点。暂停区间仍保留最近规则切换，下一事件继续取可用的规则边界。恢复依据当前会话与报价规则，不将普通请求时间、手工调账时间或设备操作请求时间冒充历史节点。金额仍使用统一账单预览的结果，客户端不自行计费。
+
+示例：
+
+```json
+{
+  "amountCents": 600,
+  "planLabel": "标准方案（日间）",
+  "previousEvent": { "atUnix": 1790000000, "label": "计费" },
+  "nextEvent": { "atUnix": 1790001800, "label": "下次计费" },
+  "asOfUnix": 1790000600,
+  "billable": true
+}
+```
+
 ## 配置
 
 平台入口为 `packages/platform/src/worker.ts`，导出 Hono 应用和 `LiveBilling` Durable Object。`wrangler.platform.jsonc` 声明 `LIVE_BILLING` SQLite namespace 和 `live-billing-v1` 类迁移；生成的部署配置继承它们。上线前计费数据库须已应用 `0028_pricing_versions.sql`。未配置绑定时保留原 start/end 推送行为。
@@ -89,13 +108,13 @@ Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身�
 
 每个店铺／玩家一个 Durable Object，只为已注册实时活动的玩家安排任务。保存玩家标识和修订号，金额与方案始终从真实未结账会话及其锁定版本读取，不修改账单和资产。Alarm 到期后使用现有统一账单预览计算，发送摘要，再安排下一边界；没有全店轮询，也不挂常驻 Future。
 
-`nextTimePricingEvent` 复用计价引擎的优先级、时区、分钟取整、宽限和分段起点，合并多个会话与全局封顶规则的边界。已达到区间或全局封顶的部分不再产生收费倒计时。最近的收费候选点会经统一预览确认；若优惠抵消了金额增长，隐藏该收费倒计时，仍在候选点重新评估后续变化。规则切换与收费同刻时客户端合并标签。
+`nextTimePricingEvent` 复用计价引擎的优先级、时区、分钟取整、宽限和分段起点，合并多个会话与全局封顶规则的边界。已达到区间或全局封顶的部分不再产生收费倒计时。收费倒计时表示计费规则节点；金额仍由统一预览确认，因此优惠抵消金额增长时也可能保留该规则节点。规则切换与收费同刻时客户端合并标签。
 
 入场、子会话增减、麻将开局／离桌、取消宽限的设备操作、结账和账单预览均触发同步。普通 GET 概览不触发重新计费。短时间事件合并，内容不变不重复推送；批量结账逐玩家同步。新增子会话更新原活动，不另开一份入场活动。回调读取最新状态，修订号变化则放弃旧结果，推送失败通过 Alarm 重试；成功令牌分别记账去重。结账的最终金额读取该会话对应的已保存 checkout，避免混入后一次入场的账单。
 
 本地请求只用于初次创建或恢复已过期内容，也会恢复后台调度。Swift 不复刻计费引擎，倒计时通过系统时间组件持续显示。到下一次检查时间设为 stale；更新尚未到达时隐藏旧倒计时，保留账单金额和时间。全部会话关闭但尚未付款时保留活动，设置 `endedAtUnix` 停止计时并显示“待结账”；成功付款后再结束活动。推送受系统与网络影响，不保证准点到达。无令牌或活动已超过八小时则清理调度状态。
 
-验证：`bun test packages/core/test/live-pricing-event.test.ts packages/platform/test/live-billing.test.ts`，后者在 workerd 中运行真实 Durable Object Alarm，并覆盖 APNs 暂时失败重试、金额去重、结账和令牌清理。
+验证：`bun test packages/core/test/live-pricing-event.test.ts packages/core/test/previous-billing-event.test.ts packages/platform/test/live-billing.test.ts`，后者在 workerd 中运行真实 Durable Object Alarm，并覆盖 APNs 暂时失败重试、金额去重、结账和令牌清理。
 
 | 变量 | 说明 |
 | --- | --- |

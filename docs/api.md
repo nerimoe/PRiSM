@@ -361,7 +361,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 | --- | --- | --- |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
-| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`nextChargeAtUnix`、`nextRuleAtUnix`、`asOfUnix`。时间均为 Unix 秒；客户端选两个倒计时中较早者。 |
+| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`previousEvent`、`nextEvent`、`asOfUnix`，以及可选的 `billable` / `remainingToCapCents`。事件为 `{ atUnix, label }` 或 null，时间均为 Unix 秒；下一事件统一取最近收费或规则切换，上一事件不随快照刷新改变。 |
 
 注册请求体：
 

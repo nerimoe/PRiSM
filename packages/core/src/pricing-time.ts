@@ -645,7 +645,7 @@ export function nextTimePricingEvent(input: {
   now: Date;
   intervalCapReached?: boolean;
   intervalStartedAt?: Date;
-}): { ruleLabel: string | null; ruleAt: Date | null; chargeAt: Date | null } {
+}): { ruleLabel: string | null; ruleAt: Date | null; chargeAt: Date | null; intervalStartedAt: Date } {
   const { config, session, now } = input;
   const rules = activeRules<PriorityTimePricingRule | TimeCapPricingRule>(config.rules).sort((a, b) => b.priority - a.priority);
   const zone = config.timeZone ?? "UTC";
@@ -684,7 +684,122 @@ export function nextTimePricingEvent(input: {
       break;
     }
   }
-  return { ruleLabel: rule?.label ?? null, ruleAt, chargeAt };
+  return { ruleLabel: rule?.label ?? null, ruleAt, chargeAt, intervalStartedAt: cursor };
+}
+
+/** Resolve a historical pricing event from the same quote and cap rules used
+ * by the live alarm. Snapshot refreshes are deliberately not event candidates.
+ * Current interval boundaries also include periods without an active rule. */
+export function previousBillingEvent(input: {
+  now: Date;
+  sessions: readonly Session[];
+  chargeItems: readonly ChargeItem[];
+  globalCapWindows: readonly TimeCapPricingWindow[];
+  ruleBoundaries: readonly Date[];
+}): { at: Date; label: string } | null {
+  const state: { event: { at: Date; label: string } | null } = { event: null };
+  const record = (at: Date, label: string) => {
+    if (at > input.now || !Number.isFinite(at.getTime())) return;
+    if (!state.event || at > state.event.at) state.event = { at, label };
+    else if (at.getTime() === state.event.at.getTime() &&
+      new Set([label, state.event.label]).has("计费") && new Set([label, state.event.label]).has("规则切换")) {
+      state.event.label = "计费与规则切换";
+    }
+  };
+  for (const session of input.sessions) {
+    record(session.startedAt, "入场");
+    if (session.endedAt) record(session.endedAt, "结束计费");
+  }
+  if (!state.event) return null;
+  const startedAt = state.event.at;
+  for (const at of input.ruleBoundaries) {
+    if (at > startedAt) record(at, "规则切换");
+  }
+  const boundary = state.event.at;
+  if (boundary.getTime() === input.now.getTime()) return state.event;
+
+  // Grace invalidation is consumed by the first positive segment, exactly as
+  // in createPriorityTimePricingProvider.quote(). Completed segments before
+  // the latest structural event are constant throughout this search window.
+  const sessions = new Map(input.sessions.map(session => [session.id, session]));
+  const charges = input.chargeItems.map(item => {
+    const session = item.sessionId ? sessions.get(item.sessionId) : undefined;
+    const explanation = item.pricingExplanation;
+    const operated = Boolean(session?.metadata?.deviceOperated || session?.metadata?.hasDeviceActivity);
+    const priorPositive = input.chargeItems.some(prior => prior.sessionId === item.sessionId &&
+      prior.pricingExplanation?.pricingConfigId === explanation?.pricingConfigId &&
+      prior.period && item.period && prior.period.startedAt < item.period.startedAt && isPositiveCents(prior.amount));
+    const amountAt = (at: Date) => {
+      if (!explanation?.pricing || !item.period || item.period.endedAt <= at) return item.amount;
+      const minutes = Math.max(0, Math.floor((at.getTime() - item.period.startedAt.getTime()) / 60_000));
+      return calculateUnitPriceWithHistory(minutes, explanation.pricing,
+        centsOf(explanation.paidBefore ?? 0), operated && !priorPositive);
+    };
+    return { item, amountAt };
+  });
+  const projectedAt = (at: Date) => charges.flatMap(({ item, amountAt }) => {
+    if (item.period && item.period.startedAt > at) return [];
+    if (!item.period || item.period.endedAt <= at) return [item];
+    return [{ ...item, amount: amountAt(at), period: { ...item.period, endedAt: at } }];
+  });
+
+  // A global cap can be shared by staggered sessions and several plans. Replay
+  // its actual proration instead of dividing the cap by a single unit price.
+  const cutoffs = input.globalCapWindows.filter(window =>
+    window.windowStartedAt <= input.now && window.windowEndedAt > input.now &&
+    compareCents(addCents(window.paidBefore, window.currentAmount), window.priceCap) >= 0,
+  ).map(window => {
+    const config: TimeCapPricingProviderConfig = {
+      id: window.capConfigId,
+      includedPricingConfigIds: [...new Set(window.contributions.map(item => item.pricingConfigId))],
+      paidHistory: { [window.key]: window.paidBefore },
+      rules: [{ id: window.capRuleId, label: window.ruleLabel, priority: 1,
+        dateTimeRange: { start: window.windowStartedAt, end: window.windowEndedAt },
+        priceCap: yuanOf(window.priceCap) }],
+    };
+    const cappedAt = (at: Date) => {
+      const projected = explainTimeCapPricing({ config, chargeItems: projectedAt(at) })
+        .find(candidate => candidate.key === window.key);
+      return compareCents(addCents(window.paidBefore, projected?.currentAmount ?? ZERO_CENTS), window.priceCap) >= 0;
+    };
+    let low = boundary.getTime(), high = input.now.getTime();
+    if (cappedAt(boundary)) return { window, at: boundary };
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (cappedAt(new Date(middle))) high = middle;
+      else low = middle + 1;
+    }
+    const at = new Date(low);
+    return { window, at };
+  });
+
+  for (const cutoff of cutoffs) {
+    // A looser overlapping cap must not advance a timeline whose contributors
+    // were already stopped by an earlier cap.
+    const affectsUncappedCharge = cutoff.window.contributions.some(contribution =>
+      !cutoffs.some(other => other.at < cutoff.at && other.window.contributions.some(candidate =>
+        candidate.sessionId === contribution.sessionId && candidate.pricingConfigId === contribution.pricingConfigId)));
+    if (affectsUncappedCharge && cutoff.at > boundary) record(cutoff.at, "计费");
+  }
+
+  for (const { item, amountAt } of charges) {
+    if (!item.period || !item.pricingExplanation?.pricing || item.period.endedAt < boundary) continue;
+    const applicable = cutoffs.filter(({ window }) => window.contributions.some(contribution =>
+      contribution.sessionId === item.sessionId && contribution.pricingConfigId === item.pricingExplanation?.pricingConfigId));
+    const until = new Date(Math.min(input.now.getTime(), item.period.endedAt.getTime(),
+      ...applicable.map(cutoff => cutoff.at.getTime())));
+    let low = 0, high = Math.max(0, Math.floor((until.getTime() - item.period.startedAt.getTime()) / 60_000));
+    const target = amountAt(until);
+    if (!isPositiveCents(target)) continue;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (compareCents(amountAt(new Date(item.period.startedAt.getTime() + middle * 60_000)), target) >= 0) high = middle;
+      else low = middle + 1;
+    }
+    const at = new Date(item.period.startedAt.getTime() + low * 60_000);
+    if (at >= boundary && at <= until) record(at, "计费");
+  }
+  return state.event;
 }
 
 function findActiveRule<T extends TimeRuleLike>(

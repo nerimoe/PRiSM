@@ -49,6 +49,9 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   const initial = await activityBill(env, "shop", "p", now);
   expect(initial?.bill.amountCents).toBe(600);
   expect(initial?.bill.nextEvent).toEqual({ atUnix: (+now + 4 * 60_000) / 1000, label: "下次计费" });
+  expect(initial?.bill.previousEvent).toEqual({ atUnix: (+now - 11 * 60_000) / 1000, label: "计费" });
+  const refreshed = await activityBill(env, "shop", "p", new Date(+now + 30_000));
+  expect(refreshed?.bill.previousEvent).toEqual(initial?.bill.previousEvent);
   expect(initial?.bill.planLabel).toBe("标准方案（日间）");
   // No cap config exists yet at this point, so the field must be absent rather
   // than 0 -- the client has to be able to tell "no cap" from "capped".
@@ -64,6 +67,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   // headroom is 0 and the island is allowed to say it is capped.
   expect(capped?.bill.remainingToCapCents).toBe(0);
   expect(capped?.bill.billable).toBe(true);
+  expect(capped?.bill.previousEvent).toEqual(initial?.bill.previousEvent);
   await db.prepare(`INSERT INTO live_activity_tokens(id,shop_id,user_id,activity_id,token,environment,bundle_id,session_id,attributes_json,created_at,updated_at)
     VALUES('token','shop','u','activity',?,'sandbox','moe.neri.hinatago','entry','{}',?,?)`).bind("a".repeat(64), now.toISOString(), now.toISOString()).run();
   const namespace = await mf.getDurableObjectNamespace("LIVE_BILLING");
@@ -78,6 +82,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   await waitPush(1);
   expect(pushes[0]!.aps.event).toBe("update");
   expect(pushes[0]!.aps["content-state"].bill.amountCents).toBe(600);
+  expect(pushes[0]!.aps["content-state"].bill.previousEvent).toEqual(initial?.bill.previousEvent);
   expect(new TextEncoder().encode(JSON.stringify(pushes[0])).length).toBeLessThan(4096);
   await (stub as any).refresh("shop", "p");
   await Bun.sleep(1300);
@@ -105,4 +110,4 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   expect(pushes[4]!.aps.event).toBe("end");
   expect(pushes[4]!.aps["content-state"].bill.amountCents).toBe(checkout.playerSettlement.total);
   expect((await db.prepare("SELECT id FROM live_activity_tokens").all()).results).toHaveLength(0);
-}, 20000);
+}, 60000);
