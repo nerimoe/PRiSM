@@ -31,7 +31,7 @@ export const billingSetupSchema = z.object({
   autoRegister: z.boolean(),
 });
 export const createShopSchema = z.object({
-  billingSetup: billingSetupSchema.optional(),
+  billingSetup: billingSetupSchema.extend({ createBotToken: z.boolean().default(false) }).optional(),
   name: z
     .string()
     .trim()

@@ -8,7 +8,7 @@ import {
   claimDeviceCoin,
 } from "./devices";
 import { PrismDomainError } from "@prism/core";
-import { serializePricingProviderConfig } from "@prism/storage-sql";
+import { billingSetupStatements } from "./billing-setup";
 import {
   registerBillingRoutes,
   getBillingShop,
@@ -817,8 +817,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
   const publicId = randomToken(8);
   const heroHash = body.heroData ? await sha256(body.heroData) : null;
   const setup = body.billingSetup;
-  const botToken = setup ? `prism_integration_${randomToken(32)}` : null;
-  const ruleId = crypto.randomUUID();
+  const botToken = setup?.createBotToken ? `prism_integration_${randomToken(32)}` : null;
   const now = new Date().toISOString();
   const statements = [
     c.env.DB.prepare(
@@ -839,51 +838,11 @@ app.post("/api/v1/merchant/shops", async (c) => {
     ).bind(crypto.randomUUID(), shopId, user.id),
   ];
   if (setup) {
-    for (const [code, name] of [
-      ["paid", setup.paidName],
-      ["free", setup.freeName],
-    ])
-      statements.push(
-        c.env.DB.prepare(
-          "INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES (?,'currency',?,?,1,'active')",
-        ).bind(shopId, code, name),
-      );
-    const provider = {
-      id: ruleId,
-      rules: [
-        {
-          id: crypto.randomUUID(),
-          label: "全天",
-          priority: 0,
-          timeRange: { start: "00:00", end: "00:00" },
-          pricing: {
-            unitMinutes: 60,
-            unitPrice: setup.hourlyPrice,
-            roundGraceMinutes: setup.graceMinutes,
-            priceCap: setup.dailyCap,
-          },
-        },
-      ],
-    };
-    statements.push(
-      c.env.DB.prepare(
-        "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES (?,?,'time.priority','标准入场',1,'active',?,?,?)",
-      ).bind(shopId, ruleId, JSON.stringify(serializePricingProviderConfig(provider)), now, now),
-    );
-    statements.push(
+    statements.push(...billingSetupStatements(c.env.DB, shopId, setup).statements);
+    if (botToken) statements.push(
       c.env.DB.prepare(
         "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,'QQ Bot','integration','prism_integration',?,'active',?)",
-      ).bind(shopId, crypto.randomUUID(), await sha256Hex(botToken!), now),
-    );
-    statements.push(
-      c.env.DB.prepare(
-        "INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,entry_pricing_ids_json,bot_contact) VALUES (?,1,?,?,?)",
-      ).bind(
-        shopId,
-        +setup.autoRegister,
-        JSON.stringify([ruleId]),
-        setup.botContact,
-      ),
+      ).bind(shopId, crypto.randomUUID(), await sha256Hex(botToken), now),
     );
   }
   await c.env.DB.batch(statements);

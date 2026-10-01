@@ -26,6 +26,7 @@ import { PricingPage } from "./merchant/Pricing";
 import { AssetsPage } from "./merchant/Assets";
 import { ReportsPage } from "./merchant/Reports";
 import { SettingsPage } from "./merchant/Settings";
+import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup";
 import { DevicesPage } from "./merchant/Devices";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
 
@@ -292,11 +293,8 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
   const [step, setStep] = useState(0);
   const [billing, setBilling] = useState(false);
   const [setup, setSetup] = useState({
-    paidName: "余额",
-    freeName: "赠送余额",
-    hourlyPrice: 12,
-    graceMinutes: 5,
-    dailyCap: 60,
+    ...defaultBillingSetup,
+    createBotToken: false,
     botContact: "",
     autoRegister: false,
   });
@@ -403,51 +401,12 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
           }}
         >
           <h3 className="font-semibold">{t("基础资产与计费")}</h3>
-          <div className="grid grid-cols-2 gap-3">
-            {(
-              [
-                ["paidName", "充值余额名称"],
-                ["freeName", "赠送余额名称"],
-              ] as const
-            ).map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input
-                  className={input}
-                  required
-                  maxLength={40}
-                  value={setup[key]}
-                  onChange={(e) =>
-                    setSetup({ ...setup, [key]: e.target.value })
-                  }
-                />
-              </Field>
-            ))}
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {(
-              [
-                ["hourlyPrice", "每小时"],
-                ["graceMinutes", "宽限分钟"],
-                ["dailyCap", "全天封顶"],
-              ] as const
-            ).map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input
-                  className={input}
-                  type="number"
-                  required
-                  min={key === "hourlyPrice" ? ".01" : "0"}
-                  max={key === "graceMinutes" ? 59 : 100000}
-                  step={key === "graceMinutes" ? "1" : ".01"}
-                  value={setup[key]}
-                  onChange={(e) =>
-                    setSetup({ ...setup, [key]: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            ))}
-          </div>
-
+          <BillingSetupFields value={setup} change={value => setSetup({ ...setup, ...value })} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={setup.createBotToken} onChange={event => setSetup({ ...setup, createBotToken: event.target.checked })} />
+            {t("创建 QQ Bot 接入凭据（可选）")}
+          </label>
+          <p className="text-sm text-ink/60">{t("无需创建 QQ Bot 凭据；需要连接 Bot 时，可在「接入凭据」单独配置。")}</p>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"

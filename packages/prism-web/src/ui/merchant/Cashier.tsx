@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { useSearchParams } from "react-router-dom";
 import { CreditCard, Plug, CheckCircle2 } from "lucide-react";
 import { api, playerOperation } from "../../api";
-import { browserHid, HinataCardReader, type BasicCard } from "../../card-reader";
+import { browserHid, ReaderError, type BasicCard } from "../../card-reader";
+import { HinataReaderManager } from "../../reader-manager";
 import { useI18n } from "../../i18n";
 import { shopApi } from "../BillingPages";
 import { BillTotal, BillTimeline } from "../BillTimeline";
@@ -24,9 +25,12 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   const [connecting, setConnecting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [readerError, setReaderError] = useState("");
+  const [readerDetail, setReaderDetail] = useState("");
   const [notice, setNotice] = useState("");
   const [receipt, setReceipt] = useState<{ name: string; total: number; method: string } | null>(null);
-  const reader = useRef<HinataCardReader | null>(null);
+  const reader = useRef<HinataReaderManager | null>(null);
+  const readerConnected = useRef(false);
   const panel = useRef<HTMLElement>(null);
   const working = useRef(false);
   const occupied = useRef(false);
@@ -55,8 +59,36 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   };
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; void reader.current?.stop(); reader.current = null; };
+    return () => { mounted.current = false; };
   }, []);
+  useEffect(() => {
+    const hid = browserHid();
+    if (!hid || !canWrite) return;
+    let active = true;
+    const manager = new HinataReaderManager(hid, {
+      onState: state => {
+        if (!active) return;
+        readerConnected.current = state.status === "connected";
+        setReaderName(state.status === "connected" ? state.name : "");
+        setConnecting(state.status === "connecting");
+        if (state.status !== "disconnected") { setReaderError(""); setReaderDetail(""); }
+      },
+      onCard: card => { if (active) handleCard.current(card); },
+      onError: error => {
+        if (!active) return;
+        setReaderError(readerConnected.current ? t("读卡器本次读取未完成，正在重试") : t(error.message));
+        setReaderDetail(error instanceof ReaderError ? error.detail : "");
+      },
+      onRecovered: () => { if (active) { setReaderError(""); setReaderDetail(""); } },
+    });
+    reader.current = manager;
+    void manager.start();
+    return () => {
+      active = false; readerConnected.current = false;
+      if (reader.current === manager) reader.current = null;
+      void manager.dispose();
+    };
+  }, [canWrite, t]);
   const playerId = params.get("cashierPlayer");
   useEffect(() => {
     if (!playerId || !canWrite) return;
@@ -70,22 +102,11 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
     return () => { current = false; };
   }, [playerId, canWrite, read, loadProfile]);
   async function connect() {
-    setConnecting(true); setError("");
-    let deviceReader: HinataCardReader | undefined;
+    setConnecting(true); setReaderError(""); setReaderDetail("");
     try {
-      const hid = browserHid();
-      if (!hid) throw new Error(t("此浏览器不支持 WebHID，请使用桌面版 Chrome 或 Edge"));
-      const [device] = await hid.requestDevice({ filters: [{ vendorId: 0xf822 }] });
-      if (!device) return;
-      deviceReader = new HinataCardReader(device, hid);
-      if (!mounted.current) return;
-      reader.current = deviceReader;
-      await deviceReader.start(card => handleCard.current(card), e => {
-        if (mounted.current) { setError(t(e.message)); setReaderName(""); }
-      });
-      if (mounted.current) setReaderName(deviceReader.name);
-      else await deviceReader.stop();
-    } catch (e) { if (mounted.current) setError((e as Error).message); await deviceReader?.stop(); }
+      if (!reader.current) throw new Error(t("此浏览器不支持 WebHID，请使用桌面版 Chrome 或 Edge"));
+      await reader.current.requestDevice();
+    } catch (e) { if (mounted.current) setReaderError((e as Error).message); }
     finally { if (mounted.current) setConnecting(false); }
   }
   async function act(action: () => Promise<void>) {
@@ -130,7 +151,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   return <section ref={panel} className="grid scroll-mt-5 gap-5 rounded-xl border border-ink/10 p-4 sm:p-5" aria-label={t("前台收银")}>
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div><h3 className="text-lg font-semibold">{t("前台收银")}</h3><p className="mt-1 text-sm text-ink/60">{t("低安全模式 · 卡片仅用于计时，现场收款，不预存余额")}</p></div>
-      {readerName ? <button className={button} onClick={() => { void reader.current?.stop(); reader.current = null; setReaderName(""); }}>{t("断开读卡器")}</button>
+      {readerName ? <button className={button} onClick={() => { void reader.current?.disconnect(); setReaderError(""); setReaderDetail(""); }}>{t("断开读卡器")}</button>
         : <button className={primary} disabled={connecting} onClick={connect}><Plug size={18} />{t(connecting ? "连接中..." : "连接读卡器")}</button>}
     </header>
     {!browserHid() && <p className="rounded-xl bg-ink/5 p-4 text-sm">{t("此浏览器不支持 WebHID，请使用桌面版 Chrome 或 Edge")}</p>}
@@ -139,6 +160,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
       <div><p className="font-medium">{readerName || t("读卡器未连接")}</p><p className="text-sm text-ink/60">{t(busy ? "正在处理，请稍候" : scan ? "请完成当前玩家的操作" : "等待玩家刷卡")}</p></div>
     </div>
     {error && <p role="alert" className="text-coral">{error}</p>}
+    {readerError && <div role="alert" className="text-coral"><p>{readerError}</p>{readerDetail && <details className="mt-2 text-sm"><summary className="cursor-pointer">{t("读卡器通信详情")}</summary><pre className="mt-2 whitespace-pre-wrap break-all font-mono">{readerDetail}</pre></details>}</div>}
     {notice && <p role="status" className="text-sm">{notice}</p>}
     {receipt && <section className="rounded-xl border border-mint/30 bg-mint/5 p-5" role="status"><h3 className="flex items-center gap-2 font-semibold"><CheckCircle2 size={20} />{t("已收款并结账")}</h3><p className="mt-2">{receipt.name} · {money(receipt.total)} · {t(({ wechat: "微信", alipay: "支付宝", cash: "现金", other: "其他" } as Record<string, string>)[receipt.method]!)}</p></section>}
     {scan && <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">

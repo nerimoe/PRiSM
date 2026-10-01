@@ -719,6 +719,7 @@ test("new billed stores create base assets and pricing atomically; door QR requi
       graceMinutes: 5,
       dailyCap: 60,
       autoRegister: true,
+      createBotToken: true,
     },
   });
   expect(created.status).toBe(201);
@@ -1403,7 +1404,7 @@ test("merchant location toggle synchronizes legacy flags and native session poli
 
 test("mahjong seats persist, start together, allow replacements and settle independently", async () => {
   const created = await request("/api/v1/merchant/shops", {
-    name:"Mahjong", latitude:35,longitude:139,billingSetup:{paidName:"余额",freeName:"赠送",hourlyPrice:12,graceMinutes:0,dailyCap:0,autoRegister:true},
+    name:"Mahjong", latitude:35,longitude:139,billingSetup:{paidName:"余额",freeName:"赠送",hourlyPrice:12,graceMinutes:0,dailyCap:0,autoRegister:true,createBotToken:true},
   });
   const {data:{shop,botToken}} = await created.json() as any;
   const {data:settings} = await (await request(`/api/v1/shops/${shop.publicId}/settings`)).json() as any;

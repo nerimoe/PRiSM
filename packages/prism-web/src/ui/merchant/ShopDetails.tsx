@@ -75,7 +75,7 @@ export function ShopForm({
         });
         await onSaved(result.shop);
       } else {
-        const result = await api<{ shop: Shop; botToken?: string }>(
+        const result = await api<{ shop: Shop; botToken: string | null }>(
           "/api/v1/merchant/shops",
           {
             method: "POST",
@@ -94,7 +94,7 @@ export function ShopForm({
         setLatitude(null);
         setLongitude(null);
         setRadiusMeters("80");
-        await onSaved(result.shop, result.botToken);
+        await onSaved(result.shop, result.botToken ?? undefined);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存店铺失败");

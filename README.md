@@ -138,6 +138,7 @@ The live operations screen is player-first: each player appears once, the previe
 
 - [Architecture](docs/architecture.md)
 - [API Reference](docs/api.md)
+- [已有店铺转换为计费店铺](docs/billing-setup.md)
 - [前台收银与 WebHID 读卡](docs/cashier.md)
 - [Deployment](docs/deployment.md)
 - [Integrations And Machines](docs/integrations-and-machines.md)

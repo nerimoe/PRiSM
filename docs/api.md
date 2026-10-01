@@ -450,3 +450,8 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 ## React 前台收银
 
 前台收银默认关闭，负责人通过店铺设置的 `cashierEnabled` 开关手动启用，启用后读卡与收款合并在 React「在店」页面。存在未付款前台计时时不能关闭。低安全模式卡片档案使用 `/api/v1/shops/:shopCode/cashier/*`，仅由店铺 owner/manager 操作，不要求玩家账号或 QQ，不保存资产。登记、入场与现场收款结账使用 UUID `operationId` 保证重试不重复处理。完整接口、预览时刻结账规则及权限见 [前台收银](cashier.md)。
+
+
+## React 店铺计费初始化
+
+已有非计费店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并启用计费。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 QQ Bot 凭据；启用计费的设置校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。

@@ -1,0 +1,83 @@
+import { useRef, useState, type FormEvent } from "react";
+import { playerOperation } from "../../api";
+import { useI18n } from "../../i18n";
+import { shopApi, type Settings } from "../BillingPages";
+import { Field, Modal, button, input, money, primary } from "./shared";
+
+export const defaultBillingSetup = {
+  paidName: "余额", freeName: "赠送余额", hourlyPrice: 12, graceMinutes: 5, dailyCap: 60,
+};
+type Setup = typeof defaultBillingSetup;
+
+export function BillingSetupFields({ value, change }: { value: Setup; change: (value: Setup) => void }) {
+  const { t } = useI18n();
+  return <>
+    <div className="grid grid-cols-2 gap-3">
+      {([["paidName", "充值余额名称"], ["freeName", "赠送余额名称"]] as const).map(([key, label]) =>
+        <Field key={key} label={label}><input className={input} required maxLength={40} value={value[key]}
+          onChange={event => change({ ...value, [key]: event.target.value })} /></Field>)}
+    </div>
+    <div className="grid grid-cols-3 gap-3">
+      {([["hourlyPrice", "每小时"], ["graceMinutes", "宽限分钟"], ["dailyCap", "全天封顶"]] as const).map(([key, label]) =>
+        <Field key={key} label={label}><input className={input} type="number" required min={key === "hourlyPrice" ? ".01" : "0"}
+          max={key === "graceMinutes" ? 59 : 100000} step={key === "graceMinutes" ? "1" : ".01"} value={value[key]}
+          onChange={event => change({ ...value, [key]: Number(event.target.value) })} /></Field>)}
+    </div>
+    <p className="text-sm text-ink/60">{t("收费金额单位为元，全天封顶填 0 表示不封顶。")}</p>
+  </>;
+}
+
+export function BillingConversionWizard({ shopCode, close, done }: {
+  shopCode: string; close: () => void; done: (settings: Settings) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [setup, setSetup] = useState(defaultBillingSetup);
+  const [cashier, setCashier] = useState(false);
+  const [step, setStep] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submitting = useRef(false);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (submitting.current) return;
+    if (step === 0) { setStep(1); return; }
+    submitting.current = true; setBusy(true); setError("");
+    try {
+      const settings = await playerOperation<Settings>(shopApi(shopCode, "billing/setup"), { ...setup, cashierEnabled: cashier });
+      window.dispatchEvent(new Event("prism-shop-settings"));
+      await done(settings);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : t("操作失败"));
+    } finally { submitting.current = false; setBusy(false); }
+  }
+  return <Modal title="转换为计费店铺" close={() => { if (!submitting.current) close(); }}>
+    <form onSubmit={submit}>
+      <fieldset disabled={busy} className="grid gap-4">
+        <ol className="flex gap-4 text-sm text-ink/60">
+          {["收费标准", "确认转换"].map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}
+            className={step === index ? "font-semibold text-ink" : ""}>{index + 1} · {t(label)}</li>)}
+        </ol>
+        {step === 0 ? <>
+          <BillingSetupFields value={setup} change={setSetup} />
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={cashier}
+            onChange={event => setCashier(event.target.checked)} />{t("同时启用前台收银")}</label>
+          <p className="text-sm text-ink/60">{t("前台收银默认关闭，开启后可在「在店」页面刷卡计时并现场收款。")}</p>
+        </> : <>
+          <dl className="grid grid-cols-2 gap-3 rounded-lg bg-ink/5 p-4 text-sm">
+            <dt>{t("每小时")}</dt><dd>{money(setup.hourlyPrice)}</dd>
+            <dt>{t("宽限分钟")}</dt><dd>{setup.graceMinutes}</dd>
+            <dt>{t("全天封顶")}</dt><dd>{setup.dailyCap === 0 ? t("不封顶") : money(setup.dailyCap)}</dd>
+            <dt>{t("前台收银")}</dt><dd>{t(cashier ? "启用" : "停用")}</dd>
+          </dl>
+          <p className="text-sm">{t("将补齐基础余额资产，创建并选用新的标准入场方案，然后启用计费。已有设备、玩家、资产和计费方案会保留。")}</p>
+        </>}
+        <p className="text-sm text-ink/60">{t("无需创建 QQ Bot 凭据；需要连接 Bot 时，可在「接入凭据」单独配置。")}</p>
+        {error && <p role="alert" className="text-sm text-coral">{error}</p>}
+        <div className="flex flex-wrap justify-between gap-3">
+          <button type="button" className={button} onClick={() => step === 0 ? close() : setStep(0)}>{t(step === 0 ? "取消" : "上一步")}</button>
+          <button className={primary}>{t(busy ? "正在处理，请稍候" : step === 0 ? "下一步" : "确认转换并启用计费")}</button>
+        </div>
+      </fieldset>
+    </form>
+  </Modal>;
+}

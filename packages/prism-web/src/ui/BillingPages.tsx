@@ -1,10 +1,11 @@
 import type { Pricing } from "./merchant/Pricing";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useI18n } from "../i18n";
+import { BillingConversionWizard } from "./merchant/BillingSetup";
 
-type Settings = {
+export type Settings = {
   billingEnabled: boolean;
   cashierEnabled: boolean;
   autoRegister: boolean;
@@ -117,19 +118,20 @@ export function BillingSettings({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    Promise.all([
+  const [billingActive, setBillingActive] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const load = useCallback(async () => {
+    const [s, r] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
-      api<{ pricingConfigs: typeof rules }>(
-        shopApi(shopCode, "staff/pricing-configs"),
-      ),
-    ])
-      .then(([s, r]) => {
-        setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false });
-        setRules(r.pricingConfigs);
-      })
-      .catch((e) => setError(e.message));
+      api<{ pricingConfigs: { id: string; name: string; enabled: boolean }[] }>(shopApi(shopCode, "staff/pricing-configs")),
+    ]);
+    setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false });
+    setBillingActive(s.billingEnabled);
+    setRules(r.pricingConfigs);
   }, [shopCode]);
+  useEffect(() => {
+    void load().catch((e) => setError(e.message));
+  }, [load]);
   if (!settings) return <p role="status">{error || t("加载中...")}</p>;
   const flags = {
     billingEnabled: "启用入场计费",
@@ -137,7 +139,7 @@ export function BillingSettings({
     locationEnabled: "启用位置校验",
   } as const;
   return (
-    <form
+    <><form
       className={`${embedded ? "rounded-xl border border-ink/10 bg-panel p-5" : panel} grid gap-4`}
       onSubmit={async (e) => {
         e.preventDefault();
@@ -145,10 +147,11 @@ export function BillingSettings({
         setError("");
         setSaved(false);
         try {
-          await api(shopApi(shopCode, "settings"), {
+          const result = await api<Settings>(shopApi(shopCode, "settings"), {
             method: "PUT",
             body: JSON.stringify(settings),
           });
+          setBillingActive(result.billingEnabled);
           setSaved(true);
           window.dispatchEvent(new Event("prism-shop-settings"));
         } catch (e) {
@@ -159,14 +162,18 @@ export function BillingSettings({
       }}
     >
       <h3 className="font-semibold">{t("入场与位置校验")}</h3>
-      {!settings.billingEnabled && (
-        <div className="flex flex-wrap gap-3 text-sm">
-          <Link className="underline" to={`/merchant/${shopCode}/assets`}>
-            {t("配置基础资产")}
-          </Link>
-          <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-            {t("配置入场规则")}
-          </Link>
+      {!billingActive && (
+        <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
+          <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
+          <button type="button" className={`${control} justify-self-start`} onClick={() => setConverting(true)}>{t("转换为计费店铺")}</button>
+          <div className="flex flex-wrap gap-3">
+            <Link className="underline" to={`/merchant/${shopCode}/assets`}>
+              {t("配置基础资产")}
+            </Link>
+            <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
+              {t("配置入场规则")}
+            </Link>
+          </div>
         </div>
       )}
       <label className="grid gap-2">
@@ -218,6 +225,11 @@ export function BillingSettings({
         </Link>
       )}
     </form>
+      {converting && <BillingConversionWizard shopCode={shopCode} close={() => setConverting(false)} done={async value => {
+        setSettings(value); setBillingActive(value.billingEnabled); setConverting(false); setSaved(true); setError("");
+        await load().catch(error => setError(error.message));
+      }} />}
+    </>
   );
 }
 

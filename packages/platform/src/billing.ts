@@ -36,6 +36,8 @@ import { checkLocation } from "./geo";
 import { jsonError } from "./http";
 import { enforceRateLimits } from "./risk";
 import type { AppBindings } from "./types";
+import { billingSetupSchema } from "./validators";
+import { billingSetupStatements } from "./billing-setup";
 
 type C = Context<AppBindings>;
 export type BillingShop = {
@@ -638,11 +640,6 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         if (unpaid) jsonError(409, "存在未结清的前台账单，请先收款结账", "CASHIER_UNSETTLED_SESSIONS");
       }
       if (body.billingEnabled) {
-        const bot = await c.env.DB.prepare(
-          "SELECT 1 FROM api_tokens WHERE shop_id=? AND role='integration' AND status='active' LIMIT 1",
-        )
-          .bind(shop.id)
-          .first();
         const configured = await c.env.DB.prepare(
           "SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active'",
         )
@@ -654,7 +651,6 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           .bind(shop.id)
           .first();
         if (
-          !bot ||
           !currency ||
           !body.entryPricingIds.length ||
           body.entryPricingIds.some(
@@ -663,7 +659,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         )
           jsonError(
             409,
-            "请先配置 Bot 凭据、余额资产和入场规则",
+            "请先配置余额资产和入场规则",
             "BILLING_CONFIGURATION_REQUIRED",
           );
       }
@@ -696,6 +692,31 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           .bind(shop.id, JSON.stringify({ enabled: cashierEnabled }), new Date().toISOString()),
       ]);
       return c.json({ ...body, cashierEnabled });
+    });
+  });
+  app.post("/api/v1/shops/:shopCode/billing/setup", async (c) => {
+    const shop = await getBillingShop(c, c.req.param("shopCode"));
+    const principal = await staffPrincipal(c, shop);
+    if (principal.staffRole !== "owner") jsonError(403, "只有店铺负责人可以启用计费", "FORBIDDEN");
+    const body = billingSetupSchema.omit({ autoRegister: true, botContact: true }).extend({
+      operationId: z.string().uuid(), cashierEnabled: z.boolean().default(false),
+    }).parse(await c.req.json());
+    return runPlayerOperation(c, shop.id, "billing/setup", body, async () => {
+      const repos = createD1Repositories({ db: c.env.DB, shopId: shop.id, id: crypto.randomUUID, now: () => new Date() });
+      return withOperationLease({ repository: repos.operationLocks, scope: "shop.cashier", resourceId: shop.id, now: () => new Date() }, async () => {
+        const current = await getBillingShop(c, c.req.param("shopCode"));
+        if (current.billing_enabled) jsonError(409, "店铺已启用计费，请在计费页面调整规则", "BILLING_ALREADY_ENABLED");
+        const archived = await c.env.DB.prepare(`SELECT 1 FROM asset_definitions
+          WHERE shop_id=? AND type='currency' AND code IN ('paid','free') AND status='archived' LIMIT 1`).bind(shop.id).first();
+        if (archived) jsonError(409, "基础余额资产已归档，请先恢复后再转换", "BILLING_ASSETS_ARCHIVED");
+        const setup = billingSetupStatements(c.env.DB, shop.id, { ...body, autoRegister: !!current.auto_register, botContact: current.bot_contact });
+        await c.env.DB.batch([...setup.statements,
+          c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'cashier.settings',?,?)
+            ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
+            .bind(shop.id, JSON.stringify({ enabled: body.cashierEnabled }), new Date().toISOString()),
+        ]);
+        return c.json({ ...publicSettings(await getBillingShop(c, c.req.param("shopCode"))), pricingConfigId: setup.ruleId });
+      });
     });
   });
   app.post("/api/v1/shops/:shopCode/qq-binding", async (c) => {

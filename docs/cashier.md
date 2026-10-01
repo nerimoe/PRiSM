@@ -4,8 +4,8 @@
 
 ## 操作流程
 
-1. 负责人进入「设置」，勾选「启用前台收银」并保存。存在进行中或已停止但未付款的前台计时时，须先收款结账才能关闭模式。关闭后保留已有昵称档案、卡片绑定和收款记录，再次启用可继续使用原卡。
-2. 使用支持 WebHID 的桌面 Chrome / Edge，通过 HTTPS（开发时 localhost 也可以）打开管理页面，点击「连接读卡器」并授权 HINATA 设备。关闭其他占用该读卡器的程序或浏览器页面。
+1. 非计费店铺可先在「设置」使用[转换向导](billing-setup.md)启用计费，无需 QQ Bot 凭据。负责人进入「设置」，勾选「启用前台收银」并保存。存在进行中或已停止但未付款的前台计时时，须先收款结账才能关闭模式。关闭后保留已有昵称档案、卡片绑定和收款记录，再次启用可继续使用原卡。
+2. 使用支持 WebHID 的桌面 Chrome / Edge，通过 HTTPS（开发时 localhost 也可以）打开管理页面，点击「连接读卡器」并授权 HINATA 设备。再次打开收银区域会自动连接已经授权的读卡器；拔出后显示断开，重新接入后自动初始化并恢复读卡。关闭其他占用该读卡器的程序或浏览器页面。
 3. 新卡刷入后，询问玩家昵称，点击「登记并入场」。仅创建当前店铺的计时档案并绑定基础 ID，不创建 PRiSM 账号、不要求 QQ、不发注册赠品。
 4. 已绑定卡再次刷入时，无未结账计时则显示「确认入场」；有进行中或已停止但未结账的计时则显示账单。入场和结账均须店员确认，刷卡本身不会扣款或结束计时。
 5. 结账时按显示金额通过店铺自己的微信、支付宝、现金或其他方式收款，勾选「我已通过上述方式收到款项」，点击「确认已收款并结账」。PRiSM 记录原始账单、收款方式、收银员和收款时间，不连接第三方支付系统，也不扣除或创建任何资产。
@@ -16,7 +16,22 @@
 
 ## 卡片和安全边界
 
-参照 [Project-HINATA/hinata_go](https://github.com/Project-HINATA/hinata_go) 的 `hinata_reader.dart`、`pn532.dart` 和 `usb_hinata_impl.dart`：使用 WebHID vendor ID `0xF822`，output/input report ID `1`，桥接命令 `0xE2`，PN532 `InListPassiveTarget` 查询 FeliCa 和 ISO14443 Type A。沿用标准版与 Lite 版的 Type A RF 参数档位。只读取 Type A UID（4/7/10 字节）或 FeliCa IDm（8 字节），不要求 Aime、Banapass、交通卡等应用格式、不读取受保护扇区、不导入游戏卡 access code。
+通信链路移植自 [Project-HINATA/hinata_go 的 `3ca80cc`](https://github.com/Project-HINATA/hinata_go/tree/3ca80ccedb971b8c9de6e2817b2ff44f9f5be8aa)。对照文件包括 `plugins/hinata_nfc.dart/lib/src/core/hinata_reader.dart`、`core/subscription.dart`、`protocol/pn532.dart`、`transport/hid_bridge/hid_bridge_web.dart`，以及 `lib/services/reader/usb_hinata_impl.dart`、`lib/providers/hardware_device_provider.dart` 和 `current_scan_session_provider.dart`。PRiSM 的对应实现是 `card-reader.ts`、`reader-subscription.ts` 和 `reader-manager.ts`。
+
+使用 WebHID vendor ID `0xF822`，输出 report ID `1`；输入按数据首字节分发到订阅，只有 report ID `2` 单独走 CardIO 通道，不能假设响应的 report ID 必须为 `1`。Go 的测试使用 report ID `0`，旧实现过滤掉此类响应会产生超时。PN532 使用桥接命令 `0xE2`、标准帧和校验；接受 ACK、忽略其他命令的响应，按每次接收设置独立的 1000ms 超时，计时从 HID 写入完成后开始。收到 ACK 后继续等待对应命令的响应；请求成功、失败或取消均结束对应订阅。
+
+只读取 Type A UID（4/7/10 字节）或 FeliCa IDm（8 字节），不要求 Aime、Banapass、交通卡等应用格式、不读取受保护扇区、不导入游戏卡 access code。
+
+### 初始化、事件订阅和重连
+
+- 按 Go 等待 HID collections 数量大于 2，每 50ms 检查一次，最多 60 次；仅在设备尚未打开时调用 `open()`，先注册输入事件，再发送固件时间戳请求 `0x01`，其响应首字节为 ASCII `2`（`0x32`）。按固件版本读取 `0xE5` commit、`0xE6` chip ID，以及 `0xD4`/`0xD1` 启动配置；不插入额外的 RF 初始化指令。
+- 移植 `count`、`never`、`specificIsOn`、`specificNotOn` 四种退订策略；接收队列按序消费，广播订阅可独立取消。发送 HID 指令前建立订阅，保留提前到达的响应；一次性订阅自动关闭后仍可取出已缓冲的响应。CardIO report `2` 保留独立订阅接口，不作为卡片计时凭证。
+- 打开收银区域后订阅 HID `connect`/`disconnect` 事件并调用 `getDevices()` 枚举已授权设备；未授权设备须通过按钮打开选择器。重复连接事件不会建立第二轮轮询。每次连接和断开递增连接代次，过期枚举、握手和旧设备响应不能覆盖新连接；重新接入后使用新订阅完成固件握手再开始轮询。
+- 拔出、手动断开和离开收银区域都会取消响应等待、移除输入订阅、结束轮询并关闭设备；离开区域还移除 HID 连接事件监听。取消也覆盖尚未完成的 HID 写入。快速重连或 React 页面重挂载会等待前一连接关闭，避免旧连接关闭新连接。手动断开后保持断开，直到再次点击连接或物理重新接入。
+- 每轮按 Go 先轮询 FeliCa（212kbps，初始数据 `00 FF FF 01 00`）；无目标时释放 `tg=1`，再逐档配置 RF 并轮询 Type A。标准版 PID `0x0147` 使用两档，Lite PID `0x0148` 使用三档，其他 PID 使用默认档；参数与 Go 一致。
+- 轮询间隔 16ms；页面失焦时每 200ms 检查一次，暂停发送读卡指令。保留等待当前轮询结束后暂停、恢复轮询的接口。只有连续三次成功的无目标扫描才判断卡片已移开；超时或坏帧视为读取未完成，不清除卡片存在状态，也不重复触发玩家操作。
+
+轮询失败时页面显示「读卡器本次读取未完成，正在重试」，保留连接并继续轮询，下一次成功扫描自动清除提示。真实拔出时显示自动重连提示；握手失败保持未连接，可以重新选择设备。超时或坏帧的「读卡器通信详情」包含命令、轮询协议/RF 档位、帧数及最后响应的 report ID，便于区分未收到任何响应与收到 ACK 后未收到数据。现场仍出现超时时可记录这些详情及读卡器型号、固件版本后排查。
 
 这里的「任何卡片」指读卡器能通过上述协议读取基础 ID 的卡片。ISO15693、Type B、手机系统 NFC、非 HINATA WebHID 设备和高安全模式不在本次实现范围内。随机 UID 的手机或卡片不适合作为稳定入场凭证。真实设备仍需现场确认固件和浏览器兼容性。
 
@@ -39,4 +54,4 @@ UID 可以被复制，仅用于店员监督下的店内计时档案。卡片档�
 
 Cloudflare D1 部署须应用 `migrations/0029_cashier.sql`（正常 `deploy:worker` 流程会执行未应用迁移）；本地 SQLite 运行时会通过既有 schema 初始化自动添加表和保护触发器。无须更改现有玩家数据或配置支付密钥。
 
-验证命令：`bun run typecheck`、`bun run build:web`、`bun test --timeout 30000`。收银 API 可单独运行 `bun test packages/platform/test/cashier.test.ts --timeout 60000`。如果全量单进程运行中出现 Miniflare 运行器超时或共享模拟状态错误，可按测试文件使用独立 Bun 进程验证平台集成测试，保持所有断言启用。读卡协议单元测试使用模拟 HID 设备，收银接口测试使用真实 Miniflare D1；这些测试不替代实体刷卡实测。
+验证命令：`bun run typecheck`、`bun run build:web`、`bun test --timeout 30000`。读卡链路可单独运行 `bun test packages/prism-web/src/card-reader.test.ts packages/prism-web/src/reader-subscription.test.ts packages/prism-web/src/reader-manager.test.ts`，覆盖 report `0`/`1`、CardIO 隔离、提前响应、ACK 后等待、超时清理、固件版本握手、RF 档位、失焦、卡片存在状态、已授权枚举、初始化中拔出和重连。收银 API 可单独运行 `bun test packages/platform/test/cashier.test.ts --timeout 60000`。如果全量单进程运行中出现 Miniflare 运行器超时或共享模拟状态错误，可按测试文件使用独立 Bun 进程验证平台集成测试，保持所有断言启用。读卡协议单元测试使用模拟 HID 设备，收银接口测试使用真实 Miniflare D1；这些测试不替代实体刷卡实测。
