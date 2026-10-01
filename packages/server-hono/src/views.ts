@@ -252,6 +252,7 @@ export function toStaffReportSettlementView(
   settlement: StaffReportSettlementListItem,
 ): Record<string, unknown> {
   return {
+    ...(settlement.externalPayment ? { externalPayment: settlement.externalPayment } : {}),
     settlementId: settlement.settlementId,
     sessionId: settlement.sessionId,
     playerId: settlement.playerId,

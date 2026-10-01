@@ -26,6 +26,7 @@ import {
 } from "./shared";
 
 import { LivePlayers } from "./LivePlayers";
+import { Cashier } from "./Cashier";
 
 type Holdings = {
   holdings: {
@@ -52,7 +53,7 @@ type History = {
 };
 export function Players({ live = false }: { live?: boolean }) {
   const { t } = useI18n();
-  const { canWrite, shopCode } = useMerchant();
+  const { canWrite, shopCode, cashierEnabled } = useMerchant();
   const request = useStaffApi();
   const list = useResource<{ players: Player[] }>(live ? null : "players");
   const onSite = useResource<{ players: LivePlayer[] }>(live ? "live-players" : null);
@@ -61,7 +62,7 @@ export function Players({ live = false }: { live?: boolean }) {
   const [bind, setBind] = useState(false);
   const [params, setParams] = useSearchParams();
   const players: Player[] | undefined = live ? onSite.data?.players.map(p => ({
-    id: p.playerId, displayName: p.displayName, status: p.status, walletTotal: p.walletTotal,
+    id: p.playerId, paymentMode: p.paymentMode, displayName: p.displayName, status: p.status, walletTotal: p.walletTotal,
     identities: p.identities, activeSessionId: p.sessions.find(s => !s.endedAt)?.id ?? null,
   })) : list.data?.players;
   const selected = players?.find(
@@ -104,6 +105,7 @@ export function Players({ live = false }: { live?: boolean }) {
           </button>
         )}
       </div>
+      {live && cashierEnabled && <Cashier onChanged={refresh} />}
       <input
         className={`${input} max-w-md`}
         type="search"
@@ -273,7 +275,7 @@ function PlayerDetail({
   refresh: () => void;
 }) {
   const { t } = useI18n();
-  const { canWrite, shopCode } = useMerchant();
+  const { canWrite, shopCode, cashierEnabled } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
   const assets = useResource<Holdings>(`${base}/assets`);
@@ -312,7 +314,7 @@ function PlayerDetail({
   return (
     <Modal title={player.displayName} close={close}>
       <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
-        <span className="text-sm text-ink/60">{t("余额")}</span>
+        <span className="text-sm text-ink/60">{t(player.paymentMode === "cashier" ? "现场收款 · 无预存资产" : "余额")}</span>
         <strong className="text-3xl font-semibold tabular-nums">
           {money(player.walletTotal)}
         </strong>
@@ -322,7 +324,8 @@ function PlayerDetail({
           {error}
         </p>
       )}
-      {canWrite && (
+      {canWrite && cashierEnabled && player.paymentMode === "cashier" && <Link className={`${primary} mb-5`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(player.id)}`}>{t("前台收银")}</Link>}
+      {canWrite && player.paymentMode !== "cashier" && (
         <div className="mb-5 flex flex-wrap gap-2">
           <button className={primary} onClick={() => setAction("wallet")}>
             {t("充值 / 扣款")}
@@ -555,7 +558,7 @@ function PlayerDetail({
               {i.provider === "qq" ? "QQ" : i.provider} · {i.subject}
             </p>
           ))}
-          {canWrite && (
+          {canWrite && player.paymentMode !== "cashier" && (
             <div className="mt-4 grid gap-5">
               {!player.identities?.some((identity) => identity.provider === "qq") && <ActionForm
                 done={done}

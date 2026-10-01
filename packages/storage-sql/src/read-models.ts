@@ -42,8 +42,9 @@ export function createSqlReadModels(input: CreateSqlReadModelsInput): Applicatio
 }
 
 async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: string, checkoutId?: string): Promise<import("@prism/application").PlayerCheckoutReceipt | null> {
-  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null }>(
-    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json FROM player_checkouts c
+  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null; payment_method: string | null; collected_by: string | null; collected_at: string | null }>(
+    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json, payment.method AS payment_method, payment.staff_id AS collected_by, payment.collected_at FROM player_checkouts c
+     LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
      LEFT JOIN checkout_timelines t ON t.shop_id = c.shop_id AND t.checkout_id = c.id
      LEFT JOIN app_settings profile ON profile.shop_id = c.shop_id AND profile.key = 'store.profile'
      LEFT JOIN asset_transactions tx ON tx.shop_id = c.shop_id AND tx.player_id = c.player_id
@@ -119,6 +120,7 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
     timeline.totals = [...totals].map(([name, amount]) => ({ name, amount: yuanOf(centsOfInteger(amount)) }));
   }
   return {
+    ...(checkout.payment_method ? { externalPayment: { method: checkout.payment_method, staffId: checkout.collected_by!, collectedAt: checkout.collected_at! } } : {}),
     wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
     playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
     settlements: sessions.map(session => ({ settlement: { sessionId: session.sessionId,
@@ -259,6 +261,7 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            p.id,
            p.display_name,
            p.status,
+           EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(input.executor)} AND cp.player_id=p.id) AS cashier,
            wallet_rows.wallet_rows_json,
            active_sessions.active_session_id,
            active_sessions.has_unpaid_session,
@@ -490,10 +493,12 @@ async function listReportSettlements(
        s.ended_at,
        st.settled_at,
        st.subtotal,
-       st.total
+       st.total,
+       payment.method AS payment_method, payment.staff_id AS collected_by
      FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st
      INNER JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s ON s.id = st.session_id
      INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
+     LEFT JOIN cashier_payments payment ON payment.shop_id = ${sqlShop(input.executor)} AND payment.checkout_id = st.checkout_id
      WHERE st.settled_at >= ? AND st.settled_at < ?
      ORDER BY st.settled_at DESC, st.id DESC
      LIMIT ? OFFSET ?`,
@@ -505,6 +510,7 @@ async function listReportSettlements(
     const endedAt = row.ended_at ? new Date(row.ended_at) : null;
 
     return {
+      ...(row.payment_method ? { externalPayment: { method: row.payment_method, staffId: row.collected_by! } } : {}),
       settlementId: row.settlement_id,
       sessionId: row.session_id,
       playerId: row.player_id,
@@ -915,6 +921,7 @@ function groupStaffPlayers(
         id: row.id,
         displayName: row.display_name,
         status: row.status,
+        ...(row.cashier ? { paymentMode: "cashier" as const } : {}),
         walletTotal: availableCurrencyTotal(row.wallet_rows_json, at),
         activeSessionId: row.active_session_id,
         hasUnpaidSession: !!row.has_unpaid_session,
@@ -1036,6 +1043,7 @@ type StaffPlayerRow = {
 };
 
 type StaffPlayerWithIdentityRow = StaffPlayerRow & {
+  cashier?: number;
   identity_provider: string | null;
   identity_subject: string | null;
   identity_created_at: string | null;
@@ -1108,6 +1116,8 @@ type MachineConnectionRow = {
 };
 
 type StaffReportSettlementRow = {
+  payment_method: string | null;
+  collected_by: string | null;
   settlement_id: string;
   session_id: string;
   player_id: string;

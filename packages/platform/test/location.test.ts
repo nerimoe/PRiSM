@@ -3,7 +3,7 @@ import { checkShopLocation, type BillingShop } from "../src/billing";
 
 const shop: BillingShop = {
   id: "shop", public_id: "shop", name: "Shop", latitude: 35, longitude: 139,
-  radius_meters: 80, billing_enabled: 1, auto_register: 0,
+  radius_meters: 80, billing_enabled: 1, cashier_enabled: 0, auto_register: 0,
   checkin_geo: 0, checkout_geo: 0, machine_geo: 1,
   entry_pricing_ids_json: "[]", bot_contact: "", time_zone: "Asia/Shanghai",
 };

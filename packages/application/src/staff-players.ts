@@ -137,6 +137,8 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
     },
 
     async bindPlayerIdentity(input) {
+      if ((await dependencies.players.findById(input.playerId))?.paymentMode === "cashier")
+        throw new PrismDomainError("前台卡片档案不能绑定账号身份", "CASHIER_PROFILE_RESTRICTED");
       if (!dependencies.playerIdentities) {
         throw new PrismDomainError("Player identity repository is required.", "PLAYER_IDENTITY_REPOSITORY_NOT_CONFIGURED");
       }

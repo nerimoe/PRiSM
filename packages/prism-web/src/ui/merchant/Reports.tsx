@@ -14,6 +14,7 @@ import {
 } from "./shared";
 
 type Settlement = {
+  externalPayment?: { method: string; staffId: string };
   settlementId: string;
   playerDisplayName: string;
   settledAt: string;
@@ -23,6 +24,7 @@ type Settlement = {
 export function ReportsPage() {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
+  const payment = (s: Settlement) => s.externalPayment ? t("现场收款") + " · " + t(({ wechat: "微信", alipay: "支付宝", cash: "现金", other: "其他" } as Record<string, string>)[s.externalPayment.method] ?? s.externalPayment.method) : t("资产结算");
   const [from, setFrom] = useState(
     () => formatLocalDate(new Date(), timeZone).slice(0, 8) + "01",
   );
@@ -117,6 +119,7 @@ export function ReportsPage() {
                 className="grid grid-cols-[1fr_auto] gap-2 p-4"
               >
                 <strong>{s.playerDisplayName}</strong>
+                <span className="col-span-2 text-xs text-ink/60">{payment(s)}</span>
                 <strong className="tabular-nums">{money(s.total)}</strong>
                 <span className="text-xs text-ink/60">
                   {new Date(s.settledAt).toLocaleString(undefined, {
@@ -130,7 +133,7 @@ export function ReportsPage() {
             ))}
           </div>
           <div className="hidden md:block">
-            <Table headers={["玩家", "结账时间", "时长（分钟）", "金额"]}>
+            <Table headers={["玩家", "结账时间", "时长（分钟）", "金额", "收款方式"]}>
               {settlements.data.settlements.map((s) => (
                 <tr key={s.settlementId}>
                   <td className={cell}>{s.playerDisplayName}</td>
@@ -141,6 +144,7 @@ export function ReportsPage() {
                   </td>
                   <td className={cell}>{Math.round(s.durationMinutes)}</td>
                   <td className={cell}>{money(s.total)}</td>
+                  <td className={cell} title={s.externalPayment?.staffId}>{payment(s)}</td>
                 </tr>
               ))}
             </Table>

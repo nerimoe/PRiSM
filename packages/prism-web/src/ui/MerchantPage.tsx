@@ -115,6 +115,7 @@ function Workspace({
   const navigate = useNavigate();
   const [state, setState] = useState<{
     billingEnabled: boolean;
+    cashierEnabled: boolean;
     timeZone: string;
     canWrite: boolean;
     owner: boolean;
@@ -122,7 +123,7 @@ function Workspace({
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     const [info, me] = await Promise.all([
-      api<{ shop: { billingEnabled: boolean; timeZone: string } }>(
+      api<{ shop: { billingEnabled: boolean; cashierEnabled: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
       api<{ staff: { canWrite: boolean; role: string } }>(
@@ -174,6 +175,7 @@ function Workspace({
         owner: state.owner,
         timeZone: state.timeZone,
         billingEnabled: state.billingEnabled,
+        cashierEnabled: state.cashierEnabled,
       }}
     >
       <header className="flex flex-wrap items-center justify-between gap-4">
@@ -221,6 +223,8 @@ function Workspace({
       <div key={section}>
         {section === "devices" ? (
           <DevicesPage />
+        ) : state.billingEnabled && section === "cashier" ? (
+          <CashierRedirect shopCode={shop.publicId} />
         ) : state.billingEnabled && section === "live" ? (
           <Players live />
         ) : state.billingEnabled && section === "players" ? (
@@ -255,6 +259,13 @@ function Workspace({
       </div>
     </MerchantContext.Provider>
   );
+}
+function CashierRedirect({ shopCode }: { shopCode: string }) {
+  const [params] = useSearchParams();
+  const next = new URLSearchParams(params);
+  const player = next.get("player");
+  if (player) { next.set("cashierPlayer", player); next.delete("player"); }
+  return <Navigate replace to={`/merchant/${encodeURIComponent(shopCode)}/live?${next}`} />;
 }
 function StaffMembers({ shopId }: { shopId: string }) {
   const [members, setMembers] = useState<

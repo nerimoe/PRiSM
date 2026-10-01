@@ -1,3 +1,4 @@
+import { cashierSchema } from "./cashier-schema";
 import { pricingVersionSchema } from "./pricing-version-schema";
 
 export const sqliteSchema = [
@@ -405,8 +406,10 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_api_tokens_role_status ON api_tokens(shop_id, role, status)`,
   `CREATE INDEX IF NOT EXISTS idx_operation_locks_expires_at ON operation_locks(shop_id, expires_at)`,
   ...pricingVersionSchema,
+  ...cashierSchema,
 ] as const;
 
+export { cashierSchema } from "./cashier-schema";
 export * from "./repositories";
 export * from "./read-models";
 

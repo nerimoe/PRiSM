@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
 import { readFileSync, readdirSync } from "node:fs";
-import { sqliteSchema } from "@prism/storage-sql";
+import { cashierSchema, sqliteSchema } from "@prism/storage-sql";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { createPrismWorkerDependencies } from "@prism/runtime";
 import { activityBill } from "../src/live-activity-billing";
@@ -28,11 +28,14 @@ afterAll(() => mf.dispose());
 
 test("real DO alarms push authoritative bills, deduplicate and end with the persisted checkout", async () => {
   const db = await mf.getD1Database("DB");
-  for (const sql of sqliteSchema) await db.prepare(sql).run();
+  // Historical fixtures rebuild holdings in migration 0022. Install the new guards afterward.
+  const cashierStatements = new Set<string>(cashierSchema);
+  for (const sql of sqliteSchema) if (!cashierStatements.has(sql)) await db.prepare(sql).run();
   const root = new URL("../../../migrations/", import.meta.url);
   for (const file of readdirSync(root).filter(file => file >= "0017_" && file < "0027_" && file.endsWith(".sql")).sort()) {
     for (const sql of readFileSync(new URL(file, root), "utf8").replace(/^\s*--.*$/gm, "").split(";").map(sql => sql.trim()).filter(Boolean)) await db.prepare(sql).run();
   }
+  for (const sql of cashierSchema) await db.prepare(sql).run();
   const now = new Date();
   await db.prepare("INSERT INTO users(id,role) VALUES('u','user')").run();
   await db.prepare("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES('shop','shop','Shop',0,0,80,'u')").run();

@@ -446,3 +446,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 `GET /api/v1/shops/:shopCode/player/live-activity/bill?sessionId=...` 校验该会话属于当前店铺与玩家。未付款时返回当前统一账单，`phase: active`；已付款时只读取该会话关联的已保存 checkout，返回 `phase: ended`、最终金额及实际会话开始/结束时间，不会混入下一次入场。找不到会话返回 404，已付款但结算记录不完整返回 409，客户端应保留活动重试。省略 sessionId 时仍返回当前未结账摘要，无账单时各字段为 null。
 
 结算单查询（latest 和按 checkoutId 查询）现在附带 `settlements: [{ settlement: { sessionId, startedAt, endedAt } }]`，与结账确认响应中的会话字段一致。客户端可复用已取得的结算单结束匹配的活动，只有缺少匹配且完整的数据时才调用按会话恢复接口。历史账单仍可解码，缺失结束时间时不猜测。
+
+## React 前台收银
+
+前台收银默认关闭，负责人通过店铺设置的 `cashierEnabled` 开关手动启用，启用后读卡与收款合并在 React「在店」页面。存在未付款前台计时时不能关闭。低安全模式卡片档案使用 `/api/v1/shops/:shopCode/cashier/*`，仅由店铺 owner/manager 操作，不要求玩家账号或 QQ，不保存资产。登记、入场与现场收款结账使用 UUID `operationId` 保证重试不重复处理。完整接口、预览时刻结账规则及权限见 [前台收银](cashier.md)。

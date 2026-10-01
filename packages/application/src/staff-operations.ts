@@ -56,6 +56,7 @@ export type LiveSessionView = {
 };
 
 export type LivePlayerView = {
+  paymentMode?: "cashier";
   timeline?: BillTimeline;
   identities: StaffPlayerListItem["identities"];
   playerId: string;
@@ -152,6 +153,7 @@ export function createStaffOperationsService<TCheckoutResult>(
           const orderedSessions = liveSessions.sort((left, right) => left.startedAt.getTime() - right.startedAt.getTime());
           rows.push({
             playerId,
+            ...(player?.paymentMode ? { paymentMode: player.paymentMode } : {}),
             identities: player?.identities ?? [],
             displayName: player?.displayName ?? playerSessions[0]?.playerDisplayName ?? playerId,
             status: player?.status ?? "active",

@@ -457,6 +457,7 @@ export type StaffCheckoutOverrideInput = {
 };
 
 export type StaffCheckoutCommands = {
+  checkoutExternal?(input: import("@prism/application").ExternalCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   previewCheckout?(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   checkoutWithOverride?(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;

@@ -8,7 +8,7 @@ import type { PastAppliedAdjustment, PlayerCheckout, SettlementRecord } from "./
 import type { Cents } from "./money";
 
 export type CheckoutCommit = {
-  assets: Parameters<AssetRepository["commitAssetTransaction"]>[0];
+  assets: Parameters<AssetRepository["commitAssetTransaction"]>[0] | null;
   checkout: PlayerCheckout;
   settlements: readonly SettlementRecord[];
   sessions: readonly Session[];
@@ -131,6 +131,8 @@ export type SystemRepository = {
 };
 
 export type Player = {
+  /** Card UID profiles only support staff-collected external payment. */
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   status: PlayerStatus;

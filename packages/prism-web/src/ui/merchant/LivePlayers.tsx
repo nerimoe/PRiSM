@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { BillTotal, BillTimeline } from "../BillTimeline";
 import { useRef, useState } from "react";
 import { useI18n } from "../../i18n";
@@ -8,7 +9,7 @@ export function LivePlayers({ players, refresh, onManage }: {
   players: LivePlayer[]; refresh: () => void; onManage: (id: string) => void;
 }) {
   const { t } = useI18n();
-  const { timeZone, canWrite } = useMerchant();
+  const { timeZone, canWrite, shopCode, cashierEnabled } = useMerchant();
   const request = useStaffApi();
   const billPanel = useRef<HTMLElement>(null);
   const [selectedId, setSelectedId] = useState<string>();
@@ -59,7 +60,7 @@ export function LivePlayers({ players, refresh, onManage }: {
             className={`focus-ring block w-full border-b border-ink/10 px-4 py-4 text-left last:border-b-0 ${selected?.playerId === player.playerId ? "bg-ink/[0.06]" : "hover:bg-ink/[0.025]"}`}>
             <span className="flex items-baseline justify-between gap-3">
               <span className="truncate text-base font-semibold">{player.displayName}</span>
-              <span className={`shrink-0 text-xs ${player.estimatedTotal !== null && player.walletTotal < player.estimatedTotal ? "text-coral" : "text-ink/60"}`}>{t(liveBilling(player).status)}</span>
+              <span className={`shrink-0 text-xs ${player.paymentMode !== "cashier" && player.estimatedTotal !== null && player.walletTotal < player.estimatedTotal ? "text-coral" : "text-ink/60"}`}>{t(liveBilling(player).status)}</span>
             </span>
             <span className="mt-3 grid grid-cols-3 gap-3">
               <span><span className="block text-xs text-ink/60">{t("入场时间")}</span>
@@ -80,7 +81,7 @@ export function LivePlayers({ players, refresh, onManage }: {
         <dl className="grid grid-cols-3 gap-3 border-b border-ink/10 p-4">
           <div><dt className="text-xs text-ink/60">{t("入场时间")}</dt><dd className="mt-1 text-2xl font-semibold leading-tight tabular-nums">{selected.sessions[0] ? <time dateTime={selected.sessions[0].startedAt}>{clockAt(selected.sessions[0].startedAt)}</time> : "—"}</dd><dd className="mt-1 text-xs text-ink/50">{selected.sessions[0] && dayAt(selected.sessions[0].startedAt)}</dd></div>
           <div><dt className="text-xs text-ink/60">{t("时长")}</dt><dd className="mt-1 text-2xl font-semibold leading-tight tabular-nums">{stayDuration(selected.stayDurationMinutes)}</dd></div>
-          <div className="text-right"><dt className="text-xs text-ink/60">{t("应付")}</dt><dd className="mt-1 break-all text-2xl font-semibold leading-tight tabular-nums">{money(selected.estimatedTotal)}</dd><dd className="mt-1 text-xs text-ink/50">{t("余额")} {money(selected.walletTotal)}</dd></div>
+          <div className="text-right"><dt className="text-xs text-ink/60">{t("应付")}</dt><dd className="mt-1 break-all text-2xl font-semibold leading-tight tabular-nums">{money(selected.estimatedTotal)}</dd><dd className="mt-1 text-xs text-ink/50">{selected.paymentMode === "cashier" ? t("现场收款") : <>{t("余额")} {money(selected.walletTotal)}</>}</dd></div>
         </dl>
         <div className="max-h-[60vh] overflow-y-auto p-4">
           {selected.timeline && <BillTimeline preview={{ settlementPreview: { total: selected.estimatedTotal ?? 0 }, timeline: selected.timeline, chargeItems: [], adjustments: [] }} />}
@@ -91,7 +92,7 @@ export function LivePlayers({ players, refresh, onManage }: {
         </div>
         {(canWrite || error) && <footer className="p-4">
           {error && <p role="alert" className="mb-3 text-sm text-coral">{error}</p>}
-          {canWrite && <button className={`${primary} w-full`} disabled={busy} onClick={previewCheckout}>{t(busy ? "正在加载" : "结账")}</button>}
+          {canWrite && selected.paymentMode === "cashier" ? cashierEnabled && <Link className={`${primary} w-full`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(selected.playerId)}`}>{t("前台收款")}</Link> : canWrite && <button className={`${primary} w-full`} disabled={busy} onClick={previewCheckout}>{t(busy ? "正在加载" : "结账")}</button>}
         </footer>}
       </section>}
     </div>

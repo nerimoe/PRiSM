@@ -46,6 +46,7 @@ export type BillingShop = {
   longitude: number;
   radius_meters: number;
   billing_enabled: number;
+  cashier_enabled: number;
   auto_register: number;
   checkin_geo: number;
   checkout_geo: number;
@@ -57,6 +58,7 @@ export type BillingShop = {
 };
 const settingsSchema = z.object({
   billingEnabled: z.boolean(),
+  cashierEnabled: z.boolean().optional(),
   autoRegister: z.boolean(),
   locationEnabled: z.boolean().optional(),
   checkinGeo: z.boolean().optional(),
@@ -80,6 +82,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
   const shop = await c.env.DB.prepare(
     `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
     COALESCE(b.billing_enabled,0) AS billing_enabled, COALESCE(b.auto_register,0) AS auto_register,
+    COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='cashier.settings'),0) AS cashier_enabled,
     COALESCE(b.checkin_geo,0) AS checkin_geo, COALESCE(b.checkout_geo,0) AS checkout_geo,
     COALESCE(b.machine_geo,0) AS machine_geo, COALESCE(b.entry_pricing_ids_json,'[]') AS entry_pricing_ids_json,
     COALESCE(b.bot_contact,'') AS bot_contact,
@@ -175,6 +178,7 @@ export async function requireActiveEntry(
 function publicSettings(shop: BillingShop) {
   return {
     billingEnabled: !!shop.billing_enabled,
+    cashierEnabled: !!shop.cashier_enabled,
     autoRegister: !!shop.auto_register,
     locationEnabled: !!shop.machine_geo,
     checkinGeo: !!shop.checkin_geo,
@@ -615,67 +619,84 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     return c.json(publicSettings(shop));
   });
   app.put("/api/v1/shops/:shopCode/settings", async (c) => {
-    const shop = await getBillingShop(c, c.req.param("shopCode"));
-    const principal = await staffPrincipal(c, shop);
+    const initialShop = await getBillingShop(c, c.req.param("shopCode"));
+    const principal = await staffPrincipal(c, initialShop);
     if (principal.staffRole !== "owner")
       jsonError(403, "只有店铺负责人可以修改平台设置");
-    const body = settingsSchema.parse(await c.req.json());
-    if (body.billingEnabled) {
-      const bot = await c.env.DB.prepare(
-        "SELECT 1 FROM api_tokens WHERE shop_id=? AND role='integration' AND status='active' LIMIT 1",
-      )
-        .bind(shop.id)
-        .first();
-      const configured = await c.env.DB.prepare(
-        "SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active'",
-      )
-        .bind(shop.id)
-        .all<{ id: string }>();
-      const currency = await c.env.DB.prepare(
-        "SELECT 1 FROM asset_definitions WHERE shop_id=? AND type='currency' AND status='active' LIMIT 1",
-      )
-        .bind(shop.id)
-        .first();
-      if (
-        !bot ||
-        !currency ||
-        !body.entryPricingIds.length ||
-        body.entryPricingIds.some(
-          (id) => !configured.results.some((r) => r.id === id),
+    const repos = createD1Repositories({ db: c.env.DB, shopId: initialShop.id, id: crypto.randomUUID, now: () => new Date() });
+    return withOperationLease({ repository: repos.operationLocks, scope: "shop.cashier", resourceId: initialShop.id, now: () => new Date() }, async () => {
+      const shop = await getBillingShop(c, c.req.param("shopCode"));
+      const body = settingsSchema.parse(await c.req.json());
+      // Older clients omit this flag; preserve the current mode in that case.
+      const cashierEnabled = body.cashierEnabled ?? !!shop.cashier_enabled;
+      if (cashierEnabled && !body.billingEnabled)
+        jsonError(409, "请先启用入场计费", "BILLING_DISABLED");
+      if (shop.cashier_enabled && !cashierEnabled) {
+        const unpaid = await c.env.DB.prepare(`SELECT 1 FROM sessions s JOIN cashier_profiles cp
+          ON cp.shop_id=s.shop_id AND cp.player_id=s.player_id
+          WHERE s.shop_id=? AND s.payment_status='unpaid' LIMIT 1`).bind(shop.id).first();
+        if (unpaid) jsonError(409, "存在未结清的前台账单，请先收款结账", "CASHIER_UNSETTLED_SESSIONS");
+      }
+      if (body.billingEnabled) {
+        const bot = await c.env.DB.prepare(
+          "SELECT 1 FROM api_tokens WHERE shop_id=? AND role='integration' AND status='active' LIMIT 1",
         )
+          .bind(shop.id)
+          .first();
+        const configured = await c.env.DB.prepare(
+          "SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active'",
+        )
+          .bind(shop.id)
+          .all<{ id: string }>();
+        const currency = await c.env.DB.prepare(
+          "SELECT 1 FROM asset_definitions WHERE shop_id=? AND type='currency' AND status='active' LIMIT 1",
+        )
+          .bind(shop.id)
+          .first();
+        if (
+          !bot ||
+          !currency ||
+          !body.entryPricingIds.length ||
+          body.entryPricingIds.some(
+            (id) => !configured.results.some((r) => r.id === id),
+          )
+        )
+          jsonError(
+            409,
+            "请先配置 Bot 凭据、余额资产和入场规则",
+            "BILLING_CONFIGURATION_REQUIRED",
+          );
+      }
+      if (shop.billing_enabled && !body.billingEnabled) {
+        const active = await c.env.DB.prepare(
+          "SELECT 1 FROM sessions WHERE shop_id=? AND payment_status='unpaid' LIMIT 1",
+        )
+          .bind(shop.id)
+          .first();
+        if (active)
+          jsonError(409, "存在未结消费，不能停用计费", "UNSETTLED_SESSIONS");
+      }
+      await c.env.DB.batch([c.env.DB.prepare(
+        `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact)
+        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
+        checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact`,
       )
-        jsonError(
-          409,
-          "请先配置 Bot 凭据、余额资产和入场规则",
-          "BILLING_CONFIGURATION_REQUIRED",
-        );
-    }
-    if (shop.billing_enabled && !body.billingEnabled) {
-      const active = await c.env.DB.prepare(
-        "SELECT 1 FROM sessions WHERE shop_id=? AND payment_status='unpaid' LIMIT 1",
-      )
-        .bind(shop.id)
-        .first();
-      if (active)
-        jsonError(409, "存在未结消费，不能停用计费", "UNSETTLED_SESSIONS");
-    }
-    await c.env.DB.prepare(
-      `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact)
-      VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
-      checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact`,
-    )
-      .bind(
-        shop.id,
-        +body.billingEnabled,
-        +body.autoRegister,
-        +body.checkinGeo,
-        +body.checkoutGeo,
-        +body.machineGeo,
-        JSON.stringify(body.entryPricingIds),
-        body.botContact,
-      )
-      .run();
-    return c.json(body);
+        .bind(
+          shop.id,
+          +body.billingEnabled,
+          +body.autoRegister,
+          +body.checkinGeo,
+          +body.checkoutGeo,
+          +body.machineGeo,
+          JSON.stringify(body.entryPricingIds),
+          body.botContact,
+        ),
+        c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'cashier.settings',?,?)
+          ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
+          .bind(shop.id, JSON.stringify({ enabled: cashierEnabled }), new Date().toISOString()),
+      ]);
+      return c.json({ ...body, cashierEnabled });
+    });
   });
   app.post("/api/v1/shops/:shopCode/qq-binding", async (c) => {
     const user = requireUser(c);
@@ -832,6 +853,13 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       c.req.method === "POST"
         ? await c.req.json<Record<string, unknown>>()
         : undefined;
+    const restrictedPlayerId = path.match(/^players\/([^/]+)\//)?.[1];
+    if (restrictedPlayerId && c.req.method !== "GET" &&
+        !/\/(checkout\/preview|sessions\/[^/]+\/stop|status)$/.test(path)) {
+      const cashier = await c.env.DB.prepare("SELECT 1 FROM cashier_profiles WHERE shop_id=? AND player_id=?")
+        .bind(shop.id, decodeURIComponent(restrictedPlayerId)).first();
+      if (cashier) jsonError(409, "前台卡片档案请使用前台收银，不支持资产或账号绑定", "CASHIER_PROFILE_RESTRICTED");
+    }
     const execute = () =>
       forward(
         c,

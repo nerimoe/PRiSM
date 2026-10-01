@@ -6,6 +6,7 @@ import { useI18n } from "../i18n";
 
 type Settings = {
   billingEnabled: boolean;
+  cashierEnabled: boolean;
   autoRegister: boolean;
   locationEnabled: boolean;
   checkinGeo: boolean;
@@ -124,7 +125,7 @@ export function BillingSettings({
       ),
     ])
       .then(([s, r]) => {
-        setSettings(s);
+        setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false });
         setRules(r.pricingConfigs);
       })
       .catch((e) => setError(e.message));
@@ -169,7 +170,11 @@ export function BillingSettings({
         </div>
       )}
       <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.billingEnabled} onChange={(e) => setSettings({ ...settings, billingEnabled: e.target.checked })} />{t(flags.billingEnabled)}</span>
+        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.billingEnabled} onChange={(e) => setSettings({ ...settings, billingEnabled: e.target.checked, cashierEnabled: e.target.checked && settings.cashierEnabled })} />{t(flags.billingEnabled)}</span>
+      </label>
+      <label className="grid gap-2">
+        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.cashierEnabled} disabled={!settings.billingEnabled} onChange={(e) => setSettings({ ...settings, cashierEnabled: e.target.checked })} />{t("启用前台收银")}</span>
+        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。")}</span>
       </label>
       <label className="grid gap-2">
         <span className="flex items-center gap-3"><input type="checkbox" checked={settings.autoRegister} onChange={(e) => setSettings({ ...settings, autoRegister: e.target.checked })} />{t(flags.autoRegister)}</span>

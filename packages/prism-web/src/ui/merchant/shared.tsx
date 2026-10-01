@@ -17,6 +17,7 @@ export const MerchantContext = createContext({
   shopCode: "",
   shopId: "",
   billingEnabled: false,
+  cashierEnabled: false,
   canWrite: false,
   owner: false,
   timeZone: "",
@@ -216,6 +217,7 @@ export function Table({
 }
 export const cell = "px-4 py-4";
 export type Player = {
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   walletTotal: number;
@@ -225,6 +227,7 @@ export type Player = {
   identities?: { provider: string; subject: string }[];
 };
 export type LivePlayer = {
+  paymentMode?: "cashier";
   timeline?: import("@prism/core").BillTimeline;
   status: string;
   identities?: { provider: string; subject: string }[];

@@ -223,6 +223,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
   };
   const playerCheckoutCommands = createSettlementService({
+    players: input.repositories.players,
     commitCheckout: input.repositories.commitCheckout,
     sessions: input.repositories.sessions,
     operationLocks: input.repositories.operationLocks,

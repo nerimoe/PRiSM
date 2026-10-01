@@ -118,7 +118,7 @@ export function createSqlRepositories(
         async batch(batch) { statements.push(...batch); },
       };
       const repositories = createSqlRepositories({ ...input, executor: writer });
-      await repositories.assets.commitAssetTransaction(checkout.assets);
+      if (checkout.assets) await repositories.assets.commitAssetTransaction(checkout.assets);
       await repositories.settlements.saveCheckout!(checkout.checkout, checkout.settlements);
       await repositories.sessions.saveMany!(checkout.sessions);
       await repositories.pricingHistory.appendEntries(checkout.pricingHistory);
@@ -525,7 +525,7 @@ function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
   return {
     async findById(playerId) {
       const row = await executor.first<PlayerRow>(
-        `SELECT id, display_name, status, created_at FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) WHERE id = ? LIMIT 1`,
+        `SELECT id, display_name, status, created_at, EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id) AS cashier FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players WHERE id = ? LIMIT 1`,
         [playerId],
       );
       return row ? toPlayer(row) : null;
@@ -533,7 +533,7 @@ function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
 
     async listPlayers() {
       const rows = await executor.all<PlayerRow>(
-        `SELECT id, display_name, status, created_at FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) ORDER BY created_at DESC, id`,
+        `SELECT id, display_name, status, created_at, EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id) AS cashier FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players ORDER BY created_at DESC, id`,
       );
       return rows.map(toPlayer);
     },
@@ -1707,6 +1707,7 @@ type SessionRow = {
 };
 
 type PlayerRow = {
+  cashier?: number;
   id: string;
   display_name: string;
   status: PlayerStatus;
@@ -1991,6 +1992,7 @@ function toSession(row: SessionRow): Session {
 
 function toPlayer(row: PlayerRow): Player {
   return {
+    ...(row.cashier ? { paymentMode: "cashier" as const } : {}),
     id: row.id,
     displayName: row.display_name,
     status: row.status,
@@ -2280,6 +2282,12 @@ async function savePlayerCheckout(
       checkout.settledAt.toISOString(),
     ],
   );
+  if (checkout.externalPayment) {
+    await executor.run(
+      `INSERT INTO cashier_payments (shop_id, checkout_id, staff_id, method, collected_at) VALUES (${sqlShop(executor)}, ?, ?, ?, ?)`,
+      [checkout.id, checkout.externalPayment.staffId, checkout.externalPayment.method, checkout.externalPayment.collectedAt.toISOString()],
+    );
+  }
   if (checkout.timeline) {
     await executor.run(
       `INSERT INTO checkout_timelines (shop_id, checkout_id, timeline_json) VALUES (${sqlShop(executor)}, ?, ?)

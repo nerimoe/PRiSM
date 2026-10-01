@@ -1,3 +1,4 @@
+import { registerCashierRoutes } from "./cashier";
 import {
   registerDeviceRoutes,
   listDevices,
@@ -149,6 +150,7 @@ app.use("*", async (c, next) => {
 app.use("*", attachUser);
 registerDeviceRoutes(app);
 registerBillingRoutes(app);
+registerCashierRoutes(app);
 
 app.get("/api/v1/health", (c) => c.json({ ok: true }));
 

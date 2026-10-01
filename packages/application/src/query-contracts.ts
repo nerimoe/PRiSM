@@ -99,6 +99,7 @@ export type CheckoutHistoryRecord = {
   id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
 };
 export type PlayerCheckoutReceipt = {
+  externalPayment?: { method: string; staffId: string; collectedAt: string };
   settlements?: Array<{ settlement: { sessionId: string; startedAt: string; endedAt: string | null } }>;
   playerSettlement: { total: number; settledAt: string };
   timeline: BillTimeline;
@@ -117,6 +118,7 @@ export type PlayerQueries = {
 };
 
 export type StaffPlayerListItem = {
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   status: "active" | "disabled" | "banned";
@@ -173,6 +175,7 @@ export type StaffReportsSummary = StaffReportsSummaryInput & {
 };
 
 export type StaffReportSettlementListItem = {
+  externalPayment?: { method: string; staffId: string };
   settlementId: string;
   sessionId: string;
   playerId: string;
