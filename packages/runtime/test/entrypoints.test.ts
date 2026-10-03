@@ -647,7 +647,7 @@ describe("runtime entrypoints", () => {
     });
   });
 
-  it("applies the configured store time zone to runtime time-priority settlement", async () => {
+  it("executes UTC billing and projects the timeline into the store UI time zone", async () => {
     const db = new Database(":memory:");
     seed(db);
     db.run("INSERT INTO asset_holdings (id, player_id, asset_type, asset_code, quantity) VALUES (?, ?, ?, ?, ?)", [
@@ -689,7 +689,7 @@ describe("runtime entrypoints", () => {
             id: "peak",
             label: "晚高峰",
             priority: 10,
-            timeRange: { start: "20:00", end: "22:00" },
+            timeRange: { start: "11:00", end: "13:00" },
             pricing: {
               unitMinutes: 30,
               unitPrice: 20,

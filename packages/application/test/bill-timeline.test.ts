@@ -74,4 +74,18 @@ test("active tail rounded before preview time stays current", () => {
   expect(timeline.events).toHaveLength(2);
   expect(timeline.events[0]?.at).toBe(previewedAt.toISOString());
   expect(timeline.events[0]?.entries[0]?.kind).toBe("current");
+  expect(timeline.events[0]?.entries[0]?.endedAt).toBe(roundedEnd.toISOString());
+});
+
+
+test("closed gaps do not extend a charged period to the preview clock", async () => {
+  const start = date("02:08"), at = date("03:54");
+  const s = session("gap", "02:08", null);
+  const items = await createPriorityTimePricingProvider({ id: "night", rules: [{ id: "night", label: "Night", priority: 1, timeRange: { start: "10:00", end: "03:00" }, pricing: pricing(18) }], timeZone: "UTC" }).quote({ session: s, now: at, assetHoldings: [] });
+  const timeline = buildBillTimeline({ at, sessions: [{ sessionId: s.id, label: null, startedAt: start, endedAt: null, chargeItems: items }], adjustments: [], globalCapWindows: [] });
+  const charge = timeline.events.flatMap(event => event.entries).find(entry => entry.amount != null)!;
+  expect(charge.endedAt).toBe(date("03:00").toISOString());
+  expect(charge.periodLabel).toBe("02:08 – 03:00");
+  expect(timeline.events[0]?.at).toBe(at.toISOString());
+  expect(timeline.events[0]?.entries[0]?.amount).toBeNull();
 });

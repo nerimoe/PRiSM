@@ -63,6 +63,7 @@ describe("sqliteSchema", () => {
       "pricing_history_entries",
       "pricing_release_heads",
       "pricing_releases",
+      "prism_data_migrations",
       "redeem_codes",
       "redeem_records",
       "session_pricing_releases",

@@ -136,6 +136,10 @@ The live operations screen is player-first: each player appears once, the previe
 
 ## Documentation
 
+- [当前工作区开发环境](docs/dev-environment.md)
+- [单方案未覆盖全天的计费验证](docs/billing-gap-analysis.md)
+- [截图中的入场失败与时区](docs/pricing-timezone-analysis.md)
+- [UTC 业务时间与 UI 展示时间](docs/utc-time-contract.md)
 - [Architecture](docs/architecture.md)
 - [API Reference](docs/api.md)
 - [已有店铺转换为计费店铺](docs/billing-setup.md)

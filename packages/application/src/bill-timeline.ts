@@ -53,20 +53,21 @@ export function buildBillTimeline(input: {
         const endedAt = new Date(Math.min(periodEnd, end.getTime()));
         const next = sorted[index + 1];
         // Active quotes can end at the last whole minute while the preview clock still has seconds.
-        const currentTail = !session.endedAt && !next && endedAt.getTime() < end.getTime();
+        const tailMilliseconds = end.getTime() - endedAt.getTime();
+        const currentTail = !session.endedAt && !next && tailMilliseconds > 0 && tailMilliseconds < 60_000;
         const isBoundary = !currentTail && endedAt.getTime() < end.getTime() && !!next;
         const eventAt = currentTail ? end : endedAt;
         add(eventAt, {
-          trackId: id, name, kind: isBoundary ? "switch" : session.endedAt ? "end" : "current",
+          trackId: id, name, kind: isBoundary ? "switch" : session.endedAt || endedAt.getTime() < end.getTime() && !currentTail ? "end" : "current",
           rule: item.label, nextRule: isBoundary ? next?.label ?? null : null, amount: item.amount,
-          startedAt: period?.startedAt.toISOString() ?? null, endedAt: period ? eventAt.toISOString() : null,
+          startedAt: period?.startedAt.toISOString() ?? null, endedAt: period ? endedAt.toISOString() : null,
           unitMinutes: explanation?.pricing?.unitMinutes ?? null, unitPrice: explanation?.pricing?.unitPrice ?? null,
           units: explanation?.units ?? null, cap: explanation?.intervalCapReached ? explanation.intervalCap : null,
           paidBefore: explanation?.paidBefore ?? null,
         });
       });
-      if (session.endedAt && !sorted.some(item => Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) === end.getTime())) {
-        add(end, { trackId: id, name, rule: sorted.at(-1)?.label ?? null, kind: session.endedAt ? "end" : "current" });
+      if (!sorted.some(item => end.getTime() - Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) < (session.endedAt ? 1 : 60_000))) {
+        add(end, { trackId: id, name, rule: session.endedAt ? sorted.at(-1)?.label ?? null : null, kind: session.endedAt ? "end" : "current" });
       }
     }
   }

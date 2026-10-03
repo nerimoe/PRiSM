@@ -1,3 +1,4 @@
+import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -239,7 +240,7 @@ export function EntryPricing({ info }: { info: ShopInfo }) {
     weekday: "short",
     timeZone: "UTC",
   });
-  const plans = info.entryPricing.filter(
+  const plans = info.entryPricing.map(plan => pricingInZone(plan, plan.kind === "charge.fixed" ? "UTC" : plan.provider.timeZone ?? "UTC", info.shop.timeZone ?? "UTC", info.pricingSchedule.localDate)).filter(
     (plan) => plan.enabled !== false && plan.status !== "archived",
   );
   return (

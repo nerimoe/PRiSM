@@ -11,7 +11,7 @@ import {
   type Cents,
   type PricingConfig,
 } from "@prism/core";
-import { createPrismWorkerDependencies } from "@prism/runtime";
+import { createPrismWorkerDependencies, ensureD1UtcPricing } from "@prism/runtime";
 import type { Env } from "./types";
 import { liveActivityConfig } from "./live-activity-push";
 
@@ -39,6 +39,7 @@ export type ActivityBill = {
 };
 
 export async function activityBill(env: Pick<Env, "DB">, shopId: string, playerId: string, now = new Date()) {
+  await ensureD1UtcPricing(env.DB, now);
   const repos = createD1Repositories({ db: env.DB, shopId, now: () => now, id: crypto.randomUUID });
   const active = await repos.sessions.findActiveByPlayerId(playerId);
   const unpaid = [...active, ...await repos.sessions.findUnpaidClosedByPlayerId(playerId)];

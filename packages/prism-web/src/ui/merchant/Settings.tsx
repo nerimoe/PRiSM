@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import { BillingSettings } from "../BillingPages";
 import {
@@ -59,6 +59,10 @@ export function SettingsPage() {
     presents: { id: string; name: string; status: string }[];
   }>("presents");
   const [notice, setNotice] = useState("");
+  useEffect(() => {
+    window.addEventListener("prism-shop-settings", settings.reload);
+    return () => window.removeEventListener("prism-shop-settings", settings.reload);
+  }, [settings.reload]);
   return (
     <div className="grid gap-5">
       <h2 className="text-xl font-semibold">{t("店铺设置")}</h2>

@@ -42,6 +42,10 @@ export type PriorityTimePricingRule = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -57,6 +61,10 @@ export type TimeCapPricingRule = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -66,6 +74,8 @@ export type TimeCapPricingRule = {
 };
 
 export type PriorityTimePricingProviderConfig = {
+  /** Historical aliases retain the original cap/history identity. */
+  historyProviderId?: string;
   name?: string;
   id: string;
   pricingConfigId?: string;
@@ -98,6 +108,10 @@ type TimeRuleLike = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -251,7 +265,7 @@ export function createPriorityTimePricingProvider(config: PriorityTimePricingPro
           pricingHistory: {
             pricingConfigId: config.pricingConfigId ?? config.id,
             providerId: config.id,
-            ruleId: rule.id,
+            ruleId: rule.historyRuleId ?? rule.id,
             ruleAnchorAt: getRuleAnchor(cursor, rule, timeZone),
             amount,
           },
@@ -309,10 +323,10 @@ export function collectTimeCapPricingHistoryLookupKeys(input: {
       }
       const nextBoundary = findNextPriorityBoundary(cursor, endedAt, rule, rules, timeZone);
       const capAnchorAt = getRuleAnchor(cursor, rule, timeZone);
-      const key = buildTimeCapHistoryKey(capConfigId, rule.id, capAnchorAt);
+      const key = buildTimeCapHistoryKey(capConfigId, rule.historyRuleId ?? rule.id, capAnchorAt);
       keys.set(key, {
         capConfigId,
-        capRuleId: rule.id,
+        capRuleId: rule.historyRuleId ?? rule.id,
         capAnchorAt,
         key,
       });
@@ -388,7 +402,7 @@ export function explainTimeCapPricing(input: {
       const nextBoundary = findNextPriorityBoundary(cursor, endedAt, rule, rules, timeZone);
       const overlapMs = nextBoundary.getTime() - cursor.getTime();
       const capAnchorAt = getRuleAnchor(cursor, rule, timeZone);
-      const key = buildTimeCapHistoryKey(capConfigId, rule.id, capAnchorAt);
+      const key = buildTimeCapHistoryKey(capConfigId, rule.historyRuleId ?? rule.id, capAnchorAt);
       segments.push({ rule, capAnchorAt, key, weight: overlapMs });
       cursor = nextBoundary;
     }
@@ -431,7 +445,7 @@ export function explainTimeCapPricing(input: {
       key,
       capName: input.config.name,
       capConfigId,
-      capRuleId: bucket.rule.id,
+      capRuleId: bucket.rule.historyRuleId ?? bucket.rule.id,
       ruleLabel: bucket.rule.label,
       windowStartedAt: bucket.capAnchorAt,
       windowEndedAt: getRuleNaturalEnd(bucket.capAnchorAt, bucket.rule, timeZone),
@@ -474,7 +488,7 @@ export function collectPriorityTimePricingHistoryLookupKeys(input: {
     keys.set(key, {
       pricingConfigId: input.config.pricingConfigId ?? input.config.id,
       providerId: input.config.id,
-      ruleId: rule.id,
+      ruleId: rule.historyRuleId ?? rule.id,
       ruleAnchorAt,
       key,
     });
@@ -495,10 +509,12 @@ export function canStartPriorityTimePricingSession(input: {
 export function buildPriorityTimePricingTimeline(input: {
   localDate: string;
   config: PriorityTimePricingProviderConfig;
+  displayTimeZone?: string;
 }): PriorityTimePricingTimeline {
   return buildTimeRuleTimeline({
     localDate: input.localDate,
     config: input.config,
+    displayTimeZone: input.displayTimeZone,
     segmentValue: (rule) => ({ pricing: rule.pricing }),
   });
 }
@@ -506,16 +522,19 @@ export function buildPriorityTimePricingTimeline(input: {
 export function buildTimeCapPricingTimeline(input: {
   localDate: string;
   config: TimeCapPricingProviderConfig;
+  displayTimeZone?: string;
 }): PriorityTimePricingTimeline {
   return buildTimeRuleTimeline({
     localDate: input.localDate,
     config: input.config,
+    displayTimeZone: input.displayTimeZone,
     segmentValue: (rule) => ({ priceCap: rule.priceCap }),
   });
 }
 
 function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
   localDate: string;
+  displayTimeZone?: string;
   config: {
     id: string;
     rules: readonly T[];
@@ -525,8 +544,9 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
 }): PriorityTimePricingTimeline {
   const rules = activeRules(input.config.rules).sort((a, b) => b.priority - a.priority);
   const timeZone = input.config.timeZone ?? "UTC";
-  const dayStart = parseLocalDateTime(input.localDate, "00:00", timeZone);
-  const dayEnd = parseLocalDateTime(addLocalDays(input.localDate, 1), "00:00", timeZone);
+  const displayTimeZone = input.displayTimeZone ?? timeZone;
+  const dayStart = parseLocalDateTime(input.localDate, "00:00", displayTimeZone);
+  const dayEnd = parseLocalDateTime(addLocalDays(input.localDate, 1), "00:00", displayTimeZone);
   const segments: PriorityTimePricingTimelineSegment[] = [];
   let cursor = dayStart;
 
@@ -539,8 +559,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
       throw new PrismDomainError("Time pricing timeline cannot advance.", "TIME_PRICING_TIMELINE_STALLED");
     }
 
-    const startMinute = getLocalMinuteOfDay(cursor, input.localDate, timeZone);
-    const endMinute = getLocalMinuteOfDay(nextBoundary, input.localDate, timeZone);
+    const startMinute = getLocalMinuteOfDay(cursor, input.localDate, displayTimeZone);
+    const endMinute = getLocalMinuteOfDay(nextBoundary, input.localDate, displayTimeZone);
     if (rule) {
       segments.push({
         ruleId: rule.id,
@@ -571,7 +591,7 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
   return {
     providerId: input.config.id,
     localDate: input.localDate,
-    timeZone,
+    timeZone: displayTimeZone,
     segments: mergeAdjacentTimelineSegments(segments),
   };
 }
@@ -820,7 +840,7 @@ function buildRuleHistoryKey(
   rule: TimeRuleLike,
   timeZone: string,
 ): string {
-  return `${pricingConfigId}@${providerId}@${rule.id}@${getRuleAnchor(date, rule, timeZone).toISOString()}`;
+  return `${pricingConfigId}@${providerId}@${rule.historyRuleId ?? rule.id}@${getRuleAnchor(date, rule, timeZone).toISOString()}`;
 }
 
 function buildTimeCapHistoryKey(capConfigId: string, capRuleId: string, capAnchorAt: Date): string {
@@ -828,6 +848,7 @@ function buildTimeCapHistoryKey(capConfigId: string, capRuleId: string, capAncho
 }
 
 function getRuleAnchor(date: Date, rule: TimeRuleLike, timeZone: string): Date {
+  if (rule.anchorAt) return new Date(rule.anchorAt);
   if (rule.dateTimeRange && !rule.timeRange) return new Date(rule.dateTimeRange.start);
   if (!rule.timeRange) {
     throw new PrismDomainError("Time pricing rule has no time range.", "INVALID_TIME_PRICING_RULE");
@@ -839,7 +860,7 @@ function getRuleAnchor(date: Date, rule: TimeRuleLike, timeZone: string): Date {
   const end = parseClockMinutes(rule.timeRange.end);
   const current = getZonedParts(date, timeZone).hour * 60 + getZonedParts(date, timeZone).minute;
 
-  if (start > end && current < end) {
+  if (start >= end && current < start) {
     anchorLocalDate = addLocalDays(localDate, -1);
   }
 
@@ -944,7 +965,7 @@ function getRuleDateMatchAnchor(date: Date, rule: TimeRuleLike, timeZone: string
   const current = parts.hour * 60 + parts.minute;
   const start = parseClockMinutes(rule.timeRange.start);
   const end = parseClockMinutes(rule.timeRange.end);
-  if (start > end && current < end) {
+  if (start >= end && current < start) {
     return parseLocalDateTime(addLocalDays(formatLocalDateFromParts(parts), -1), rule.timeRange.start, timeZone);
   }
 

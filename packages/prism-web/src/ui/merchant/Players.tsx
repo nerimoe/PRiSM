@@ -275,7 +275,7 @@ function PlayerDetail({
   refresh: () => void;
 }) {
   const { t } = useI18n();
-  const { canWrite, shopCode, cashierEnabled } = useMerchant();
+  const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
   const assets = useResource<Holdings>(`${base}/assets`);
@@ -422,7 +422,7 @@ function PlayerDetail({
           submit={() => request(`${base}/checkout/confirm`, "POST", {})}
         >
           <BillTotal preview={preview} />
-          <BillTimeline preview={preview} />
+          <BillTimeline preview={preview} timeZone={timeZone || undefined} />
           <p className="text-sm text-ink/60">
             {t("结账后余额")} {money(preview.wallet.balanceAfter)}
           </p>

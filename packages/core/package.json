@@ -8,5 +8,8 @@
   "scripts": {
     "test": "bun test test",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@photostructure/tz-lookup": "11.7.0"
   }
 }

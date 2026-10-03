@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { Pricing } from "./Pricing";
+import { pricingInZone } from "./pricing-clock";
 import { input, money, useMerchant, useStaffApi } from "./shared";
 
 type Segment = {
@@ -36,16 +37,17 @@ function arc(start: number, end: number) {
 export function PricingRing({
   value,
   onSelect,
+  localDate: day,
+  onDateChange: setDay,
 }: {
   value: Pricing;
   onSelect: (id: string) => void;
+  localDate: string;
+  onDateChange: (date: string) => void;
 }) {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
   const request = useStaffApi();
-  const [day, setDay] = useState(() =>
-    new Intl.DateTimeFormat("sv-SE", { timeZone }).format(new Date()),
-  );
   const [segments, setSegments] = useState<Segment[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -55,11 +57,13 @@ export function PricingRing({
     let current = true;
     setLoading(true);
     const timer = setTimeout(() => {
-      request<{ timeline: { segments: Segment[] } }>(
+      void Promise.resolve().then(() => request<{ timeline: { segments: Segment[] } }>(
         "pricing-timeline/preview",
         "POST",
-        { localDate: day, provider: JSON.parse(provider) },
-      )
+        { localDate: day, displayTimeZone: timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+          provider: pricingInZone({ ...value, provider: JSON.parse(provider) },
+            timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", day).provider },
+      ))
         .then((r) => {
           if (current) {
             setSegments(r.timeline.segments);
@@ -77,7 +81,7 @@ export function PricingRing({
       current = false;
       clearTimeout(timer);
     };
-  }, [provider, day, request]);
+  }, [provider, day, request, timeZone]);
   const color = (s: Segment) =>
     s.isClosed
       ? "#d5d9d7"

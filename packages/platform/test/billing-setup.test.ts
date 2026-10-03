@@ -43,6 +43,68 @@ const count = (table: string, shopId: string) => env.DB.prepare(`SELECT COUNT(*)
 const convert = (code: string, body: Record<string, unknown> = {}, session = "owner-session") =>
   request(`/api/v1/shops/${code}/billing/setup`, { ...setup, operationId: op(), ...body }, session);
 
+test("store location forms automatically derive the display time zone and ignore client overrides", async () => {
+  const created = await request("/api/v1/merchant/shops", {
+    name: "东京店", latitude: 35, longitude: 139, timeZone: "America/New_York",
+  });
+  expect(created.status).toBe(201);
+  expect(created.data.shop.timeZone).toBe("Asia/Tokyo");
+  const shops = (await request("/api/v1/merchant/shops")).data.shops;
+  expect(shops.find((s: any) => s.id === created.data.shop.id).timeZone).toBe("Asia/Tokyo");
+  expect((await request(`/api/v1/shops/${created.data.shop.publicId}`)).data.shop.timeZone).toBe("Asia/Tokyo");
+  const oldShop = await store();
+  expect((await request("/api/v1/merchant/shops")).data.shops.find((s: any) => s.id === oldShop.id).timeZone).toBe("Asia/Tokyo");
+  const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM shops").first("n");
+  for (const location of [{ latitude: 91, longitude: 139 }, { latitude: 35, longitude: -181 }]) {
+    expect((await request("/api/v1/merchant/shops", { name: "无效位置", ...location })).status).toBe(400);
+  }
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM shops").first("n")).toBe(before);
+});
+
+test("moving a store changes its display zone automatically and preserves UTC pricing and other profile fields", async () => {
+  const shop = await store({ ...setup, autoRegister: true });
+  await env.DB.prepare("UPDATE app_settings SET value_json=? WHERE shop_id=? AND key='store.profile'")
+    .bind(JSON.stringify({ name: "原设备店", timeZone: "Asia/Tokyo", extra: "preserved" }), shop.id).run();
+  const pricing = await env.DB.prepare("SELECT * FROM pricing_configs WHERE shop_id=?").bind(shop.id).all();
+  const releases = await env.DB.prepare("SELECT * FROM pricing_releases WHERE shop_id=?").bind(shop.id).all();
+  const path = `/api/v1/merchant/shops/${shop.id}`;
+  const updated = await request(path, { name: "新店名", latitude: 40.7128, longitude: -74.0060 }, "owner-session", "PATCH");
+  expect(updated.status).toBe(200);
+  expect(updated.data.shop).toMatchObject({ name: "新店名", latitude: 40.7128, timeZone: "America/New_York" });
+  expect(JSON.parse((await env.DB.prepare("SELECT value_json FROM app_settings WHERE shop_id=? AND key='store.profile'")
+    .bind(shop.id).first<string>("value_json"))!)).toEqual({ name: "新店名", timeZone: "America/New_York", extra: "preserved" });
+  expect((await env.DB.prepare("SELECT * FROM pricing_configs WHERE shop_id=?").bind(shop.id).all()).results).toEqual(pricing.results);
+  expect((await env.DB.prepare("SELECT * FROM pricing_releases WHERE shop_id=?").bind(shop.id).all()).results).toEqual(releases.results);
+  const moved = await request(path, { latitude: 31.2304, longitude: 121.4737, timeZone: "America/New_York" }, "owner-session", "PATCH");
+  expect(moved.data.shop.timeZone).toBe("Asia/Shanghai");
+  const renamed = await request(path, { name: "上海店" }, "owner-session", "PATCH");
+  expect(renamed.data.shop.timeZone).toBe("Asia/Shanghai");
+  expect((await request(path, { latitude: 91 }, "owner-session", "PATCH")).status).toBe(400);
+  expect(await env.DB.prepare("SELECT latitude FROM shops WHERE id=?").bind(shop.id).first("latitude")).toBe(31.2304);
+  const settingsPath = `/api/v1/shops/${shop.publicId}/staff/settings`;
+  const settings = (await request(settingsPath)).data.settings;
+  settings.store.timeZone = "UTC";
+  const saved = await request(settingsPath, settings, "owner-session", "PUT");
+  expect(saved.status).toBe(200);
+  expect(saved.data.settings.store.timeZone).toBe("Asia/Shanghai");
+  await env.DB.prepare("INSERT INTO shop_members(shop_id,user_id,role) VALUES (?,'manager','staff')").bind(shop.id).run();
+  expect((await request(path, { timeZone: "UTC" }, "manager-session", "PATCH")).status).toBe(403);
+});
+
+test("failed time zone save rolls back the location update in the same transaction", async () => {
+  const shop = await store();
+  await env.DB.prepare("CREATE TRIGGER fail_display_zone BEFORE INSERT ON app_settings WHEN NEW.key='store.profile' BEGIN SELECT RAISE(ABORT,'test display zone failure'); END").run();
+  try {
+    expect((await request(`/api/v1/merchant/shops/${shop.id}`, { latitude: 20, timeZone: "UTC" }, "owner-session", "PATCH")).status).toBe(500);
+  } finally {
+    await env.DB.prepare("DROP TRIGGER fail_display_zone").run();
+  }
+  expect(await env.DB.prepare("SELECT latitude FROM shops WHERE id=?").bind(shop.id).first("latitude")).toBe(35);
+  expect(await count("app_settings", shop.id)).toBe(1);
+  expect(JSON.parse((await env.DB.prepare("SELECT value_json FROM app_settings WHERE shop_id=? AND key='store.profile'")
+    .bind(shop.id).first<string>("value_json"))!).timeZone).toBe("Asia/Tokyo");
+});
+
 test("new billed stores create no Bot credentials by default, with explicit opt-in available", async () => {
   for (const flag of [undefined, false, true]) {
     const created = await request("/api/v1/merchant/shops", {
@@ -148,9 +210,10 @@ test("a failed setup transaction rolls back assets, pricing and mode together", 
   await env.DB.prepare("CREATE TRIGGER fail_billing_setup BEFORE INSERT ON app_settings WHEN NEW.key='cashier.settings' BEGIN SELECT RAISE(ABORT,'test setup failure'); END").run();
   try { expect((await convert(shop.publicId)).status).toBe(500); }
   finally { await env.DB.prepare("DROP TRIGGER fail_billing_setup").run(); }
-  for (const table of ["asset_definitions", "pricing_configs", "shop_billing_settings", "app_settings"]) {
+  for (const table of ["asset_definitions", "pricing_configs", "shop_billing_settings"]) {
     expect(await count(table, shop.id)).toBe(0);
   }
+  expect(await count("app_settings", shop.id)).toBe(1);
   expect((await convert(shop.publicId)).status).toBe(200);
   expect(await count("pricing_configs", shop.id)).toBe(1);
 });

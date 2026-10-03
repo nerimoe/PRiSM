@@ -310,6 +310,7 @@ export type BusinessItemOrderCommands = {
 
 export type StaffPreviewPricingTimelineInput = {
   localDate: string;
+  displayTimeZone?: string;
   provider: Extract<PricingConfig, { kind: "time.priority" | "time.cap" }>["provider"];
 };
 
@@ -811,6 +812,7 @@ export type StaffUpdatePricingConfigBody = {
 };
 
 export type StaffPreviewPricingTimelineBody = {
+  displayTimeZone?: string;
   localDate: string;
   provider: Extract<PricingConfig, { kind: "time.priority" | "time.cap" }>["provider"];
 };

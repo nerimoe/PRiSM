@@ -14,6 +14,7 @@ import {
   buildPriorityTimePricingTimeline,
   buildTimeCapPricingTimeline,
   formatLocalDate,
+  resolveLocationTimeZone,
   type DeviceCommandType,
   type Session,
   type PricingConfig,
@@ -526,7 +527,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         ...row,
         provider: {
           ...row.provider,
-          timeZone: ("timeZone" in row.provider ? row.provider.timeZone : undefined) ?? shop.time_zone,
+          timeZone: ("timeZone" in row.provider ? row.provider.timeZone : undefined) ?? "UTC",
         },
       } as PricingConfig;
       if (config.kind === "charge.fixed")
@@ -542,10 +543,12 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           ? buildTimeCapPricingTimeline({
               localDate,
               config: config.provider,
+              displayTimeZone: shop.time_zone,
             })
           : buildPriorityTimePricingTimeline({
               localDate,
               config: config.provider,
+              displayTimeZone: shop.time_zone,
             });
       return { id: row.id, name: row.name, kind: row.kind, ...timeline };
     });
@@ -557,7 +560,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
             .map((segment) => segment.ruleId),
         );
         const dateTime = new Intl.DateTimeFormat("sv-SE", {
-          timeZone: ("timeZone" in row.provider ? row.provider.timeZone : undefined) ?? shop.time_zone,
+          timeZone: shop.time_zone,
           dateStyle: "short",
           timeStyle: "medium",
           hourCycle: "h23",
@@ -870,10 +873,16 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       jsonError(403, "此操作需要店主权限");
     if (path === "device-actions")
       jsonError(409, "请在设备页面操作", "DEVICE_QR_REQUIRED");
-    const body =
+    let body =
       c.req.method === "POST"
         ? await c.req.json<Record<string, unknown>>()
         : undefined;
+    if (path === "settings" && c.req.method === "PUT") {
+      const input = await c.req.json<Record<string, unknown>>();
+      const store = input.store && typeof input.store === "object" && !Array.isArray(input.store)
+        ? input.store as Record<string, unknown> : {};
+      body = { ...input, store: { ...store, timeZone: resolveLocationTimeZone(shop.latitude, shop.longitude) } };
+    }
     const restrictedPlayerId = path.match(/^players\/([^/]+)\//)?.[1];
     if (restrictedPlayerId && c.req.method !== "GET" &&
         !/\/(checkout\/preview|sessions\/[^/]+\/stop|status)$/.test(path)) {

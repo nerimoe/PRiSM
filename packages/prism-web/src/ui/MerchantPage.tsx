@@ -241,7 +241,7 @@ function Workspace({
             <SettingsPage />
             <details className="rounded-xl border border-ink/10 bg-panel p-5">
               <summary className="cursor-pointer font-medium">
-                {t("店铺信息与位置")}
+                {t("店铺信息、位置与时区")}
               </summary>
               <div className="mt-4">
                 <ShopForm

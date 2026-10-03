@@ -174,7 +174,7 @@ test("global v1 auth and public shop responses use the shared envelope", async (
       shop: {
         billingEnabled: false,
         machineGeo: false,
-        timeZone: "Asia/Shanghai",
+        timeZone: "Asia/Tokyo",
       },
     },
   });
@@ -1335,7 +1335,7 @@ test("player rate schedule resolves production-style priorities, dated overnight
   expect(holiday.timeRange).toEqual({start: "22:30", end: "01:30"});
   const spring = await entryRules("2026-02-18");
   expect(spring.map((r: any) => r.id)).toEqual(["spring"]);
-  expect(spring[0].displayDateTimeRange).toEqual({ start: "2026-02-17 08:00:21", end: "2026-03-04 04:00:21" });
+  expect(spring[0].displayDateTimeRange).toEqual({ start: "2026-02-17 09:00:21", end: "2026-03-04 05:00:21" });
   const schedule = async (date: string) =>
     (
       (await (await request(`/api/v1/shops/a?date=${date}`)).json()) as any
@@ -1344,7 +1344,7 @@ test("player rate schedule resolves production-style priorities, dated overnight
   expect((await schedule("2026-01-01"))[0]).toMatchObject({
     label: "跨年活动",
     startLabel: "00:00",
-    endLabel: "01:30",
+    endLabel: "02:30",
     pricing: { unitPrice: 0 },
   });
   expect(

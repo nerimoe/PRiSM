@@ -1893,6 +1893,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json({
       timeline: await dependencies.staffPricingCommands.previewPricingTimeline({
         localDate: body.localDate,
+        displayTimeZone: body.displayTimeZone,
         provider: parseRulesProviderBody(body.provider),
       }),
     });

@@ -1,3 +1,4 @@
+import { ensureD1UtcPricing } from "./utc-pricing";
 import type { Database } from "bun:sqlite";
 import { createD1Executor, createD1Repositories, type D1DatabaseLike } from "@prism/adapter-d1";
 import { createBunSqliteExecutor, createSqliteRepositories } from "@prism/adapter-sqlite";
@@ -46,7 +47,7 @@ import { createHomeAssistantStateSource } from "./home-assistant-state-source";
 import type { PrismAppDependencies } from "@prism/server-hono";
 import type { CreateSqlReadModelsInput, SqlRepositories } from "@prism/storage-sql";
 import { createSqlReadModels, sqliteSchema } from "@prism/storage-sql";
-import type { Hono } from "hono";
+import { Hono } from "hono";
 import { backendVersionInfo } from "./release-version";
 import {
   createHinataIoExecutor,
@@ -191,8 +192,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
       const configs = pinned.configs;
       const timeConfigs = configs.filter((config): config is Extract<PricingConfig, { kind: "time.priority" }> => config.kind === "time.priority");
       if (timeConfigs.length === 0) return true;
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
+      const storeTimeZone = pinned.timeZone ?? "UTC";
       return timeConfigs.some((config) =>
         canStartPriorityTimePricingSession({
           config: {
@@ -207,12 +207,15 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     now: input.now,
   });
   const sessionPricing = async (session: import("@prism/core").Session) => {
-    if (!session.pricingReleaseId) return { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+    if (!session.pricingReleaseId) return { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: "UTC" };
     const release = await input.repositories.pricingConfigs.findRelease?.(session.pricingReleaseId);
     if (!release) throw new PrismDomainError("Pinned pricing release not found.", "PRICING_RELEASE_NOT_FOUND");
     return { configs: release.configs.filter(config => config.enabled && config.status !== "archived"), timeZone: release.timeZone };
   };
   const versioned = (config: PricingConfig): PricingConfig => {
+    if (config.kind === "time.priority" && config.provider.historyProviderId) {
+      return { ...config, provider: { ...config.provider, id: config.provider.historyProviderId } };
+    }
     // Version 1 keeps the pre-migration history key so an upgrade cannot reset caps.
     if (!config.versionId || config.version === 1) return config;
     return { ...config, provider: { ...config.provider, id: config.versionId } } as PricingConfig;
@@ -220,7 +223,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
   const playerPricing = async (playerId: string) => {
     const sessions = [...await input.repositories.sessions.findActiveByPlayerId(playerId), ...await input.repositories.sessions.findUnpaidClosedByPlayerId!(playerId)];
     const first = sessions.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || a.id.localeCompare(b.id))[0];
-    return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+    return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: "UTC" };
   };
   const playerCheckoutCommands = createSettlementService({
     players: input.repositories.players,
@@ -245,8 +248,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
         : allConfigs).filter((config) => config.kind !== "time.cap").map(versioned);
 
       if (configs.length === 0) return [...fallbackPricingProviders, ...pluginPricingProviders];
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
+      const storeTimeZone = pinned.timeZone ?? "UTC";
       const resolvedConfigs = await withRuntimePricingHistory(configs, {
         playerId: context.playerId,
         startedAt: context.session.startedAt,
@@ -260,8 +262,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
       ];
     },
     async globalCapResolver(context) {
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined;
+      const storeTimeZone = "UTC";
       const releases = new Map(context.sessions.map(session => [session.pricingReleaseId ?? "legacy", session]));
       if (releases.size > 1) throw new PrismDomainError("Unsettled sessions use different pricing releases.", "PRICING_RELEASE_MISMATCH");
       const result: import("@prism/core").TimeCapPricingProviderConfig[] = [];
@@ -662,7 +663,13 @@ export type CreatePrismWorkerAppOptions = {
 };
 
 export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): Hono {
-  return createPrismApp(createPrismWorkerDependencies(env, options));
+  const app = new Hono();
+  app.use("*", async (_context, next) => {
+    await ensureD1UtcPricing(env.DB, options.now?.() ?? new Date());
+    await next();
+  });
+  app.route("/", createPrismApp(createPrismWorkerDependencies(env, options)));
+  return app;
 }
 
 export function createPrismWorkerDependencies(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): PrismAppDependencies {
@@ -1063,3 +1070,5 @@ function createDynamicHinataIoTargetResolver(input: {
 }
 
 export const createRuntimeQueries = createSqlReadModels;
+
+export { ensureD1UtcPricing } from "./utc-pricing";

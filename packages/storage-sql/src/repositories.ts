@@ -2436,6 +2436,7 @@ export function serializePricingProviderConfig(
       const { dateTimeRange, ...rest } = rule;
       return {
         ...rest,
+        ...(rule.anchorAt ? { anchorAt: new Date(rule.anchorAt) } : {}),
         ...(dateTimeRange
           ? {
               dateTimeRange: {
@@ -2484,6 +2485,7 @@ function deserializeTimePriorityPricingProviderConfig(
       const { dateTimeRange, ...rest } = rule;
       return {
         ...rest,
+        ...(rule.anchorAt ? { anchorAt: new Date(rule.anchorAt) } : {}),
         ...(dateTimeRange
           ? {
               dateTimeRange: {
@@ -2506,6 +2508,7 @@ function deserializeTimeCapPricingProviderConfig(
       const { dateTimeRange, ...rest } = rule;
       return {
         ...rest,
+        ...(rule.anchorAt ? { anchorAt: new Date(rule.anchorAt) } : {}),
         ...(dateTimeRange
           ? {
               dateTimeRange: {

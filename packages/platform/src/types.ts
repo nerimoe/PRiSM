@@ -37,6 +37,7 @@ export type ShopRow = {
   id: string;
   publicId: string;
   name: string;
+  timeZone: string;
   heroUrl: string | null;
   latitude: number;
   longitude: number;

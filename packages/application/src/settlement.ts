@@ -349,16 +349,7 @@ async function calculateUnifiedCheckoutDetails(
     throw new PrismDomainError("Player has no sessions to settle.", "PLAYER_HAS_NO_UNSETTLED_SESSIONS");
   }
 
-  const [operations, storeProfile] = dependencies.system
-    ? await Promise.all([
-        dependencies.system.getAppSetting<{ timeZone?: unknown }>("venue.operations"),
-        dependencies.system.getAppSetting<{ timeZone?: unknown }>("store.profile"),
-      ])
-    : [null, null];
-  const timeZone =
-    (typeof operations?.timeZone === "string" && operations.timeZone.trim() ? operations.timeZone.trim() : null) ??
-    (typeof storeProfile?.timeZone === "string" && storeProfile.timeZone.trim() ? storeProfile.timeZone.trim() : null) ??
-    "Asia/Shanghai";
+  const timeZone = "UTC";
 
   const pastAppliedAdjustments = dependencies.settlements.listPastAppliedAdjustmentsByPlayerId
     ? await dependencies.settlements.listPastAppliedAdjustmentsByPlayerId(playerId)

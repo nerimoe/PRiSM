@@ -1,4 +1,4 @@
-import { buildPriorityTimePricingTimeline, buildTimeCapPricingTimeline, PrismDomainError, quantizePricingProvider, validatePricingConfig } from "@prism/core";
+import { buildPriorityTimePricingTimeline, buildTimeCapPricingTimeline, convertPricingRuleClock, PrismDomainError, quantizePricingProvider, validatePricingConfig } from "@prism/core";
 import type {
   PricingConfig,
   PricingConfigKind,
@@ -39,6 +39,7 @@ export type StaffPricingService = {
       | Extract<PricingConfig, { kind: "time.priority" }>["provider"]
       | Extract<PricingConfig, { kind: "time.cap" }>["provider"];
     localDate: string;
+    displayTimeZone?: string;
   }): Promise<PriorityTimePricingTimeline>;
 };
 
@@ -131,7 +132,8 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
       }
       return buildPriorityTimePricingTimeline({
         localDate: input.localDate,
-        config: await withDefaultTimeZone(config.provider, dependencies),
+        config: config.provider,
+        displayTimeZone: await dependencies.getDefaultTimeZone?.(),
       });
     },
 
@@ -139,12 +141,14 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
       if ("includedPricingConfigIds" in input.provider) {
         return buildTimeCapPricingTimeline({
           localDate: input.localDate,
-          config: quantizePricingProvider(await withDefaultCapTimeZone(input.provider, dependencies)),
+          config: quantizePricingProvider(await withUtcCapClock(input.provider, dependencies, input.localDate)),
+          displayTimeZone: input.displayTimeZone ?? await dependencies.getDefaultTimeZone?.() ?? input.provider.timeZone,
         });
       }
       return buildPriorityTimePricingTimeline({
         localDate: input.localDate,
-        config: quantizePricingProvider(await withDefaultTimeZone(input.provider, dependencies)),
+        config: quantizePricingProvider(await withUtcPricingClock(input.provider, dependencies, input.localDate)),
+        displayTimeZone: input.displayTimeZone ?? await dependencies.getDefaultTimeZone?.() ?? input.provider.timeZone,
       });
     },
   };
@@ -169,7 +173,7 @@ async function createPricingConfigForKind(
         ...base,
         kind,
         provider: quantizePricingProvider(
-          await withDefaultTimeZone(
+          await withUtcPricingClock(
             provider as Extract<PricingConfig, { kind: "time.priority" }>["provider"],
             dependencies,
           ),
@@ -188,7 +192,7 @@ async function createPricingConfigForKind(
         ...base,
         kind,
         provider: quantizePricingProvider(
-          await withDefaultCapTimeZone(
+          await withUtcCapClock(
             provider as Extract<PricingConfig, { kind: "time.cap" }>["provider"],
             dependencies,
           ),
@@ -225,26 +229,35 @@ async function assertIncludedPricingConfigsAreTimePriority(
   }
 }
 
-async function withDefaultTimeZone(
+async function withUtcPricingClock(
   provider: Extract<PricingConfig, { kind: "time.priority" }>["provider"],
   dependencies: StaffPricingServiceDependencies,
+  referenceDate = dependencies.now().toISOString().slice(0, 10),
 ): Promise<Extract<PricingConfig, { kind: "time.priority" }>["provider"]> {
-  const timeZone = provider.timeZone ?? (await dependencies.getDefaultTimeZone?.());
-  if (!timeZone) return provider;
+  const { historyProviderId, ...editedProvider } = provider;
+  const timeZone = provider.timeZone ?? "UTC";
   return {
-    ...provider,
-    timeZone,
+    ...editedProvider,
+    timeZone: "UTC",
+    rules: provider.rules.map(rule => {
+      const { historyRuleId, anchorAt, ...editedRule } = rule;
+      return convertPricingRuleClock(editedRule, timeZone, "UTC", referenceDate);
+    }),
   };
 }
 
-async function withDefaultCapTimeZone(
+async function withUtcCapClock(
   provider: Extract<PricingConfig, { kind: "time.cap" }>["provider"],
   dependencies: StaffPricingServiceDependencies,
+  referenceDate = dependencies.now().toISOString().slice(0, 10),
 ): Promise<Extract<PricingConfig, { kind: "time.cap" }>["provider"]> {
-  const timeZone = provider.timeZone ?? (await dependencies.getDefaultTimeZone?.());
-  if (!timeZone) return provider;
+  const timeZone = provider.timeZone ?? "UTC";
   return {
     ...provider,
-    timeZone,
+    timeZone: "UTC",
+    rules: provider.rules.map(rule => {
+      const { historyRuleId, anchorAt, ...editedRule } = rule;
+      return convertPricingRuleClock(editedRule, timeZone, "UTC", referenceDate);
+    }),
   };
 }

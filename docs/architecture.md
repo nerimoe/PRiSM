@@ -134,3 +134,7 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 - 编译期的 Hono 路由与响应体强类型客户端生成。
 - 更复杂的报表图表与批量操作。
 - 计费配置的多版本灰度回滚管理。
+
+计费规则、入场判定、封顶日期边界和优惠日历统一使用 UTC；店铺时区用于 UI 输入与展示。规则编辑器在 HTTP 边界转换时钟、开始日星期和指定日期，后端预览将 UTC 收费窗口投影到 UI 的当地日。详情及历史版本兼容约定见 [UTC 时间约定](utc-time-contract.md)。
+
+UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务计划，在 SQLite 启动、D1 首次请求和活动账单后台读取之前执行。完成标记与转换一起提交，版本和发布防篡改触发器仅在事务内临时开放，随后恢复。统一平台在此之后以 `shop-location-time-zone-v1` 补齐已有店铺的展示时区，并在位置保存时原子更新 `store.profile.timeZone`；前后端共用 `core/location-time-zone.ts` 的离线 WGS84 → IANA 地理查询。位置变化只更新展示时区，不影响 UTC 规则与历史金额。独立旧版 runtime 没有店铺位置表，保留手动展示设置。

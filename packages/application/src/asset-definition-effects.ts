@@ -44,7 +44,7 @@ export function createAssetDefinitionEffectProvider(
 
       const adjustments: SettlementAdjustment[] = [];
       let remainingSubtotal = context.subtotal;
-      const timeZone = context.timeZone ?? "Asia/Shanghai";
+      const timeZone = "UTC";
       const definitions = new Map(
         (await assetDefinitions.listAll()).map((definition) => [
           assetDefinitionKey(definition.type, definition.code),

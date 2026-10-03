@@ -84,7 +84,7 @@ export function LivePlayers({ players, refresh, onManage }: {
           <div className="text-right"><dt className="text-xs text-ink/60">{t("应付")}</dt><dd className="mt-1 break-all text-2xl font-semibold leading-tight tabular-nums">{money(selected.estimatedTotal)}</dd><dd className="mt-1 text-xs text-ink/50">{selected.paymentMode === "cashier" ? t("现场收款") : <>{t("余额")} {money(selected.walletTotal)}</>}</dd></div>
         </dl>
         <div className="max-h-[60vh] overflow-y-auto p-4">
-          {selected.timeline && <BillTimeline preview={{ settlementPreview: { total: selected.estimatedTotal ?? 0 }, timeline: selected.timeline, chargeItems: [], adjustments: [] }} />}
+          {selected.timeline && <BillTimeline timeZone={timeZone || undefined} preview={{ settlementPreview: { total: selected.estimatedTotal ?? 0 }, timeline: selected.timeline, chargeItems: [], adjustments: [] }} />}
           {canWrite && selected.sessions.filter(session => session.status === "active").map(session => <div key={session.id} className="flex items-center justify-between gap-3 border-t border-ink/10 py-3 text-sm">
             <span>{[...new Set(session.pricingCharges.map(charge => charge.planName))].join(" + ") || title(session)}</span>
             <button className={button} onClick={() => setStop({ playerId: selected.playerId, session })}>{t("停止计费")}</button>
@@ -102,7 +102,7 @@ export function LivePlayers({ players, refresh, onManage }: {
     {checkout && <Modal title="结账" close={() => setCheckout(null)}><ActionForm label="确认结账" done={() => { setCheckout(null); refresh(); }} submit={() => request(`players/${segment(checkout.player.playerId)}/checkout/confirm`, "POST", {})}>
       <p className="font-semibold">{checkout.player.displayName}</p>
       <BillTotal preview={checkout.preview} />
-      <BillTimeline preview={checkout.preview} />
+      <BillTimeline preview={checkout.preview} timeZone={timeZone || undefined} />
       <p className="text-sm text-ink/60">{t("结账后余额")} {money(checkout.preview.wallet.balanceAfter)}</p>
     </ActionForm></Modal>}
   </>;

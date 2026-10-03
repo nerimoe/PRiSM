@@ -172,7 +172,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
         })}>{t("确认入场")}</button></div>
         : <><div className="grid gap-2 text-sm">{scan.profile.sessions.map(session => <p key={session.id}>{t(session.status === "active" ? "计费中" : "待结账")} · {at(session.startedAt)}{session.endedAt && ` — ${at(session.endedAt)}`}</p>)}</div>
           {preview ? <form className="grid gap-4" onSubmit={collect}>
-            <BillTotal preview={preview} /><BillTimeline preview={preview} />
+            <BillTotal preview={preview} /><BillTimeline preview={preview} timeZone={timeZone || undefined} />
             <p className="text-sm text-ink/60">{t("金额截止到本次账单预览时间；确认现场收款后结束计时")}</p>
             <p className="text-sm text-ink/60">{t("账单时间")} · {at(preview.settlementPreview.previewedAt)}</p>
             <Field label="收款方式"><select className={input} name="method"><option value="wechat">{t("微信")}</option><option value="alipay">{t("支付宝")}</option><option value="cash">{t("现金")}</option><option value="other">{t("其他")}</option></select></Field>

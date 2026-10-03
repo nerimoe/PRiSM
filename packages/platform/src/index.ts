@@ -1,3 +1,4 @@
+import { ensureD1UtcPricing } from "@prism/runtime";
 import { registerCashierRoutes } from "./cashier";
 import {
   registerDeviceRoutes,
@@ -7,7 +8,8 @@ import {
   requireDeviceStaff,
   claimDeviceCoin,
 } from "./devices";
-import { PrismDomainError } from "@prism/core";
+import { PrismDomainError, resolveLocationTimeZone } from "@prism/core";
+import { ensureShopLocationTimeZones } from "./location-time-zone";
 import { billingSetupStatements } from "./billing-setup";
 import {
   registerBillingRoutes,
@@ -38,7 +40,7 @@ import {
   sha256,
   sha256Hex,
 } from "./crypto";
-import { canAccessShop, getMachineByPublicId, listShopsForUser } from "./db";
+import { canAccessShop, getMachineByPublicId, listShopsForUser, shopTimeZoneStatement } from "./db";
 import { checkLocation, clampShopRadius } from "./geo";
 import {
   allowedOrigins,
@@ -145,6 +147,13 @@ app.use("*", async (c, next) => {
     }
   })();
   if (rejected) return rejected;
+  await next();
+});
+app.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/api/") && c.env?.DB) {
+    await ensureD1UtcPricing(c.env.DB);
+    await ensureShopLocationTimeZones(c.env.DB);
+  }
   await next();
 });
 app.use("*", attachUser);
@@ -813,6 +822,7 @@ app.get("/api/v1/merchant/shops", async (c) => {
 app.post("/api/v1/merchant/shops", async (c) => {
   const user = requireUser(c);
   const body = createShopSchema.parse(await c.req.json());
+  const timeZone = resolveLocationTimeZone(body.latitude, body.longitude);
   const shopId = crypto.randomUUID();
   const publicId = randomToken(8);
   const heroHash = body.heroData ? await sha256(body.heroData) : null;
@@ -837,6 +847,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
       "INSERT INTO shop_members (id, shop_id, user_id, role) VALUES (?, ?, ?, 'owner')",
     ).bind(crypto.randomUUID(), shopId, user.id),
   ];
+  statements.push(shopTimeZoneStatement(c.env.DB, shopId, timeZone));
   if (setup) {
     statements.push(...billingSetupStatements(c.env.DB, shopId, setup).statements);
     if (botToken) statements.push(
@@ -854,6 +865,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
         id: shopId,
         publicId,
         ...shop,
+        timeZone,
         heroUrl: heroHash ? shopHeroPath(publicId, heroHash) : null,
       },
     },
@@ -878,9 +890,15 @@ app.patch("/api/v1/merchant/shops/:id", async (c) => {
   }
 
   const body = patchShopSchema.parse(await c.req.json());
+  const location = await c.env.DB.prepare("SELECT latitude,longitude FROM shops WHERE id=?")
+    .bind(shopId).first<{ latitude: number; longitude: number }>();
+  if (!location) jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
+  const latitude = body.latitude ?? location.latitude;
+  const longitude = body.longitude ?? location.longitude;
+  const timeZone = resolveLocationTimeZone(latitude, longitude);
   const radius =
     body.radiusMeters !== undefined ? clampShopRadius(body.radiusMeters) : null;
-  await c.env.DB.prepare(
+  const statements = [c.env.DB.prepare(
     `UPDATE shops
      SET name = COALESCE(?, name),
          hero_data = CASE WHEN ? THEN ? ELSE hero_data END,
@@ -897,15 +915,16 @@ app.patch("/api/v1/merchant/shops/:id", async (c) => {
       body.heroData ?? null,
       body.heroData !== undefined ? 1 : 0,
       body.heroData ? await sha256(body.heroData) : null,
-      body.latitude ?? null,
-      body.longitude ?? null,
+      latitude,
+      longitude,
       radius,
       shopId,
-    )
-    .run();
+    )];
+  statements.push(shopTimeZoneStatement(c.env.DB, shopId, timeZone));
+  await c.env.DB.batch(statements);
 
   const updated = await c.env.DB.prepare(
-    "SELECT id, public_id AS publicId, name, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters AS radiusMeters, radius_meters, created_at AS createdAt, updated_at AS updatedAt FROM shops WHERE id = ?",
+    "SELECT id, public_id AS publicId, name, COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'Asia/Shanghai') AS timeZone, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters AS radiusMeters, radius_meters, created_at AS createdAt, updated_at AS updatedAt FROM shops WHERE id = ?",
   )
     .bind(shopId)
     .first();

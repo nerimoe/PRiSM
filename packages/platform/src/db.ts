@@ -1,6 +1,22 @@
 import type { Context } from "hono";
 import type { AppBindings, AuthUser, MachineRow, ShopRow } from "./types";
 
+/** Save the display zone with the location transaction, preserving other profile fields. */
+export function shopTimeZoneStatement(db: D1Database, shopId: string, timeZone: string,
+  location?: { latitude: number; longitude: number }) {
+  const where = location
+    ? "id=? AND latitude=? AND longitude=? AND COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'')!=?"
+    : "id=?";
+  return db.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at)
+    SELECT id,'store.profile',json_set(
+      COALESCE((SELECT value_json FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'{}'),
+      '$.name',name,'$.timeZone',?),?
+    FROM shops WHERE ${where}
+    ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
+    .bind(timeZone, new Date().toISOString(), shopId,
+      ...(location ? [location.latitude, location.longitude, timeZone] : []));
+}
+
 export async function canAccessShop(c: Context<AppBindings>, user: AuthUser, shopId: string): Promise<boolean> {
   if (user.role === "admin") return true;
   const row = await c.env.DB.prepare("SELECT id FROM shop_members WHERE shop_id = ? AND user_id = ?")
@@ -13,13 +29,14 @@ export async function listShopsForUser(c: Context<AppBindings>, user: AuthUser):
   if (user.role === "admin") {
     return (
       await c.env.DB.prepare(
-        "SELECT id, public_id AS publicId, name, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/v1/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters, created_by FROM shops ORDER BY created_at DESC",
+        "SELECT id, public_id AS publicId, name, COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'Asia/Shanghai') AS timeZone, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/v1/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters, created_by FROM shops ORDER BY created_at DESC",
       ).all<ShopRow>()
     ).results;
   }
   return (
     await c.env.DB.prepare(
       `SELECT shops.id, shops.public_id AS publicId, shops.name,
+              COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'Asia/Shanghai') AS timeZone,
               CASE WHEN shops.hero_data IS NULL OR shops.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || shops.public_id || '/hero?v=' || COALESCE(shops.hero_hash, 'original') END AS heroUrl,
               shops.latitude, shops.longitude,
               shops.radius_meters, shops.created_by
