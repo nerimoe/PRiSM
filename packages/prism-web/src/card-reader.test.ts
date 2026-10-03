@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { basicCard, CardPresence, HinataCardReader, HinataTransport, pn532Frame, pn532Response } from "./card-reader";
+import { basicCard, CardPresence, HinataCardReader, HinataTransport, pn532Frame, pn532Response, ReaderError } from "./card-reader";
 import { FakeDevice, FakeHid, response, until, wait } from "./reader-test-device";
 test("PN532 WebHID frame includes the bridge header and validates responses", () => {
   expect([...pn532Frame(0x4a, [1, 0])]).toEqual([0xe2, 0, 0, 255, 4, 252, 0xd4, 0x4a, 1, 0, 0xe1, 0]);
@@ -223,4 +223,164 @@ test("HID readiness is awaited and cancellation releases listeners before a devi
     error => { expect(error.message).toContain("已断开"); });
   await reader.stop(); await pending;
   expect(device.inputListeners.size).toBe(0); expect(hid.listeners.size).toBe(0);
+});
+
+test("a hung HID write times out, frees its channel and safely handles a late rejection", async () => {
+  const device = new FakeDevice(); await device.open();
+  const transport = new HinataTransport(device);
+  let rejectWrite!: (error: Error) => void;
+  device.handler = () => new Promise<void>((_, reject) => { rejectWrite = reject; });
+  try {
+    const error = await transport.request(1).catch(error => error);
+    expect(error).toBeInstanceOf(ReaderError);
+    expect(error.message).toBe("读卡器写入超时");
+    expect(error.detail).toContain("command=0x1, write, 1000ms");
+    device.handler = undefined;
+    expect(new TextDecoder().decode(await transport.request(1))).toBe(device.firmware);
+    rejectWrite(new Error("Late USB failure"));
+    await wait(0);
+    expect((await transport.pn532(0x4a, [1, 0]))[0]).toBe(1);
+  } finally { transport.close(); await device.close(); }
+});
+
+test.each([false, true])("persistent PN532 timeouts (ACK=%s) rebuild the link and preserve a held card", async ack => {
+  const device = new FakeDevice(); const hid = new FakeHid([device]);
+  const reader = new HinataCardReader(device, hid);
+  const cards: unknown[] = []; const errors: Error[] = []; let recovered = 0;
+  await reader.start(card => cards.push(card), error => errors.push(error), () => recovered++);
+  try {
+    await until(() => cards.length === 1);
+    let wedged = true;
+    device.handler = data => {
+      if (data[0] === 0xe8) { wedged = false; return; }
+      if (data[0] === 0xe2 && wedged) {
+        if (ack) device.emit(Uint8Array.of(0xe2, 0, 0, 255, 0, 255, 0));
+        return;
+      }
+      device.reply(data);
+    };
+    await until(() => recovered === 1, 4500);
+    expect(errors).toHaveLength(3);
+    expect((errors[0] as ReaderError).detail).toContain(`brty=1), 1000ms, ${ack ? 1 : 0} frame(s)`);
+    expect(device.opens).toBe(2); expect(device.closes).toBe(1);
+    expect(device.writes.filter(frame => frame[0] === 1)).toHaveLength(2);
+    expect(device.writes.filter(frame => frame[0] === 0xe8)).toEqual([[0xe8]]);
+    expect(device.inputListeners.size).toBe(1); expect(reader.connected).toBe(true);
+    expect(cards).toHaveLength(1);
+    device.card = [1, 1, 0, 4, 8, 4, 0x11, 0x22, 0x33, 0x44];
+    await until(() => cards.length === 2);
+  } finally { await reader.stop(); }
+  expect(device.inputListeners.size).toBe(0); expect(hid.listeners.size).toBe(0);
+}, 6000);
+
+test("one transient scan timeout recovers without resetting or reopening the device", async () => {
+  const device = new FakeDevice(); let missed = false;
+  device.handler = data => {
+    if (data[0] === 0xe2 && !missed) { missed = true; return; }
+    device.reply(data);
+  };
+  const reader = new HinataCardReader(device, new FakeHid([device]));
+  const errors: Error[] = []; let recovered = 0;
+  await reader.start(() => {}, error => errors.push(error), () => recovered++);
+  try {
+    await until(() => recovered === 1);
+    expect(errors).toHaveLength(1); expect(device.opens).toBe(1);
+    expect(device.writes.some(frame => frame[0] === 0xe8)).toBe(false);
+  } finally { await reader.stop(); }
+});
+
+test("persistent hung polling writes recover automatically and their late failures are harmless", async () => {
+  const device = new FakeDevice(); const pending: ((error: Error) => void)[] = [];
+  let wedged = true;
+  device.handler = data => {
+    if (data[0] === 0xe8) { wedged = false; return; }
+    if (data[0] === 0xe2 && wedged) return new Promise<void>((_, reject) => { pending.push(reject); });
+    device.reply(data);
+  };
+  const reader = new HinataCardReader(device, new FakeHid([device]));
+  const cards: unknown[] = []; const errors: Error[] = []; let recovered = 0;
+  await reader.start(card => cards.push(card), error => errors.push(error), () => recovered++);
+  try {
+    await until(() => recovered === 1, 4500);
+    expect(errors.map(error => error.message)).toEqual(Array(3).fill("读卡器写入超时"));
+    expect(cards).toHaveLength(1); expect(device.opens).toBe(2);
+    pending.forEach(reject => reject(new Error("Late write failure")));
+    await wait(30); expect(errors).toHaveLength(3);
+  } finally { await reader.stop(); }
+}, 6000);
+
+test("unplug during the recovery handshake cancels the new transport without reopening again", async () => {
+  const device = new FakeDevice(); const hid = new FakeHid([device]);
+  let firmwareQueries = 0;
+  device.handler = data => {
+    if (data[0] === 1 && ++firmwareQueries > 1) return;
+    if (data[0] === 0xe2) {
+      const corrupt = response(data[7]!, [0]); corrupt[corrupt.length - 2]! ^= 1;
+      device.emit(corrupt); return;
+    }
+    device.reply(data);
+  };
+  const reader = new HinataCardReader(device, hid);
+  await reader.start(() => {}, () => {});
+  try {
+    await until(() => firmwareQueries === 2);
+    hid.emit("disconnect", device);
+    await reader.stop();
+    await wait(40);
+    expect(device.opens).toBe(2); expect(device.closes).toBe(2);
+    expect(device.inputListeners.size).toBe(0); expect(hid.listeners.size).toBe(0);
+    expect(device.writes.some(frame => frame[0] === 0xe8)).toBe(false);
+  } finally { await reader.stop(); }
+});
+
+test("polling suspension waits for recovery before allowing other device operations", async () => {
+  const device = new FakeDevice(); let firmwareQueries = 0;
+  device.handler = data => {
+    if (data[0] === 1 && ++firmwareQueries === 2) return;
+    if (data[0] === 0xe2 && firmwareQueries === 1) {
+      const corrupt = response(data[7]!, [0]); corrupt[corrupt.length - 2]! ^= 1;
+      device.emit(corrupt); return;
+    }
+    device.reply(data);
+  };
+  const reader = new HinataCardReader(device, new FakeHid([device]));
+  await reader.start(() => {}, () => {});
+  try {
+    await until(() => firmwareQueries === 2);
+    let suspended = false;
+    const suspension = reader.suspendPolling().then(() => { suspended = true; });
+    await wait(30); expect(suspended).toBe(false);
+    device.emit(new TextEncoder().encode(device.firmware));
+    await suspension;
+    const writes = device.writes.length;
+    await wait(50); expect(device.writes).toHaveLength(writes);
+    expect(device.writes.at(-1)).toEqual([0xe8]);
+    reader.resumePolling(); await until(() => device.writes.length > writes);
+  } finally { await reader.stop(); }
+});
+
+test("a failed recovery handshake is retried before scanning or reporting recovery", async () => {
+  const device = new FakeDevice(); let firmwareQueries = 0;
+  device.handler = data => {
+    if (data[0] === 1 && ++firmwareQueries === 2) return;
+    if (data[0] === 0xe2 && firmwareQueries === 1) {
+      const corrupt = response(data[7]!, [0]); corrupt[corrupt.length - 2]! ^= 1;
+      device.emit(corrupt); return;
+    }
+    device.reply(data);
+  };
+  const reader = new HinataCardReader(device, new FakeHid([device]));
+  const errors: Error[] = []; let recovered = 0;
+  await reader.start(() => {}, error => errors.push(error), () => recovered++);
+  try {
+    await until(() => firmwareQueries === 2);
+    expect(recovered).toBe(0);
+    await until(() => recovered === 1, 2500);
+    const queries = device.writes.flatMap((frame, index) => frame[0] === 1 ? [index] : []);
+    expect(queries).toHaveLength(3);
+    expect(device.writes.slice(queries[1]! + 1, queries[2]!)).toEqual([]);
+    expect(errors).toHaveLength(4);
+    expect(errors.at(-1)?.message).toBe("读卡器响应超时");
+    expect(device.opens).toBe(3); expect(device.inputListeners.size).toBe(1);
+  } finally { await reader.stop(); }
 });

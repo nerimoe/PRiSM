@@ -105,6 +105,30 @@ export class HinataTransport {
     if (!this.closed) this.cardioListeners.add(listener);
     return () => { this.cardioListeners.delete(listener); };
   }
+  private async write(data: Uint8Array): Promise<void> {
+    if (this.closed) throw new Error("读卡器已断开");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort = () => {};
+    try {
+      await new Promise<void>((resolve, reject) => {
+        abort = () => { reject(new Error("读卡器已断开")); };
+        timer = setTimeout(() => reject(new ReaderError("读卡器写入超时",
+          `HINATA output reportId=1, command=0x${data[0]!.toString(16)}, write, 1000ms`)), 1000);
+        this.cancel.signal.addEventListener("abort", abort, { once: true });
+        // A timed-out native write can still settle later. Handle its rejection
+        // without letting it change the next exchange's subscription.
+        try { void this.device.sendReport(1, data).then(resolve, reject); }
+        catch (error) { reject(error); }
+      });
+    } finally {
+      clearTimeout(timer);
+      this.cancel.signal.removeEventListener("abort", abort);
+    }
+  }
+  /** HINATA Go resetStateMachine: command 0xE8 has no response. */
+  resetStateMachine(): Promise<void> {
+    return this.write(Uint8Array.of(0xe8));
+  }
   private async exchange<T>(header: number, data: Uint8Array, policy: UnsubscribePolicy, action: (subscription: ReportSubscription) => Promise<T>): Promise<T> {
     if (this.closed) throw new Error("读卡器已断开");
     if (this.subscriptions.has(header)) throw new Error("读卡器请求正在进行");
@@ -112,14 +136,8 @@ export class HinataTransport {
     this.subscriptions.set(header, subscription);
     this.lastReportId = undefined;
     try {
-      // Stop/disconnect must also cancel initialization if a HID write hangs.
-      await new Promise<void>((resolve, reject) => {
-        const abort = () => { reject(new Error("读卡器已断开")); };
-        this.cancel.signal.addEventListener("abort", abort, { once: true });
-        void this.device.sendReport(1, data).then(resolve, reject).finally(() => {
-          this.cancel.signal.removeEventListener("abort", abort);
-        });
-      });
+      // Response deadlines start after writing; the write has its own deadline.
+      await this.write(data);
       return await action(subscription);
     } finally {
       if (this.subscriptions.get(header) === subscription) this.subscriptions.delete(header);
@@ -171,7 +189,7 @@ export class HinataCardReader {
   private presence = new CardPresence();
   private closing?: Promise<void>;
   private suspended = false;
-  private activePoll?: Promise<BasicCard | null>;
+  private activePoll?: Promise<void>;
   firmwareTimestamp = 0;
   commitHash = new Uint8Array();
   chipId = new Uint8Array();
@@ -249,24 +267,37 @@ export class HinataCardReader {
     }
     return null;
   }
+  private async recover() {
+    // Retrying the same PN532 command cannot repair a wedged HID/firmware link.
+    // Replace the input subscription before reopening, so old waiters cannot
+    // consume the new handshake. Preserve presence across this recovery.
+    this.transport?.close();
+    await this.closeDevice();
+    this.closing = undefined;
+    this.checkRunning();
+    this.transport = new HinataTransport(this.device);
+    await this.initialize();
+    this.checkRunning();
+    await this.transport.resetStateMachine();
+    await this.pause(200);
+  }
   async start(onCard: (card: BasicCard) => void, onError: (error: Error) => void, onRecovered?: () => void): Promise<void> {
     if (this.running || this.initialization || this.loop) throw new Error("读卡器请求正在进行");
     this.running = true; this.initialized = false; this.presence = new CardPresence();
     this.suspended = false;
     this.closing = undefined;
-    const transport = new HinataTransport(this.device);
-    this.transport = transport;
+    this.transport = new HinataTransport(this.device);
     const disconnected = (event: Event) => {
       if ((event as Event & { device: ReaderDevice }).device === this.device) {
         this.running = false; this.initialized = false;
-        transport.close(); this.wake?.();
+        this.transport?.close(); this.wake?.();
         onError(new Error("读卡器已断开，请重新连接"));
       }
     };
     this.hid.addEventListener("disconnect", disconnected);
     const cleanup = async () => {
       this.running = false; this.initialized = false;
-      transport.close(); this.wake?.();
+      this.transport?.close(); this.wake?.();
       this.hid.removeEventListener("disconnect", disconnected);
       await this.closeDevice();
     };
@@ -277,22 +308,42 @@ export class HinataCardReader {
     this.initialized = true;
     this.loop = (async () => {
       let incomplete = false;
+      let failures = 0;
+      let needsRecovery = false;
       try {
         while (this.running) {
           if (this.suspended) { await this.pause(16); continue; }
           if (typeof document !== "undefined" && !document.hasFocus()) { await this.pause(200); continue; }
-          try {
-            this.activePoll = this.poll();
-            const card = await this.activePoll;
-            if (!this.running) break;
-            if (incomplete) { incomplete = false; onRecovered?.(); }
-            if (this.presence.accept(card) && card) onCard(card);
-          } catch (error) {
-            if (!this.running) break;
-            // Go reports an incomplete scan, keeps the link and does not mark
-            // the card removed until three successful no-target polls.
-            incomplete = true; onError(error as Error);
-          } finally { this.activePoll = undefined; }
+          this.activePoll = (async () => {
+            try {
+              if (needsRecovery) {
+                // Back off on every recovery attempt, including failed handshakes.
+                await this.pause(200);
+                if (!this.running) return;
+                await this.recover();
+                needsRecovery = false;
+              }
+              if (!this.running || this.suspended) return;
+              const card = await this.poll();
+              if (!this.running) return;
+              failures = 0;
+              if (incomplete) { incomplete = false; onRecovered?.(); }
+              if (this.presence.accept(card) && card) onCard(card);
+            } catch (error) {
+              if (!this.running) return;
+              // Go reports an incomplete scan, keeps the link and does not mark
+              // the card removed until three successful no-target polls.
+              incomplete = true; onError(error as Error);
+              if (++failures >= 3) {
+                failures = 0;
+                needsRecovery = true;
+              }
+            }
+          })();
+          // Suspension must wait for recovery as well as the scan itself.
+          try { await this.activePoll; }
+          finally { this.activePoll = undefined; }
+          if (!this.running) break;
           await this.pause(16);
         }
       } finally { await cleanup(); }
