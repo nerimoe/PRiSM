@@ -6,7 +6,7 @@ import { Field, input, button, primary } from "./shared";
 
 type Conversion = { sourceProvider:string;targetProvider:string;playerCount:number;identityCount:number;bindingCount:number;
   fingerprint:string;conflicts:{subject:string;reason:string}[];samples:{playerId:string;displayName:string;from:string;to:string}[] };
-export function IdentityConverter({ shopCode }: { shopCode:string }) {
+export function IdentityConverter({ shopCode, embedded = false }: { shopCode:string; embedded?:boolean }) {
   const { t,errorText } = useI18n();
   const [source,setSource] = useState("");
   const [target,setTarget] = useState("");
@@ -27,8 +27,8 @@ export function IdentityConverter({ shopCode }: { shopCode:string }) {
     } catch (e) { setError(errorText(e instanceof Error ? e.message : "操作失败")); }
     finally { setBusy(false); }
   }
-  return <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">
-    <h3 className="font-semibold">{t("平台身份转换")}</h3>
+  return <section className={embedded ? "grid gap-4" : "grid gap-4 rounded-xl border border-ink/10 bg-panel p-5"}>
+    {!embedded && <h3 className="font-semibold">{t("平台身份转换")}</h3>}
     <p className="text-sm text-ink/60">{t("批量替换本店玩家的平台标识，身份值、玩家、余额和账单保持不变。转换前先预览影响和冲突。")}</p>
     <form className="grid gap-4" onSubmit={e=>{e.preventDefault();void run(false);}}>
       <Field label="原平台标识"><input className={input} value={source} required pattern="[a-z][a-z0-9_-]{0,63}" disabled={busy}

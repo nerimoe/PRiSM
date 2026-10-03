@@ -108,9 +108,11 @@ export async function operationLocation(required: boolean) {
 export function BillingSettings({
   shopCode,
   embedded = false,
+  section = "billing",
 }: {
   shopCode: string;
   embedded?: boolean;
+  section?: "billing" | "players" | "devices" | null;
 }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -119,122 +121,293 @@ export function BillingSettings({
   >([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [savedSection, setSavedSection] = useState<typeof section>(null);
+  const [errorSection, setErrorSection] = useState<typeof section>(null);
   const [billingActive, setBillingActive] = useState(false);
   const [converting, setConverting] = useState(false);
   const load = useCallback(async () => {
     const [s, r] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
-      api<{ pricingConfigs: { id: string; name: string; enabled: boolean }[] }>(shopApi(shopCode, "staff/pricing-configs")),
+      api<{ pricingConfigs: { id: string; name: string; enabled: boolean }[] }>(
+        shopApi(shopCode, "staff/pricing-configs"),
+      ),
     ]);
-    setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false, identityBindingRequired: s.identityBindingRequired ?? true });
+    setSettings({
+      ...s,
+      cashierEnabled: s.cashierEnabled ?? false,
+      identityBindingRequired: s.identityBindingRequired ?? true,
+    });
     setBillingActive(s.billingEnabled);
     setRules(r.pricingConfigs);
   }, [shopCode]);
   useEffect(() => {
     void load().catch((e) => setError(e.message));
   }, [load]);
-  if (!settings) return <p role="status">{error || t("加载中...")}</p>;
+  if (!settings)
+    return section ? <p role="status">{error || t("加载中...")}</p> : null;
   const flags = {
     billingEnabled: "启用入场计费",
     autoRegister: "允许自动创建玩家档案",
     locationEnabled: "启用位置校验",
   } as const;
   return (
-    <><form
-      className={`${embedded ? "rounded-xl border border-ink/10 bg-panel p-5" : panel} grid gap-4`}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setError("");
-        setSaved(false);
-        try {
-          const result = await api<Settings>(shopApi(shopCode, "settings"), {
-            method: "PUT",
-            body: JSON.stringify(settings),
-          });
-          setBillingActive(result.billingEnabled);
-          setSaved(true);
-          window.dispatchEvent(new Event("prism-shop-settings"));
-        } catch (e) {
-          setError(e instanceof Error ? e.message : t("保存失败"));
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <h3 className="font-semibold">{t("入场与位置校验")}</h3>
-      {!billingActive && (
-        <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
-          <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
-          <button type="button" className={`${control} justify-self-start`} onClick={() => setConverting(true)}>{t("转换为计费店铺")}</button>
-          <div className="flex flex-wrap gap-3">
-            <Link className="underline" to={`/merchant/${shopCode}/assets`}>
-              {t("配置基础资产")}
-            </Link>
-            <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-              {t("配置入场规则")}
-            </Link>
-          </div>
-        </div>
-      )}
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.billingEnabled} onChange={(e) => setSettings({ ...settings, billingEnabled: e.target.checked, cashierEnabled: e.target.checked && settings.cashierEnabled })} />{t(flags.billingEnabled)}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.cashierEnabled} disabled={!settings.billingEnabled} onChange={(e) => setSettings({ ...settings, cashierEnabled: e.target.checked })} />{t("启用前台收银")}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。")}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.identityBindingRequired} onChange={(e) => setSettings({ ...settings, identityBindingRequired: e.target.checked })} />{t("要求绑定平台身份")}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，绑定任意一个 Bot 平台身份即可入场和使用设备；关闭后，登录网页账号即可使用。")}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.autoRegister} onChange={(e) => setSettings({ ...settings, autoRegister: e.target.checked })} />{t(flags.autoRegister)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，验证平台身份可创建新玩家档案；关闭后，仅可认领已有平台身份档案。")}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.locationEnabled} onChange={(e) => setSettings({ ...settings, locationEnabled: e.target.checked })} />{t(flags.locationEnabled)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。范围使用店铺地图设置。")}</span>
-      </label>
-
-      <fieldset>
-        <legend>{t("普通入场计费规则")}</legend>
-        {rules
-          .filter((r) => r.enabled)
-          .map((rule) => (
-            <label className="mt-2 flex gap-3" key={rule.id}>
-              <input
-                type="checkbox"
-                checked={settings.entryPricingIds.includes(rule.id)}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    entryPricingIds: e.target.checked
-                      ? [...settings.entryPricingIds, rule.id]
-                      : settings.entryPricingIds.filter((id) => id !== rule.id),
-                  })
-                }
-              />
-              {rule.name}
+    <>
+      <form
+        style={section ? undefined : { display: "none" }}
+        className={`${embedded ? "rounded-xl border border-ink/10 bg-panel p-5" : panel} grid gap-4`}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (busy || !section) return;
+          const savingSection = section;
+          setBusy(true);
+          setError("");
+          setSavedSection(null);
+          setErrorSection(savingSection);
+          try {
+            const current = await api<Settings>(shopApi(shopCode, "settings"));
+            const patch =
+              savingSection === "billing"
+                ? {
+                    billingEnabled: settings.billingEnabled,
+                    cashierEnabled: settings.cashierEnabled,
+                    entryPricingIds: settings.entryPricingIds,
+                  }
+                : savingSection === "players"
+                  ? {
+                      identityBindingRequired: settings.identityBindingRequired,
+                      autoRegister: settings.autoRegister,
+                    }
+                  : { locationEnabled: settings.locationEnabled };
+            const result = await api<Settings>(shopApi(shopCode, "settings"), {
+              method: "PUT",
+              body: JSON.stringify({ ...current, ...patch }),
+            });
+            setBillingActive(result.billingEnabled);
+            setSavedSection(savingSection);
+            window.dispatchEvent(new Event("prism-shop-settings"));
+          } catch (e) {
+            setError(e instanceof Error ? e.message : t("保存失败"));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <fieldset disabled={busy} className="grid gap-4">
+          <h4 className="font-semibold">
+            {t(
+              section === "players"
+                ? "注册与身份绑定"
+                : section === "devices"
+                  ? "位置校验"
+                  : "入场与收银",
+            )}
+          </h4>
+          {section === "billing" && !billingActive && (
+            <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
+              <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
+              <button
+                type="button"
+                className={`${control} justify-self-start`}
+                onClick={() => setConverting(true)}
+              >
+                {t("转换为计费店铺")}
+              </button>
+              <div className="flex flex-wrap gap-3">
+                <Link className="underline" to={`/merchant/${shopCode}/assets`}>
+                  {t("配置基础资产")}
+                </Link>
+                <Link
+                  className="underline"
+                  to={`/merchant/${shopCode}/pricing`}
+                >
+                  {t("配置入场规则")}
+                </Link>
+              </div>
+            </div>
+          )}
+          {section === "billing" && (
+            <>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.billingEnabled}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        billingEnabled: e.target.checked,
+                        cashierEnabled:
+                          e.target.checked && settings.cashierEnabled,
+                      })
+                    }
+                  />
+                  {t(flags.billingEnabled)}
+                </span>
+              </label>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.cashierEnabled}
+                    disabled={!settings.billingEnabled}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        cashierEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  {t("启用前台收银")}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。",
+                  )}
+                </span>
+              </label>
+            </>
+          )}
+          {section === "players" && (
+            <>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.identityBindingRequired}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        identityBindingRequired: e.target.checked,
+                      })
+                    }
+                  />
+                  {t("要求绑定平台身份")}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "开启后，绑定任意一个 Bot 平台身份即可入场和使用设备；关闭后，登录网页账号即可使用。",
+                  )}
+                </span>
+              </label>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoRegister}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        autoRegister: e.target.checked,
+                      })
+                    }
+                  />
+                  {t(flags.autoRegister)}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "开启后，验证平台身份可创建新玩家档案；关闭后，仅可认领已有平台身份档案。",
+                  )}
+                </span>
+              </label>
+            </>
+          )}
+          {section === "devices" && (
+            <label className="grid gap-2">
+              <span className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.locationEnabled}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      locationEnabled: e.target.checked,
+                    })
+                  }
+                />
+                {t(flags.locationEnabled)}
+              </span>
+              <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                {t(
+                  "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。范围使用店铺地图设置。",
+                )}
+              </span>
             </label>
-          ))}
-      </fieldset>
-      {error && <p role="alert">{error}</p>}
-      {saved && <p role="status">{t("已保存")}</p>}
-      <button className={`${control} justify-self-start`} disabled={busy}>
-        {t("保存设置")}
-      </button>
-      {!embedded && (
-        <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-          {t("打开计费管理")}
-        </Link>
+          )}
+
+          {section === "billing" && (
+            <fieldset>
+              <legend>{t("普通入场计费规则")}</legend>
+              {!rules.some((rule) => rule.enabled) && (
+                <p className="mt-2 text-sm text-ink/60">
+                  {t("暂无启用的入场规则，请先在计费管理中配置。")}
+                </p>
+              )}
+              {rules
+                .filter((r) => r.enabled)
+                .map((rule) => (
+                  <label className="mt-2 flex gap-3" key={rule.id}>
+                    <input
+                      type="checkbox"
+                      checked={settings.entryPricingIds.includes(rule.id)}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          entryPricingIds: e.target.checked
+                            ? [...settings.entryPricingIds, rule.id]
+                            : settings.entryPricingIds.filter(
+                                (id) => id !== rule.id,
+                              ),
+                        })
+                      }
+                    />
+                    {rule.name}
+                  </label>
+                ))}
+            </fieldset>
+          )}
+          {error && errorSection === section && <p role="alert">{error}</p>}
+          {savedSection === section && <p role="status">{t("已保存")}</p>}
+          <button className={`${control} justify-self-start`} disabled={busy}>
+            {t(
+              section === "players"
+                ? "保存身份设置"
+                : section === "devices"
+                  ? "保存位置校验"
+                  : "保存计费设置",
+            )}
+          </button>
+        </fieldset>
+        {section === "billing" && (
+          <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
+            {t("打开计费管理")}
+          </Link>
+        )}
+      </form>
+      {converting && (
+        <BillingConversionWizard
+          shopCode={shopCode}
+          close={() => setConverting(false)}
+          done={async (value) => {
+            setSettings((previous) => ({
+              ...value,
+              autoRegister: previous?.autoRegister ?? value.autoRegister,
+              identityBindingRequired:
+                previous?.identityBindingRequired ??
+                value.identityBindingRequired,
+              locationEnabled:
+                previous?.locationEnabled ?? value.locationEnabled,
+            }));
+            setBillingActive(value.billingEnabled);
+            setConverting(false);
+            setSavedSection("billing");
+            setError("");
+            const result = await api<{
+              pricingConfigs: { id: string; name: string; enabled: boolean }[];
+            }>(shopApi(shopCode, "staff/pricing-configs"));
+            setRules(result.pricingConfigs);
+          }}
+        />
       )}
-    </form>
-      {converting && <BillingConversionWizard shopCode={shopCode} close={() => setConverting(false)} done={async value => {
-        setSettings(value); setBillingActive(value.billingEnabled); setConverting(false); setSaved(true); setError("");
-        await load().catch(error => setError(error.message));
-      }} />}
     </>
   );
 }

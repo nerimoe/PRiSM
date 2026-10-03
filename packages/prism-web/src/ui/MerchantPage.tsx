@@ -237,22 +237,13 @@ function Workspace({
         ) : state.billingEnabled && section === "reports" ? (
           <ReportsPage />
         ) : section === "settings" && state.owner ? (
-          <div className="mx-auto grid w-full max-w-3xl gap-5">
-            <SettingsPage />
-            <details className="rounded-xl border border-ink/10 bg-panel p-5">
-              <summary className="cursor-pointer font-medium">
-                {t("店铺信息、位置与时区")}
-              </summary>
-              <div className="mt-4">
-                <ShopForm
-                  shop={shop}
-                  onSaved={async () => {
-                    await reload();
-                  }}
-                />
-              </div>
-            </details>
-            <StaffMembers shopId={shop.id} />
+          <div className="mx-auto w-full max-w-5xl">
+            <SettingsPage
+              shopDetails={<section className="rounded-xl border border-ink/10 bg-panel p-5">
+                <ShopForm shop={shop} onSaved={async () => { await reload(); }} />
+              </section>}
+              members={<StaffMembers shopId={shop.id} />}
+            />
           </div>
         ) : (
           <Navigate to={`/merchant/${shop.publicId}`} replace />

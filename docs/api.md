@@ -449,7 +449,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 仅店主可以调用 `POST /api/v1/shops/:shopCode/identity-conversion/preview`，输入 `{ sourceProvider, targetProvider }`。返回玩家数、身份数、网页绑定数、样例、冲突和数据 `fingerprint`。`apply` 接收同样标识及预览的 `fingerprint`、UUID `operationId`，检查预览未过期且无冲突后，在一笔 D1 事务内转换身份表和绑定表，保留身份值、玩家 ID、余额、会话及账单。相同玩家已拥有相同目标身份时去重；其他玩家／账号的冲突阻止整批写入。重复操作编号返回原结果，数据变化必须重新预览。
 
-`0030_platform_identity_bindings.sql` 只升级绑定结构，保留历史 `qq` 标识。需要适配 OneBot 的店家可以在「设置 → 平台身份转换」主动执行 `qq → onebot`。升级不会自动改标识，也不会跨店合并。
+`0030_platform_identity_bindings.sql` 只升级绑定结构，保留历史 `qq` 标识。需要适配 OneBot 的店家可以在「设置 → 玩家与身份 → 平台身份转换」主动执行 `qq → onebot`。升级不会自动改标识，也不会跨店合并。
 
 ### 实时活动按会话恢复
 
