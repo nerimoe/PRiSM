@@ -4,8 +4,19 @@ import { symlink, mkdir } from "fs/promises";
 
 // 支持的配置变量，可由环境变量覆盖，或者使用默认的同级目录名称
 const API_PORT = Number(process.env.PORT ?? "8787");
-const DASHBOARD_PORT = Number(process.env.DASHBOARD_PORT ?? "5500");
+const WEB_PORT = Number(process.env.WEB_PORT ?? "5173");
 const PROJECT_ROOT = join(import.meta.dir, "..");
+const apiOrigin = `http://127.0.0.1:${API_PORT}`;
+const localEnv = {
+  ...process.env,
+  APP_ORIGIN: apiOrigin,
+  EXTRA_ALLOWED_ORIGINS: [
+    `http://localhost:${API_PORT}`,
+    `http://localhost:${WEB_PORT}`,
+    `http://127.0.0.1:${WEB_PORT}`,
+    process.env.EXTRA_ALLOWED_ORIGINS,
+  ].filter(Boolean).join(","),
+};
 
 // 优先检测同级目录的 prism-astr 或是 AstrBot，也可通过环境变量指定
 const ASTRBOT_DIR = process.env.ASTRBOT_DIR ?? (
@@ -17,18 +28,21 @@ const ASTRBOT_DIR = process.env.ASTRBOT_DIR ?? (
 const processes: any[] = [];
 
 // 退出处理
-process.on("SIGINT", () => {
+const stop = () => {
   console.log("\n\x1b[31m[System] Stopping all services...\x1b[0m");
   for (const proc of processes) {
     proc.kill();
   }
   process.exit();
-});
+};
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
 
 // 并发启动子进程并添加彩色前缀
-const startProcessWithPrefix = (name: string, colorCode: string, cmd: string[], cwd?: string) => {
+const startProcessWithPrefix = (name: string, colorCode: string, cmd: string[], cwd?: string, env = process.env) => {
   const proc = Bun.spawn(cmd, {
     cwd,
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -62,28 +76,10 @@ const startProcessWithPrefix = (name: string, colorCode: string, cmd: string[], 
   return proc;
 };
 
-// 极简静态托管服务（支持 Flutter Web 的 History 路由回退）
-const serveStaticDashboard = (port: number, dir: string) => {
-  const server = Bun.serve({
-    port,
-    async fetch(req) {
-      const url = new URL(req.url);
-      let path = url.pathname;
-      if (path === "/") path = "/index.html";
-      const filePath = join(dir, path);
-      const file = Bun.file(filePath);
-      if (await file.exists()) {
-        return new Response(file);
-      }
-      const indexFile = Bun.file(join(dir, "index.html"));
-      if (await indexFile.exists()) {
-        return new Response(indexFile);
-      }
-      return new Response("Not Found", { status: 404 });
-    }
-  });
-  console.log(`\x1b[35m[System] Dashboard SPA static server listening on http://localhost:${port}\x1b[0m`);
-  return server;
+const run = async (cmd: string[]) => {
+  const child = Bun.spawn(cmd, { cwd: PROJECT_ROOT, env: localEnv, stdout: "inherit", stderr: "inherit" });
+  processes.push(child);
+  if (await child.exited !== 0) throw new Error(`${cmd[0]} failed while preparing the local platform.`);
 };
 
 const main = async () => {
@@ -114,30 +110,17 @@ const main = async () => {
     console.log(`\x1b[33m[System] Warning: AstrBot workspace not found at ${ASTRBOT_DIR}. Skipping bot runner...\x1b[0m`);
   }
 
-  // 2. 运行本地后端 API
-  console.log("[System] Launching backend API...");
-  startProcessWithPrefix("API", "36", ["bun", "run", "packages/runtime/src/serve.ts"], PROJECT_ROOT);
+  // 2. 准备统一平台的 React 静态资源及本地 D1 数据库
+  await run(["bun", "run", "build:web"]);
+  await run(["bun", "run", "scripts/generate-wrangler-config.ts", "--platform", "--local"]);
+  await run(["bunx", "wrangler", "d1", "migrations", "apply", "DB", "--local", "--config", "wrangler.generated.jsonc"]);
 
-  // 3. 运行 Dashboard
-  const newDashboardWebDir = join(PROJECT_ROOT, "packages/prism-dashboard/build/web");
-  const oldDashboardWebDir = join(PROJECT_ROOT, "packages/admin-flutter/build/web");
-
-  if (existsSync(join(newDashboardWebDir, "index.html"))) {
-    console.log("[System] Hosting new dashboard (prism-dashboard) from build/web...");
-    serveStaticDashboard(DASHBOARD_PORT, newDashboardWebDir);
-  } else if (existsSync(join(oldDashboardWebDir, "index.html"))) {
-    console.log("[System] Hosting old dashboard (admin-flutter) from build/web...");
-    serveStaticDashboard(DASHBOARD_PORT, oldDashboardWebDir);
-  } else {
-    console.log("\x1b[33m[System] Dashboard static builds not found.\x1b[0m");
-    console.log("\x1b[35m[System] Starting Dashboard (prism-dashboard) in hot-reload debug mode via Flutter...\x1b[0m");
-    startProcessWithPrefix(
-      "Dashboard",
-      "35",
-      ["flutter", "run", "-d", "web-server", "--web-port", String(DASHBOARD_PORT), "--web-hostname", "127.0.0.1", "--no-pub"],
-      join(PROJECT_ROOT, "packages/prism-dashboard")
-    );
-  }
+  // 3. 启动与 React API 契约一致的 Worker 和 Vite 热更新服务器
+  startProcessWithPrefix("API", "36", ["bunx", "wrangler", "dev", "--config", "wrangler.generated.jsonc",
+    "--ip", "127.0.0.1", "--port", String(API_PORT)], PROJECT_ROOT, localEnv);
+  startProcessWithPrefix("Web", "35", ["bun", "run", "dev", "--port", String(WEB_PORT), "--strictPort"],
+    join(PROJECT_ROOT, "packages/prism-web"), { ...process.env, PRISM_API_URL: apiOrigin });
+  console.log(`[System] React management: http://127.0.0.1:${WEB_PORT}/merchant`);
 
   // 4. 运行 AstrBot
   if (existsSync(ASTRBOT_DIR)) {
@@ -155,5 +138,6 @@ const main = async () => {
 
 main().catch(err => {
   console.error(err);
+  for (const proc of processes) proc.kill();
   process.exit(1);
 });

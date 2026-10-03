@@ -265,7 +265,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
         <body>
           <h1>PRiSM API is running</h1>
           <p>The management interface is now fully decoupled from this backend API server.</p>
-          <p>Please build and deploy the <code>packages/prism-dashboard</code> package (e.g. via Cloudflare Pages or a local static host) and configure it to connect to this API endpoint: <code>${context.req.url.replace(/\/admin$/, "")}</code>.</p>
+          <p>The React management interface lives in <code>packages/prism-web</code>. Run <code>bun run dev:all</code> locally or <code>bun run deploy:beta</code> to deploy the unified platform, then open its <code>/merchant</code> page.</p>
         </body>
       </html>
     `)

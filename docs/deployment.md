@@ -1,8 +1,8 @@
 # PRiSM Next 部署与生产环境指南
 
-PRiSM Next 采用 **完全解耦** 的“单店单部署”架构设计。整个系统包含三个独立的部分：
+PRiSM Next 的统一平台支持多店铺，Worker 同时提供 API 与 React 页面；独立单店 runtime 保留供兼容 API 使用。系统包含以下部分：
 1. **后端 API 服务**：提供无状态的 REST API 与游戏机 WebSocket 联线（基于 Hono 框架，支持本地 Bun + SQLite 单机部署或云端 Cloudflare Worker + D1 数据库部署）。
-2. **管理后台 (Dashboard)**：基于 Flutter Web 开发的静态前端网页（支持 `prism-dashboard` 与 `admin-flutter` 两个版本），与后端完全解耦，需独立构建并以静态资源形式托管。
+2. **管理与玩家前端**：`packages/prism-web` 的 React 网页，由 Vite 构建，统一平台 Worker 同时托管前端资源与 API。店铺后台入口为 `/merchant`。
 3. **机器人插件 (Koishi / AstrBot)**：独立运行的聊天机器人客户端，通过网络调用后端的 Integration API 对接店铺业务。
 
 ---
@@ -18,7 +18,6 @@ PRiSM Next 采用 **完全解耦** 的“单店单部署”架构设计。整个
 在进行任何部署之前，请确保您的宿主机环境已安装：
 - **Bun**：版本 1.3 或以上。
 - **Wrangler**（云端部署需要）：版本 4.x。
-- **Flutter SDK**（管理后台构建需要）：对应 Dart SDK 及 Flutter 命令行工具。
 
 在 `prism-next` 根目录下安装系统依赖：
 ```bash
@@ -35,8 +34,8 @@ bun run dev:all
 ```
 该命令会自动：
 1. **关联 AstrBot 机器人插件**：自动在同级目录查找 `prism-astr` 或 `AstrBot` 文件夹，并将 `packages/plugin-prism-next-astrbot` 插件目录以符号链接（symlink）形式挂载到其插件目录中。
-2. **启动本地后端 API**：在后台启动本地 API 并监听 `8787` 端口。
-3. **托管 Dashboard**：自动检测是否已有编译好的静态资源（如 `packages/prism-dashboard/build/web`）。若存在，会启动一个极简静态 SPA 服务器秒级托管并监听 `5500` 端口；若未编译，将自动通过 Flutter 启动调试 Web 服务器。
+2. **准备统一平台**：构建 React 静态资源，生成本地配置，并自动应用本地 D1 迁移。
+3. **启动 API 与 React**：Wrangler Worker 默认监听 `8787`，Vite 热更新服务器监听 `5173`；管理入口为 `http://127.0.0.1:5173/merchant`。可用 `PORT`、`WEB_PORT` 改端口，代理和允许来源同步更新。
 4. **启动机器人**：在工作目录下自动调用 `uv` 启动您的 AstrBot 实例。
 
 在终端中按下 `Ctrl+C` 将优雅地一并杀掉所有开启的子服务进程。
@@ -47,8 +46,8 @@ bun run dev:all
 
 后端服务可根据场馆的网络和硬件条件选择以下两种部署模式之一：
 
-### A. 本地单机部署 (Local SQLite)
-适用于局域网环境、网络连接较弱或不希望依赖 Cloudflare 云端服务的场馆。
+### A. 独立兼容 API (Local SQLite)
+保留给 SQLite 回归验证和既有 API 集成。此入口不托管 React，也不提供独立管理后台；开发完整平台请使用 `dev:all`。独立 API 的首次安装仍可通过 setup 接口完成 OOBE。
 
 1. **启动服务**：
    ```bash
@@ -60,7 +59,7 @@ bun run dev:all
    - 本地程序启动时会自动初始化并升级 SQLite 架构（与测试所用 schema 一致）。
    - 默认监听端口为 `8787`。
 
-### B. 云端部署 (Cloudflare Worker & D1)
+### B. 独立兼容 API 云端部署 (Cloudflare Worker & D1)
 适用于需要高可用、公网可直接访问的云端场景。
 
 1. **创建 D1 远程数据库**：
@@ -95,7 +94,7 @@ bun run dev:all
    快捷指令会先根据当前部署者的环境变量生成 Wrangler 配置，再应用所有未执行的远程 D1 迁移，最后读取根目录 `package.json` 的 SemVer 并将该版本及当前 Git 短提交号注入 Worker。迁移失败时命令会停止，不会上传 Worker；线上可通过 `GET /version` 核对实际运行版本。不要直接调用裸 `wrangler deploy`，否则会绕过配置生成、迁移和版本注入。
    部署完成后，您将获得一个类似 `https://prism-api.your-subdomain.workers.dev` 的 API 接口域名。
 
-### C. GitHub 自动构建（Cloudflare Workers Builds）
+### C. 独立兼容 API 自动构建（Cloudflare Workers Builds）
 
 每位部署者都可以 fork 同一个公共仓库，并把自己的 fork 连接到独立的 Cloudflare Worker。进入 Worker 的 **Settings > Build**，配置：
 
@@ -121,43 +120,29 @@ Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不�
 
 ---
 
-## 3. 管理后台部署 (Dashboard / Admin Flutter)
+## 3. React 统一平台部署
 
-> [!WARNING]
-> 后端服务（无论是本地 Bun 还是 Cloudflare Worker）**不托管**管理后台静态资源。访问后端的 `/admin` 路由仅会显示 API 运行状态的提示页。您必须单独构建后台并将其部署为静态 Web 页面。
+管理职能全部位于 `packages/prism-web`，不再需要 Flutter SDK、独立 UI 子模块或 `build/web` 静态目录。
 
-系统中存在两个 Flutter 管理后台版本，构建方式如下：
+### 构建与部署
 
-### 步骤 1：构建静态资源
-在根目录下运行以下命令之一进行编译：
+```bash
+bun run build:web
+bun run check:platform
+bun run deploy:beta
+```
 
-* **构建新版后台 (`prism-dashboard`)**（推荐）：
-  ```bash
-  bun run prism-dashboard:build  # 自动注入发布版本与 Dashboard Git 提交号
-  ```
-  构建生成的静态文件位于：`packages/prism-dashboard/build/web/`。
+构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 自动构建 React、生成 `--platform` 配置、应用远程 D1 迁移，再部署带前端资源的 Worker，并注入根 SemVer 和 Git 提交号。API 与网页使用同一 origin，SPA 路由由 Worker assets 配置回退。
 
-* **构建老版后台 (`admin-flutter`)**：
-  ```bash
-  bun run admin-flutter:build  # 实际执行 cd packages/admin-flutter && flutter build web --no-pub
-  ```
-  构建生成的静态文件位于：`packages/admin-flutter/build/web/`。
+统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`RATE_LIMIT_KV_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
-### 步骤 2：部署静态资源
-将编译生成的 `build/web/` 目录上传至您选择的静态托管服务中，例如：
-- Cloudflare Pages
-- Vercel / Netlify
-- 本地 Nginx / Apache 静态文件服务器
+Cloudflare Workers Builds 的 Build command 使用 `bun run build:web && bun run scripts/generate-wrangler-config.ts --platform`，Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
 
-### 步骤 3：配置与使用
-1. 使用浏览器打开您部署好的管理后台 URL。
-2. 登录界面同时填写 **API Base URL**、账号和密码（API Base URL 如本地的 `http://localhost:8787` 或云端的 Worker 域名）。
-   生产环境不会猜测或自动连接 API，服务器地址默认为空；点击「登录」后才会检查后端，已初始化时继续登录，未初始化时原地切换为初始化表单。单个请求最多等待 10 秒。本地 Web 开发默认填写 `http://localhost:8787`。
-3. 首次部署时，连接上正确的 API 地址后会自动进入开箱配置向导（OOBE），您需要设置：
-   - 首个 owner 级别员工账号及密码。
-   - 店铺名称和时区。
-   - 店铺本位币资产定义。
-   - 自动生成「机器人/店内入口」和「机器软件接入」API Token。
+### 登录与配置
+
+打开部署域名的 `/merchant`，通过平台登录后创建或选择店铺，在 React 设置页面维护位置、成员、设备及「接入凭证」。时区根据店铺位置自动设置；计费区间的编辑与展示使用该时区，业务执行统一 UTC。创建店铺时可选计费模式并初始化余额资产和入场方案；旧店铺也可通过设置中的转换向导启用计费。
+
+独立兼容 API 的 `/admin` 仅显示 React 平台的开发／部署提示，不再要求构建另一个 UI。
 
 ---
 

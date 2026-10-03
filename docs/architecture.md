@@ -22,8 +22,9 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作、设备状态同步和统一资产效果；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。
 - `packages/runtime`：部署装配中心。为 Cloudflare D1/Worker 和 SQLite/本地 Bun 部署组装仓储、SQL 读模型、应用服务、数据库鉴权适配器、外部设备适配器、运行时插件和默认计费规则；不直接包含 SQL 或重复领域规则。生产鉴权只接受数据库中的管理员会话、玩家会话和 API Token，不提供静态令牌回退。
-- `packages/prism-dashboard`：新的 Flutter Web 后台，Dart 包名为 `prism_dashboard`。它以玩家现场运营为中心，直接调用员工 HTTP API 与读模型，不在旧 `admin-flutter` 上继续叠加 UI。设备连接和映射只在设备看板维护；员工与系统页负责店铺、注册、员工和接入密钥设置。
-- Staff Web 时间显示统一通过 `packages/prism-dashboard/lib/src/shared/time_format.dart` 处理，并由 `admin_time_zone.dart` 使用 `store.timeZone` 做 UTC/店铺时间转换。带日期的业务时间统一显示为 `YYYY-MM-DD HH:mm`，日期范围使用 `YYYY-MM-DD`，只有纯时钟控件、计费时间轴刻度和营业时段才使用 `HH:mm`。报表日期边界也按店铺时区生成，不依赖浏览器所在机器时区。
+- `packages/platform`：统一平台 Worker，处理全局登录、店铺成员、设备入口及店铺范围内的业务 API，并托管 React 构建产物。
+- `packages/prism-web`：唯一的 React 管理与玩家客户端。管理入口为 `/merchant/:shopCode`，负责现场运营、计费、资产、报表、设备、成员和设置；玩家入口负责设备扫码与店铺账单。
+- React 时间显示使用店铺位置识别出的 IANA 时区，通过 `Intl`、`ui/bill-time.ts` 和计费时钟转换处理 UTC 时间戳及规则。报表查询把店铺日期范围转换为 UTC，不依赖浏览器自身时区。
 - Staff Web 的权限门控与后端角色一致：viewer 保留查询、筛选、刷新、复制和审计详情能力，但现场结账、玩家修改、资产/计费配置和设备命令等写入口不可用；manager/owner 可以执行普通业务写入，员工账号与接入密钥管理仅 owner 可用，其他角色不会请求对应 owner-only 接口。退出登录会撤销持久化管理员会话，不只清理浏览器本地 Token。
 - `packages/koishi-plugin`（git 子模块，独立仓库 `koishi-plugin-prism`）：直接调用 Integration HTTP API 的 Koishi 机器人插件。
 
@@ -124,7 +125,7 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 - 机器软件状态定时上报并于 Staff Web 展示；Home Assistant 状态读取由 runtime 外部适配器实现，application 的同步服务负责并发读取、容错和批量持久化，Hono 只触发服务并返回缓存结果。
 - 员工前台覆盖结算（Checkout Override）：手动改单，溢出部分自动以 `staff.override` 存入调整记录。
 - 财务报表读模型：聚合收入、场次数量、正向资产流水笔数和出币次数；结账明细与玩家排行使用 `limit`/`offset` 分页并返回 `hasMore`，避免 Dashboard 把首屏结果误作完整数据。
-- 基于 Hono 的员工 API，以及新的 Flutter Web 后台 `prism_dashboard`。`/admin` 只保留部署提示页，正式管理端从 `packages/prism-dashboard` 构建。
+- 基于 Hono 的员工 API，以及 `packages/prism-web` React 后台。独立 API 的 `/admin` 保留部署提示页；统一平台的店铺后台使用 `/merchant`。
 - 现场运营读模型：`/rpc/staff/live-players` 将玩家、钱包、在场时间、预计应付和未结 sessions 聚合为玩家优先的视图。未结 sessions 包含 active sessions，以及已经停止但仍是 unpaid 的 closed sessions；停止后的计时项仍留在玩家账单中，直到玩家级统一结账。每条 session 会带出当前结算预览中的 `pricingCharges`，展示该计时实际命中的计费方案、时段规则和金额；方案名称来自员工计费配置，取不到时才退回方案 ID。单条 `stop` 只停止某个 session 计时，不扣款；玩家级 `preview`/`confirm` 负责统一预览与结算。管理员加开计时时可指定这条计时使用哪些计费方案，后续资产计费效果也可以继续精确到这些方案和规则。
 
 ## 暂缓实现（Deferred）

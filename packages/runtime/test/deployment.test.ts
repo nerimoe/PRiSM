@@ -120,13 +120,34 @@ describe("deployment artifacts", () => {
       "wrangler:config": "bun run scripts/generate-wrangler-config.ts",
       "dev:worker": "bun run scripts/generate-wrangler-config.ts --local && wrangler dev --config wrangler.generated.jsonc",
       "deploy:worker": "bun run scripts/generate-wrangler-config.ts && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote && bun run scripts/release.ts deploy-worker",
-      "prism-dashboard:build": "bun run scripts/release.ts build-dashboard",
+      "build:web": "bun run --cwd packages/prism-web build",
       "version:bump": "bun run scripts/release.ts bump",
       "db:create:d1": "wrangler d1 create prism",
       "db:migrate:local": "bun run scripts/generate-wrangler-config.ts --local && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --local",
       "db:migrate:remote": "bun run scripts/generate-wrangler-config.ts && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote",
       "migration:import-json": "bun run packages/migration/src/cli.ts import-json",
     });
+  });
+
+  it("bumps release versions without a separate UI repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "prism-release-"));
+    try {
+      mkdirSync(join(root, "scripts"));
+      copyFileSync(new URL("scripts/release.ts", projectRoot), join(root, "scripts/release.ts"));
+      const path = join(root, "package.json");
+      for (const [kind, version] of [["patch", "1.2.4"], ["minor", "1.3.0"], ["major", "2.0.0"]]) {
+        await Bun.write(path, JSON.stringify({ name: "test", version: "1.2.3" }));
+        const result = Bun.spawnSync([process.execPath, "scripts/release.ts", "bump", kind!], { cwd: root });
+        expect(result.exitCode).toBe(0);
+        expect((await Bun.file(path).json()).version).toBe(version);
+      }
+      const before = await Bun.file(path).text();
+      const rejected = Bun.spawnSync([process.execPath, "scripts/release.ts", "bump", "invalid"], { cwd: root });
+      expect(rejected.exitCode).not.toBe(0);
+      expect(await Bun.file(path).text()).toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps public deployment files free of account-specific Cloudflare identifiers", async () => {

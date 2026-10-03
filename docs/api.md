@@ -49,7 +49,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查。 |
 | `GET` | `/version` | 查询后端发布版本与构建 Git 提交号；无需认证。 |
-| `GET` | `/admin` | 后台管理客户端的部署提示页，正式 UI 由 `packages/prism-dashboard` 构建部署。 |
+| `GET` | `/admin` | 独立 API 的管理部署提示页；店铺管理 UI 由 `packages/prism-web` 构建，统一平台入口为 `/merchant`。 |
 | `GET` | `/rpc/setup/status` | 查询系统是否已完成初始化开箱配置。 |
 | `POST` | `/rpc/setup/install` | 初始化首个 owner 员工、店铺设置、本位余额资产和 API 密钥。 |
 | `POST` | `/rpc/admin/login` | 管理员账号登录，创建管理员会话 Token。 |

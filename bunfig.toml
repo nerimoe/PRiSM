@@ -2,6 +2,5 @@
 pathIgnorePatterns = [
   # Git submodule with its own test suite and dependencies
   "packages/koishi-plugin/**",
-  "packages/prism-dashboard/**",
   "packages/plugin-prism-next-astrbot/**",
 ]
