@@ -178,7 +178,7 @@ function MachineSessionPage({
       }
       if (
         caught instanceof ApiError &&
-        ["QQ_BINDING_REQUIRED", "CHECKIN_REQUIRED"].includes(caught.code ?? "")
+        ["PLATFORM_BINDING_REQUIRED", "CHECKIN_REQUIRED"].includes(caught.code ?? "")
       ) {
         setStatus("idle");
         setReload((value) => value + 1);

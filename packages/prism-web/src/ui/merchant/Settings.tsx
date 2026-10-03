@@ -1,3 +1,4 @@
+import { IdentityConverter } from "./IdentityConverter";
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import { BillingSettings } from "../BillingPages";
@@ -72,6 +73,7 @@ export function SettingsPage() {
         </p>
       )}
       {owner && <BillingSettings shopCode={shopCode} embedded />}
+      {owner && <IdentityConverter key={shopCode} shopCode={shopCode} />}
       {owner && settings.data && (
         <TTLockConnection
           settings={settings.data.settings}
@@ -182,7 +184,7 @@ function Tokens({ shopCode }: { shopCode: string }) {
             <tr key={token.id}>
               <td className={cell}>{token.label}</td>
               <td className={cell}>
-                {token.role === "integration" ? "QQ Bot" : t("机台")}
+                {token.role === "integration" ? "Bot" : t("机台")}
               </td>
               <td className={cell}>
                 {t(token.status === "active" ? "有效" : "已撤销")}
@@ -222,7 +224,7 @@ function Tokens({ shopCode }: { shopCode: string }) {
             </Field>
             <Field label="用途">
               <select className={input} name="role">
-                <option value="integration">QQ Bot</option>
+                <option value="integration">Bot</option>
                 <option value="machine">{t("机台")}</option>
               </select>
             </Field>

@@ -35,13 +35,13 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 ```json
 {
   "identity": {
-    "provider": "qq",
+    "provider": "onebot",
     "subject": "123456"
   }
 }
 ```
 
-`provider` 会去掉首尾空白并转成小写，`subject` 会去掉首尾空白但保留原始内容。为了保留 prism-neo 时代机器人调用的便利性，需要输入单个字符串的地方也可以使用 `TYPE:subject` 简写，例如 `QQ:123456`、`aime:0111222333` 或 `telegram:abc:def`。解析时只按第一个冒号分隔，因此 subject 内部可以继续包含冒号。缺少冒号、provider 为空或 subject 为空时，接口应返回 `INVALID_EXTERNAL_IDENTITY`。
+`provider` 会去掉首尾空白并转成小写，`subject` 会去掉首尾空白但保留原始内容。为了保留 prism-neo 时代机器人调用的便利性，需要输入单个字符串的地方也可以使用 `TYPE:subject` 简写，例如 `onebot:123456`、`aime:0111222333` 或 `telegram:abc:def`。解析时只按第一个冒号分隔，因此 subject 内部可以继续包含冒号。缺少冒号、provider 为空或 subject 为空时，接口应返回 `INVALID_EXTERNAL_IDENTITY`。
 
 ## 公共接口 (Public)
 
@@ -61,7 +61,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
-| `POST` | `/rpc/player-auth/login/by-identity` | 通过已绑定的 QQ、Aime、扫码身份等创建玩家会话；返回 `session.token` 和玩家基本信息。 |
+| `POST` | `/rpc/player-auth/login/by-identity` | 通过已绑定的 聊天平台、Aime、扫码身份等创建玩家会话；返回 `session.token` 和玩家基本信息。 |
 
 当前版本的登录接口是“可信入口第一版”：它只登录已经绑定的身份，不自动注册玩家。后续 OAuth、短信或扫码确认可以接到同一张 `player_sessions` 表，不需要改变 `/rpc/player/*` 的玩家自助接口。
 
@@ -87,7 +87,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 PLAYER_TOKEN=$(
   curl -s -X POST http://localhost:8787/rpc/player-auth/login/by-identity \
     -H "Content-Type: application/json" \
-    -d '{"identity":{"provider":"qq","subject":"123456"}}' \
+    -d '{"identity":{"provider":"onebot","subject":"123456"}}' \
   | jq -r '.session.token'
 )
 
@@ -154,8 +154,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/players` | 获取玩家列表，附带钱包余额总额、活跃会话摘要和外部身份绑定摘要。 |
 | `POST` | `/rpc/staff/players` | 创建新玩家，支持在创建时直接给予初始化资产。 |
 | `PATCH` | `/rpc/staff/players/:playerId/status` | 设置玩家状态（`active` / `disabled` / `banned`）。 |
-| `POST` | `/rpc/staff/players/:playerId/identities` | 绑定玩家外部物理卡或 QQ 身份。 |
-| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定；删除后该 QQ、卡号或扫码身份不再自动指向此玩家。 |
+| `POST` | `/rpc/staff/players/:playerId/identities` | 绑定玩家外部物理卡或 平台身份。 |
+| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定；删除后该 平台身份、卡号或扫码身份不再自动指向此玩家。 |
 | `POST` | `/rpc/staff/players/:playerId/session/start` | 管理员为玩家开启一个计费 session；同一玩家可同时拥有多个平级 active session，请求体可带 `pricingConfigIds` 指定这条计时使用哪些计费方案。 |
 | `GET` | `/rpc/staff/players/:playerId/assets` | 检查并审计指定玩家的资产持有和变更流水。 |
 | `POST` | `/rpc/staff/players/:playerId/assets/grants` | 给玩家赠送/分发资产（货币、道具、月卡等）。 |
@@ -278,7 +278,7 @@ curl -X POST http://localhost:8787/rpc/staff/pricing-configs \
 
 ## 机器人/店内入口 RPC 接口 (Integration RPC)
 
-Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外部入口。调用方只持有 `integration` API Token，可以通过 QQ、Aime、Telegram 等外部身份直接完成玩家动作；不需要再先调用员工接口拿玩家 ID，也不需要共享 Player Token。
+Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外部入口。调用方只持有 `integration` API Token，可以通过 聊天平台、Aime、Telegram 等外部身份直接完成玩家动作；不需要再先调用员工接口拿玩家 ID，也不需要共享 Player Token。
 
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
@@ -293,7 +293,7 @@ Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外�
 | `POST` | `/rpc/integration/players/by-identity/history` | 按外部身份读取玩家计时记录。 |
 | `POST` | `/rpc/integration/players/by-identity/redeem` | 按外部身份为玩家兑换礼物码。 |
 | `POST` | `/rpc/integration/players/by-identity/device-actions` | 按外部身份申请设备动作，例如启机、投币或 Aime 扫卡；后端会先解析玩家并检查 active session、投币冷却等规则。 |
-| `GET` | `/rpc/integration/sessions/active` | 机器人列出在场所有活跃 session，含玩家对外身份（QQ 等）以便从聊天平台拉取昵称。 |
+| `GET` | `/rpc/integration/sessions/active` | 机器人列出在场所有活跃 session，含玩家对外身份（聊天平台等）以便从聊天平台拉取昵称。 |
 | `GET` | `/rpc/integration/device-states` | 机器人列出当前所有设备上报的电源/状态，供 `/show` 一类查询。`deviceStates[].state` 是普通字符串（如 `on`、`off`），不得再包装为 JSON 字符串。 |
 
 Integration body 支持结构化身份和简写身份：
@@ -301,11 +301,11 @@ Integration body 支持结构化身份和简写身份：
 ```json
 {
   "identity": {
-    "provider": "qq",
+    "provider": "onebot",
     "subject": "123456"
   },
   "autoRegister": true,
-  "displayName": "QQ 123456"
+  "displayName": "onebot:123456"
 }
 ```
 
@@ -313,22 +313,22 @@ Integration body 支持结构化身份和简写身份：
 
 ```json
 {
-  "identityKey": "QQ:123456",
+  "identityKey": "onebot:123456",
   "autoRegister": true,
-  "displayName": "QQ 123456"
+  "displayName": "onebot:123456"
 }
 ```
 
 `autoRegister` 为 `false` 或未传时，身份不存在会返回 `PLAYER_IDENTITY_NOT_FOUND` 和 HTTP 404。`autoRegister: true` 会创建玩家并绑定外部身份，然后继续执行这次动作；如果后台配置了 `registration.defaultPresentId`，新玩家会按该礼物当前有效的内容自动获得资产。未配置、已归档、已过期或找不到的默认礼物只会跳过发放，不会阻断注册；后台手动创建玩家也使用同一规则。
 
-机器人或自助入口请求机器动作时，不需要先查玩家 ID。以 QQ 用户触发 maimai 投币为例：
+机器人或自助入口请求机器动作时，不需要先查玩家 ID。以 平台用户触发 maimai 投币为例：
 
 ```bash
 curl -X POST https://prism.example.com/rpc/integration/players/by-identity/device-actions \
   -H "Authorization: Bearer <integration-token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "identity": {"provider":"qq","subject":"123456"},
+    "identity": {"provider":"onebot","subject":"123456"},
     "target": {"kind":"game_machine","ref":"舞萌左机"},
     "action": {
       "type": "coin",
@@ -439,7 +439,17 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 ### 店家手动绑定玩家账号
 
-`POST /api/v1/shops/:shopCode/staff/qq-binding/confirm` 接收 `{ code, qq }`，由已登录且拥有该店玩家管理权限的负责人或管理员调用。验证码来自玩家的 QQ 绑定页面，仍按店铺隔离、五分钟有效、单次使用；只读店员和其他店铺成员不可调用。管理员确认可创建新 QQ 档案，不受自助注册开关限制；已有档案、余额和记录直接沿用。账号/QQ 冲突或停用档案仍拒绝绑定。Bot 端点与此入口共用绑定逻辑，Bot 仍遵循店铺自助注册设置。后台入口位于「玩家 → 绑定账号」。
+`POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 接收 `{ code, provider, subject }`，由拥有该店玩家管理权限的负责人或管理员调用。Bot 使用对应的 `integration/platform-binding/confirm`，身份来自实际适配器。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, verifiedAt }] }`。
+
+同一网页账号在同店可绑定多个平台，每个平台最多一个身份，均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。同一外部身份不能被其他网页账号认领，已有不同玩家档案不自动合并。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
+
+### 店铺绑定要求与身份转换
+
+店铺 `settings` 的 `identityBindingRequired` 默认 `true`，省略时保留原设置。开启后入场和设备操作须有任意一个已验证的平台绑定；关闭后登录网页账号即可创建店内玩家档案，之后可追加外部身份。已在店玩家仍可读取账单和结账，避免重新开启开关后无法离场。该开关独立于 Bot 的自动注册设置和店铺位置校验。
+
+仅店主可以调用 `POST /api/v1/shops/:shopCode/identity-conversion/preview`，输入 `{ sourceProvider, targetProvider }`。返回玩家数、身份数、网页绑定数、样例、冲突和数据 `fingerprint`。`apply` 接收同样标识及预览的 `fingerprint`、UUID `operationId`，检查预览未过期且无冲突后，在一笔 D1 事务内转换身份表和绑定表，保留身份值、玩家 ID、余额、会话及账单。相同玩家已拥有相同目标身份时去重；其他玩家／账号的冲突阻止整批写入。重复操作编号返回原结果，数据变化必须重新预览。
+
+`0030_platform_identity_bindings.sql` 只升级绑定结构，保留历史 `qq` 标识。需要适配 OneBot 的店家可以在「设置 → 平台身份转换」主动执行 `qq → onebot`。升级不会自动改标识，也不会跨店合并。
 
 ### 实时活动按会话恢复
 
@@ -449,9 +459,11 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 ## React 前台收银
 
-前台收银默认关闭，负责人通过店铺设置的 `cashierEnabled` 开关手动启用，启用后读卡与收款合并在 React「在店」页面。存在未付款前台计时时不能关闭。低安全模式卡片档案使用 `/api/v1/shops/:shopCode/cashier/*`，仅由店铺 owner/manager 操作，不要求玩家账号或 QQ，不保存资产。登记、入场与现场收款结账使用 UUID `operationId` 保证重试不重复处理。完整接口、预览时刻结账规则及权限见 [前台收银](cashier.md)。
+前台收银默认关闭，负责人通过店铺设置的 `cashierEnabled` 开关手动启用，启用后读卡与收款合并在 React「在店」页面。存在未付款前台计时时不能关闭。低安全模式卡片档案使用 `/api/v1/shops/:shopCode/cashier/*`，仅由店铺 owner/manager 操作，不要求玩家账号或平台身份，不保存资产。登记、入场与现场收款结账使用 UUID `operationId` 保证重试不重复处理。完整接口、预览时刻结账规则及权限见 [前台收银](cashier.md)。
 
 
 ## React 店铺计费初始化
 
-已有非计费店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并启用计费。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 QQ Bot 凭据；启用计费的设置校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。
+已有非计费店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并启用计费。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 Bot 凭据；启用计费的设置校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。
+
+设备状态接口的身份门控统一为 `gate: "binding"`，业务错误为 `PLATFORM_BINDING_REQUIRED`。React 与 Koishi 已同步采用新契约；其他调用旧 `qq-binding` 或旧门控名的客户端需一起更新。

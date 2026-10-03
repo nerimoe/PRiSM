@@ -1,3 +1,4 @@
+import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
 import app from "../src/index";
@@ -326,15 +327,10 @@ beforeAll(async () => {
     "0024_drop_remote_entry.sql",
     "0025_live_activity_push_tokens.sql",
     "0026_live_activity_start_tokens.sql",
+    "0030_platform_identity_bindings.sql",
   ]) {
     statements.push(
-      ...readFileSync(new URL(`../../../migrations/${file}`, import.meta.url), "utf8")
-        // Strip `--` comments first: a leading comment would otherwise be sent to D1 as
-        // part of the statement and rejected as a syntax error.
-        .replace(/^\s*--.*$/gm, "")
-        .split(";")
-        .map((statement) => statement.trim())
-        .filter(Boolean),
+      ...splitD1MigrationStatements(readFileSync(new URL(`../../../migrations/${file}`, import.meta.url), "utf8")),
     );
   }
   for (const sql of statements) await db.prepare(sql).run();
@@ -371,9 +367,11 @@ beforeAll(async () => {
     .run();
   await db
     .prepare(
-      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('a','u','p','123456','2026-01-01')",
+      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('a','u','p','2026-01-01')",
     )
     .run();
+  await db.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('a','p','onebot','123456','2026-01-01')").run();
+  await db.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('a','u','onebot','123456','2026-01-01')").run();
 }, 30000);
 
 afterAll(async () => {

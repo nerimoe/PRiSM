@@ -1,3 +1,4 @@
+import { splitD1MigrationStatements } from "@prism/storage-sql";
 // Local-only UI fixture. No production bindings and no device URLs.
 import { Miniflare } from "miniflare";
 import { readFileSync } from "node:fs";
@@ -53,6 +54,7 @@ for (const sql of readFileSync(
   .filter((s) => s.trim()))
   await DB.prepare(sql).run();
 for (const sql of readFileSync(new URL("../../../migrations/0020_mahjong_devices.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await DB.prepare(sql).run();
+for (const sql of splitD1MigrationStatements(readFileSync(new URL("../../../migrations/0030_platform_identity_bindings.sql",import.meta.url),"utf8"))) await DB.prepare(sql).run();
 await DB.prepare(
   "INSERT INTO users(id,role) VALUES ('demo-owner','user')",
 ).run();
@@ -165,7 +167,7 @@ for (const [i, name] of ["小林", "阿澄", "凛"].entries()) {
   if (!i) first = player.id;
   await deps.staffPlayerCommands!.bindPlayerIdentity({
     playerId: player.id,
-    provider: "qq",
+    provider: "onebot",
     subject: String(100000 + i),
   });
   await deps.staffAssetCommands!.grantAssets({
@@ -191,10 +193,11 @@ for (const [i, name] of ["小林", "阿澄", "凛"].entries()) {
     });
 }
 await DB.prepare(
-  "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('demo','demo-owner',?,'100000',?)",
+  "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('demo','demo-owner',?,?)",
 )
   .bind(first, new Date().toISOString())
   .run();
+await DB.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('demo','demo-owner','onebot','100000',?)").bind(new Date().toISOString()).run();
 await DB.prepare(
   "INSERT INTO cards(id,user_id,label,card_type,access_code,source) VALUES ('demo-card','demo-owner','我的 Aime','aime','01234567890123456789','manual')",
 ).run();
@@ -229,11 +232,12 @@ await DB.batch([
     "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('lite','lite-player','小林','active',?)",
   ).bind(new Date().toISOString()),
   DB.prepare(
-    "INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('lite','lite-player','qq','100000',?)",
+    "INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('lite','lite-player','onebot','100000',?)",
   ).bind(new Date().toISOString()),
   DB.prepare(
-    "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('lite','demo-owner','lite-player','100000',?)",
+    "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('lite','demo-owner','lite-player',?)",
   ).bind(new Date().toISOString()),
+  DB.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('lite','demo-owner','onebot','100000',?)").bind(new Date().toISOString()),
   DB.prepare(
     "INSERT INTO app_settings(shop_id,key,value_json,updated_at) SELECT 'lite',key,value_json,updated_at FROM app_settings WHERE shop_id='demo' AND key='devices.ttlock_connection'",
   ),

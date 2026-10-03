@@ -46,7 +46,7 @@ export function SessionSignIn({ next }: { next: string }) {
   </div>;
 }
 
-export function QQBinding({ code }: { code: string }) {
+export function PlatformBinding({ code }: { code: string }) {
   const { t, errorText } = useI18n();
   const [binding, setBinding] = useState<{ code: string; expiresAt: string } | null>(null);
   const [error, setError] = useState("");
@@ -55,15 +55,15 @@ export function QQBinding({ code }: { code: string }) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     setBinding(null); setError("");
-    api<{ code: string; expiresAt: string }>(shopApi(code, "qq-binding"), post()).then(result => {
+    api<{ code: string; expiresAt: string }>(shopApi(code, "platform-binding"), post()).then(result => {
       if (cancelled) return;
       setBinding(result);
       timer = setTimeout(() => setAttempt(value => value + 1), Math.max(1000, Date.parse(result.expiresAt) - Date.now()));
     }).catch(e => { if (!cancelled) setError(errorText(e instanceof Error ? e.message : "操作失败")); });
     return () => { cancelled = true; clearTimeout(timer); };
   }, [code, attempt, errorText]);
-  return <div className="grid gap-6"><h2>{t("绑定 QQ")}</h2><div className="binding-code">
-    <p>{t("在 QQ 群中发送")}</p>
+  return <div className="grid gap-6"><h2>{t("绑定平台身份")}</h2><div className="binding-code">
+    <p>{t("向店铺 Bot 发送")}</p>
     {binding ? <><code className="select-all">prism.bind {binding.code}</code><small>{t("有效期至")} {new Date(binding.expiresAt).toLocaleTimeString()}</small></> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></> : <Loader2 className="animate-spin" />}
   </div></div>;
 }

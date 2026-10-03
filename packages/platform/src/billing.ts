@@ -1,3 +1,4 @@
+import { registerIdentityConversionRoutes } from "./identity-conversion";
 import { mahjongRoster } from "./mahjong";
 import { activityBill, refreshActivityBill } from "./live-activity-billing";
 import type { Context, Hono } from "hono";
@@ -51,6 +52,7 @@ export type BillingShop = {
   billing_enabled: number;
   cashier_enabled: number;
   auto_register: number;
+  identity_binding_required: number;
   checkin_geo: number;
   checkout_geo: number;
   machine_geo: number;
@@ -63,6 +65,7 @@ const settingsSchema = z.object({
   billingEnabled: z.boolean(),
   cashierEnabled: z.boolean().optional(),
   autoRegister: z.boolean(),
+  identityBindingRequired: z.boolean().optional(),
   locationEnabled: z.boolean().optional(),
   checkinGeo: z.boolean().optional(),
   checkoutGeo: z.boolean().optional(),
@@ -85,6 +88,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
   const shop = await c.env.DB.prepare(
     `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
     COALESCE(b.billing_enabled,0) AS billing_enabled, COALESCE(b.auto_register,0) AS auto_register,
+    COALESCE(b.identity_binding_required,1) AS identity_binding_required,
     COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='cashier.settings'),0) AS cashier_enabled,
     COALESCE(b.checkin_geo,0) AS checkin_geo, COALESCE(b.checkout_geo,0) AS checkout_geo,
     COALESCE(b.machine_geo,0) AS machine_geo, COALESCE(b.entry_pricing_ids_json,'[]') AS entry_pricing_ids_json,
@@ -127,23 +131,36 @@ export function checkShopLocation(
   }
 }
 
-export async function requireShopPlayer(
-  c: C,
-  shop: BillingShop,
-  deviceOnly = false,
-) {
+export async function hasPlatformBinding(c: C, shopId: string, userId: string): Promise<boolean> {
+  return !!await c.env.DB.prepare("SELECT 1 FROM shop_platform_bindings WHERE shop_id=? AND user_id=? LIMIT 1")
+    .bind(shopId, userId).first();
+}
+
+export async function requireShopPlayer(c: C, shop: BillingShop, deviceOnly = false, enforceBinding = true) {
   const user = requireUser(c);
-  if (!shop.billing_enabled && !deviceOnly)
-    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
-  const player = await c.env.DB.prepare(
-    `SELECT p.id, p.status, a.qq FROM shop_player_accounts a
-    JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id WHERE a.shop_id=? AND a.user_id=?`,
-  )
-    .bind(shop.id, user.id)
-    .first<{ id: string; status: string; qq: string }>();
-  if (!player) jsonError(403, "请先绑定 QQ", "QQ_BINDING_REQUIRED");
-  if (player.status !== "active")
-    jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
+  if (!shop.billing_enabled && !deviceOnly) jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
+  const find = () => c.env.DB.prepare(`SELECT p.id,p.status FROM shop_player_accounts a
+    JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id WHERE a.shop_id=? AND a.user_id=?`)
+    .bind(shop.id,user.id).first<{ id: string; status: string }>();
+  let player = await find();
+  if (shop.identity_binding_required && (!player || enforceBinding) && !await hasPlatformBinding(c,shop.id,user.id))
+    jsonError(403, "请先绑定平台身份", "PLATFORM_BINDING_REQUIRED");
+  if (!player) {
+    const deps = dependencies(c,shop);
+    const repos = createD1Repositories({ db:c.env.DB,shopId:shop.id,id:crypto.randomUUID,now:()=>new Date() });
+    player = await withOperationLease({ repository:repos.operationLocks,scope:"platform.membership",resourceId:user.id,now:()=>new Date() },async()=>{
+      const current = await find();
+      if (current) return current;
+      const created = await deps.integrationCommands!.resolveOrRegisterPlayerByIdentity({
+        identity:{ provider:"web-account",subject:user.id },autoRegister:true,
+        displayName:user.displayName || user.username || "玩家",
+      });
+      await c.env.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?)")
+        .bind(shop.id,user.id,created.id,new Date().toISOString()).run();
+      return created;
+    });
+  }
+  if (player.status !== "active") jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
   return player;
 }
 
@@ -183,6 +200,7 @@ function publicSettings(shop: BillingShop) {
     billingEnabled: !!shop.billing_enabled,
     cashierEnabled: !!shop.cashier_enabled,
     autoRegister: !!shop.auto_register,
+    identityBindingRequired: !!shop.identity_binding_required,
     locationEnabled: !!shop.machine_geo,
     checkinGeo: !!shop.checkin_geo,
     checkoutGeo: !!shop.checkout_geo,
@@ -346,6 +364,7 @@ async function forward(
 }
 
 export function registerBillingRoutes(app: Hono<AppBindings>) {
+  registerIdentityConversionRoutes(app);
   app.get("/api/v1/shops/:shopCode/operations/:operationId", async (c) => {
     const user = requireUser(c);
     const shop = await getBillingShop(c, c.req.param("shopCode"));
@@ -492,7 +511,8 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     const user = c.get("user");
     const membership = user
       ? await c.env.DB.prepare(
-          "SELECT player_id AS playerId FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
+          `SELECT player_id AS playerId,EXISTS(SELECT 1 FROM shop_platform_bindings b WHERE b.shop_id=a.shop_id AND b.user_id=a.user_id) AS identityBound
+          FROM shop_player_accounts a WHERE shop_id=? AND user_id=?`,
         )
           .bind(shop.id, user.id)
           .first()
@@ -615,7 +635,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         heroUrl: shop.hero_url,
         ...publicSettings(shop),
       },
-      membership,
+      membership: membership ? { ...membership,identityBound:!!membership.identityBound } : null,
     });
   });
   app.get("/api/v1/shops/:shopCode/settings", async (c) => {
@@ -634,6 +654,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       const body = settingsSchema.parse(await c.req.json());
       // Older clients omit this flag; preserve the current mode in that case.
       const cashierEnabled = body.cashierEnabled ?? !!shop.cashier_enabled;
+      const identityBindingRequired = body.identityBindingRequired ?? !!shop.identity_binding_required;
       if (cashierEnabled && !body.billingEnabled)
         jsonError(409, "请先启用入场计费", "BILLING_DISABLED");
       if (shop.cashier_enabled && !cashierEnabled) {
@@ -676,9 +697,9 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           jsonError(409, "存在未结消费，不能停用计费", "UNSETTLED_SESSIONS");
       }
       await c.env.DB.batch([c.env.DB.prepare(
-        `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact)
-        VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
-        checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact`,
+        `INSERT INTO shop_billing_settings (shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)
+        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
+        checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact,identity_binding_required=excluded.identity_binding_required`,
       )
         .bind(
           shop.id,
@@ -689,12 +710,13 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           +body.machineGeo,
           JSON.stringify(body.entryPricingIds),
           body.botContact,
+          +identityBindingRequired,
         ),
         c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'cashier.settings',?,?)
           ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
           .bind(shop.id, JSON.stringify({ enabled: cashierEnabled }), new Date().toISOString()),
       ]);
-      return c.json({ ...body, cashierEnabled });
+      return c.json({ ...body, cashierEnabled, identityBindingRequired });
     });
   });
   app.post("/api/v1/shops/:shopCode/billing/setup", async (c) => {
@@ -722,7 +744,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       });
     });
   });
-  app.post("/api/v1/shops/:shopCode/qq-binding", async (c) => {
+  app.post("/api/v1/shops/:shopCode/platform-binding", async (c) => {
     const user = requireUser(c);
     const shop = await getBillingShop(c, c.req.param("shopCode"));
     await enforceRateLimits(c, [
@@ -739,7 +761,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     ).join("");
     const expiresAt = new Date(Date.now() + 300000).toISOString();
     await c.env.DB.prepare(
-      `INSERT INTO qq_binding_codes (shop_id,user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)
+      `INSERT INTO platform_binding_codes (shop_id,user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)
       ON CONFLICT(shop_id,user_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,created_at=excluded.created_at`,
     )
       .bind(
@@ -752,111 +774,73 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       .run();
     return c.json({ code, expiresAt, botContact: shop.bot_contact });
   });
-  app.get("/api/v1/shops/:shopCode/qq-binding", async (c) => {
+  app.get("/api/v1/shops/:shopCode/platform-binding", async (c) => {
     const user = requireUser(c);
-    const shop = await getBillingShop(c, c.req.param("shopCode"));
-    const binding = await c.env.DB.prepare(
-      "SELECT player_id AS playerId,qq,verified_at AS verifiedAt FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
-    )
-      .bind(shop.id, user.id)
-      .first();
-    return c.json({ binding });
+    const shop = await getBillingShop(c,c.req.param("shopCode"));
+    const bindings = await c.env.DB.prepare(`SELECT a.player_id AS playerId,b.provider,b.subject,b.verified_at AS verifiedAt
+      FROM shop_platform_bindings b JOIN shop_player_accounts a ON a.shop_id=b.shop_id AND a.user_id=b.user_id
+      WHERE b.shop_id=? AND b.user_id=? ORDER BY b.provider`).bind(shop.id,user.id).all();
+    return c.json({ bindings:bindings.results });
   });
-  for (const channel of ["integration", "staff"] as const) app.post(
-    `/api/v1/shops/:shopCode/${channel}/qq-binding/confirm`,
-    async (c) => {
-      const shop = await getBillingShop(c, c.req.param("shopCode"));
-      const deps = dependencies(c, shop);
+  for (const channel of ["integration","staff"] as const) app.post(
+    `/api/v1/shops/:shopCode/${channel}/platform-binding/confirm`,async (c) => {
+      const shop = await getBillingShop(c,c.req.param("shopCode"));
+      const deps = dependencies(c,shop);
       const token = c.req.header("authorization")?.match(/^Bearer (.+)$/)?.[1];
       if (channel === "staff") {
-        const principal = await staffPrincipal(c, shop);
-        if (principal.staffRole === "viewer") jsonError(403, "没有玩家管理权限", "FORBIDDEN");
-      } else if (
-        !token ||
-        (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !== "integration"
-      ) {
-        jsonError(403, "店铺 Bot 凭据无效");
-      }
-      await enforceRateLimits(c, [
-        {
-          key: `bind-confirm:${shop.id}:${Math.floor(Date.now() / 60000)}`,
-          limit: 20,
-          windowSeconds: 90,
-        },
-      ]);
-      const body = z
-        .object({
-          code: z
-            .string()
-            .trim()
-            .toUpperCase()
-            .regex(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/),
-          qq: z.string().regex(/^[1-9]\d{4,19}$/),
-        })
-        .parse(await c.req.json());
-      const code = await c.env.DB.prepare(
-        "DELETE FROM qq_binding_codes WHERE shop_id=? AND code_hash=? AND expires_at>? RETURNING user_id",
-      )
-        .bind(shop.id, await sha256(body.code), new Date().toISOString())
-        .first<{ user_id: string }>();
-      if (!code)
-        jsonError(410, "验证码已失效，请重新生成", "BINDING_CODE_EXPIRED");
-      const conflict = await c.env.DB.prepare(
-        "SELECT user_id,qq FROM shop_player_accounts WHERE shop_id=? AND (user_id=? OR qq=?)",
-      )
-        .bind(shop.id, code.user_id, body.qq)
-        .all<{ user_id: string; qq: string }>();
-      if (
-        conflict.results.some(
-          (r) => r.user_id !== code.user_id || r.qq !== body.qq,
-        )
-      )
-        jsonError(409, "账号或 QQ 已有其他绑定", "QQ_BINDING_CONFLICT");
-      const repos = createD1Repositories({
-        db: c.env.DB,
-        shopId: shop.id,
-        id: crypto.randomUUID,
-        now: () => new Date(),
-      });
-      const player = await withOperationLease(
-        {
-          repository: repos.operationLocks,
-          scope: "qq.binding",
-          resourceId: body.qq,
-          now: () => new Date(),
-        },
-        async () => {
-          const player =
-            await deps.integrationCommands!.resolveOrRegisterPlayerByIdentity({
-              identity: { provider: "qq", subject: body.qq },
-              autoRegister: channel === "staff" || !!shop.auto_register,
-            });
-          if (player.status !== "active")
-            jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
-          await c.env.DB.prepare(
-            "INSERT INTO shop_player_accounts (shop_id,user_id,player_id,qq,verified_at) VALUES (?,?,?,?,?) ON CONFLICT(shop_id,user_id) DO NOTHING",
-          )
-            .bind(
-              shop.id,
-              code.user_id,
-              player.id,
-              body.qq,
-              new Date().toISOString(),
-            )
-            .run();
-          const bound = await c.env.DB.prepare(
-            "SELECT qq FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
-          )
-            .bind(shop.id, code.user_id)
-            .first<{ qq: string }>();
-          if (bound?.qq !== body.qq)
-            jsonError(409, "账号已有其他绑定", "QQ_BINDING_CONFLICT");
+        const principal = await staffPrincipal(c,shop);
+        if (principal.staffRole === "viewer") jsonError(403,"没有玩家管理权限","FORBIDDEN");
+      } else if (!token || (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !== "integration")
+        jsonError(403,"店铺 Bot 凭据无效","FORBIDDEN");
+      await enforceRateLimits(c,[{ key:`bind-confirm:${shop.id}:${Math.floor(Date.now()/60000)}`,limit:20,windowSeconds:90 }]);
+      const body = z.object({
+        code:z.string().trim().toUpperCase().regex(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/),
+        provider:z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_-]{0,63}$/).refine(value=>value!=="web-account","网页账号身份不可由 Bot 绑定"),
+        subject:z.string().trim().min(1).max(256),
+      }).parse(await c.req.json());
+      const code = await c.env.DB.prepare("SELECT user_id FROM platform_binding_codes WHERE shop_id=? AND code_hash=? AND expires_at>?")
+        .bind(shop.id,await sha256(body.code),new Date().toISOString()).first<{ user_id:string }>();
+      if (!code) jsonError(410,"验证码已失效，请重新生成","BINDING_CODE_EXPIRED");
+      const repos = createD1Repositories({ db:c.env.DB,shopId:shop.id,id:crypto.randomUUID,now:()=>new Date() });
+      const player = await withOperationLease({ repository:repos.operationLocks,scope:"platform.identities",resourceId:shop.id,now:()=>new Date() },()=>
+        withOperationLease({ repository:repos.operationLocks,scope:"platform.membership",resourceId:code.user_id,now:()=>new Date() },()=>
+        withOperationLease({ repository:repos.operationLocks,scope:"platform.binding",resourceId:`${body.provider}:${body.subject}`,now:()=>new Date() },async()=>{
+          const currentCode = await c.env.DB.prepare("SELECT 1 FROM platform_binding_codes WHERE shop_id=? AND user_id=? AND code_hash=? AND expires_at>?")
+            .bind(shop.id,code.user_id,await sha256(body.code),new Date().toISOString()).first();
+          if (!currentCode) jsonError(410,"验证码已失效，请重新生成","BINDING_CODE_EXPIRED");
+          const conflicts = await c.env.DB.prepare(`SELECT user_id,subject FROM shop_platform_bindings WHERE shop_id=? AND provider=? AND (user_id=? OR subject=?)`)
+            .bind(shop.id,body.provider,code.user_id,body.subject).all<{ user_id:string;subject:string }>();
+          if (conflicts.results.some(r=>r.user_id!==code.user_id || r.subject!==body.subject))
+            jsonError(409,"账号或平台身份已有其他绑定","PLATFORM_BINDING_CONFLICT");
+          const membership = await c.env.DB.prepare("SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id=?")
+            .bind(shop.id,code.user_id).first<{ player_id:string }>();
+          const existing = await repos.playerIdentities.findPlayerByIdentity(body.provider,body.subject);
+          if (membership && existing && existing.id!==membership.player_id)
+            jsonError(409,"该身份属于另一个玩家档案，请联系店员处理","PLATFORM_BINDING_CONFLICT");
+          let player = membership ? await repos.players.findById(membership.player_id) : existing;
+          if (!player) {
+            if (channel!=="staff" && !shop.auto_register) jsonError(403,"店铺仅允许绑定已有玩家档案","PLAYER_IDENTITY_NOT_FOUND");
+            player = await deps.integrationCommands!.resolveOrRegisterPlayerByIdentity({ identity:{ provider:body.provider,subject:body.subject },autoRegister:true });
+          }
+          if (player.status!=="active") jsonError(403,"店铺玩家资格已停用","PLAYER_DISABLED");
+          const occupied = await c.env.DB.prepare("SELECT user_id FROM shop_player_accounts WHERE shop_id=? AND player_id=?")
+            .bind(shop.id,player.id).first<{user_id:string}>();
+          if (occupied && occupied.user_id!==code.user_id) jsonError(409,"玩家档案已绑定其他账号","PLATFORM_BINDING_CONFLICT");
+          const now = new Date().toISOString();
+          await c.env.DB.batch([
+            c.env.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?) ON CONFLICT(shop_id,user_id) DO NOTHING")
+              .bind(shop.id,code.user_id,player.id,now),
+            c.env.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES (?,?,?,?,?) ON CONFLICT(shop_id,provider,subject) DO NOTHING")
+              .bind(shop.id,player.id,body.provider,body.subject,now),
+            c.env.DB.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES (?,?,?,?,?) ON CONFLICT(shop_id,provider,subject) DO NOTHING")
+              .bind(shop.id,code.user_id,body.provider,body.subject,now),
+            c.env.DB.prepare("DELETE FROM platform_binding_codes WHERE shop_id=? AND user_id=? AND code_hash=?")
+              .bind(shop.id,code.user_id,await sha256(body.code)),
+          ]);
           return player;
-        },
-      );
-      return c.json({ playerId: player.id, verified: true });
-    },
-  );
+        })));
+      return c.json({ playerId:player.id,provider:body.provider,subject:body.subject });
+    });
   app.all("/api/v1/shops/:shopCode/staff/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
     const principal = await staffPrincipal(c, shop);
@@ -915,8 +899,8 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
   });
   app.all("/api/v1/shops/:shopCode/player/*", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
-    const player = await requireShopPlayer(c, shop);
     const path = c.req.path.split("/player/")[1]!;
+    const player = await requireShopPlayer(c, shop, false, path === "session/start" || path === "device-commands");
     const body =
       c.req.method === "GET"
         ? undefined
@@ -987,7 +971,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
       body.closeSessionsBeforeBalanceCheck = false;
     }
     const execute = () => forward(c, deps, "integration/" + path, body, { shopId: shop.id });
-    // The bot channel identifies players by QQ or card rather than by account, so the
+    // The bot channel identifies players by platform identity or card rather than by account, so the
     // player is resolved from the response inside the wrapper.
     const event = sessionEventForPath(path);
     const result = await (event

@@ -10,6 +10,7 @@ export type Settings = {
   billingEnabled: boolean;
   cashierEnabled: boolean;
   autoRegister: boolean;
+  identityBindingRequired: boolean;
   locationEnabled: boolean;
   checkinGeo: boolean;
   checkoutGeo: boolean;
@@ -44,7 +45,7 @@ export type ShopInfo = {
     }[];
   };
   shop: Settings & { publicId: string; name: string; timeZone: string; heroUrl?: string | null };
-  membership: { playerId: string } | null;
+  membership: { playerId: string; identityBound: boolean } | null;
 };
 export type Summary = {
   player: { displayName: string };
@@ -126,7 +127,7 @@ export function BillingSettings({
       api<Settings>(shopApi(shopCode, "settings")),
       api<{ pricingConfigs: { id: string; name: string; enabled: boolean }[] }>(shopApi(shopCode, "staff/pricing-configs")),
     ]);
-    setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false });
+    setSettings({ ...s, cashierEnabled: s.cashierEnabled ?? false, identityBindingRequired: s.identityBindingRequired ?? true });
     setBillingActive(s.billingEnabled);
     setRules(r.pricingConfigs);
   }, [shopCode]);
@@ -185,8 +186,12 @@ export function BillingSettings({
         <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。")}</span>
       </label>
       <label className="grid gap-2">
+        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.identityBindingRequired} onChange={(e) => setSettings({ ...settings, identityBindingRequired: e.target.checked })} />{t("要求绑定平台身份")}</span>
+        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，绑定任意一个 Bot 平台身份即可入场和使用设备；关闭后，登录网页账号即可使用。")}</span>
+      </label>
+      <label className="grid gap-2">
         <span className="flex items-center gap-3"><input type="checkbox" checked={settings.autoRegister} onChange={(e) => setSettings({ ...settings, autoRegister: e.target.checked })} />{t(flags.autoRegister)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，验证 QQ 可创建新玩家档案；关闭后，仅可认领已有 QQ 档案。")}</span>
+        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，验证平台身份可创建新玩家档案；关闭后，仅可认领已有平台身份档案。")}</span>
       </label>
       <label className="grid gap-2">
         <span className="flex items-center gap-3"><input type="checkbox" checked={settings.locationEnabled} onChange={(e) => setSettings({ ...settings, locationEnabled: e.target.checked })} />{t(flags.locationEnabled)}</span>

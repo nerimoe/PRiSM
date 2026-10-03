@@ -68,7 +68,7 @@ export function registerCashierRoutes(app: Hono<AppBindings>) {
         if (exists) jsonError(409, "此卡已绑定档案，请重新刷卡", "CASHIER_CARD_BOUND");
         const id = crypto.randomUUID();
         const at = new Date().toISOString();
-        // No registration gifts, QQ identity or global account are created.
+        // No registration gifts, platform identity or global account are created.
         await c.env.DB.batch([
           c.env.DB.prepare("INSERT INTO players (shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)").bind(shop.id, id, body.displayName, at),
           c.env.DB.prepare("INSERT INTO cashier_profiles (shop_id,player_id,card_kind,card_uid,created_at) VALUES (?,?,?,?,?)").bind(shop.id, id, body.card.kind, body.card.uid, at),

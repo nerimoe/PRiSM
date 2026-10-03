@@ -378,7 +378,7 @@ export async function forwardWithLiveActivity(
  * Reads the player from whatever shape the channel returned. Start answers carry
  * `session.playerId`; checkouts carry `playerSettlement.playerId` or per-session details.
  * Resolving from the response is what lets the bot channel — which identifies players by
- * QQ or card, never by account id — participate without special casing.
+ * platform identity or card, never by account id — participate without special casing.
  */
 export function playerIdFromPayload(payload: Record<string, unknown>): string | null {
   const direct = payload.playerId;

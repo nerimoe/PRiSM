@@ -79,7 +79,7 @@ Each project owns its deployment variables. Generated Wrangler configuration and
 
 ## Auth Model
 
-The React platform signs users in through MuNET/passkeys and checks shop membership and billing roles. The standalone API retains its OOBE-created staff accounts and RPC credentials for compatibility:
+The React platform signs users in through MuNET/passkeys and checks shop membership and billing roles. Owners can require any verified bot-platform identity or allow Web-only admission. Koishi uses the actual adapter identifier and user ID; Settings includes an explicit identifier conversion preview, with no automatic legacy renaming. The standalone API retains its OOBE-created staff accounts and RPC credentials for compatibility:
 
 - Staff calls: log in through `/rpc/admin/login`; use the returned session token.
 - Player Web calls: log in through `/rpc/player-auth/login/by-identity`; use the returned player session token.

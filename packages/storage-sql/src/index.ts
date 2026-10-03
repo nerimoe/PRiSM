@@ -418,3 +418,4 @@ export * from "./read-models";
 export * from "./shop-scope";
 
 export * from "./utc-pricing-migration";
+export { splitD1MigrationStatements } from "./d1-migrations";

@@ -1,3 +1,4 @@
+import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
 import { readFileSync, readdirSync } from "node:fs";
@@ -35,12 +36,13 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   for (const file of readdirSync(root).filter(file => file >= "0017_" && file < "0027_" && file.endsWith(".sql")).sort()) {
     for (const sql of readFileSync(new URL(file, root), "utf8").replace(/^\s*--.*$/gm, "").split(";").map(sql => sql.trim()).filter(Boolean)) await db.prepare(sql).run();
   }
+  for (const sql of splitD1MigrationStatements(readFileSync(new URL("0030_platform_identity_bindings.sql",root),"utf8"))) await db.prepare(sql).run();
   for (const sql of cashierSchema) await db.prepare(sql).run();
   const now = new Date();
   await db.prepare("INSERT INTO users(id,role) VALUES('u','user')").run();
   await db.prepare("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES('shop','shop','Shop',0,0,80,'u')").run();
   await db.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES('shop','p','Player','active',?)").bind(now.toISOString()).run();
-  await db.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES('shop','u','p','123456',?)").bind(now.toISOString()).run();
+  await db.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES('shop','u','p',?)").bind(now.toISOString()).run();
   await db.prepare("INSERT INTO asset_definitions(shop_id,type,code,name,stackable) VALUES('shop','currency','balance','Balance',1)").run();
   await db.prepare("INSERT INTO asset_holdings(shop_id,id,player_id,asset_type,asset_code,quantity) VALUES('shop','wallet','p','currency','balance',100000)").run();
   const repos = createD1Repositories({ db, shopId: "shop", now: () => now, id: crypto.randomUUID });

@@ -187,7 +187,9 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    # 方式二：随本 monorepo 一起克隆（会拉取子模块）
    git clone --recurse-submodules <prism-next-repo>
    ```
-2. **在 Koishi 中注册与初始化**：
+2. **平台身份来源**：`provider` 配置已移除，插件对每条消息读取 `session.platform` 和 `session.userId`；同一个实例可同时接入 OneBot、Telegram 等适配器。旧店如需改标识，请由店主在 React「设置 → 平台身份转换」预览后确认。升级 SQL 不自动转换身份。
+
+3. **在 Koishi 中注册与初始化**：
    在您的 Koishi 配置中启用 `koishi-plugin-prism` 插件（Koishi 控制台会读取其 `Config` Schema），或在自定义插件入口中引入并使用 `applyPrismKoishiPlugin`。示例代码如下：
    ```typescript
    import { Context, Schema } from 'koishi';
@@ -198,7 +200,6 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    export interface Config {
      baseUrl: string;
      integrationToken: string;
-     provider: string;
      autoRegister: boolean;
      defaultDoorDeviceId: string;
      enableStaffCommands?: boolean;
@@ -207,7 +208,6 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    export const Config: Schema<Config> = Schema.object({
      baseUrl: Schema.string().required().description('PRiSM API Base URL'),
      integrationToken: Schema.string().required().description('Integration API Token'),
-     provider: Schema.string().default('qq').description('Identity provider (e.g., qq, aime)'),
      autoRegister: Schema.boolean().default(true).description('Auto register player on first command'),
      defaultDoorDeviceId: Schema.string().required().description('Default door device name or alias'),
      enableStaffCommands: Schema.boolean().default(false).description('Enable staff admin commands'),
@@ -217,8 +217,9 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
      applyPrismKoishiPlugin(ctx, {
        baseUrl: config.baseUrl,
        integrationToken: config.integrationToken,
-       provider: config.provider,
        autoRegister: config.autoRegister,
+       defaultScanProvider: "aime",
+       currencyName: "余额",
        defaultDoorDeviceId: config.defaultDoorDeviceId,
        enableStaffCommands: config.enableStaffCommands,
      });
@@ -311,3 +312,7 @@ PRiSM Next 对网络接口实行严格的数据库级 Token 认证拦截：
 bun run typecheck   # 检查 TypeScript 类型约束是否通过
 bun test            # 运行所有的单元测试和集成测试
 ```
+
+## 平台身份结构升级
+
+发布此版前应用 `migrations/0030_platform_identity_bindings.sql`，新版 React 与 Koishi 插件使用 `platform-binding` API。迁移保留原标识及玩家绑定，店主决定是否批量转换，例如 `qq → onebot`；转换不会调整余额或账单。强制绑定开关位于 React「设置 → 入场与位置校验」，默认开启。新 API 与适配器来源的具体约定见 [API 文档](api.md#店铺绑定要求与身份转换)。

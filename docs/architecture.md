@@ -32,12 +32,12 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 
 当前持久化 API Token 只分为两类：
 
-- `integration`：机器人、Koishi/AstrBot 或店内自有入口服务使用。它代表受信任的店内入口，后续通过结构化外部身份（如 `provider=qq, subject=123456`）发起玩家相关动作。
+- `integration`：机器人、Koishi/AstrBot 或店内自有入口服务使用。它代表受信任的店内入口，后续通过结构化外部身份（如 `provider=onebot, subject=123456`）发起玩家相关动作。
 - `machine`：游戏机软件或可控制游戏机的小主机使用。它代表机器软件接入，只通过 `/rpc/machine/ws` 接收实时命令、确认执行结果并发送心跳。
 
 员工后台不再创建 `player`、`bot` 或 `agent` API Token。玩家 Web 入口使用绑定到单个玩家的 player session；机器侧也使用 `machine` 语言，避免把 Home Assistant 设施控制和游戏机软件能力混在一个「Agent」概念里。
 
-玩家 Web 入口使用 `POST /rpc/player-auth/login/by-identity` 创建 `player_sessions`。会话记录只保存 token hash、玩家 ID、过期时间、最后使用时间和撤销时间；浏览器随后调用 `/rpc/player/*` 时只发送玩家会话 Token。后端从 token hash 查出唯一玩家，不接受浏览器提供的 `X-PRiSM-Player-Id` 来切换身份。机器人、自助入口和店内外部服务如果需要按 QQ 或 Aime 身份操作玩家，仍应使用 `integration` API 和结构化外部身份，而不是借用玩家会话。
+玩家 Web 入口使用 `POST /rpc/player-auth/login/by-identity` 创建 `player_sessions`。会话记录只保存 token hash、玩家 ID、过期时间、最后使用时间和撤销时间；浏览器随后调用 `/rpc/player/*` 时只发送玩家会话 Token。后端从 token hash 查出唯一玩家，不接受浏览器提供的 `X-PRiSM-Player-Id` 来切换身份。机器人、自助入口和店内外部服务如果需要按 平台身份或 Aime 身份操作玩家，仍应使用 `integration` API 和结构化外部身份，而不是借用玩家会话。
 
 ## 核心原则
 
@@ -65,7 +65,7 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 
 玩家可见或可消费的当前资产统一使用 `evaluateAssetHoldingAvailability` 解析。只有数量为正、持有记录已生效且未过期、关联资产定义存在且未归档、资产定义已生效且未过期的记录才属于可用资产（「数量为正」按 `money.ts` 的 `isPositiveQuantity` 判定，浮点残渣不算余额）；面向玩家的读取还会排除资产定义元数据中 `hiddenFromPlayer: true` 的项目。应用层的 `AvailableAssetReader` 用于结算、兑换和购买等已取得持有快照的流程；玩家摘要、员工玩家列表的钱包余额与资产列表由 `storage-sql` 用单条关联 SQL 同时读取持有和定义，再调用同一 evaluator。玩家钱包、资产接口和兑换回执默认只返回玩家可见资产；结算、人工扣款和服务项目购买会显式请求内部可用资产，以便隐藏的后台计费资产仍能按定义参与结算。结账响应不再让客户端从资产列表推导余额，而是直接返回 `wallet.balanceBefore` 和 `wallet.balanceAfter`；两个值都是经过相同可用性规则后的结算余额，余额为 `0` 也会返回。员工资产审计和历史流水保留原始记录，以免归档或过期后丢失历史；当前 holdings 会附加可用状态和不可用原因，dashboard 默认显示可用记录并允许切换到无效或全部。所有读取均无副作用，不会顺便清理持有记录。
 - `AssetLedgerEntry`：追加式资产变更明细记录，包含增量（`delta`）、变更原因、引用 ID 以及可选的 `transactionId`。
-- `PlayerIdentity`：玩家的外部身份绑定。以 provider（如 QQ、Aime 卡）加 subject 唯一键标识，用于第三方登录与遗留数据映射。
+- `PlayerIdentity`：玩家的外部身份绑定。以 provider（如 聊天平台、Aime 卡）加 subject 唯一键标识，用于第三方登录与遗留数据映射。
 - `PlayerSession`：玩家 Web 或自助前台登录后的短期会话。它绑定单个 `playerId`，只存储 token hash，不作为店内机器人或机器软件的长期接入凭证。
 - `BusinessItem`：店铺管理的服务项目（如赛事报名、预约占位、包间套餐、服务费）。包含类别、显示名称、价格、可选关联资产、激活/过期时间以及归档状态。
 - `BusinessItemOrder`：玩家购买 `BusinessItem` 的履约记录。记录订单价格、状态（已支付/已履约/已取消）、关联的会话及生成 `kind=business-item.purchase` 的资产交易。
@@ -139,3 +139,5 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 计费规则、入场判定、封顶日期边界和优惠日历统一使用 UTC；店铺时区用于 UI 输入与展示。规则编辑器在 HTTP 边界转换时钟、开始日星期和指定日期，后端预览将 UTC 收费窗口投影到 UI 的当地日。详情及历史版本兼容约定见 [UTC 时间约定](utc-time-contract.md)。
 
 UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务计划，在 SQLite 启动、D1 首次请求和活动账单后台读取之前执行。完成标记与转换一起提交，版本和发布防篡改触发器仅在事务内临时开放，随后恢复。统一平台在此之后以 `shop-location-time-zone-v1` 补齐已有店铺的展示时区，并在位置保存时原子更新 `store.profile.timeZone`；前后端共用 `core/location-time-zone.ts` 的离线 WGS84 → IANA 地理查询。位置变化只更新展示时区，不影响 UTC 规则与历史金额。独立旧版 runtime 没有店铺位置表，保留手动展示设置。
+
+平台的 `shop_player_accounts` 只关联网页账号与店内玩家，`shop_platform_bindings` 独立保存已验证的 provider/subject。任意平台绑定都可满足店铺的 `identityBindingRequired`，同值不同平台不合并。店主主动转换平台标识，迁移不自动重命名；两张身份表在同一事务内更新。D1 本地夹具和预览脚本通过 `splitD1MigrationStatements` 解析触发器，避免按分号截断 SQL。

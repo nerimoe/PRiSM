@@ -1,4 +1,4 @@
-import { QQBinding } from "./SessionContent";
+import { PlatformBinding } from "./SessionContent";
 import {
   useCallback,
   useEffect,
@@ -20,7 +20,7 @@ import { useAuth } from "./AuthContext";
 import { PlayerDialog } from "./PlayerAccountMenu";
 
 type DeviceState = {
-  gate: "ready" | "qq" | "entry";
+  gate: "ready" | "binding" | "entry";
   power: "on" | "off" | "unknown" | "unmanaged";
   coinUsed: boolean;
   mahjong?: {capacity:number;seats:{name:string;mine:boolean;playing:boolean}[]} | null;
@@ -88,7 +88,7 @@ export function DeviceControls({
     return () => { cancelled = true; };
   }, [code, state?.gate, info?.shop.billingEnabled, info?.membership?.playerId, setBillingActive]);
   useEffect(() => {
-    if (busy || cardBusy || (state?.gate !== "qq" && !waitingPower && !machine.capabilities.mahjong)) return;
+    if (busy || cardBusy || (state?.gate !== "binding" && !waitingPower && !machine.capabilities.mahjong)) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
@@ -162,8 +162,8 @@ export function DeviceControls({
       )}
       {!state || !info ? (
         error ? <button className="session-action" onClick={() => act("load", refresh)}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
-      ) : state.gate === "qq" ? (
-        <QQBinding code={code} />
+      ) : state.gate === "binding" ? (
+        <PlatformBinding code={code} />
       ) : (
         <>
           {state.gate === "entry" && (

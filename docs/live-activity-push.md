@@ -8,7 +8,7 @@
 
 - 玩家自己在 App / App Clip 扫码入场；
 - 管理员在后台为某个玩家「入场计费」或「结账」；
-- 店铺 Bot / 集成接口按 QQ 或卡号发起入场或结账。
+- 店铺 Bot / 集成接口按 平台身份或卡号发起入场或结账。
 
 关键要求是 **App 不需要在运行**。玩家挂起甚至强杀 App 之后，管理员的一次后台结账仍然要让灵动岛在几秒内变成「本次计费已结束」。
 
@@ -54,7 +54,7 @@
 - 入场返回 `session.playerId`；
 - 结账返回 `playerSettlement.playerId`。
 
-Bot 渠道用 `identity` / `identityKey`（QQ、卡号）识别玩家，本身不含账号 id，但**响应里的 `session.playerId` 是全渠道统一的**，再由 `shop_player_accounts(shop_id, player_id)` 反查 `user_id` 即可定位该玩家的设备令牌。这正是让 Bot 渠道无需特殊处理的原因。
+Bot 渠道用 `identity` / `identityKey`（平台身份、卡号）识别玩家，本身不含账号 id，但**响应里的 `session.playerId` 是全渠道统一的**，再由 `shop_player_accounts(shop_id, player_id)` 反查 `user_id` 即可定位该玩家的设备令牌。这正是让 Bot 渠道无需特殊处理的原因。
 
 ## 数据库
 

@@ -21,7 +21,7 @@ Integration 适合 Koishi、AstrBot、自助 Web 入场页、扫码入口等“�
 ```json
 {
   "identity": {
-    "provider": "qq",
+    "provider": "onebot",
     "subject": "123456"
   }
 }
@@ -31,7 +31,7 @@ Integration 适合 Koishi、AstrBot、自助 Web 入场页、扫码入口等“�
 
 ```json
 {
-  "identityKey": "QQ:123456"
+  "identityKey": "onebot:123456"
 }
 ```
 
@@ -45,7 +45,7 @@ Integration 适合 Koishi、AstrBot、自助 Web 入场页、扫码入口等“�
 
 | 路由 | 用途 |
 | --- | --- |
-| `GET /rpc/integration/sessions/active` | 列出在场所有活跃 session，含 `playerDisplayName`、`identities` (provider+subject)、`startedAt`、`label`、`elapsedMinutes`。机器人在 `/list`、`/窝里` 这类命令里用 `identities` 中的 `subject`（QQ 号）去调用聊天平台 API 拉昵称，而不是直接显示后台存的 `playerDisplayName`。 |
+| `GET /rpc/integration/sessions/active` | 列出在场所有活跃 session，含 `playerDisplayName`、`identities` (provider+subject)、`startedAt`、`label`、`elapsedMinutes`。机器人在 `/list`、`/窝里` 这类命令里用 `identities` 中的 `subject`（平台用户 ID）去调用聊天平台 API 拉昵称，而不是直接显示后台存的 `playerDisplayName`。 |
 | `GET /rpc/integration/device-states` | 列出当前所有设备的最新电源/状态。`state` 为普通字符串（如 `on`、`off`），bot 的 `/show` 命令直接消费。 |
 
 平台昵称的取法因适配器而异：Koishi 走 `session.bot.getUser(qq)`，AstrBot 在 aiocqhttp 走 `bot.call_action("get_stranger_info", user_id=qq)`，telegram、微信、Aime 等按对应适配器提供的方法拉取；取不到则退化为后台存的玩家名。机器人不要把后台存的 displayName 直接写进消息，避免不同身份来源的玩家出现 `Player 123` 这种开发者命名。
@@ -68,16 +68,16 @@ Integration player actions 都在 `/rpc/integration/players/by-identity/*` 下�
 | `POST /redeem` | 为玩家兑换礼物码。 |
 | `POST /device-actions` | 按玩家外部身份申请设备动作，例如投币或 Aime 扫卡。 |
 
-示例：QQ 用户第一次发送 `/入场`，不存在就自动注册，并进入标准音游计费：
+示例：平台用户第一次发送 `/入场`，不存在就自动注册，并进入标准音游计费：
 
 ```bash
 curl -X POST https://prism.example.com/rpc/integration/players/by-identity/session/start \
   -H "Authorization: Bearer <integration-token>" \
   -H "Content-Type: application/json" \
   -d '{
-    "identityKey": "QQ:123456",
+    "identityKey": "onebot:123456",
     "autoRegister": true,
-    "displayName": "QQ 123456",
+    "displayName": "onebot:123456",
     "pricingConfigIds": ["music-standard"],
     "label": "音游区间"
   }'
@@ -101,23 +101,23 @@ await fetch("https://prism.example.com/rpc/integration/players/by-identity/sessi
     "Content-Type": "application/json",
   },
   body: JSON.stringify({
-    identity: { provider: "qq", subject: "123456" },
+    identity: { provider: "onebot", subject: "123456" },
     autoRegister: true,
-    displayName: "QQ 123456",
+    displayName: "onebot:123456",
     pricingConfigIds: ["music-standard"],
     label: "音游区间",
   }),
 });
 ```
 
-玩家命令需要操作机器或设施时，也继续使用 Integration Token。后端会先按 QQ 号解析玩家，再检查该玩家是否已入场、投币冷却是否满足，最后生成发给机器通道或设施执行器的指令：
+玩家命令需要操作机器或设施时，也继续使用 Integration Token。后端会先按 平台用户 ID解析玩家，再检查该玩家是否已入场、投币冷却是否满足，最后生成发给机器通道或设施执行器的指令：
 
 Aime 扫卡可以走便利方法：
 
 ```ts
 await client.requestScanByIdentity(
   {
-    provider: "qq",
+    provider: "onebot",
     subject: "123456",
   },
   {

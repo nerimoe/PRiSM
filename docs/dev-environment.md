@@ -42,3 +42,7 @@ bun run check:platform
 相关说明见 [UTC 时间约定](utc-time-contract.md)、[计费空白时段分析](billing-gap-analysis.md) 和 [部署指南](deployment.md)。
 
 移除旧后台后，627 项 Bun 测试、TypeScript 检查、React 构建和 Worker dry-run 打包通过。实际以 `PORT=8792 WEB_PORT=5175` 启动 `dev:all`，后台、玩家页面和 API 代理均返回 HTTP 200；退出后两个端口均释放。未执行线上部署。
+
+多平台身份升级需应用 `0030_platform_identity_bindings.sql`，`dev:all` 会应用本地迁移。Bot 需使用此版 Koishi 源码／构建包；平台标识不再手填，由消息适配器提供。迁移保留旧身份，店主在设置中主动预览和执行转换。
+
+本轮主仓库 635 项 Bun 测试和 Koishi 插件 51 项测试通过；两个仓库类型检查、React／Worker 和 Koishi 构建通过。本地 `dev:all` 已应用 0030，绑定表及所有权触发器可用，React 与 API 代理返回 HTTP 200。身份转换测试覆盖冲突、过期预览、整批回滚、相同玩家去重及操作重放；已在计费时重新开启强制绑定不会阻止结账。本轮未部署线上，也未发布 npm。

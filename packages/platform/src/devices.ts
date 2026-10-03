@@ -9,6 +9,7 @@ import { requireUser } from "./auth";
 import { canAccessShop, getMachineByPublicId } from "./db";
 import { decryptSecret, encryptSecret, randomToken, sha256 } from "./crypto";
 import {
+  hasPlatformBinding,
   checkShopLocation,
   dependencies,
   getBillingShop,
@@ -430,7 +431,7 @@ export function registerDeviceRoutes(app: Hono<AppBindings>) {
       c.req.query("ticket") ?? "",
     );
     const shop = await getBillingShop(c, machine.shop_public_id);
-    let gate: "ready" | "qq" | "entry" = "ready";
+    let gate: "ready" | "binding" | "entry" = "ready";
     if (
       (shop.billing_enabled &&
         (machine.hinata_url_encrypted || machine.ha_binding_encrypted || machine.mahjong_config_json)) ||
@@ -442,7 +443,8 @@ export function registerDeviceRoutes(app: Hono<AppBindings>) {
       )
         .bind(shop.id, user.id)
         .first<{ player_id: string; status: string }>();
-      if (!player) gate = "qq";
+      if (shop.identity_binding_required && !await hasPlatformBinding(c,shop.id,user.id)) gate = "binding";
+      else if (!player) gate = shop.billing_enabled ? "entry" : "ready";
       else if (player.status !== "active")
         jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
       else if (shop.billing_enabled) {

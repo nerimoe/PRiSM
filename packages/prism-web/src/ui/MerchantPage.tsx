@@ -304,10 +304,10 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
   if (created)
     return (
       <div className="grid gap-5">
-        <h3 className="font-semibold">{t("连接 QQ Bot")}</h3>
+        <h3 className="font-semibold">{t("连接 Bot")}</h3>
         <p className="text-sm text-ink/60">
           {t(
-            "基础资产与入场规则已创建。将以下凭据填入店铺 Bot 后，玩家即可绑定 QQ。凭据仅显示一次。",
+            "基础资产与入场规则已创建。将以下凭据填入店铺 Bot 后，玩家即可绑定平台身份。凭据仅显示一次。",
           )}
         </p>
         <code className="select-all break-all rounded bg-ink/5 p-3 text-sm">
@@ -404,9 +404,9 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
           <BillingSetupFields value={setup} change={value => setSetup({ ...setup, ...value })} />
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={setup.createBotToken} onChange={event => setSetup({ ...setup, createBotToken: event.target.checked })} />
-            {t("创建 QQ Bot 接入凭据（可选）")}
+            {t("创建 Bot 接入凭据（可选）")}
           </label>
-          <p className="text-sm text-ink/60">{t("无需创建 QQ Bot 凭据；需要连接 Bot 时，可在「接入凭据」单独配置。")}</p>
+          <p className="text-sm text-ink/60">{t("无需创建 Bot 凭据；需要连接 Bot 时，可在「接入凭据」单独配置。")}</p>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -415,7 +415,7 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
                 setSetup({ ...setup, autoRegister: e.target.checked })
               }
             />
-            {t("QQ 验证后允许新玩家注册")}
+            {t("平台身份验证后允许新玩家注册")}
           </label>
           <div className="flex justify-between gap-3">
             <button type="button" className={button} onClick={() => setStep(0)}>

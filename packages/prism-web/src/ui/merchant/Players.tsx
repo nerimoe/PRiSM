@@ -109,7 +109,7 @@ export function Players({ live = false }: { live?: boolean }) {
       <input
         className={`${input} max-w-md`}
         type="search"
-        placeholder={t("搜索昵称或 QQ")}
+        placeholder={t("搜索昵称或平台身份")}
         aria-label={t("搜索玩家")}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
@@ -139,8 +139,7 @@ export function Players({ live = false }: { live?: boolean }) {
                   </span>
                   <span className="text-xs text-ink/50">
                     {
-                      player.identities?.find((i) => i.provider === "qq")
-                        ?.subject
+                      player.identities?.map((i) => `${i.provider}:${i.subject}`).join(" · ")
                     }
                   </span>
                   <span className="text-right text-xs text-ink/50">
@@ -171,8 +170,7 @@ export function Players({ live = false }: { live?: boolean }) {
                       </button>
                       <p className="mt-1 text-xs text-ink/50">
                         {
-                          player.identities?.find((i) => i.provider === "qq")
-                            ?.subject
+                          player.identities?.map((i) => `${i.provider}:${i.subject}`).join(" · ")
                         }
                       </p>
                     </td>
@@ -214,9 +212,10 @@ export function Players({ live = false }: { live?: boolean }) {
           <ActionForm
             label="确认绑定"
             done={() => { setBind(false); refresh(); }}
-            submit={(form) => request("qq-binding/confirm", "POST", {
+            submit={(form) => request("platform-binding/confirm", "POST", {
               code: String(form.get("code")).trim().toUpperCase(),
-              qq: String(form.get("qq")).trim(),
+              provider: String(form.get("provider")).trim(),
+              subject: String(form.get("subject")).trim(),
             })}
           >
             <Field label="玩家验证码">
@@ -225,10 +224,8 @@ export function Players({ live = false }: { live?: boolean }) {
                 pattern="[23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjklmnpqrstuvwxyz]{8}"
                 placeholder={t("玩家绑定页面上的验证码")} />
             </Field>
-            <Field label="QQ">
-              <input className={input} name="qq" required inputMode="numeric"
-                pattern="[1-9][0-9]{4,19}" />
-            </Field>
+            <Field label="平台标识"><input className={input} name="provider" required pattern="[a-z][a-z0-9_-]{0,63}" placeholder="onebot / telegram" /></Field>
+            <Field label="身份值"><input className={input} name="subject" required maxLength={256} /></Field>
           </ActionForm>
         </Modal>
       )}
@@ -555,31 +552,24 @@ function PlayerDetail({
           </summary>
           {player.identities?.map((i) => (
             <p className="my-2 text-sm" key={`${i.provider}:${i.subject}`}>
-              {i.provider === "qq" ? "QQ" : i.provider} · {i.subject}
+              {i.provider}:{i.subject}
             </p>
           ))}
           {canWrite && player.paymentMode !== "cashier" && (
             <div className="mt-4 grid gap-5">
-              {!player.identities?.some((identity) => identity.provider === "qq") && <ActionForm
+              <ActionForm
                 done={done}
-                label="绑定 QQ"
+                label="绑定平台身份"
                 submit={(f) =>
                   request(`${base}/identities`, "POST", {
-                    provider: "qq",
-                    subject: f.get("qq"),
+                    provider: String(f.get("provider")).trim(),
+                    subject: String(f.get("subject")).trim(),
                   })
                 }
               >
-                <Field label="QQ">
-                  <input
-                    className={input}
-                    name="qq"
-                    required
-                    inputMode="numeric"
-                    pattern="[1-9][0-9]{4,19}"
-                  />
-                </Field>
-              </ActionForm>}
+                <Field label="平台标识"><input className={input} name="provider" required pattern="[a-z][a-z0-9_-]{0,63}" placeholder="onebot / telegram" /></Field>
+                <Field label="身份值"><input className={input} name="subject" required maxLength={256} /></Field>
+              </ActionForm>
               <ActionForm
                 done={done}
                 label="更新状态"

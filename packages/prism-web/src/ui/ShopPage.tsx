@@ -5,7 +5,7 @@ import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 import { post, shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
-import { ShopHero, SessionSignIn, QQBinding } from "./SessionContent";
+import { ShopHero, SessionSignIn, PlatformBinding } from "./SessionContent";
 import { BillTotal, BillTimeline } from "./BillTimeline";
 import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
 
@@ -36,7 +36,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
         const shop = await api<ShopInfo>(shopApi(shopCode));
         if (cancelled) return;
         setInfo(shop);
-        const current = user && shop.shop.billingEnabled && shop.membership
+        const current = user && shop.shop.billingEnabled && (shop.membership || !shop.shop.identityBindingRequired)
           ? await api<Summary>(shopApi(shopCode, "player/me")) : null;
         const preview = current?.activeSession ? await api<Preview>(shopApi(shopCode, "player/checkout/preview"), post()) : null;
         const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest")) : null;
@@ -58,7 +58,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
     {error && <div role="alert" className="text-coral">{error}<button className="ml-3 underline" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></div>}
     {loading || (busy && !info) ? <Loader2 className="mx-auto animate-spin" /> : info && !user ? <SessionSignIn next={`/t/${encodeURIComponent(shopCode)}`} /> : busy && !bill && !receipt ? <Loader2 className="mx-auto animate-spin" /> : info && user && <>
       {!info.shop.billingEnabled ? <p className="session-subtitle">{t("本店未启用入场计费，暂无账单功能。")}</p>
-        : !info.membership ? <QQBinding code={shopCode} />
+        : !bill && info.shop.identityBindingRequired && !info.membership?.identityBound ? <PlatformBinding code={shopCode} />
         : bill ? <div className="grid gap-5"><BillTotal preview={bill} /><BillTimeline preview={bill} timeZone={info.shop.timeZone} /></div>
         : receipt ? <SettledBill receipt={receipt} timeZone={info.shop.timeZone} />
         : !error && <p className="session-subtitle">{t("请碰一下 NFC 或扫描机台上的二维码入场")}</p>}

@@ -852,7 +852,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
     statements.push(...billingSetupStatements(c.env.DB, shopId, setup).statements);
     if (botToken) statements.push(
       c.env.DB.prepare(
-        "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,'QQ Bot','integration','prism_integration',?,'active',?)",
+        "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,'Bot','integration','prism_integration',?,'active',?)",
       ).bind(shopId, crypto.randomUUID(), await sha256Hex(botToken), now),
     );
   }
@@ -957,7 +957,7 @@ app.delete("/api/v1/merchant/shops/:id", async (c) => {
     .first();
   if (used) jsonError(409, "店铺已有业务记录，不能删除", "SHOP_HAS_HISTORY");
   await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM qq_binding_codes WHERE shop_id=?").bind(
+    c.env.DB.prepare("DELETE FROM platform_binding_codes WHERE shop_id=?").bind(
       shopId,
     ),
     c.env.DB.prepare("DELETE FROM shop_billing_settings WHERE shop_id=?").bind(
