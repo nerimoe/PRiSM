@@ -97,7 +97,7 @@ import {
 const app = new Hono<AppBindings>();
 app.use("/api/v1/*", async (c, next) => {
   await next();
-  c.res = await wrapApiResponse(c.res);
+  c.res = await wrapApiResponse(c.res, c.get("responseTimeZone") ?? "UTC");
 });
 app.all("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/v1/")) return next();

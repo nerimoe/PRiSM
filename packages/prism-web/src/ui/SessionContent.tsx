@@ -1,3 +1,4 @@
+import { billTime } from "./bill-time";
 import { useEffect, useState } from "react";
 import { Fingerprint, Loader2 } from "lucide-react";
 import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
@@ -64,6 +65,6 @@ export function PlatformBinding({ code }: { code: string }) {
   }, [code, attempt, errorText]);
   return <div className="grid gap-6"><h2>{t("绑定平台身份")}</h2><div className="binding-code">
     <p>{t("向店铺 Bot 发送")}</p>
-    {binding ? <><code className="select-all">prism.bind {binding.code}</code><small>{t("有效期至")} {new Date(binding.expiresAt).toLocaleTimeString()}</small></> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></> : <Loader2 className="animate-spin" />}
+    {binding ? <><code className="select-all">prism.bind {binding.code}</code><small>{t("有效期至")} {billTime(binding.expiresAt).time}</small></> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></> : <Loader2 className="animate-spin" />}
   </div></div>;
 }

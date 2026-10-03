@@ -164,6 +164,11 @@ test("conversion can enable front desk timing and external collection without an
   const id = registered.data.profile.id;
   const entry = await request(`${base}/profiles/${id}/entry`, { operationId: op() });
   expect(entry.status).toBe(200);
+  expect(entry.data.session.startedAt).toEndWith("+09:00");
+  const savedStartedAt = await env.DB.prepare("SELECT started_at FROM sessions WHERE shop_id=? AND id=?")
+    .bind(shop.id, entry.data.session.id).first<string>("started_at");
+  expect(savedStartedAt).toEndWith("Z");
+  expect(Date.parse(entry.data.session.startedAt)).toBe(Date.parse(savedStartedAt!));
   await env.DB.prepare("UPDATE sessions SET started_at=? WHERE shop_id=? AND id=?").bind(new Date(Date.now() - 15 * 60_000).toISOString(), shop.id, entry.data.session.id).run();
   const preview = (await request(`${base}/profiles/${id}/checkout/preview`, {})).data.settlementPreview;
   expect(preview.total).toBe(6.75);

@@ -1,3 +1,4 @@
+import { parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
@@ -58,7 +59,7 @@ type RedeemCode = {
 };
 export function AssetsPage() {
   const { t } = useI18n();
-  const { canWrite } = useMerchant();
+  const { canWrite, timeZone } = useMerchant();
   const request = useStaffApi();
   const assets = useResource<{ assetDefinitions: Asset[] }>(
     "asset-definitions",
@@ -536,7 +537,7 @@ export function AssetsPage() {
                 maxUseCount: Number(f.get("uses")),
                 activeAt: null,
                 expiresAt: f.get("expires")
-                  ? new Date(String(f.get("expires"))).toISOString()
+                  ? parseLocalDateTime(String(f.get("expires")).slice(0, 10), String(f.get("expires")).slice(11, 16), timeZone).toISOString()
                   : null,
               })
             }

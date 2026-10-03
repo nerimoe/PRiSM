@@ -99,6 +99,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
     .bind(code)
     .first<BillingShop>();
   if (!shop) jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
+  c.set("responseTimeZone", shop.time_zone);
   // Preserve older clients while enforcing one location policy for every player action.
   const enabled = +(!!(shop.checkin_geo || shop.checkout_geo || shop.machine_geo));
   return { ...shop, checkin_geo: enabled, checkout_geo: enabled, machine_geo: enabled };

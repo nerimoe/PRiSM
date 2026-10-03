@@ -218,9 +218,9 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 现场运营页以玩家为一级对象。`/rpc/staff/live-players` 会把同一玩家名下的多个未结 session 聚合为一行，并把每个 session 作为平级明细返回；这里的未结 session 包括 active session，以及已停止但 `payment_status = unpaid` 的 closed session。active session 的 `endedAt` 为 `null`，closed/unpaid session 会返回停止时写入的 `endedAt`，并且 `elapsedMinutes` 按 `startedAt` 到 `endedAt` 计算而不是继续滚到当前时间。若 session 没有标签，明细中的可选 `label` 字段会省略，而不是返回 `null`。`stayDurationMinutes` 按该玩家当前最久的未结 session 计算。session 明细保留来自当前玩家级结算预览的 `pricingCharges`，字段包含 `pricingConfigId`、`planName`、`ruleLabel` 和 `amount`，用于紧凑地说明这一条计时实际用了哪些计费方案。
 
-同一条 session 的 `pricingSegments` 是可展开的逐段计费解释；每段包含 `pricingConfigId`、`planName`、`providerId`、`ruleId`、`ruleLabel`、`actualStartedAt`、`actualEndedAt`、`ruleTimeRange`、`amount`、`intervalCap` 和 `intervalCapReached`。`actualStartedAt` 与 `actualEndedAt` 是后端以 ISO 8601 UTC 时间戳（带 `Z`）返回的这次实际计费边界，不是仅有时钟的规则配置；`ruleTimeRange` 才是匹配规则的 `{ start, end }` 时钟范围。只有 `intervalCapReached = true` 时客户端才应显示该段的区间封顶状态，未达到时仍保留该段的真实金额而不显示封顶徽标。
+同一条 session 的 `pricingSegments` 是可展开的逐段计费解释；每段包含 `pricingConfigId`、`planName`、`providerId`、`ruleId`、`ruleLabel`、`actualStartedAt`、`actualEndedAt`、`ruleTimeRange`、`amount`、`intervalCap` 和 `intervalCapReached`。`actualStartedAt` 与 `actualEndedAt` 是后端以带明确偏移的 ISO 8601 时间戳（按店铺时区，UTC 可用 `Z`）返回的这次实际计费边界，不是仅有时钟的规则配置；`ruleTimeRange` 才是匹配规则的 `{ start, end }` 时钟范围。只有 `intervalCapReached = true` 时客户端才应显示该段的区间封顶状态，未达到时仍保留该段的真实金额而不显示封顶徽标。
 
-玩家级 `globalCapWindows` 按全局封顶规则的锚定窗口分组，而不是按 session 或单次调整分组。每项包含稳定的 `key`、`capConfigId`、`capRuleId`、`ruleLabel`、窗口完整 ISO 8601 UTC 范围 `windowStartedAt` / `windowEndedAt`、`priceCap`、历史已计入金额 `paidBefore`、本次参与封顶前的 `currentAmount`、本次最终计入封顶的 `amountApplied`、`priceCapReached` 以及按 session/计费方案列出的 `contributions`。历史结账会进入同一个窗口的 `paidBefore`，因此客户端必须用这些 history-aware 值解释窗口余量；达到封顶时应展示 `priceCap` 这个封顶后的最终金额，未达到时展示 `amountApplied` 这个当前计入金额，不应把封顶产生的调整差额当成应收金额。`stop` 是独立的现场动作，只结束某个 session 的计时并保留待结算状态；停止后的 session 仍应显示在现场账单中，状态为已停止，直到玩家级 `confirm-all` 执行统一扣款。这样可以支持“音游计时 + 麻将服务叠加”等门店自定义计费方式，同时不把某个 session 设定成业务上的主从关系。
+玩家级 `globalCapWindows` 按全局封顶规则的锚定窗口分组，而不是按 session 或单次调整分组。每项包含稳定的 `key`、`capConfigId`、`capRuleId`、`ruleLabel`、窗口完整带偏移 ISO 8601 范围 `windowStartedAt` / `windowEndedAt`、`priceCap`、历史已计入金额 `paidBefore`、本次参与封顶前的 `currentAmount`、本次最终计入封顶的 `amountApplied`、`priceCapReached` 以及按 session/计费方案列出的 `contributions`。历史结账会进入同一个窗口的 `paidBefore`，因此客户端必须用这些 history-aware 值解释窗口余量；达到封顶时应展示 `priceCap` 这个封顶后的最终金额，未达到时展示 `amountApplied` 这个当前计入金额，不应把封顶产生的调整差额当成应收金额。`stop` 是独立的现场动作，只结束某个 session 的计时并保留待结算状态；停止后的 session 仍应显示在现场账单中，状态为已停止，直到玩家级 `confirm-all` 执行统一扣款。这样可以支持“音游计时 + 麻将服务叠加”等门店自定义计费方式，同时不把某个 session 设定成业务上的主从关系。
 
 资产计费效果的 `config` 可包含 `applicableSessionLabels`、`applicablePricingConfigIds`、`applicableRuleIds` 以及最低消费门槛 `minSubtotal`（消费未达门槛时不触发减免）。结算时只有当前计时名称、费用项所属计费方案和费用项所属规则匹配且达到最低消费门槛时，效果才会作用到费用；针对特定方案的多张卡券叠加时，系统会跟踪并限制在目标费用项的剩余额度内，不会超出目标方案费用穿透到其他费用。资产持有量在扣减为 0 后不会在多场次结账中重复享受优惠；多张相同卡券生成的调整明细会带有持有唯一标识避免主键冲突；比例折扣按分保留两位小数；卡券有效窗口在开台时间或当前结算时间任一处于有效期内均可生效。后台 UI 会用中文控件生成这些配置，员工不需要手写 JSON。
 
@@ -467,3 +467,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 已有非计费店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并启用计费。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 Bot 凭据；启用计费的设置校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。
 
 设备状态接口的身份门控统一为 `gate: "binding"`，业务错误为 `PLATFORM_BINDING_REQUIRED`。React 与 Koishi 已同步采用新契约；其他调用旧 `qq-binding` 或旧门控名的客户端需一起更新。
+
+## 时间序列化与展示
+
+店铺事件时间使用带店铺偏移的 ISO 8601，例如 `2026-10-03T10:08:00.123+08:00`。内部存储及规则继续为 UTC，响应转换不重算账单。商户／Bot 显示店铺时间；玩家的个人事件显示设备时区，营业规则显示店铺时区。字段范围、兼容标签及夏令时约定见 [客户端时间约定](client-time-contract.md)。

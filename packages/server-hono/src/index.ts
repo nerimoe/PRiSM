@@ -95,7 +95,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   const app = new Hono();
   app.use("/api/v1/*", async (context, next) => {
     await next();
-    context.res = await wrapApiResponse(context.res);
+    context.res = await wrapApiResponse(context.res, async () => (await dependencies.staffSettingsCommands?.getSettings())?.store.timeZone ?? "UTC");
   });
   app.all("/rpc/*", async (context) => {
     const url = new URL(context.req.url);

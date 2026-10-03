@@ -145,5 +145,5 @@ export const createBanSchema = z.object({
   subjectType: z.enum(["user", "ip", "card", "machine"]),
   subjectValue: z.string().trim().min(1).max(160),
   reason: z.string().trim().min(1).max(200),
-  expiresAt: z.string().datetime().optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
 });

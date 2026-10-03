@@ -106,7 +106,7 @@ export function registerCashierRoutes(app: Hono<AppBindings>) {
     const staff = await staffPrincipal(c, shop);
     const playerId = c.req.param("playerId")!;
     const body = z.object({ operationId, collected: z.literal(true), method: z.enum(["wechat", "alipay", "cash", "other"]),
-      previewedAt: z.string().datetime(), expectedTotal: z.number().finite().nonnegative(), sessionIds: z.array(z.string().min(1)).min(1).max(100) }).parse(await c.req.json());
+      previewedAt: z.string().datetime({ offset: true }), expectedTotal: z.number().finite().nonnegative(), sessionIds: z.array(z.string().min(1)).min(1).max(100) }).parse(await c.req.json());
     return runPlayerOperation(c, shop.id, "cashier/checkout/" + playerId, body, async () => {
       await profile(c, shop, playerId);
       const commands = dependencies(c, shop).staffCheckoutCommands!;

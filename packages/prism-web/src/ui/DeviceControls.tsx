@@ -1,3 +1,4 @@
+import { billTime } from "./bill-time";
 import { PlatformBinding } from "./SessionContent";
 import {
   useCallback,
@@ -216,7 +217,7 @@ export function DeviceControls({
                   </output>
                   <small>
                     {t("有效期至")}{" "}
-                    {new Date(password.expiresAt).toLocaleTimeString()}
+                    {billTime(password.expiresAt).time}
                   </small>
                   <p>{t("在门锁上输入密码后按 #")}</p>
                 </div>

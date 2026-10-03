@@ -1,3 +1,4 @@
+import { formatApiDateTime } from "@prism/core";
 import {
   createContext,
   useCallback,
@@ -36,7 +37,7 @@ export const money = (value: number | null | undefined) =>
         maximumFractionDigits: 2,
       });
 export const date = (value: string | null | undefined) =>
-  value ? new Date(value).toLocaleString() : "—";
+  value ? formatApiDateTime(value) : "—";
 export const segment = (value: string) => encodeURIComponent(value);
 export function useStaffApi() {
   const { shopCode } = useMerchant();

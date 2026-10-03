@@ -63,3 +63,5 @@ React 商户工作台的「设置」按六个分类组织，分类写入 URL 的
 各表单有独立保存入口。保存前读取最新配置，仅合并当前表单负责的字段，防止保存一个分类时连带提交其他分类的未保存修改。设置页仍只对店铺 owner 开放；业务时间和计费规则的 UTC 约定不变，平台身份转换不会自动执行。
 
 设置页重组验证：635 项 Bun 测试、TypeScript 检查、React 构建与 Worker dry-run 通过。本地浏览器检查覆盖六组导航、URL／前进后退、独立保存、保留草稿与一次性凭据、390px 手机布局，以及隐藏地图展开和窗口缩放后的居中。
+
+跨客户端时间检查：业务与 SQL 保持 UTC，事件响应输出店铺偏移 ISO 时间。商户／Bot 显示店铺时间，玩家个人时间显示设备时区。Swift 源码克隆于 `/workspace/hinata_go`，Foundation 时间回归可运行 `test/native/run-prism-time-check.sh`；完整 iOS 编译需 macOS／Xcode。详见 [客户端时间约定](client-time-contract.md)。

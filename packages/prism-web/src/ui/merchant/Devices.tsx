@@ -13,6 +13,7 @@ import { Api, api, playerOperation, type Machine } from "../../api";
 import { useI18n } from "../../i18n";
 import {
   ActionForm,
+  date,
   Field,
   Modal,
   State,
@@ -617,7 +618,7 @@ function DeviceOperations({ device }: { device: Machine }) {
             <div>
               {t(labels[e.type] ?? e.type)}
               <p className="mt-1 text-xs text-ink/50">
-                {new Date(e.requestedAt).toLocaleString()}
+                {date(e.requestedAt)}
               </p>
             </div>
             <span className="text-xs text-ink/55">

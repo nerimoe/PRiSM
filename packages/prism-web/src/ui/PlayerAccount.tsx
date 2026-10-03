@@ -121,7 +121,7 @@ export function AccountContent({
       cancelled = true;
     };
   }, [code, section, attempt, errorText, setBillingActive]);
-  if (section === "记录") return <CheckoutHistory code={code} timeZone={info.shop.timeZone} />;
+  if (section === "记录") return <CheckoutHistory code={code} />;
   async function submit() {
     if (busy) return;
     setBusy(true);
@@ -160,9 +160,9 @@ export function AccountContent({
         )}
         {section === "账单" &&
           (receipt ? (
-            <SettledBill receipt={receipt} timeZone={info.shop.timeZone} />
+            <SettledBill receipt={receipt} />
           ) : preview ? (
-            <BillTimeline preview={preview} timeZone={info.shop.timeZone} />
+            <BillTimeline preview={preview} />
           ) : (
             !busy && !error && <p>{t("暂无待结账单")}</p>
           ))}

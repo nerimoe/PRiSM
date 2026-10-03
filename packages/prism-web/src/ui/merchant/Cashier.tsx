@@ -1,3 +1,4 @@
+import { displayDateTime } from "../bill-time";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CreditCard, Plug, CheckCircle2 } from "lucide-react";
@@ -147,7 +148,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
     });
   }
   if (!canWrite) return <p className="py-10 text-ink/60">{t("只读账号不能操作前台收银")}</p>;
-  const at = (value: string) => new Date(value).toLocaleString(undefined, { timeZone: timeZone || undefined });
+  const at = (value: string) => displayDateTime(value, timeZone || undefined);
   return <section ref={panel} className="grid scroll-mt-5 gap-5 rounded-xl border border-ink/10 p-4 sm:p-5" aria-label={t("前台收银")}>
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div><h3 className="text-lg font-semibold">{t("前台收银")}</h3><p className="mt-1 text-sm text-ink/60">{t("低安全模式 · 卡片仅用于计时，现场收款，不预存余额")}</p></div>

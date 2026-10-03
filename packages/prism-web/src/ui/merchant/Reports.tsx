@@ -1,3 +1,4 @@
+import { displayDateTime } from "../bill-time";
 import { addLocalDays, formatLocalDate, parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
 import { useI18n } from "../../i18n";
@@ -122,9 +123,7 @@ export function ReportsPage() {
                 <span className="col-span-2 text-xs text-ink/60">{payment(s)}</span>
                 <strong className="tabular-nums">{money(s.total)}</strong>
                 <span className="text-xs text-ink/60">
-                  {new Date(s.settledAt).toLocaleString(undefined, {
-                    timeZone,
-                  })}
+                  {displayDateTime(s.settledAt, timeZone)}
                 </span>
                 <span className="text-right text-xs text-ink/60">
                   {Math.round(s.durationMinutes)} {t("分钟")}
@@ -138,9 +137,7 @@ export function ReportsPage() {
                 <tr key={s.settlementId}>
                   <td className={cell}>{s.playerDisplayName}</td>
                   <td className={`${cell} whitespace-nowrap`}>
-                    {new Date(s.settledAt).toLocaleString(undefined, {
-                      timeZone,
-                    })}
+                    {displayDateTime(s.settledAt, timeZone)}
                   </td>
                   <td className={cell}>{Math.round(s.durationMinutes)}</td>
                   <td className={cell}>{money(s.total)}</td>

@@ -135,6 +135,8 @@ export type PriorityTimePricingTimelineSegment = {
   endMinute: number;
   startLabel: string;
   endLabel: string;
+  startedAt?: string;
+  endedAt?: string;
   pricing?: UnitPricingConfig;
   priceCap?: number;
   isClosed?: true;
@@ -570,6 +572,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
         endMinute,
         startLabel: formatMinuteLabel(startMinute),
         endLabel: formatMinuteLabel(endMinute),
+        startedAt: cursor.toISOString(),
+        endedAt: nextBoundary.toISOString(),
         ...input.segmentValue(rule),
       });
     } else {
@@ -581,6 +585,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
         endMinute,
         startLabel: formatMinuteLabel(startMinute),
         endLabel: formatMinuteLabel(endMinute),
+        startedAt: cursor.toISOString(),
+        endedAt: nextBoundary.toISOString(),
         isClosed: true,
       });
     }
@@ -1094,6 +1100,7 @@ function mergeAdjacentTimelineSegments(
     if (previous && previous.ruleId === segment.ruleId && previous.endMinute === segment.startMinute) {
       previous.endMinute = segment.endMinute;
       previous.endLabel = segment.endLabel;
+      previous.endedAt = segment.endedAt;
       continue;
     }
     merged.push({ ...segment });

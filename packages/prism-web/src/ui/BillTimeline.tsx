@@ -17,7 +17,7 @@ export function BillTimeline({ preview, timeZone }: { preview: BillPreview; time
   const { t } = useI18n();
   const timeline = preview.timeline;
   if (!timeline) return <div>{[...preview.chargeItems, ...preview.adjustments].map((row, i) => <div className="account-row" key={i}><span>{row.label}</span><span className={row.amount < 0 ? "bill-negative" : ""}>{row.amount.toFixed(2)}</span></div>)}</div>;
-  const date = (at: string) => new Date(at).toLocaleDateString([], { timeZone, month: "short", day: "numeric" });
+  const date = (at: string) => new Date(`${billTime(at, timeZone).date}T12:00:00Z`).toLocaleDateString([], { timeZone: "UTC", month: "short", day: "numeric" });
   const labels = { start: "开始计费", end: "结束计费", current: "现在", switch: "切换计费规则", adjustment: "" };
   const lanes = Math.max(1, ...timeline.tracks.map(track => track.lane + 1));
   return <div className="bill-timeline">{timeline.events.map((event, index) => {
@@ -26,8 +26,8 @@ export function BillTimeline({ preview, timeZone }: { preview: BillPreview; time
     return <section className="bill-event" key={event.at} style={{ paddingLeft: lanes * 14 + 18 }}>
       <div className="bill-rails" aria-hidden="true">{timeline.tracks.map(track => {
         const point = event.entries.some(e => e.trackId === track.id);
-        const above = track.endedAt > event.at && track.startedAt <= event.at;
-        const below = nextAt != null && track.startedAt < event.at && track.endedAt >= event.at;
+        const above = Date.parse(track.endedAt) > Date.parse(event.at) && Date.parse(track.startedAt) <= Date.parse(event.at);
+        const below = nextAt != null && Date.parse(track.startedAt) < Date.parse(event.at) && Date.parse(track.endedAt) >= Date.parse(event.at);
         if (!point && !above && !below) return null;
         return <div key={track.id} className="bill-rail" style={{ left: track.lane * 14 + 4, color: colors[track.color % colors.length] }}>
           {above && <i className="bill-line above" />}{below && <i className="bill-line below" />}{point && <i className="bill-dot" />}

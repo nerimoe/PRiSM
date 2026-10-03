@@ -1,3 +1,4 @@
+import { displayDateTime } from "./bill-time";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronRight, Loader2, ReceiptText } from "lucide-react";
 import { api } from "../api";
@@ -46,7 +47,7 @@ export function CheckoutHistory({ code, timeZone }: { code: string; timeZone?: s
       </>}
     </> : <>
       {records.map(row => <button className="history-record focus-ring" key={row.id} onClick={() => { setReceipt(null); setBusy(true); setSelected(row); }}>
-        <span className="history-label"><strong>{new Date(row.startedAt ?? row.settledAt).toLocaleString([], { timeZone, year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong>{row.startedAt && <small>→ {new Date(row.endedAt ?? row.settledAt).toLocaleString([], { timeZone, year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>}</span>
+        <span className="history-label"><strong>{displayDateTime(row.startedAt ?? row.settledAt, timeZone)}</strong>{row.startedAt && <small>→ {displayDateTime(row.endedAt ?? row.settledAt, timeZone)}</small>}</span>
         <span className="history-amount"><strong>{row.total.toFixed(2)}</strong></span><ChevronRight size={16} />
       </button>)}
       {!busy && !error && !records.length && <div className="history-empty"><ReceiptText size={36} /><p>{t("暂无结账记录")}</p></div>}

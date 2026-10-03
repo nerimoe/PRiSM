@@ -16,6 +16,7 @@ export type Env = Cloudflare.Env & {
 };
 
 export type Variables = {
+  responseTimeZone?: string;
   user: AuthUser | null;
   sessionId: string | null;
 };

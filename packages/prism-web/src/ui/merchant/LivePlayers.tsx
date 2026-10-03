@@ -1,3 +1,4 @@
+import { billTime } from "../bill-time";
 import { Link } from "react-router-dom";
 import { BillTotal, BillTimeline } from "../BillTimeline";
 import { useRef, useState } from "react";
@@ -28,15 +29,10 @@ export function LivePlayers({ players, refresh, onManage }: {
     group.players.push(player);
     groups.set(key, group);
   }
-  const at = (value: string) => new Intl.DateTimeFormat(undefined, {
-    timeZone: timeZone || undefined, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).format(new Date(value));
-  const clockAt = (value: string) => new Intl.DateTimeFormat(undefined, {
-    timeZone: timeZone || undefined, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).format(new Date(value));
-  const dayAt = (value: string) => new Intl.DateTimeFormat(undefined, {
-    timeZone: timeZone || undefined, month: "2-digit", day: "2-digit",
-  }).format(new Date(value));
+  const partsAt = (value: string) => billTime(value, timeZone || undefined);
+  const at = (value: string) => `${partsAt(value).date.slice(5)} ${partsAt(value).time}`;
+  const clockAt = (value: string) => partsAt(value).time;
+  const dayAt = (value: string) => partsAt(value).date.slice(5);
   const title = (session: LivePlayer["sessions"][number]) => !session.label || session.label === "entry" ? t("入场") : session.label;
   async function previewCheckout() {
     if (!selected || busy) return;

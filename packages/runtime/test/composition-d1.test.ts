@@ -417,13 +417,13 @@ describe("createPrismRuntimeDependencies with D1", () => {
     expect(playerSessionHistory).toMatchObject({
       sessions: [
         {
-          startedAt: "2026-06-07T10:00:00.000Z",
-          endedAt: "2026-06-07T11:00:00.000Z",
+          startedAt: "2026-06-07T18:00:00.000+08:00",
+          endedAt: "2026-06-07T19:00:00.000+08:00",
           durationMinutes: 60,
           subtotal: 20,
           total: 20,
           status: "settled",
-          settledAt: "2026-06-07T11:00:00.000Z",
+          settledAt: "2026-06-07T19:00:00.000+08:00",
         },
       ],
     });
@@ -462,13 +462,13 @@ describe("createPrismRuntimeDependencies with D1", () => {
     await expect(staffPlayerSessionHistoryResponse.json()).resolves.toMatchObject({
       sessions: [
         {
-          startedAt: "2026-06-07T10:00:00.000Z",
-          endedAt: "2026-06-07T11:00:00.000Z",
+          startedAt: "2026-06-07T18:00:00.000+08:00",
+          endedAt: "2026-06-07T19:00:00.000+08:00",
           durationMinutes: 60,
           subtotal: 20,
           total: 20,
           status: "settled",
-          settledAt: "2026-06-07T11:00:00.000Z",
+          settledAt: "2026-06-07T19:00:00.000+08:00",
         },
       ],
     });
@@ -514,9 +514,9 @@ describe("createPrismRuntimeDependencies with D1", () => {
           sessionId: settledSessionId,
           playerId: "player-1",
           playerDisplayName: "Neri",
-          startedAt: "2026-06-07T10:00:00.000Z",
-          endedAt: "2026-06-07T11:00:00.000Z",
-          settledAt: "2026-06-07T11:00:00.000Z",
+          startedAt: "2026-06-07T18:00:00.000+08:00",
+          endedAt: "2026-06-07T19:00:00.000+08:00",
+          settledAt: "2026-06-07T19:00:00.000+08:00",
           durationMinutes: 60,
           subtotal: 20,
           total: 20,
@@ -541,7 +541,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
           settlementCount: 1,
           totalDurationMinutes: 60,
           revenueTotal: 20,
-          lastSettledAt: "2026-06-07T11:00:00.000Z",
+          lastSettledAt: "2026-06-07T19:00:00.000+08:00",
         },
       ],
       page: { limit: 10, offset: 0, hasMore: false },
@@ -672,7 +672,7 @@ describe("createPrismRuntimeDependencies with D1", () => {
           delta: 50,
           reason: "staff.asset.grant",
           refId: "staff",
-          createdAt: "2026-06-07T11:00:00.000Z",
+          createdAt: "2026-06-07T19:00:00.000+08:00",
         }),
         expect.objectContaining({
           assetType: "currency",
@@ -1227,8 +1227,8 @@ describe("createPrismRuntimeDependencies with D1", () => {
     expect(reportsResponse.status).toBe(200);
     await expect(reportsResponse.json()).resolves.toEqual({
       summary: {
-        from: "2026-06-07T00:00:00.000Z",
-        to: "2026-06-08T00:00:00.000Z",
+        from: "2026-06-07T08:00:00.000+08:00",
+        to: "2026-06-08T08:00:00.000+08:00",
         revenueTotal: 2025,
         sessionCount: 4,
         assetGrantTotal: 4,

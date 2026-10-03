@@ -47,6 +47,9 @@ export async function requireDeviceStaff(c: C, shopId: string, write = false) {
     if (role?.role === "viewer" && user.role !== "admin")
       jsonError(403, "只读账号不能执行此操作");
   }
+  const zone = await c.env.DB.prepare("SELECT json_extract(value_json,'$.timeZone') AS timeZone FROM app_settings WHERE shop_id=? AND key='store.profile'")
+    .bind(shopId).first<{ timeZone: string }>();
+  c.set("responseTimeZone", zone?.timeZone ?? "UTC");
 }
 async function haBinding(c: C, machine: MachineRow): Promise<HA | null> {
   return machine.ha_binding_encrypted

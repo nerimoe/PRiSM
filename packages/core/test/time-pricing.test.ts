@@ -1544,6 +1544,8 @@ describe("createPriorityTimePricingProvider", () => {
         endMinute: 1440,
         startLabel: "00:00",
         endLabel: "24:00",
+        startedAt: "2026-06-06T15:00:00.000Z",
+        endedAt: "2026-06-07T15:00:00.000Z",
         pricing: {
           unitMinutes: 30,
           unitPrice: 5,
