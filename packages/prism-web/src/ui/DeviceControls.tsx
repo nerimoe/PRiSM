@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate } from "react-router-dom";
 import { Power, DoorOpen, Coins, Loader2, Check } from "lucide-react";
 import { ApiError, api, playerOperation, type PublicMachine } from "../api";
 import { useI18n } from "../i18n";
@@ -30,15 +29,15 @@ export function DeviceControls({
   machine,
   ticket,
   children,
-  cardBusy,
+  cardBusy, onExpired,
 }: {
   machine: PublicMachine;
   ticket: string;
   children: ReactNode;
   cardBusy: boolean;
+  onExpired: () => void;
 }) {
   const { t, errorText } = useI18n();
-  const navigate = useNavigate();
   const code = machine.shop.publicId!;
   const { setBillingActive } = useAuth();
   const [state, setState] = useState<DeviceState | null>(null);
@@ -60,10 +59,10 @@ export function DeviceControls({
           "TICKET_EXPIRED",
         ].includes(code)
       )
-        navigate("/m/expired", { replace: true });
+        onExpired();
       else setError(errorText(e instanceof Error ? e.message : "操作失败"));
     },
-    [navigate, errorText],
+    [onExpired, errorText],
   );
   const refresh = useCallback(async () => {
     const [current, shop] = await Promise.all([

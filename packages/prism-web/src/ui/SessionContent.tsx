@@ -1,3 +1,4 @@
+import { useLocation, useSearchParams } from "react-router-dom";
 import { billTime } from "./bill-time";
 import { useEffect, useState } from "react";
 import { Fingerprint, Loader2 } from "lucide-react";
@@ -20,17 +21,24 @@ export function ShopHero({ name, heroUrl, subtitle }: { name: string; heroUrl?: 
   </header>;
 }
 
-export function SessionSignIn({ next }: { next: string }) {
+export function SessionSignIn() {
   const { t, errorText } = useI18n();
   const { refresh } = useAuth();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [params] = useSearchParams();
+  const location = useLocation();
+  const nextParams = new URLSearchParams(params);
+  nextParams.delete("error"); nextParams.delete("setup");
+  const next = location.pathname + (nextParams.size ? `?${nextParams}` : "") + location.hash;
+  const queryError = params.get("error");
+  const displayedError = error || (queryError === "MuNET 授权已取消" ? "" : queryError);
   async function passkey() {
     setBusy("passkey"); setError("");
     try {
       await Api.loginWithPasskey(await startAuthentication({ optionsJSON: await Api.passkeyOptions() }));
       await refresh();
-    } catch (e) { const message = passkeyErrorMessage(e); if (message) setError(errorText(message)); }
+    } catch (e) { const message = passkeyErrorMessage(e); if (message) setError(message); }
     finally { setBusy(""); }
   }
   return <div className="session-actions">
@@ -43,7 +51,7 @@ export function SessionSignIn({ next }: { next: string }) {
       {t(busy === "passkey" ? "正在验证 Passkey…" : "使用 Passkey 登录")}
     </button>
     {!browserSupportsWebAuthn() && <p className="session-subtitle text-center">{t("当前浏览器不支持 Passkey，请使用 MuNET 登录")}</p>}
-    {error && <p role="alert" className="text-coral">{error}</p>}
+    {displayedError && <p role="alert" className="text-coral">{errorText(displayedError)}</p>}
   </div>;
 }
 

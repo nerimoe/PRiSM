@@ -141,3 +141,11 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务计划，在 SQLite 启动、D1 首次请求和活动账单后台读取之前执行。完成标记与转换一起提交，版本和发布防篡改触发器仅在事务内临时开放，随后恢复。统一平台在此之后以 `shop-location-time-zone-v1` 补齐已有店铺的展示时区，并在位置保存时原子更新 `store.profile.timeZone`；前后端共用 `core/location-time-zone.ts` 的离线 WGS84 → IANA 地理查询。位置变化只更新展示时区，不影响 UTC 规则与历史金额。独立旧版 runtime 没有店铺位置表，保留手动展示设置。
 
 平台的 `shop_player_accounts` 只关联网页账号与店内玩家，`shop_platform_bindings` 独立保存已验证的 provider/subject。任意平台绑定都可满足店铺的 `identityBindingRequired`，同值不同平台不合并。店主主动转换平台标识，迁移不自动重命名；两张身份表在同一事务内更新。D1 本地夹具和预览脚本通过 `splitD1MigrationStatements` 解析触发器，避免按分号截断 SQL。
+
+### 扫码注册与可选 Passkey
+
+新玩家从机台二维码/NFC（`/t/:shop/:device` 或 `/m?ticket=...`）进入时，MuNET OAuth 完成后返回原机台页面，保留 ticket、查询参数和锚点。新账号附带 `setup=passkey` 提示；Web 在原页面显示“建议添加 Passkey”，提供添加和跳过按钮。仅点击添加时才唤起系统验证器；成功或跳过后移除提示参数，继续平台身份绑定、入场及机台操作，不经过账号设置页。取消、绑定失败、网络错误或不支持 Passkey 均可跳过，已添加 Passkey 的账号不重复提示。OAuth 取消/失败同样返回原扫码页；授权取消不显示错误。绑定过程中 ticket 到期时，原页面内提示重新扫码，不跳转到其他页面或自动续期。普通非到店登录仍可进入账号设置完成可选设置。
+
+iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup=passkey` 为新账号附带同样的可选提示，原有客户端可以忽略新增参数。Swift 保留机台 ticket 和上下文，使用 AuthenticationServices 原生注册弹窗调用现有 `/api/v1/auth/passkey/register/options` 和 `/api/v1/auth/passkey/register`；跳过、取消及失败均不跳转至 Web 设置页，也不触发入场或计费操作。Passkey 仍是可选登录方式，与店家的平台身份强制绑定策略独立。
+
+![新玩家在原机台页面选择添加或跳过 Passkey](images/passkey-onboarding-mobile.png)

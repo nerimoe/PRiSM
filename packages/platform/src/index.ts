@@ -1,3 +1,4 @@
+import { munetSuccessReturn, munetFailureReturn } from "./auth-return";
 import { ensureD1UtcPricing } from "@prism/runtime";
 import { registerCashierRoutes } from "./cashier";
 import { registerAdminAccountRoutes } from "./admin-accounts";
@@ -387,9 +388,9 @@ async function finishAppClipCallback(
       code,
       redirectUri: `${c.env.APP_ORIGIN}${redirectPath}`,
     });
-    const { userId } = await provisionMunetUser(c, munet);
+    const { userId, isNewUser } = await provisionMunetUser(c, munet);
     const exchangeCode = await createAppClipAuthCode(c, userId);
-    return callback({ code: exchangeCode });
+    return callback({ code: exchangeCode, ...(isNewUser ? { setup: "passkey" } : {}) });
   } catch (error) {
     console.error(error);
     return callback({
@@ -425,10 +426,7 @@ app.get("/callback", async (c) => {
     return finishAppClipCallback(c, "/callback");
   }
   const next = safePath(getCookie(c, oauthNextCookie));
-  const fail = (message: string) =>
-    c.redirect(
-      `/login?error=${encodeURIComponent(message)}&next=${encodeURIComponent(next)}`,
-    );
+  const fail = (message: string) => c.redirect(munetFailureReturn(next, message));
   const expectedState = getCookie(c, oauthStateCookie);
   deleteCookie(c, oauthStateCookie, { path: "/" });
   deleteCookie(c, oauthNextCookie, { path: "/" });
@@ -446,11 +444,7 @@ app.get("/callback", async (c) => {
     });
     const { userId, isNewUser } = await provisionMunetUser(c, munet);
     await createSession(c, userId);
-    return c.redirect(
-      isNewUser
-        ? `/settings?setup=passkey&next=${encodeURIComponent(next)}`
-        : next,
-    );
+    return c.redirect(munetSuccessReturn(next, isNewUser));
   } catch (error) {
     console.error(error);
     return fail(

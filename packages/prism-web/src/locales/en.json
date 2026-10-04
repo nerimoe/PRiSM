@@ -864,5 +864,9 @@
   "店铺、玩家账单和余额保留。已有其他负责人的店铺继续由其管理，无其他负责人的店铺由当前管理员接管。": "Stores, player bills and balances are kept. Existing co-owners continue to manage their stores; stores without another owner transfer to the current administrator.",
   "正在删除…": "Deleting…",
   "确认删除账号": "Confirm account deletion",
-  "账号已变化，请刷新后重试": "The account has changed. Refresh and try again."
+  "账号已变化，请刷新后重试": "The account has changed. Refresh and try again.",
+  "建议添加 Passkey": "Add a Passkey for next time",
+  "下次可用指纹或面容快速登录。此步骤可跳过，不影响继续游玩。": "Sign in faster next time with your fingerprint or face. You can skip this step and keep playing.",
+  "跳过，继续游玩": "Skip and keep playing",
+  "正在添加 Passkey…": "Adding Passkey…"
 }
