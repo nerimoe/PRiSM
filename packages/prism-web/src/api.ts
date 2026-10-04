@@ -395,6 +395,8 @@ export const Api = {
       method: "POST",
       body: JSON.stringify({ userId, role }),
     }),
+  deleteUser: (userId: string) =>
+    api<{ ok: true }>(`/api/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
   bans: () => api<{ bans: Ban[] }>("/api/v1/admin/bans"),
   createBan: (input: {
     subjectType: Ban["subjectType"];

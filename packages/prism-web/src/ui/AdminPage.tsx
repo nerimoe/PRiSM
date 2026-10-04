@@ -1,8 +1,10 @@
 import { useI18n } from "../i18n";
 import { useEffect, useState, type FormEvent } from "react";
-import { Ban, ShieldCheck, UserCog, X } from "lucide-react";
+import { Ban, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
 import { Api, type Ban as BanRecord, type User, type UserSummary } from "../api";
 import { RequireLogin } from "./RequireLogin";
+import { useAuth } from "./AuthContext";
+import { Modal } from "./merchant/shared";
 
 const roleLabels: Record<User["role"], string> = {
   user: "玩家",
@@ -41,7 +43,8 @@ export function AdminPage() {
     <RequireLogin roles={["admin"]}>
       <section className="grid gap-6 lg:grid-cols-[1fr_360px]">
         <div className="grid content-start gap-4">
-          <h1 className="text-2xl font-semibold">{t("账号权限")}</h1>
+          <h1 className="text-2xl font-semibold">{t("账号管理")}</h1>
+          <p className="text-sm text-ink/60">{t("删除测试账号后，再次用 MuNET 登录会重新进入注册流程。")}</p>
           {error && <p className="rounded border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">{errorText(error)}</p>}
           <form
             className="flex gap-2"
@@ -95,18 +98,23 @@ export function AdminPage() {
 }
 
 function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => void | Promise<void> }) {
-  const { t } = useI18n();
+  const { t, errorText } = useI18n();
+  const { user: currentUser } = useAuth();
   const [role, setRole] = useState<User["role"]>(user.role);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+  const isCurrentUser = currentUser?.id === user.id;
 
   return (
     <article className="flex flex-wrap items-center justify-between gap-3 rounded border border-ink/10 bg-surface p-4">
       <div className="min-w-0">
         <p className="font-semibold">{user.displayName}</p>
         <p className="mt-1 text-sm text-ink/60">@{user.username} · {t("当前身份：")}{t(roleLabels[user.role])}</p>
+        {isCurrentUser && <p className="mt-1 text-xs text-ink/60">{t("当前登录账号不能删除，请使用另一个管理员账号操作")}</p>}
       </div>
       <div className="flex items-center gap-2">
-        <select className="focus-ring min-h-10 rounded border border-ink/10 bg-panel px-3" value={role} onChange={(event) => setRole(event.target.value as User["role"])}>
+        <select className="focus-ring min-h-10 rounded border border-ink/10 bg-panel px-3" disabled={busy} value={role} onChange={(event) => setRole(event.target.value as User["role"])}>
           {Object.entries(roleLabels).map(([value, label]) => (
             <option key={value} value={value}>{t(label)}</option>
           ))}
@@ -116,9 +124,12 @@ function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => void
           disabled={busy || role === user.role}
           onClick={async () => {
             setBusy(true);
+            setError("");
             try {
               await Api.setUserRole(user.id, role);
               await onChanged();
+            } catch (caught) {
+              setError(caught instanceof Error ? caught.message : "操作失败");
             } finally {
               setBusy(false);
             }
@@ -126,7 +137,33 @@ function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => void
         >
           <UserCog size={17} />
           {t("保存")}</button>
+        <button className="focus-ring flex min-h-10 items-center gap-2 rounded border border-coral/30 px-3 text-coral disabled:opacity-50"
+          disabled={busy || isCurrentUser} onClick={() => { setError(""); setDeleting(true); }}>
+          <Trash2 size={17} />{t("删除账号")}
+        </button>
       </div>
+      {error && !deleting && <p role="alert" className="w-full text-sm text-coral">{errorText(error)}</p>}
+      {deleting && <Modal title="删除账号" dismissDisabled={busy} close={() => setDeleting(false)}>
+        <div className="grid gap-4">
+          <div><p className="font-semibold">{user.displayName} · @{user.username}</p><p className="mt-1 break-all text-xs text-ink/60">{user.id}</p></div>
+          <p className="text-sm">{t("删除后无法恢复。该账号的登录资料、Passkey、卡片和店铺关联将被移除，下次 MuNET 登录会重新注册。")}</p>
+          <p className="text-sm text-ink/60">{t("店铺、玩家账单和余额保留。已有其他负责人的店铺继续由其管理，无其他负责人的店铺由当前管理员接管。")}</p>
+          {error && <p role="alert" className="text-sm text-coral">{errorText(error)}</p>}
+          <div className="flex justify-end gap-2">
+            <button className="focus-ring min-h-10 rounded border border-ink/15 px-4" disabled={busy} onClick={() => setDeleting(false)}>{t("取消")}</button>
+            <button className="focus-ring min-h-10 rounded bg-coral px-4 font-medium text-white disabled:opacity-60" disabled={busy} onClick={async () => {
+              setBusy(true); setError("");
+              try {
+                await Api.deleteUser(user.id);
+                setDeleting(false);
+                await onChanged();
+              } catch (caught) {
+                setError(caught instanceof Error ? caught.message : "操作失败");
+              } finally { setBusy(false); }
+            }}>{t(busy ? "正在删除…" : "确认删除账号")}</button>
+          </div>
+        </div>
+      </Modal>}
     </article>
   );
 }

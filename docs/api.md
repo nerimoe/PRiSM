@@ -471,3 +471,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 ## 时间序列化与展示
 
 店铺事件时间使用带店铺偏移的 ISO 8601，例如 `2026-10-03T10:08:00.123+08:00`。内部存储及规则继续为 UTC，响应转换不重算账单。商户／Bot 显示店铺时间；玩家的个人事件显示设备时区，营业规则显示店铺时区。字段范围、兼容标签及夏令时约定见 [客户端时间约定](client-time-contract.md)。
+
+### 平台管理员删除账号
+
+React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:userId` 仅接受平台管理员 Cookie 会话，成功返回 `{ data: { ok: true } }`。删除 PRiSM 登录账号及其凭据、卡片和网页店铺关联后，同一个 MuNET 身份再次登录会按新用户注册。店铺、店内玩家、余额和账单保留，必要时由当前管理员接管无人负责的店铺。不能删除当前登录账号，清理与负责人调整在同一笔 D1 事务内完成；详见 [删除测试账号](admin-account-deletion.md)。

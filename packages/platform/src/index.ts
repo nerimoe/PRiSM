@@ -1,5 +1,6 @@
 import { ensureD1UtcPricing } from "@prism/runtime";
 import { registerCashierRoutes } from "./cashier";
+import { registerAdminAccountRoutes } from "./admin-accounts";
 import {
   registerDeviceRoutes,
   listDevices,
@@ -461,6 +462,8 @@ app.get("/callback", async (c) => {
     );
   }
 });
+
+registerAdminAccountRoutes(app);
 
 app.post("/api/v1/admin/users/role", async (c) => {
   requireAdmin(c);

@@ -855,5 +855,14 @@
   "暂无启用的入场规则，请先在计费管理中配置。": "No admission rules are enabled. Configure them in pricing management first.",
   "Koishi / 集成配置": "Koishi / integration configuration",
   "将下面的店铺编号和正式 API 地址填入 Bot 配置。": "Enter the shop code and production API URL below in your bot configuration.",
-  "复制": "Copy"
+  "复制": "Copy",
+  "账号管理": "Account management",
+  "删除测试账号后，再次用 MuNET 登录会重新进入注册流程。": "After deleting a test account, signing in with MuNET again starts new account registration.",
+  "删除账号": "Delete account",
+  "当前登录账号不能删除，请使用另一个管理员账号操作": "You cannot delete the account you are signed in with. Use another administrator account.",
+  "删除后无法恢复。该账号的登录资料、Passkey、卡片和店铺关联将被移除，下次 MuNET 登录会重新注册。": "Deletion cannot be undone. Sign-in details, passkeys, cards and store associations are removed. The next MuNET sign-in creates a new account.",
+  "店铺、玩家账单和余额保留。已有其他负责人的店铺继续由其管理，无其他负责人的店铺由当前管理员接管。": "Stores, player bills and balances are kept. Existing co-owners continue to manage their stores; stores without another owner transfer to the current administrator.",
+  "正在删除…": "Deleting…",
+  "确认删除账号": "Confirm account deletion",
+  "账号已变化，请刷新后重试": "The account has changed. Refresh and try again."
 }

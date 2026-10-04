@@ -114,10 +114,12 @@ export function Modal({
   title,
   children,
   close,
+  dismissDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
+  dismissDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
@@ -129,7 +131,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      onCancel={close}
+      onCancel={event => { if (dismissDisabled) event.preventDefault(); else close(); }}
       className="m-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35"
       aria-label={t(title)}
     >
@@ -139,6 +141,7 @@ export function Modal({
           type="button"
           className={button}
           onClick={close}
+          disabled={dismissDisabled}
           aria-label={t("关闭")}
         >
           <X size={18} />
