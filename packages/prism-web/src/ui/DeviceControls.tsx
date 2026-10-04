@@ -151,7 +151,12 @@ export function DeviceControls({
     });
   }
   const cap = machine.capabilities;
-  if (!Object.values(cap).some(Boolean)) return null;
+  if (!Object.values(cap).some(Boolean)) return <p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p>;
+  const powerBlocked = cap.power && state?.power === "off";
+  const hasReadyAction = cap.door || powerBlocked
+    || (!powerBlocked && (cap.card || (cap.coin && !machine.coinAfterSwipe)
+      || (cap.mahjong && state?.mahjong && (state.mahjong.seats.some(seat => seat.mine)
+        || state.mahjong.seats.length < state.mahjong.capacity))));
   const spinner = <Loader2 size={22} className="animate-spin" />;
   return (
     <div className="device-controls">
@@ -305,6 +310,7 @@ export function DeviceControls({
                 )}
               </>
             ))}
+          {state.gate === "ready" && !hasReadyAction && <p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p>}
         </>
       )}
     </div>

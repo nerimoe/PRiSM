@@ -149,3 +149,7 @@ UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务
 iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup=passkey` 为新账号附带同样的可选提示，原有客户端可以忽略新增参数。Swift 保留机台 ticket 和上下文，使用 AuthenticationServices 原生注册弹窗调用现有 `/api/v1/auth/passkey/register/options` 和 `/api/v1/auth/passkey/register`；跳过、取消及失败均不跳转至 Web 设置页，也不触发入场或计费操作。Passkey 仍是可选登录方式，与店家的平台身份强制绑定策略独立。
 
 ![新玩家在原机台页面选择添加或跳过 Passkey](images/passkey-onboarding-mobile.png)
+
+设备页面按当前能力和状态判断可执行操作。未配置任何能力，或仅有电源功能且已开机（包括未知/未托管状态），或只配置隐藏的自动投币功能时，显示“当前设备没有可操作项”。仍在加载、等待身份绑定或入场、正在执行操作时不会误显示该提示；刷卡、开门、手动投币及可上/下桌的麻将操作存在时正常显示。仅有满员麻将桌且玩家未入座时，在保留满桌信息的同时提示无可操作项。Web 与 Swift 使用一致文案。
+
+![电源设备通电后显示无可操作项提示](images/device-no-actions-mobile.png)

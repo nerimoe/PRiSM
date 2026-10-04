@@ -183,7 +183,9 @@ function MachineSessionPage({
     <section className="machine-session">
       <ShopHero name={machine.shop.name} heroUrl={machine.shop.heroUrl} subtitle={machine.name} />
 
-      {!Object.values(machine.capabilities).some(Boolean) ? null : !user ? (
+      {!Object.values(machine.capabilities).some(Boolean) ? (
+        <div className="device-controls"><p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p></div>
+      ) : !user ? (
         <SessionSignIn />
       ) : (
         <SessionPasskeySetup><DeviceControls

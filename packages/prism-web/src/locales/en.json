@@ -868,5 +868,6 @@
   "建议添加 Passkey": "Add a Passkey for next time",
   "下次可用指纹或面容快速登录。此步骤可跳过，不影响继续游玩。": "Sign in faster next time with your fingerprint or face. You can skip this step and keep playing.",
   "跳过，继续游玩": "Skip and keep playing",
-  "正在添加 Passkey…": "Adding Passkey…"
+  "正在添加 Passkey…": "Adding Passkey…",
+  "当前设备没有可操作项": "No actions are available for this device"
 }
