@@ -1,3 +1,4 @@
+import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
 import { SessionPasskeySetup } from "./SessionPasskeySetup";
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
@@ -26,34 +27,27 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const checkoutPending = useRef(false);
+  const checkoutRevision = useRef(0);
   useEffect(() => { setActiveShop(shopCode); }, [shopCode, setActiveShop]);
-  useEffect(() => {
-    if (loading) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function load() {
+  usePagePolling(async signal => {
+    if (checkoutPending.current) return;
+    const revision = checkoutRevision.current;
+    try {
+      const shop = await api<ShopInfo>(shopApi(shopCode), { signal });
+      const current = user && shop.shop.billingEnabled && (shop.membership || !shop.shop.identityBindingRequired)
+        ? await api<Summary>(shopApi(shopCode, "player/me"), { signal }) : null;
+      const preview = current?.activeSession ? await api<Preview>(shopApi(shopCode, "player/checkout/preview"), { ...post(), signal }) : null;
+      const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest"), { signal }) : null;
+      if (signal.aborted || checkoutPending.current || revision !== checkoutRevision.current) return;
+      setInfo(shop); setBill(preview); setReceipt(latest?.receipt ?? null);
+      setBillingActive(shopCode, !!current?.activeSession);
       setError("");
-      try {
-        const shop = await api<ShopInfo>(shopApi(shopCode));
-        if (cancelled) return;
-        setInfo(shop);
-        const current = user && shop.shop.billingEnabled && (shop.membership || !shop.shop.identityBindingRequired)
-          ? await api<Summary>(shopApi(shopCode, "player/me")) : null;
-        const preview = current?.activeSession ? await api<Preview>(shopApi(shopCode, "player/checkout/preview"), post()) : null;
-        const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest")) : null;
-        if (cancelled || checkoutPending.current) return;
-        setBill(preview); setReceipt(latest?.receipt ?? null);
-        setBillingActive(shopCode, !!current?.activeSession);
-        if (user && shop.shop.billingEnabled && !shop.membership) timer = setTimeout(load, 3000);
-      } catch (e) { if (!cancelled) setError(errorText(e instanceof Error ? e.message : "操作失败")); }
-      finally { if (!cancelled) setBusy(false); }
-    }
-    setBusy(true); void load();
-    const refresh = () => { if (!document.hidden && !checkoutPending.current) { clearTimeout(timer); setAttempt(value => value + 1); } };
-    document.addEventListener("visibilitychange", refresh);
-    window.addEventListener("focus", refresh);
-    return () => { cancelled = true; clearTimeout(timer); document.removeEventListener("visibilitychange", refresh); window.removeEventListener("focus", refresh); };
-  }, [shopCode, user, loading, attempt, errorText, setBillingActive]);
+    } catch (e) {
+      if (!signal.aborted && (!info || !isTransientReadFailure(e)))
+        setError(errorText(e instanceof Error ? e.message : "操作失败"));
+    } finally { if (!signal.aborted) setBusy(false); }
+  }, !loading, `${shopCode}:${attempt}`, !info || !!user && info.shop.billingEnabled
+    && info.shop.identityBindingRequired && !info.membership?.identityBound && !bill);
   return <section className={`machine-session shop-session ${bill ? "has-checkout" : ""}`}>
     {info && <ShopHero name={info.shop.name || shopCode} heroUrl={info.shop.heroUrl} subtitle={!user ? "" : bill ? t("计费中") : receipt ? t("结账成功") : busy ? t("正在加载") : t("未入场")} />}
     {error && <div role="alert" className="text-coral">{error}<button className="ml-3 underline" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></div>}
@@ -63,7 +57,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
         : bill ? <div className="grid gap-5"><BillTotal preview={bill} /><BillTimeline preview={bill} /></div>
         : receipt ? <SettledBill receipt={receipt} />
         : !error && <p className="session-subtitle">{t("请碰一下 NFC 或扫描机台上的二维码入场")}</p>}
-      {bill && <footer className="shop-checkout"><CheckoutButton info={info} onPendingChange={pending => { checkoutPending.current = pending; }} onComplete={result => { checkoutPending.current = false; setReceipt(result); setBill(null); setBillingActive(shopCode, false); }} /></footer>}
+      {bill && <footer className="shop-checkout"><CheckoutButton info={info} onPendingChange={pending => { checkoutPending.current = pending; checkoutRevision.current++; }} onComplete={result => { checkoutPending.current = false; checkoutRevision.current++; setReceipt(result); setBill(null); setBillingActive(shopCode, false); }} /></footer>}
     </SessionPasskeySetup>}
   </section>;
 }

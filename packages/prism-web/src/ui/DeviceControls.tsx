@@ -1,13 +1,15 @@
+import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
 import { billTime } from "./bill-time";
 import { PlatformBinding } from "./SessionContent";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { Power, DoorOpen, Coins, Loader2, Check } from "lucide-react";
-import { ApiError, api, playerOperation, type PublicMachine } from "../api";
+import { api, playerOperation, type PublicMachine } from "../api";
 import { useI18n } from "../i18n";
 import {
   operationLocation,
@@ -50,6 +52,7 @@ export function DeviceControls({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [waitingPower, setWaitingPower] = useState(false);
+  const refreshError = useRef("");
   const failed = useCallback(
     (e: unknown) => {
       const code =
@@ -64,20 +67,31 @@ export function DeviceControls({
     },
     [onExpired, errorText],
   );
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (signal?: AbortSignal) => {
     const [current, shop] = await Promise.all([
       api<DeviceState>(
         `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}`,
+        { signal },
       ),
-      api<ShopInfo>(shopApi(code)),
+      api<ShopInfo>(shopApi(code), { signal }),
     ]);
+    if (signal?.aborted) return;
     setState(current);
     setInfo(shop);
     if (current.power !== "off") setWaitingPower(false);
+    const previousRefreshError = refreshError.current;
+    setError(previous => previous === previousRefreshError ? "" : previous);
+    refreshError.current = "";
   }, [ticket, code]);
-  useEffect(() => {
-    void refresh().catch(failed);
-  }, [refresh, failed]);
+  usePagePolling(async signal => {
+    try { await refresh(signal); }
+    catch (e) {
+      if (!signal.aborted && (!isTransientReadFailure(e) || !state)) {
+        refreshError.current = errorText(e instanceof Error ? e.message : "操作失败");
+        failed(e);
+      }
+    }
+  }, !busy && !cardBusy, ticket, !state || state.gate === "binding" || waitingPower || !!machine.capabilities.mahjong);
   useEffect(() => {
     let cancelled = false;
     if (info?.shop.billingEnabled && info.membership) {
@@ -87,22 +101,6 @@ export function DeviceControls({
     }
     return () => { cancelled = true; };
   }, [code, state?.gate, info?.shop.billingEnabled, info?.membership?.playerId, setBillingActive]);
-  useEffect(() => {
-    if (busy || cardBusy || (state?.gate !== "binding" && !waitingPower && !machine.capabilities.mahjong)) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      try {
-        if (!document.hidden) await refresh();
-      } catch (e) {
-        if (!stopped && e instanceof ApiError) failed(e);
-      } finally {
-        if (!stopped) timer = setTimeout(poll, 3000);
-      }
-    }
-    timer = setTimeout(poll, 3000);
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [state?.gate, waitingPower, cardBusy, busy, refresh, failed, machine.capabilities.mahjong]);
   async function act(action: string, fn: () => Promise<void>) {
     if (busy || cardBusy) return;
     setBusy(action);
@@ -166,7 +164,7 @@ export function DeviceControls({
         </PlayerDialog>
       )}
       {!state || !info ? (
-        error ? <button className="session-action" onClick={() => act("load", refresh)}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
+        error ? <button className="session-action" onClick={() => act("load", () => refresh())}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
       ) : state.gate === "binding" ? (
         <PlatformBinding code={code} />
       ) : (
