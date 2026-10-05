@@ -16,9 +16,11 @@ export async function deploymentControl(request: Request, env: Env,
   const owner = token && await sha256(token);
   if (request.method !== "POST" || !owner || owner !== env.PRISM_DEPLOY_TOKEN_HASH)
     return Response.json({ error: "Not found" }, { status: 404, headers: { "cache-control": "no-store" } });
-  const result = (data: Record<string, unknown>, status = 200) => Response.json({ ...data, revision: env.PRISM_DEPLOY_REVISION }, { status, headers: { "cache-control": "no-store" } });
+  const result = (data: Record<string, unknown>, status = 200) => Response.json({ ...data, revision: env.PRISM_DEPLOY_REVISION, phase: env.PRISM_DEPLOY_PHASE }, { status, headers: { "cache-control": "no-store" } });
   try {
     const input = await request.json() as { action?: string; name?: string; sql?: string };
+    // Readiness checks authenticate the exact upload before touching even the gate table.
+    if (input.action === "probe") return result({ ok: true, phase: env.PRISM_DEPLOY_PHASE });
     if (input.action === "begin" && env.PRISM_DEPLOY_PHASE === "maintenance") {
       await env.DB.prepare(deploymentGateSchema).run();
       const tables = await tableNames(env.DB);
@@ -32,13 +34,15 @@ export async function deploymentControl(request: Request, env: Env,
     }
     const gate = await env.DB.prepare("SELECT owner_hash,maintenance,checked FROM prism_deployment_gate WHERE id='global'")
       .first<{ owner_hash: string; maintenance: number; checked: number }>();
-    if (!gate || gate.owner_hash !== owner) return result({ error: "Deployment ownership changed" }, 409);
+    if (!gate || gate.owner_hash !== owner) return result({ error: "Deployment ownership changed", code: "DEPLOYMENT_OWNERSHIP_CHANGED" }, 409);
     if (input.action === "status") return result({ ok: true, maintenance: gate.maintenance === 1, checked: gate.checked === 1 });
     if (input.action === "block") {
       await env.DB.prepare("UPDATE prism_deployment_gate SET maintenance=1,permit=0,checked=0 WHERE id='global' AND owner_hash=?").bind(owner).run();
       return result({ ok: true, maintenance: true });
     }
-    if (!gate.maintenance) return result({ error: "Maintenance must be active" }, 409);
+    if (input.action === "resume" && env.PRISM_DEPLOY_PHASE === "live" && !gate.maintenance && gate.checked)
+      return result({ ok: true, maintenance: false });
+    if (!gate.maintenance) return result({ error: "Maintenance must be active", code: "DEPLOYMENT_MAINTENANCE_REQUIRED" }, 409);
     const guardedDB = {
       prepare: env.DB.prepare.bind(env.DB),
       batch: (statements: D1PreparedStatement[]) => deploymentBatch(env.DB, owner, statements),
@@ -82,11 +86,11 @@ export async function deploymentControl(request: Request, env: Env,
       return result({ ok: true, checked: true });
     }
     if (input.action === "resume" && env.PRISM_DEPLOY_PHASE === "live") {
-      if (!gate.checked) return result({ error: "Health verification is required" }, 409);
+      if (!gate.checked) return result({ error: "Health verification is required", code: "DEPLOYMENT_VERIFICATION_REQUIRED" }, 409);
       await deploymentBatch(env.DB, owner, [env.DB.prepare("UPDATE prism_deployment_gate SET maintenance=0 WHERE id='global' AND owner_hash=? AND checked=1").bind(owner)]);
       return result({ ok: true, maintenance: false });
     }
-    return result({ error: "Invalid deployment phase or action" }, 409);
+    return result({ error: "Invalid deployment phase or action", code: "DEPLOYMENT_PHASE_NOT_READY" }, 409);
   } catch {
     // Never echo SQL, credentials, or business rows into a public response.
     return result({ error: "Deployment step failed; maintenance remains active" }, 500);

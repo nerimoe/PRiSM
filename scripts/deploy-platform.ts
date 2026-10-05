@@ -1,9 +1,13 @@
+import { assertDeploymentBranch } from "./deployment-branch";
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomToken, sha256 } from "../packages/platform/src/crypto";
+import { deploymentRequest } from "./deployment-control-client";
 import { deploymentControlPath } from "../packages/platform/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
+
+assertDeploymentBranch(process.env);
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const configPath = resolve(root, "wrangler.generated.jsonc");
@@ -40,16 +44,9 @@ const deploymentArgs = (phase: string) => ["wrangler", "deploy", "--config", con
   "--define", `PRISM_BACKEND_VERSION:${JSON.stringify(packageJson.version)}`,
   "--define", `PRISM_BACKEND_REVISION:${JSON.stringify(revision.slice(0, 12))}`];
 
-async function control(body: Record<string, unknown>) {
-  const response = await fetch(new URL(deploymentControlPath, origin), {
-    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(120_000), redirect: "error",
-  });
-  const result = await response.json() as { ok?: boolean; revision?: string; error?: string };
-  if (!response.ok || result.ok !== true || result.revision !== revision)
-    throw new Error(`Deployment ${body.action} failed (${response.status}); expected release was not confirmed`);
-  return result;
-}
+const controlOptions = { origin, token, revision, sleep: (milliseconds: number) => Bun.sleep(milliseconds) };
+let activePhase: string | undefined;
+const control = (body: Record<string, unknown>) => deploymentRequest(controlOptions, body, activePhase);
 
 const steps: PlatformDeploymentSteps = {
   async preflight() {
@@ -59,16 +56,13 @@ const steps: PlatformDeploymentSteps = {
   async deploy(phase) {
     console.log(`Deploying ${phase} phase for ${base.name} (${revision.slice(0, 12)})`);
     await command(deploymentArgs(phase));
+    console.log(`Waiting for authenticated ${phase} phase at ${origin.origin}`);
+    await deploymentRequest(controlOptions, { action: "probe" }, phase);
+    activePhase = phase;
+    console.log(`Confirmed ${phase} phase (${revision.slice(0, 12)})`);
   },
   async control(action) {
-    // Deployment propagation may briefly route to the previous version. Only reads/blocking
-    // setup are retried; financial/device actions never pass through this interface.
-    let failure: unknown;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      try { await control({ action }); return; } catch (error) { failure = error; }
-      if (attempt < 5) await Bun.sleep(1000);
-    }
-    throw failure;
+    await control({ action });
   },
   async checkpoint() {
     // Capture after fencing: no later business writes can be lost by restoring this bookmark.

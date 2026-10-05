@@ -44,6 +44,11 @@ async function fixture() {
 test("first deployment on the exact stable schema fences existing writers, upgrades atomically and resumes only after verification", async () => {
   const { mf, env, DB, control, schema } = await fixture();
   try {
+    expect((await control({ action: "probe" }, otherToken)).status).toBe(404);
+    const ready = await control({ action: "probe" });
+    expect(ready.status).toBe(200);
+    expect((await ready.json() as { phase: string }).phase).toBe("maintenance");
+    expect((await DB.prepare("SELECT name FROM sqlite_master WHERE name='prism_deployment_gate'").all()).results).toHaveLength(0);
     expect((await control({ action: "begin" }, otherToken)).status).toBe(404);
     expect((await control({ action: "begin" })).status).toBe(200);
     await expect(DB.prepare("UPDATE pricing_configs SET name='Old write'").run()).rejects.toThrow("PRISM_MAINTENANCE");
@@ -60,6 +65,8 @@ test("first deployment on the exact stable schema fences existing writers, upgra
     expect(await isDeploymentMaintenance(env)).toBe(true);
     env.PRISM_DEPLOY_PHASE = "live";
     expect((await control({ action: "resume" })).status).toBe(200);
+    expect((await control({ action: "resume" })).status).toBe(200);
+    expect((await control({ action: "resume" }, otherToken)).status).toBe(404);
     expect(await isDeploymentMaintenance(env)).toBe(false);
     expect(await DB.prepare("SELECT quantity FROM asset_holdings").first("quantity")).toBe(10000);
     await DB.prepare("UPDATE players SET display_name='New name'").run();
