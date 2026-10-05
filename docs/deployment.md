@@ -155,7 +155,7 @@ Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及
 
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
-Cloudflare Workers Builds 的 Build command 使用 `bun run build:web && bun run scripts/generate-wrangler-config.ts --platform`，Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
+Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成 `--platform` 配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
 
 ### 登录与配置
 
@@ -337,3 +337,9 @@ bun test            # 运行所有的单元测试和集成测试
 发布此版前应用 `migrations/0030_platform_identity_bindings.sql`，新版 React 与 Koishi 插件使用 `platform-binding` API。迁移保留原标识及玩家绑定，店主决定是否批量转换，例如 `qq → onebot`；转换不会调整余额或账单。强制绑定开关位于 React「设置 → 玩家与身份」，默认开启。新 API 与适配器来源的具体约定见 [API 文档](api.md#店铺绑定要求与身份转换)。
 
 限流由 `wrangler.platform.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
+
+### Workers Builds 上传占位 D1 配置的排查
+
+如果日志中 Web 构建成功，但 `versions upload` 只有 DB binding、提示 Worker 名称从 `prism-api` 覆盖为目标名称，并以 10021 报 D1 database_id 无效，说明上传使用了根目录的兼容 API 模板。`build:web` 现在在 Workers Builds 中自动先生成统一平台配置与 `.wrangler/deploy/config.json` 重定向；本地及 GitHub CI 的纯 Web 构建不需要 Cloudflare 构建变量。显式执行 `generate-wrangler-config.ts --platform` 仍可用。
+
+在目标 Worker 的 Settings > Build > Variables and Secrets 中填写真实的 `D1_DATABASE_ID`（D1 数据库页面的 UUID）及上文五项必需变量；运行时 Variables & Secrets 不会提供构建变量。生成器会拒绝空值、非法 UUID 和远程部署的全零占位 UUID，失败时不会继续构建或上传。`WORKER_NAME` 未设置时采用 Workers Builds 提供的目标名称，本地仍默认 `prism-api`；显式设置时须与目标 Worker 一致。真实 ID 或凭据无需提交到仓库。默认 `versions upload` 仅上传版本，生产发布仍走 `deploy:beta` 的维护、迁移和验证流程。

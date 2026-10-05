@@ -8,7 +8,7 @@ const redirectPath = fileURLToPath(new URL("../.wrangler/deploy/config.json", im
 const localOnly = Bun.argv.includes("--local");
 const platform = Bun.argv.includes("--platform");
 
-const workerName = readOptional("WORKER_NAME") ?? "prism-api";
+const workerName = readOptional("WORKER_NAME") ?? readOptional("WRANGLER_CI_OVERRIDE_NAME") ?? "prism-api";
 const databaseName = readOptional("D1_DATABASE_NAME") ?? "prism";
 const databaseId = readOptional("D1_DATABASE_ID") ?? (localOnly ? "00000000-0000-0000-0000-000000000000" : undefined);
 const previewDatabaseId = readOptional("D1_PREVIEW_DATABASE_ID");
@@ -99,7 +99,8 @@ function validateWorkerName(value: string): void {
 }
 
 function validateDatabaseId(name: string, value: string): void {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
-    throw new Error(`${name} must be a D1 database UUID.`);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+      || (!localOnly && value === "00000000-0000-0000-0000-000000000000")) {
+    throw new Error(`${name} must be a non-placeholder D1 database UUID.`);
   }
 }
