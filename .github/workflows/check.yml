@@ -46,3 +46,4 @@ jobs:
         with:
           name: scan-first-paint
           path: .scan-check/*.png
+          include-hidden-files: true

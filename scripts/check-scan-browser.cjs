@@ -5,7 +5,7 @@ const fs=require('node:fs');const assert=require('node:assert/strict');
  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
  const counts={};let releaseMe,releasePower,meDone=false,powerDone=false;const meHeld=new Promise(r=>releaseMe=r),powerHeld=new Promise(r=>releasePower=r);
  const machine={publicId:'demo',name:'测试机台',kind:'machine',coinAfterSwipe:false,capabilities:{card:true,power:true,coin:false,door:false,mahjong:true},shop:{publicId:'demo',name:'测试店铺',billingEnabled:false,locationEnabled:false,heroUrl:null}};
- await page.route('**/api/**',async route=>{const url=new URL(route.request().url);counts[url.pathname]=(counts[url.pathname]||0)+1;let data;
+ await page.route('**/api/**',async route=>{const url=new URL(route.request().url());counts[url.pathname]=(counts[url.pathname]||0)+1;let data;
  if(url.pathname==='/api/v1/me'){await meHeld;meDone=true;data={user:{id:'u',username:'test',displayName:'测试玩家',role:'user',hasShops:false}};}
  else if(url.pathname==='/api/v1/machines/session') data={machine};
  else if(url.pathname==='/api/v1/cards') data={cards:[{id:'card',label:'测试 Aime',accessCode:'12345678901234567890',disabledAt:null}],authorizationRequired:false};
