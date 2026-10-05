@@ -1,3 +1,10 @@
+import { getMachineByPublicId } from "../src/db";
+import { requirePoweredMachine } from "../src/devices";
+import { mintMachineTicket } from "../src/machine-session";
+import { beforeEach } from "bun:test";
+import { createTestRateLimits } from "./rate-limit-fixture";
+const rateLimits = createTestRateLimits();
+beforeEach(rateLimits.reset);
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
@@ -15,7 +22,6 @@ const mf = new Miniflare({
   modules: true,
   script: "export default { fetch() { return new Response('test'); } }",
   d1Databases: ["DB"],
-  kvNamespaces: ["RATE_LIMIT"],
   compatibilityDate: "2026-06-01",
 });
 let env: Env;
@@ -55,11 +61,10 @@ async function entryBody() {
 
 beforeAll(async () => {
   const db = await mf.getD1Database("DB");
-  const kv = await mf.getKVNamespace("RATE_LIMIT");
-  // Miniflare exposes the same D1/KV wire methods as the Worker bindings.
+  // Miniflare exposes the same D1 wire methods as the Worker bindings.
   env = {
     DB: db,
-    RATE_LIMIT: kv,
+    ...rateLimits.bindings,
     APP_ORIGIN: origin,
     SESSION_SECRET: "test-only",
     URL_ENCRYPTION_KEY: "test-only",
@@ -973,9 +978,7 @@ test("nonbilling card and automatic coin flows need no QQ or entry, dispatch onc
     expect(machine.coinAfterSwipe).toBe(false);
     const start = async () => {
       // Each scenario isolates delivery semantics from the separate login throttle.
-      await env.RATE_LIMIT.delete(
-        `login:user:u:${Math.floor(Date.now() / 60000)}`,
-      );
+      rateLimits.reset();
       const response = await request("/api/v1/machines/session/start", {
         shopCode: "card",
         publicId: machine.publicId,
@@ -1478,7 +1481,7 @@ test("mahjong seats persist, start together, allow replacements and settle indep
   expect(checkout.status).toBe(200);
   expect(await count()).toBe(4);
   // An expired QR cannot join or leave; another shop's ticket cannot target this table.
-  await env.DB.prepare("UPDATE machine_tickets SET expires_at='2000-01-01' WHERE token_hash=?").bind(await sha256(tickets[0]!)).run();
+  tickets[0] = (await mintMachineTicket(env.SESSION_SECRET, shop.publicId, machine.publicId, Date.now() - 301_000)).ticket;
   expect((await action(0,"mahjong.join")).status).toBe(410);
 },30000);
 
@@ -1607,4 +1610,31 @@ test("a Bot checkout override without funds keeps the session running instead of
     "SELECT status, payment_status FROM sessions WHERE shop_id=? AND id=?",
   ).bind(shop, sessionId).first<{ status: string; payment_status: string }>();
   expect(session).toEqual({ status: "active", payment_status: "unpaid" });
+});
+
+test("fast Web device state never contacts HA; observations coalesce but action preconditions stay fresh", async () => {
+  const binding = await encryptSecret(JSON.stringify({ url: "https://slow-ha.test", token: "test", entityId: "switch.fast" }), env.URL_ENCRYPTION_KEY);
+  await env.DB.prepare("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,ha_binding_encrypted,enabled) VALUES ('fast-state','fast-state','card','Fast','','',1)").run();
+  await env.DB.prepare("UPDATE machines SET ha_binding_encrypted=? WHERE id='fast-state'").bind(binding).run();
+  const { ticket } = await mintMachineTicket(env.SESSION_SECRET, "card", "fast-state");
+  const original = globalThis.fetch;
+  let reads = 0, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = (async () => { reads++; await held; return Response.json({ state: "on" }); }) as typeof fetch;
+  try {
+    const state = await request(`/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}&includePower=0`);
+    expect(state.status).toBe(200);
+    expect((await state.json() as any).data.gate).toBe("ready");
+    expect(reads).toBe(0);
+    const first = request(`/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`);
+    const second = request(`/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`);
+    release();
+    const results = await Promise.all([first, second]);
+    expect(results.map(r => r.status)).toEqual([200, 200]);
+    expect(reads).toBe(1);
+    const machine = (await getMachineByPublicId(env.DB, "fast-state"))!;
+    globalThis.fetch = (async () => { reads++; return Response.json({ state: "off" }); }) as typeof fetch;
+    await expect(requirePoweredMachine({ env } as any, { ...machine, hinata_url_encrypted: "configured" })).rejects.toMatchObject({ status: 409 });
+    expect(reads).toBe(2);
+  } finally { release(); globalThis.fetch = original; }
 });

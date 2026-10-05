@@ -61,7 +61,7 @@ Use `PORT` and `WEB_PORT` to change ports; the runner updates the Vite proxy and
 
 ## Quick Start: Cloudflare
 
-Create a D1 database with `bun run db:create:d1`, then configure `.env` from `.env.example`. Unified platform deployment requires `D1_DATABASE_ID`, `CLOUDFLARE_ACCOUNT_ID`, `RATE_LIMIT_KV_ID`, `APP_ORIGIN`, `MUNET_CLIENT_ID` and `APPLE_TEAM_ID`. Keep runtime secrets such as OAuth client secrets, session secrets and URL encryption keys in Cloudflare Secrets.
+Create a D1 database with `bun run db:create:d1`, then configure `.env` from `.env.example`. Unified platform deployment requires `D1_DATABASE_ID`, `CLOUDFLARE_ACCOUNT_ID`, `APP_ORIGIN`, `MUNET_CLIENT_ID` and `APPLE_TEAM_ID`. Keep runtime secrets such as OAuth client secrets, session secrets and URL encryption keys in Cloudflare Secrets.
 
 ```bash
 bun run deploy:beta

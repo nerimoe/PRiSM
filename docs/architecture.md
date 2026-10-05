@@ -144,7 +144,7 @@ UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务
 
 ### 扫码注册与可选 Passkey
 
-新玩家从机台二维码/NFC（`/t/:shop/:device` 或 `/m?ticket=...`）进入时，MuNET OAuth 完成后返回原机台页面，保留 ticket、查询参数和锚点。新账号附带 `setup=passkey` 提示；Web 在原页面显示“建议添加 Passkey”，提供添加和跳过按钮。仅点击添加时才唤起系统验证器；成功或跳过后移除提示参数，继续平台身份绑定、入场及机台操作，不经过账号设置页。取消、绑定失败、网络错误或不支持 Passkey 均可跳过，已添加 Passkey 的账号不重复提示。OAuth 取消/失败同样返回原扫码页；授权取消不显示错误。绑定过程中 ticket 到期时，原页面内提示重新扫码，不跳转到其他页面或自动续期。普通非到店登录仍可进入账号设置完成可选设置。
+新玩家从机台二维码/NFC（`/t/:shop/:device` 或 `/m#ticket=...`）进入时，MuNET OAuth 完成后返回原机台页面，保留 ticket、查询参数和锚点。新账号附带 `setup=passkey` 提示；Web 在原页面显示“建议添加 Passkey”，提供添加和跳过按钮。仅点击添加时才唤起系统验证器；成功或跳过后移除提示参数，继续平台身份绑定、入场及机台操作，不经过账号设置页。取消、绑定失败、网络错误或不支持 Passkey 均可跳过，已添加 Passkey 的账号不重复提示。OAuth 取消/失败同样返回原扫码页；授权取消不显示错误。绑定过程中 ticket 到期时，原页面内提示重新扫码，不跳转到其他页面或自动续期。普通非到店登录仍可进入账号设置完成可选设置。
 
 iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup=passkey` 为新账号附带同样的可选提示，原有客户端可以忽略新增参数。Swift 保留机台 ticket 和上下文，使用 AuthenticationServices 原生注册弹窗调用现有 `/api/v1/auth/passkey/register/options` 和 `/api/v1/auth/passkey/register`；跳过、取消及失败均不跳转至 Web 设置页，也不触发入场或计费操作。Passkey 仍是可选登录方式，与店家的平台身份强制绑定策略独立。
 
@@ -153,3 +153,5 @@ iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup
 设备页面按当前能力和状态判断可执行操作。未配置任何能力，或仅有电源功能且已开机（包括未知/未托管状态），或只配置隐藏的自动投币功能时，显示“当前设备没有可操作项”。仍在加载、等待身份绑定或入场、正在执行操作时不会误显示该提示；刷卡、开门、手动投币及可上/下桌的麻将操作存在时正常显示。仅有满员麻将桌且玩家未入座时，在保留满桌信息的同时提示无可操作项。Web 与 Swift 使用一致文案。
 
 ![电源设备通电后显示无可操作项提示](images/device-no-actions-mobile.png)
+
+扫码入口、客户端刷新预算、HA 观察缓存、APNs 重试与临时状态清理的现行约定见 [扫码性能与请求预算](scan-performance.md)。

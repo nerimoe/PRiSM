@@ -1,37 +1,34 @@
 import type { Context } from "hono";
 import type { AppBindings } from "./types";
+import { HTTPException } from "hono/http-exception";
 import { clientIp, jsonError, nowIso } from "./http";
 
 type LimitRule = {
   key: string;
-  limit: number;
-  windowSeconds: number;
+  limit: 3 | 5 | 10 | 20 | 30 | 60;
+  windowSeconds: 60;
 };
 
 export async function enforceRateLimits(c: Context<AppBindings>, rules: LimitRule[]): Promise<void> {
   for (const rule of rules) {
-    const count = await incrementCounter(c.env.RATE_LIMIT, rule.key, rule.windowSeconds);
-    if (count > rule.limit) jsonError(429, "操作过于频繁，请稍后重试");
+    const binding = c.env[`RATE_LIMIT_${rule.limit}` as keyof typeof c.env] as RateLimit | undefined;
+    if (!binding || rule.windowSeconds !== 60) jsonError(503, "限流服务尚未配置");
+    if (!(await binding.limit({ key: rule.key })).success) {
+      throw new HTTPException(429, { res: Response.json({ error: { code: "RATE_LIMITED", message: "操作过于频繁，请稍后重试" } },
+        { status: 429, headers: { "retry-after": "60", "cache-control": "no-store" } }) });
+    }
   }
-}
-
-async function incrementCounter(kv: KVNamespace, key: string, ttl: number): Promise<number> {
-  const current = Number((await kv.get(key)) || "0");
-  const next = current + 1;
-  await kv.put(key, String(next), { expirationTtl: ttl });
-  return next;
 }
 
 export function loginRateLimitRules(c: Context<AppBindings>, input: {
   userId: string;
   machineId: string;
 }): LimitRule[] {
-  const minute = Math.floor(Date.now() / 60_000);
   const ip = clientIp(c.req.raw);
   return [
-    { key: `login:user:${input.userId}:${minute}`, limit: 5, windowSeconds: 90 },
-    { key: `login:machine:${input.machineId}:${minute}`, limit: 20, windowSeconds: 90 },
-    { key: `login:ip:${ip}:${minute}`, limit: 30, windowSeconds: 90 },
+    { key: `login:user:${input.userId}`, limit: 5, windowSeconds: 60 },
+    { key: `login:machine:${input.machineId}`, limit: 20, windowSeconds: 60 },
+    { key: `login:ip:${ip}`, limit: 30, windowSeconds: 60 },
   ];
 }
 

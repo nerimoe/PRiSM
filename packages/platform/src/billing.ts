@@ -181,8 +181,9 @@ export function isEntry(session: Session, shop: BillingShop): boolean {
 export async function requireActiveEntry(
   c: C,
   shop: BillingShop,
+  verifiedPlayerId?: string,
 ): Promise<string> {
-  const player = await requireShopPlayer(c, shop);
+  const player = verifiedPlayerId ? { id: verifiedPlayerId } : await requireShopPlayer(c, shop);
   const repos = createD1Repositories({
     db: c.env.DB,
     shopId: shop.id,
@@ -750,9 +751,9 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
     await enforceRateLimits(c, [
       {
-        key: `bind:${shop.id}:${user.id}:${Math.floor(Date.now() / 60000)}`,
+        key: `bind:${shop.id}:${user.id}`,
         limit: 3,
-        windowSeconds: 90,
+        windowSeconds: 60,
       },
     ]);
     const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -793,7 +794,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
         if (principal.staffRole === "viewer") jsonError(403,"没有玩家管理权限","FORBIDDEN");
       } else if (!token || (await deps.apiTokenAuth?.authenticateApiToken(token))?.role !== "integration")
         jsonError(403,"店铺 Bot 凭据无效","FORBIDDEN");
-      await enforceRateLimits(c,[{ key:`bind-confirm:${shop.id}:${Math.floor(Date.now()/60000)}`,limit:20,windowSeconds:90 }]);
+      await enforceRateLimits(c,[{ key:`bind-confirm:${shop.id}`,limit:20,windowSeconds:60 }]);
       const body = z.object({
         code:z.string().trim().toUpperCase().regex(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/),
         provider:z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_-]{0,63}$/).refine(value=>value!=="web-account","网页账号身份不可由 Bot 绑定"),

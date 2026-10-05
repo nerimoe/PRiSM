@@ -73,13 +73,13 @@ Nonbilling TTLock acceptance also verifies that platform binding is required whe
 
 ## Player flow revision — 2026-09-12
 
-The player operation surface is QR/NFC → static `/t/:shop/:device` link → expiring `/m?ticket=…` session. Player shop/device lists and all UI links that mint another device session have been removed. Native clients no longer renew expired tickets. `/t/:shop` no longer opens a store dashboard; public player device-list endpoints no longer return operation destinations. Public static links are not physical-presence proof; stores can additionally require geolocation for entry, machine actions and checkout.
+The player operation surface is QR/NFC → static `/t/:shop/:device` link → expiring `/m#ticket=…` session. Player shop/device lists and all UI links that mint another device session have been removed. Native clients no longer renew expired tickets. `/t/:shop` no longer opens a store dashboard; public player device-list endpoints no longer return operation destinations. Public static links are not physical-presence proof; stores can additionally require geolocation for entry, machine actions and checkout.
 
 ### Shop-only surface (`/t/:shopCode`)
 
 A bare shop code with no device segment is the standalone, device-independent shop page. It is the deep-link target for the PRiSM Link Live Activity and Dynamic Island. It is still not a store dashboard: it shows only the signed-in player's own bill, redeem, history and wallet.
 
-- It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m?ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
+- It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m#ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
 - `GET /api/v1/shops/:shopCode` returns `shop.heroUrl` (the same versioned `…/hero?v=<hash>` path the machine payload uses, or `null`) so the shop card matches a device card. It is derived from `hero_data`/`hero_hash`, so a shop without cover art reports `null` rather than a broken path.
 - It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
 - Players needing verification see the platform-binding command. When binding is optional, Web can create a membership directly; any later adapter binding reuses the same player.
@@ -181,3 +181,5 @@ Mahjong player controls group the title/status and occupancy count in one header
 麻将人数不足时统一显示“等待玩家”（Waiting for players），保留两列座位布局。
 
 Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update both `player_identities` and `shop_platform_bindings`. See [API](api.md#店铺绑定要求与身份转换).
+
+当前扫码/请求放大修复以 [扫码性能与请求预算](scan-performance.md) 为准：新 ticket 为 AEAD 密文且不写 D1；历史 ticket claim 描述不适用于新流程。

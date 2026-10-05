@@ -1,3 +1,7 @@
+import { beforeEach } from "bun:test";
+import { createTestRateLimits } from "./rate-limit-fixture";
+const rateLimits = createTestRateLimits();
+beforeEach(rateLimits.reset);
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
@@ -8,7 +12,7 @@ import app from "../src/index";
 import { sha256 } from "../src/crypto";
 import type { Env } from "../src/types";
 
-const mf = new Miniflare({ modules:true,script:"export default {fetch(){return new Response('test')}}",d1Databases:["DB"],kvNamespaces:["RATE_LIMIT"],compatibilityDate:"2026-06-07" });
+const mf = new Miniflare({ modules:true,script:"export default {fetch(){return new Response('test')}}",d1Databases:["DB"],compatibilityDate:"2026-06-07" });
 let env:Env;
 const origin = "https://identity.test";
 async function request(path:string,body?:unknown,user="owner",method=body===undefined ? "GET" : "POST",bot=false) {
@@ -39,7 +43,7 @@ async function seedPlayer(shopId:string,id:string,provider:string,subject:string
   ]);
 }
 beforeAll(async()=>{
-  env={DB:await mf.getD1Database("DB"),RATE_LIMIT:await mf.getKVNamespace("RATE_LIMIT"),APP_ORIGIN:origin,SESSION_SECRET:"test",URL_ENCRYPTION_KEY:"test",MUNET_CLIENT_ID:"",MUNET_CLIENT_SECRET:"",APPLE_TEAM_ID:"TEST"} as Env;
+  env={DB:await mf.getD1Database("DB"),...rateLimits.bindings,APP_ORIGIN:origin,SESSION_SECRET:"test",URL_ENCRYPTION_KEY:"test",MUNET_CLIENT_ID:"",MUNET_CLIENT_SECRET:"",APPLE_TEAM_ID:"TEST"} as Env;
   for (const sql of sqliteSchema) await env.DB.prepare(sql).run();
   for (const name of ["0017_platform_accounts","0018_unified_devices","0019_ticket_coin","0020_mahjong_devices","0021_machine_aliases","0023_remote_entry","0024_drop_remote_entry"])
     for (const sql of readFileSync(new URL(`../../../migrations/${name}.sql`,import.meta.url),"utf8").replace(/^\s*--.*$/gm,"").split(";").filter(s=>s.trim())) await env.DB.prepare(sql).run();

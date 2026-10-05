@@ -62,6 +62,7 @@ import {
 } from "./apple";
 import {
   createMachineSession,
+  mintMachineTicket,
   publicMachine,
   resolveMachineSession,
 } from "./machine-session";
@@ -152,13 +153,21 @@ app.use("*", async (c, next) => {
   await next();
 });
 app.use("*", async (c, next) => {
+  if (/^\/t\/[^/]+\/[^/]+$/.test(c.req.path) || c.req.path === "/api/v1/machines/session/start"
+    || c.req.path === "/api/v1/machines/session" || /^\/api\/v1\/machines\/[^/]+$/.test(c.req.path)) {
+    await enforceRateLimits(c, [{ key: `machine-navigation:${clientIp(c.req.raw)}`, limit: 60, windowSeconds: 60 }]);
+  }
+  await next();
+});
+app.use("*", async (c, next) => {
   if (c.req.path.startsWith("/api/") && c.env?.DB) {
     await ensureD1UtcPricing(c.env.DB);
     await ensureShopLocationTimeZones(c.env.DB);
   }
   await next();
 });
-app.use("*", attachUser);
+app.use("/api/*", attachUser);
+app.use("/callback*", attachUser);
 registerDeviceRoutes(app);
 registerBillingRoutes(app);
 registerCashierRoutes(app);
@@ -238,12 +247,11 @@ app.post("/api/v1/auth/logout", async (c) => {
 });
 
 app.get("/api/v1/auth/passkey/options", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `passkey:options:${clientIp(c.req.raw)}:${minute}`,
+      key: `passkey:options:${clientIp(c.req.raw)}`,
       limit: 10,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   return c.json(await authenticationOptions(c));
@@ -344,12 +352,11 @@ app.get("/api/v1/auth/munet", (c) => {
 app.get("/api/v1/appclip/auth/start", async (c) => {
   if (!c.env.MUNET_CLIENT_ID || !c.env.MUNET_CLIENT_SECRET)
     jsonError(503, "MuNET 登录尚未配置");
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `appclip-auth:start:${clientIp(c.req.raw)}:${minute}`,
+      key: `appclip-auth:start:${clientIp(c.req.raw)}`,
       limit: 5,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   const state = `appclip.${randomToken(24)}`;
@@ -405,12 +412,11 @@ async function finishAppClipCallback(
 }
 
 app.post("/api/v1/appclip/auth/exchange", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `appclip-auth:exchange:${clientIp(c.req.raw)}:${minute}`,
+      key: `appclip-auth:exchange:${clientIp(c.req.raw)}`,
       limit: 10,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   const body = appClipAuthExchangeSchema.parse(await c.req.json());
@@ -564,12 +570,14 @@ app.delete("/api/v1/cards/:id", async (c) => {
 
 app.get("/t/:shopCode/:publicId", async (c) => {
   try {
-    const session = await createMachineSession(
-      c,
+    const session = await mintMachineTicket(
+      c.env.SESSION_SECRET,
       c.req.param("shopCode"),
       c.req.param("publicId"),
     );
-    return c.redirect(`/m?ticket=${encodeURIComponent(session.ticket)}`, 302);
+    c.header("cache-control", "no-store");
+    c.header("referrer-policy", "no-referrer");
+    return c.redirect(`/m#ticket=${encodeURIComponent(session.ticket)}`, 302);
   } catch (error) {
     if (error instanceof HTTPException && error.status === 404) {
       return c.redirect(
@@ -582,14 +590,6 @@ app.get("/t/:shopCode/:publicId", async (c) => {
 });
 
 app.post("/api/v1/machines/session/start", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
-  await enforceRateLimits(c, [
-    {
-      key: `machine-session:start:${clientIp(c.req.raw)}:${minute}`,
-      limit: 60,
-      windowSeconds: 90,
-    },
-  ]);
   const body = machineSessionStartSchema.parse(await c.req.json());
   const session = await createMachineSession(c, body.shopCode, body.publicId);
   return c.json({

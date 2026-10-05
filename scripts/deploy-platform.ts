@@ -28,7 +28,7 @@ for (const phase of ["maintenance", "verify", "live"] as const) {
   const config = {
     ...base,
     main: resolve(root, phase === "maintenance" ? "packages/platform/src/maintenance-worker.ts" : "packages/platform/src/worker.ts"),
-    assets: { ...base.assets, binding: "ASSETS", directory: resolve(root, base.assets.directory), run_worker_first: true },
+    assets: { ...base.assets, binding: "ASSETS", directory: resolve(root, base.assets.directory), run_worker_first: phase === "live" ? [...base.assets.run_worker_first, deploymentControlPath] : true },
     d1_databases: base.d1_databases.map((db: Record<string, unknown>) => ({ ...db, migrations_dir: resolve(root, "migrations") })),
     vars: { ...base.vars, PRISM_DEPLOY_GUARD: "1", PRISM_DEPLOY_PHASE: phase, PRISM_DEPLOY_TOKEN_HASH: tokenHash, PRISM_DEPLOY_REVISION: revision },
   };

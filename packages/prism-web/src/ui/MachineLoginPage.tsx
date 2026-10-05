@@ -2,7 +2,7 @@ import { SessionPasskeySetup } from "./SessionPasskeySetup";
 import { DeviceControls } from "./DeviceControls";
 import { useI18n } from "../i18n";
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { ShopHero, SessionSignIn } from "./SessionContent";
 import { Api, ApiError, type Card, type PublicMachine } from "../api";
@@ -11,7 +11,8 @@ import { useAuth } from "./AuthContext";
 export function MachineLoginPage() {
   const { ticket: paramTicket = "", publicId = "" } = useParams();
   const [searchParams] = useSearchParams();
-  const ticket = searchParams.get("ticket") || paramTicket || publicId;
+  const { hash } = useLocation();
+  const ticket = new URLSearchParams(hash.slice(1)).get("ticket") || searchParams.get("ticket") || paramTicket || publicId;
   const [expiredTicket, setExpiredTicket] = useState<string | null>(null);
   const onExpired = useCallback(() => setExpiredTicket(ticket), [ticket]);
   const expired = expiredTicket === ticket ||
@@ -34,7 +35,7 @@ function MachineSessionLoader({
   ticket: string;
   onExpired: () => void;
 }) {
-  const { loading, setActiveShop } = useAuth();
+  const { setActiveShop } = useAuth();
   const [page, setPage] = useState<
     | { kind: "loading" }
     | { kind: "failed"; message: string }
@@ -85,9 +86,7 @@ function MachineSessionLoader({
         />
       );
     case "session":
-      return loading ? (
-        <MachineLoadingPage />
-      ) : (
+      return (
         <MachineSessionPage
           machine={page.machine}
           ticket={ticket}
@@ -106,7 +105,7 @@ function MachineSessionPage({
   onExpired: () => void;
 }) {
   const { t, errorText } = useI18n();
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const [cards, setCards] = useState<Card[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
   const [cardsError, setCardsError] = useState<string | null>(null);
@@ -185,6 +184,8 @@ function MachineSessionPage({
 
       {!Object.values(machine.capabilities).some(Boolean) ? (
         <div className="device-controls"><p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p></div>
+      ) : loading ? (
+        <div className="device-controls" role="status"><Loader2 className="mx-auto animate-spin" aria-label={t("正在加载")} /></div>
       ) : !user ? (
         <SessionSignIn />
       ) : (

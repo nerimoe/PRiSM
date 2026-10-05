@@ -31,7 +31,7 @@
     "migration:export-postgres": "bun run packages/migration/src/cli.ts export-postgres",
     "migration:export-postgres-dump": "bun run packages/migration/src/cli.ts export-postgres-dump",
     "migration:import-json": "bun run packages/migration/src/cli.ts import-json",
-    "build:web": "bun run --cwd packages/prism-web build",
+    "build:web": "bun run scripts/build-web.ts",
     "dev:platform": "bun run build:web && wrangler dev --config wrangler.platform.jsonc",
     "check:platform": "bun run build:web && wrangler deploy --dry-run --config wrangler.platform.jsonc",
     "deploy:beta": "bun run build:web && bun run scripts/generate-wrangler-config.ts --platform && bun run scripts/deploy-platform.ts"

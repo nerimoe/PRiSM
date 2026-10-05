@@ -45,6 +45,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
     } catch (e) {
       if (!signal.aborted && (!info || !isTransientReadFailure(e)))
         setError(errorText(e instanceof Error ? e.message : "操作失败"));
+      throw e;
     } finally { if (!signal.aborted) setBusy(false); }
   }, !loading, `${shopCode}:${attempt}`, !info || !!user && info.shop.billingEnabled
     && info.shop.identityBindingRequired && !info.membership?.identityBound && !bill);
