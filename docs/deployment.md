@@ -343,3 +343,19 @@ bun test            # 运行所有的单元测试和集成测试
 如果日志中 Web 构建成功，但 `versions upload` 只有 DB binding、提示 Worker 名称从 `prism-api` 覆盖为目标名称，并以 10021 报 D1 database_id 无效，说明上传使用了根目录的兼容 API 模板。`build:web` 现在在 Workers Builds 中自动先生成统一平台配置与 `.wrangler/deploy/config.json` 重定向；本地及 GitHub CI 的纯 Web 构建不需要 Cloudflare 构建变量。显式执行 `generate-wrangler-config.ts --platform` 仍可用。
 
 在目标 Worker 的 Settings > Build > Variables and Secrets 中填写真实的 `D1_DATABASE_ID`（D1 数据库页面的 UUID）及上文五项必需变量；运行时 Variables & Secrets 不会提供构建变量。生成器会拒绝空值、非法 UUID 和远程部署的全零占位 UUID，失败时不会继续构建或上传。`WORKER_NAME` 未设置时采用 Workers Builds 提供的目标名称，本地仍默认 `prism-api`；显式设置时须与目标 Worker 一致。真实 ID 或凭据无需提交到仓库。默认 `versions upload` 仅上传版本，生产发布仍走 `deploy:beta` 的维护、迁移和验证流程。
+
+### 防止 PR 构建修改运行中的 Worker
+
+`deploy:beta` 与直接运行 `scripts/deploy-platform.ts` 都会在任何发布操作之前检查 Workers Builds 分支：`WORKERS_CI=1` 时，`WORKERS_CI_BRANCH` 必须等于 `PRISM_DEPLOY_BRANCH`（默认 `main`）。非生产分支或缺少分支信息会立即失败，不构建、不发布维护 Worker，也不执行 D1 迁移。生产分支另有名称时，在构建变量中明确设置 `PRISM_DEPLOY_BRANCH`。本地发布流程不受 Workers Builds 分支检查影响。
+
+Cloudflare 中生产 Deploy command 使用 `bun run deploy:beta`；关闭预览构建，或使用独立预览命令与隔离资源。预览命令不可填写 `deploy:beta` 或 `wrangler deploy`；旧版上传预览流程可使用 `bunx wrangler versions upload`，新版 Worker Previews 使用 Cloudflare 控制台指定的 `wrangler preview` 命令。已有 PR 构建失败不能只看 GitHub 测试是否通过，应检查对应的 Workers Builds check。
+
+如果站点持续返回 `503 MAINTENANCE`，先检查失败构建日志及当前发布阶段；分支保护只能避免后续误发布，不能解除已有维护状态。确认并修复失败步骤后，从生产分支重新运行完整部署流程；不要将修改数据库维护行或只回滚 Worker 当作通用恢复方式。
+
+### 上传成功后控制请求返回 404
+
+Wrangler 报告上传/发布成功后，部署脚本会使用本次随机令牌调用只读 `probe`，确认自定义域名正在执行预期提交及阶段；此探测不读写 D1。确认后才执行 `begin`、迁移和恢复操作。404、临时网络错误及可重试 HTTP 状态使用最多三分钟的有界重试，每次网络请求最多十秒；认证后明确的 SQL/所有权错误立即失败。错误日志不打印令牌或任意响应体。
+
+`Deployment begin failed (404)` 表示控制请求在认证处被拒绝（或尚未到达预期 Worker），发生于本次数据库迁移之前；不能把它等同于 D1 UUID 错误。检查域名路由与部署绑定是否指向预期 Worker。`resume` 对已验证、同一部署所有者的重复请求返回成功，避免首次成功但响应丢失后重新关闭业务。上述改动仍保留维护期间的写入保护，不自动关闭未知部署的维护状态。
+
+恢复请求的 409 会区分阶段未就绪（可重试）、部署所有者变化、缺少验证和维护状态不符（立即失败）。部署日志只输出固定错误码，不丢弃可诊断的原因，也不打印任意响应体。并行构建或重试旧提交可能覆盖正在执行的发布；恢复时使用最新修复提交，且同一 Worker 只运行一个完整部署任务。

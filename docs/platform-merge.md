@@ -130,7 +130,7 @@ Bot acceptance includes platform binding, roster, billing and legacy device comm
 
 The `prism-link-beta` branch deploys to the separate `prism-link-beta` Worker.
 Workers Builds uses repository root `/`, build command `bun run build:web`, and
-deploy command `bun run deploy:beta`. Disable non-production branch builds.
+deploy command `bun run deploy:beta`. Disable non-production branch builds. The deployment entry points also reject Workers Builds branches other than `PRISM_DEPLOY_BRANCH` (default `main`) before changing the live Worker or D1.
 Deployment runs `scripts/generate-wrangler-config.ts --platform`, reading
 build variables documented in `.env.example`. The generated
 `wrangler.generated.jsonc` is ignored by Git. Resource IDs, domains and client
