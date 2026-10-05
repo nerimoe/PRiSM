@@ -159,7 +159,7 @@ export class ApiError extends Error {
     readonly details?: unknown,
     readonly retryAfterMs?: number,
   ) {
-    super(message);
+    super(code === "INSUFFICIENT_BALANCE" ? "余额不足，请充值后重试" : message);
   }
 
   get sessionExpired(): boolean {

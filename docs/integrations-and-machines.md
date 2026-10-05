@@ -210,3 +210,7 @@ Hinata IO 设备由员工在设备看板的游戏机器区域配置，保存于 
 > 需注意：设备状态同步（`syncHomeAssistantStates`）始终使用注册表里的真实 `id` 调用 `/api/states/<entity_id>`，因此看板上的在线/离线状态不会被别名影响；只有命令执行路径此前漏掉了这一解析，现已修复。
 
 Cloudflare Workers 运行时通过保持原生 `fetch` 调用上下文的包装函数访问 Home Assistant，避免把运行时函数作为普通对象方法调用而触发 `Illegal invocation`。
+
+### 余额不足提示
+
+Web 与 Swift（主 App / App Clip 共用 API 层）按 `INSUFFICIENT_BALANCE` 错误码显示本地化提示：中文“余额不足，请充值后重试”，英文“Insufficient balance. Please top up and try again.”。内部诊断文本变化不影响提示；HTTP 状态与错误码保留，余额不足不视为会话失效。结账被拒绝后保留当前账单和计费状态，不自动重发结账；充值后可手动重试，并使用新的操作 ID。
