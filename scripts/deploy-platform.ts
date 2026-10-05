@@ -1,9 +1,12 @@
+import { assertDeploymentBranch } from "./deployment-branch";
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomToken, sha256 } from "../packages/platform/src/crypto";
 import { deploymentControlPath } from "../packages/platform/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
+
+assertDeploymentBranch(process.env);
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const configPath = resolve(root, "wrangler.generated.jsonc");

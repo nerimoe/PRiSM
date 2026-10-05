@@ -343,3 +343,11 @@ bun test            # 运行所有的单元测试和集成测试
 如果日志中 Web 构建成功，但 `versions upload` 只有 DB binding、提示 Worker 名称从 `prism-api` 覆盖为目标名称，并以 10021 报 D1 database_id 无效，说明上传使用了根目录的兼容 API 模板。`build:web` 现在在 Workers Builds 中自动先生成统一平台配置与 `.wrangler/deploy/config.json` 重定向；本地及 GitHub CI 的纯 Web 构建不需要 Cloudflare 构建变量。显式执行 `generate-wrangler-config.ts --platform` 仍可用。
 
 在目标 Worker 的 Settings > Build > Variables and Secrets 中填写真实的 `D1_DATABASE_ID`（D1 数据库页面的 UUID）及上文五项必需变量；运行时 Variables & Secrets 不会提供构建变量。生成器会拒绝空值、非法 UUID 和远程部署的全零占位 UUID，失败时不会继续构建或上传。`WORKER_NAME` 未设置时采用 Workers Builds 提供的目标名称，本地仍默认 `prism-api`；显式设置时须与目标 Worker 一致。真实 ID 或凭据无需提交到仓库。默认 `versions upload` 仅上传版本，生产发布仍走 `deploy:beta` 的维护、迁移和验证流程。
+
+### 防止 PR 构建修改运行中的 Worker
+
+`deploy:beta` 与直接运行 `scripts/deploy-platform.ts` 都会在任何发布操作之前检查 Workers Builds 分支：`WORKERS_CI=1` 时，`WORKERS_CI_BRANCH` 必须等于 `PRISM_DEPLOY_BRANCH`（默认 `main`）。非生产分支或缺少分支信息会立即失败，不构建、不发布维护 Worker，也不执行 D1 迁移。生产分支另有名称时，在构建变量中明确设置 `PRISM_DEPLOY_BRANCH`。本地发布流程不受 Workers Builds 分支检查影响。
+
+Cloudflare 中生产 Deploy command 使用 `bun run deploy:beta`；关闭预览构建，或使用独立预览命令与隔离资源。预览命令不可填写 `deploy:beta` 或 `wrangler deploy`；旧版上传预览流程可使用 `bunx wrangler versions upload`，新版 Worker Previews 使用 Cloudflare 控制台指定的 `wrangler preview` 命令。已有 PR 构建失败不能只看 GitHub 测试是否通过，应检查对应的 Workers Builds check。
+
+如果站点持续返回 `503 MAINTENANCE`，先检查失败构建日志及当前发布阶段；分支保护只能避免后续误发布，不能解除已有维护状态。确认并修复失败步骤后，从生产分支重新运行完整部署流程；不要将修改数据库维护行或只回滚 Worker 当作通用恢复方式。
