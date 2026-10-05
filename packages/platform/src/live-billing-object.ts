@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { activityBill, type ActivityBill } from "./live-activity-billing";
 import { LiveActivityPusher, liveActivityConfig, liveActivityEndPayload, liveActivityUpdatePayload } from "./live-activity-push";
 import type { Env } from "./types";
+import { isDeploymentMaintenance } from "./deployment-gate";
 
 type Visit = { shopId: string; playerId: string; revision: number };
 type Token = { id: string; token: string; environment: "sandbox" | "production"; bundle_id: string; session_id: string; created_at: string; started_at: string; ended_at: string | null; payment_status: string; checkout_total: number | null; settled_at: string | null };
@@ -16,6 +17,15 @@ export class LiveBilling extends DurableObject<Env> {
   }
 
   async alarm() {
+    try {
+      if (await isDeploymentMaintenance(this.env)) {
+        await this.ctx.storage.setAlarm(Date.now() + 30_000);
+        return;
+      }
+    } catch {
+      await this.ctx.storage.setAlarm(Date.now() + 30_000);
+      return;
+    }
     const visit = await this.ctx.storage.get<Visit>("visit");
     const config = liveActivityConfig(this.env);
     if (!visit || !config) return;

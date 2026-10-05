@@ -31,7 +31,7 @@ bun run check:platform
 
 平台测试涉及 Miniflare，首次启动使用 30 秒测试超时。`check:platform` 构建 React 并进行 Worker dry-run，不部署线上。
 
-版本号统一使用根 `package.json` 的 SemVer。`bun run version:bump patch` 不再依赖其他前端仓库。`bun run deploy:beta` 构建 React、生成平台配置、应用远程 D1 迁移并发布 Worker，需预先配置 Cloudflare 与平台登录凭据。
+版本号统一使用根 `package.json` 的 SemVer。`bun run version:bump patch` 不再依赖其他前端仓库。`bun run deploy:beta` 构建 React、生成平台配置后自动进入维护模式、阻断旧写入、记录 D1 恢复书签、应用迁移并完成 UTC 数据转换；健康验证通过后恢复服务。失败保持维护。需预先配置 Cloudflare 与平台登录凭据，详情见 [自动维护部署](deployment.md#自动维护部署)。
 
 ## UTC 与位置时区
 

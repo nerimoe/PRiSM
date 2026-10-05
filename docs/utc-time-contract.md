@@ -8,7 +8,7 @@
 
 计费日预览使用 UTC 规则在 UI 当地日所对应的 UTC 起止窗口内执行，然后投影到当地 00:00–24:00。API 按店铺时区输出带偏移的事件时间。商户账单 UI 按店铺时区、玩家账单 UI 按手机／浏览器时区，从事件 `at`、收费段 `startedAt/endedAt` 转换时间、日期和区间文字，忽略旧的后端格式化文字；切换显示时区不改变时长、金额或收费边界。
 
-升级需应用 `0029_utc_pricing.sql` 并运行新版服务。SQL 设置新发布的 UTC 约束；新版 SQLite 启动、Worker 首次请求以及活动账单后台读取会执行 IANA 感知的数据迁移 `utc-pricing-data-v1`。SQLite 也可单独执行 `bun run scripts/migrate-pricing-utc.ts <数据库路径>`。
+升级需应用 `0029_utc_pricing.sql` 并运行新版服务。统一平台的 `deploy:beta` 先安装维护入口与 D1 写入屏障，再原子应用 SQL；在 verify 阶段主动完成 UTC 和位置时区转换及健康检查，随后恢复业务请求。旧版本在途写入不能穿过屏障，新版计时方案还有 UTC 写入约束，避免旧代码迟到时把当地时钟错误发布为 UTC。详见 [自动维护部署](deployment.md#自动维护部署)。SQL 设置新发布的 UTC 约束；新版 SQLite 启动、Worker 首次请求以及活动账单后台读取会执行 IANA 感知的数据迁移 `utc-pricing-data-v1`。SQLite 也可单独执行 `bun run scripts/migrate-pricing-utc.ts <数据库路径>`。
 
 `0029` 从 `utcPricingSchema` 生成，测试校验 SQL 文件与运行时 schema 严格一致，并按 D1 服务端的触发器拆分方式验证。
 

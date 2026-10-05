@@ -11,7 +11,7 @@ PRiSM Next 的统一平台支持多店铺，Worker 同时提供 API 与 React �
 
 ### 0022 整数计费升级注意事项
 
-金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。首次升级前备份目标库，暂停访问并等待在途写入结束，再执行迁移并部署新 Worker。自动部署脚本按「迁移 → 部署」顺序执行，本身不提供维护窗口。详见 [计费整数与单位约定](money.md)。
+金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。统一平台的 `deploy:beta` 自动提供维护窗口和数据库写入屏障，保护首次从旧 stable 升级以及后续部署；独立兼容 API 的 `deploy:worker` 仍须自行停止旧写入并备份。详见下面的自动维护部署及 [计费整数与单位约定](money.md)。
 
 本地 `dev:local` 会在升级前生成 `.before-integer-money-*.sqlite` 备份并在事务内执行 0022；直接调用 `initializeSqliteSchema` 遇到旧金额 schema 会拒绝启动，防止误读。升级后核对金额、券票数量、JSON 定价和外键；回滚必须同时协调数据库与代码。
 
@@ -132,7 +132,26 @@ bun run check:platform
 bun run deploy:beta
 ```
 
-构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 自动构建 React、生成 `--platform` 配置、应用远程 D1 迁移，再部署带前端资源的 Worker，并注入根 SemVer 和 Git 提交号。API 与网页使用同一 origin，SPA 路由由 Worker assets 配置回退。
+构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，注入根 SemVer 和 Git 提交号。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
+
+### 自动维护部署
+
+脚本先编译三个部署阶段，再开始改变线上服务；也可在生成生产平台配置后运行 `bun run scripts/deploy-platform.ts --dry-run`，仅编译三个阶段，不请求线上接口或执行迁移。
+
+1. 发布独立维护 Worker，网页、API、OAuth 回调及新设备连接均返回不可缓存的 HTTP 503 和 `Retry-After: 30`；页面显示「正在升级，请稍后重试」。不依赖旧 stable 认识维护开关。
+2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。
+3. 屏障生效后获取 D1 Time Travel 恢复书签，并在构建日志及 `.wrangler/platform-deploy-*/recovery.json` 记录。请保留构建日志。没有获取到书签则停止，不开始迁移。
+4. 按文件名和数字前缀顺序执行未应用 SQL。沿用 Wrangler 的 `d1_migrations` 表和完整文件名，因此两个 0029 都会执行，已执行的文件跳过。SQL、重建表的屏障及迁移记录在同一个 D1 batch 内提交；失败整批回滚，之前成功的文件仍保留。部署流水线不再直接运行 `wrangler d1 migrations apply`，避免绕过屏障。
+5. 发布处于 verify 阶段的正式 Worker，继续返回维护响应。执行一次性 UTC 计费转换和位置时区补齐，检查完成标记、当前及历史方案的 UTC 状态、外键及真实 API 健康响应。数据转换失败保持屏障，重复部署不会再次偏移。
+6. 发布 live 阶段的正式 Worker，数据库仍关闭业务写入；仅在此前验证成功时解除屏障，再检查公开健康接口及预期提交号。计时方案同时有 UTC 写入约束，迟到的旧代码不能重新发布本地时钟。
+
+屏障使用主 D1 控制行，不依赖 KV 的传播延迟。部署写入许可只在一个原子 batch 内打开并关闭，业务请求不能看到中间许可。控制接口校验每次部署随机生成的令牌和当前数据库所有者，普通账号、Bot 及其他部署不能借此写库；令牌不放在命令行或日志中。Worker 保留的仅为令牌哈希。数据库表的写入屏障只在维护期间拦截，恢复后正常业务可继续写入。
+
+任意阶段失败都不自动解除维护或回滚数据库。若已经恢复后公开健康检查失败，脚本尝试重新阻止业务；如果网络故障使维护状态无法确认，明确报告而不声称恢复成功。重跑同一流程即可接管失败部署并跳过已完成迁移。并行部署可能因所有者变化安全中止，请为同一 Worker 串行运行构建。
+
+恢复操作须使用日志中的目标数据库和书签；不要仅回滚 Worker 到旧 stable，因为表结构可能已升级。书签是在屏障启用后取得的，恢复该数据库仍保留维护屏障。通常先修复并重新运行 `deploy:beta`；确需恢复旧版时，由管理员恢复对应 D1 书签和匹配的 Worker，再确认兼容性并明确解除 `prism_deployment_gate` 的维护状态。脚本不会自动恢复数据库或删除业务记录。
+
+Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及 Time Travel info 权限；无须手工配置维护令牌或新增 KV namespace。
 
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`RATE_LIMIT_KV_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
