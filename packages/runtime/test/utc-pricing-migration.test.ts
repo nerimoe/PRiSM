@@ -76,8 +76,8 @@ test("pre-versioning databases capture the old operations zone before UTC conver
   await migrateLegacyPricingToUtc({ executor: createBunSqliteExecutor(db), now: at, id: () => crypto.randomUUID() });
   expect((await repositories.pricingConfigs.findById("rate"))?.provider).toMatchObject({ timeZone: "UTC",
     rules: [{ timeRange: { start: "02:00", end: "19:00" } }] });
-  expect(await repositories.system.getAppSetting("venue.operations")).toEqual({ timeZone: "UTC" });
-  expect(await repositories.system.getAppSetting("store.profile")).toEqual({ timeZone: "Asia/Tokyo" });
+  expect(await repositories.system.getAppSetting<{ timeZone: string }>("venue.operations")).toEqual({ timeZone: "UTC" });
+  expect(await repositories.system.getAppSetting<{ timeZone: string }>("store.profile")).toEqual({ timeZone: "Asia/Tokyo" });
   db.close();
 });
 

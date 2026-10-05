@@ -263,6 +263,7 @@ export type Asset = {
   status: string;
   stackable: boolean;
   pricingEffectId: string | null;
+  pricingEffect?: import("./asset-types").Effect | null;
   activeAt?: string | null;
   expiresAt?: string | null;
   metadata?: Record<string, unknown> | null;

@@ -175,7 +175,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `PUT` | `/rpc/staff/pricing-effects/:effectId` | 新增或编辑计费效果，可设置作用范围、每日次数、最低消费门槛（`minSubtotal`）、生效时间、过期时间，以及适用的计时名称、计费方案和计费时段规则。 |
 | `POST` | `/rpc/staff/pricing-effects/:effectId/archive` | 软归档计费效果，历史资产引用保留但新配置不可继续使用。 |
 | `POST` | `/rpc/staff/pricing-effects/:effectId/restore` | 恢复已归档计费效果。 |
-| `GET` | `/rpc/staff/asset-definitions` | 列出资产定义的清单。 |
+| `GET` | `/rpc/staff/asset-definitions` | 列出资产定义的清单，含类型、编号、叠加方式、归档状态、定义有效期、关联优惠与 metadata。后台列表和只读详情展示这些已保存字段，见 [商户后台物品详情](merchant-asset-details.md)。 |
 | `PUT` | `/rpc/staff/asset-definitions/:assetType/:assetCode` | 新增或编辑某项资产定义，可绑定计费效果并设置资产定义有效期。 |
 | `POST` | `/rpc/staff/asset-definitions/:assetType/:assetCode/archive` | 软归档某项资产定义（保护历史引用不丢失）。 |
 | `POST` | `/rpc/staff/asset-definitions/:assetType/:assetCode/restore` | 恢复已归档的资产定义，使其恢复可用。 |
