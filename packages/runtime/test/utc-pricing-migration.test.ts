@@ -4,6 +4,7 @@ import { centsOf, type PricingConfig } from "@prism/core";
 import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
 import { migrateLegacyPricingToUtc, serializePricingProviderConfig, sqliteSchema, utcPricingMigrationId } from "@prism/storage-sql";
 import { utcPricingSchema } from "../../storage-sql/src/utc-pricing-schema";
+import { pricingVersionSchema } from "../../storage-sql/src/pricing-version-schema";
 import { createPrismRuntimeDependencies, RuntimeRepositories } from "../src";
 
 function legacyDb() {
@@ -34,6 +35,51 @@ function saveLegacyPlan(db: Database, config: PricingConfig) {
     [config.id, config.kind, config.name, JSON.stringify(serializePricingProviderConfig(config.provider)),
       config.createdAt.toISOString(), config.updatedAt.toISOString()]);
 }
+
+test("explicit legacy provider zones override release zones for rates and caps, including already UTC rules", async () => {
+  for (const [sourceZone, expectedStart, expectedEnd] of [["Asia/Tokyo", "01:00", "18:00"], ["UTC", "10:00", "03:00"]]) {
+    const db = legacyDb(), at = new Date("2026-10-02T12:00:00Z");
+    const { repositories } = runtime(db, () => at);
+    await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Shanghai" });
+    const rate = plan(at);
+    if (rate.kind !== "time.priority") throw new Error("type");
+    rate.provider.timeZone = sourceZone;
+    await repositories.pricingConfigs.save(rate);
+    await repositories.pricingConfigs.save({ id: "cap", kind: "time.cap", name: "Cap", enabled: true,
+      createdAt: at, updatedAt: at, provider: { id: "cap", timeZone: sourceZone,
+        includedPricingConfigIds: ["rate"], rules: [{ id: "cap-day", label: "Cap", priority: 1,
+          timeRange: { start: "10:00", end: "03:00" }, priceCap: 90 }] } });
+    expect(db.query("SELECT DISTINCT time_zone FROM pricing_releases").all()).toEqual([{ time_zone: "Asia/Shanghai" }]);
+    for (const sql of utcPricingSchema) db.run(sql);
+    await migrateLegacyPricingToUtc({ executor: createBunSqliteExecutor(db), now: at, id: () => crypto.randomUUID() });
+    for (const table of ["pricing_configs", "pricing_config_versions"]) {
+      const providers = db.query(`SELECT provider_json FROM ${table}`).all() as { provider_json: string }[];
+      for (const row of providers) expect(JSON.parse(row.provider_json)).toMatchObject({ timeZone: "UTC",
+        rules: [{ timeRange: { start: expectedStart, end: expectedEnd } }] });
+    }
+    db.close();
+  }
+});
+
+test("pre-versioning databases capture the old operations zone before UTC conversion", async () => {
+  const db = new Database(":memory:"), at = new Date("2026-10-02T12:00:00Z");
+  db.run("PRAGMA foreign_keys=ON");
+  for (const sql of sqliteSchema.filter(sql => !(utcPricingSchema as readonly string[]).includes(sql)
+    && !(pricingVersionSchema as readonly string[]).includes(sql))) db.run(sql);
+  const { repositories } = runtime(db, () => at);
+  await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Tokyo" });
+  await repositories.system.setAppSetting("venue.operations", { timeZone: "Asia/Shanghai" });
+  saveLegacyPlan(db, plan(at));
+  for (const sql of pricingVersionSchema) db.run(sql);
+  expect(db.query("SELECT time_zone FROM pricing_releases").all()).toEqual([{ time_zone: "Asia/Shanghai" }]);
+  for (const sql of utcPricingSchema) db.run(sql);
+  await migrateLegacyPricingToUtc({ executor: createBunSqliteExecutor(db), now: at, id: () => crypto.randomUUID() });
+  expect((await repositories.pricingConfigs.findById("rate"))?.provider).toMatchObject({ timeZone: "UTC",
+    rules: [{ timeRange: { start: "02:00", end: "19:00" } }] });
+  expect(await repositories.system.getAppSetting("venue.operations")).toEqual({ timeZone: "UTC" });
+  expect(await repositories.system.getAppSetting("store.profile")).toEqual({ timeZone: "Asia/Tokyo" });
+  db.close();
+});
 
 test("different release timezones sharing one version migrate without changing fees, identities or snapshots twice", async () => {
   const db = legacyDb();

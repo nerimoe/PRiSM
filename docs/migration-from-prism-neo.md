@@ -114,6 +114,7 @@ PRISM_SQLITE_PATH=./data/prism-next-staging.sqlite bun run dev:local
 ### E. 计费方案映射
 - 旧的 `BillingRule` 计费配置会被合并导入为一个名为 `Legacy time priority pricing`（历史优先级计费方案）的配置中，且该方案**默认处于关闭状态（`enabled: false`）**。
 - 这可以防止未经验收的旧计费配置立刻在生产环境中错误扣费。店主应当在 `/admin` 后台仔细比对 24 小时时间轴，调整其优先级和跨天规则后，再行激活该配置，或者直接在后台新建中文的可视化规则。
+- 当前 Neo 快照不包含规则源时区，导入器原样复制裸时钟，新存储将其视为 UTC，无法自动判断原来是否是店铺当地时间。启用前须按旧部署实际时区核对并转换区间、星期和日期，例如上海的 `10:00–次日 03:00` 应存为 UTC `02:00–19:00`；不能仅依据目标库的 UTC 标签判断正确。该入口仍需要补充明确的源时区转换，和现有 PRiSM stable 的 UTC 升级是两条不同链路，详见 [计费时区字段审计](pricing-time-zone-audit.md#独立的-prism-neo-导入缺口)。
 
 ### F. CDK 与出币记录映射
 - 礼物（`Present`）与 CDK（`Redeem`）正常平移，历史合并发放策略自动转化为 `stack` / `extend-time` / `replace`。礼物授予里的 `activeAt` / `expiresAt` 会在 PRiSM Next 仓储层恢复为 `Date | null`，兼容旧 JSON 快照和 pg_dump 导入后的字符串日期。
