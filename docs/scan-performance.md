@@ -16,7 +16,7 @@ Web 请求 `/devices/session/state?includePower=0`，先取得绑定/入场/麻�
 - PagePolling 失败基准间隔为 5/10/20/30/60 秒，带 ±15% jitter，上限六十秒；`Retry-After`（秒数或 HTTP date）是最低等待时间，可超过上限。成功恢复普通间隔。focus/pageshow/visibility 不绕过失败冷却，隐藏和卸载取消订阅。
 - KV 的 GET/PUT 计数器已移除。Workers Rate Limiting bindings 使用稳定 actor/action key，各预算为每六十秒 3/5/10/20/30/60 次。扫码、session mint/resolve 在迁移/身份查询前共用每 IP 六十次的导航预算；HTTP 429 返回 `Retry-After: 60`。这是各 Cloudflare location 的 abuse protection，不是全局财务计数；现有 D1 operation lease、投币 cooldown、账务幂等与操作审计继续执行。
 - `RATE_LIMIT_KV_ID` 不再是构建变量。`wrangler.platform.jsonc` 的 namespace_id（73003/73005/73010/73020/73030/73060）必须在同一账号内预留；同账号其他 Worker 不应复用这些 ID，除非有意共享预算。缺失限流 binding 返回 503。
-- LiveBilling APNs 失败按 token/signature 存储 failureCount/nextAt，最多六次发送尝试，间隔 5/10/20/40/60 秒；耗尽后等待 token 过期或内容/凭据变化。成功 token 保留 signature 去重。失败 end 推送也继续调度；不通过 throw 重跑整个 alarm。相同 visit revision 的账单在三十秒内复用，计费边界到达或 revision 变化立即重算。D1/DO 存储等非 APNs 异常仍遵循平台故障语义。
+- LiveBilling APNs 失败按 token/signature 存储 failureCount/nextAt，最多六次发送尝试，间隔 5/10/20/40/60 秒；耗尽后等待 token 过期或内容/token 变化。成功 token 保留 signature 去重。失败 end 推送也继续调度；不通过 throw 重跑整个 alarm。相同 visit revision 的账单在三十秒内复用，计费边界到达或 revision 变化立即重算。D1/DO 存储等非 APNs 异常仍遵循平台故障语义。
 
 ## 清理与可观测性
 
@@ -27,3 +27,11 @@ Worker CPU 上限为 1000ms，避免意外无限执行；应根据生产 CPU 分
 回归测试覆盖加密/过期/错误密钥、二维码无需 D1、旧 ticket JOIN、跨店与禁用设备、轮询冷却与 Retry-After、共享 GET 缓存、维护 fence、APNs retry 和有界 retention。`.github/workflows/check.yml` 使用 Bun 1.3.14 执行完整测试、类型检查及平台 dry-run，不部署生产环境。CI 为所有 Git 跟踪的 test/spec 文件分别启动 Bun 进程，隔离全局 mocks 和 Miniflare/workerd 生命周期；任何文件失败都会使检查失败。每个用例超时三十秒，容纳真实 Miniflare/D1 启动与事务；生成配置测试使用临时目录，不依赖本地未提交的 `wrangler.generated.jsonc`。本地仍可使用 `bun test`；单进程执行出现环境污染时应按文件重现，而非跳过用例。
 
 浏览器回归由 `scripts/check-scan-browser.cjs` 使用模拟 API 验证 hero 先于 /me、卡片先于 HA、麻将动态轮询期间只获取一次店铺配置；通过 `bun run --cwd packages/prism-web preview` 启动 production build，CI 的 `scan-first-paint` artifact 保存两张移动端截图。截图使用虚构店铺与玩家，不执行真实设备操作；artifact 显式包含 `.scan-check` 目录中的 PNG。
+
+### 首屏回归截图
+
+以下为模拟 API 的移动端截图，分别在身份请求与 HA 请求仍挂起时捕获。
+
+| /me 等待中 | HA 等待中 |
+| --- | --- |
+| ![店铺 hero 已显示](scan-first-paint/scan-auth-loading.png) | ![选卡与麻将状态已显示](scan-first-paint/scan-cards-before-power.png) |
