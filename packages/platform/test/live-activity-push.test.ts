@@ -1,3 +1,7 @@
+import { beforeEach } from "bun:test";
+import { createTestRateLimits } from "./rate-limit-fixture";
+const rateLimits = createTestRateLimits();
+beforeEach(rateLimits.reset);
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
@@ -281,14 +285,13 @@ const mf = new Miniflare({
   modules: true,
   script: "export default { fetch() { return new Response('test'); } }",
   d1Databases: ["DB"],
-  kvNamespaces: ["RATE_LIMIT"],
   compatibilityDate: "2026-06-01",
 });
 const origin = "https://prism.test";
 const cookie = "arcadelink_session=e2e-session";
 const routeEnv = {
   DB: await mf.getD1Database("DB"),
-  RATE_LIMIT: await mf.getKVNamespace("RATE_LIMIT"),
+  ...rateLimits.bindings,
   APP_ORIGIN: origin,
   SESSION_SECRET: "test-only",
   URL_ENCRYPTION_KEY: "test-only",

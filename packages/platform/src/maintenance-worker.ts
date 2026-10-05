@@ -14,6 +14,7 @@ export class LiveBilling extends DurableObject<Env> {
 }
 
 export default {
+  async scheduled() { /* Retention pauses while the schema is being migrated. */ },
   async fetch(request: Request, env: Env): Promise<Response> {
     const control = await deploymentControl(request, env, async () => maintenanceResponse(request));
     return control ?? maintenanceResponse(request);

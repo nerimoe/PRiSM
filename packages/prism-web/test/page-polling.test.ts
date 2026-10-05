@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { PagePolling } from "../src/ui/page-polling";
+import { PagePolling, pollingDelay } from "../src/ui/page-polling";
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-test("page polling continues after successful reads and failures", async () => {
+test("page polling continues after successful reads", async () => {
   let reads = 0;
-  const polling = new PagePolling(async () => { if (++reads === 2) throw new Error("503"); }, 10);
+  const polling = new PagePolling(async () => { reads++; }, 10);
   try { polling.refresh(); await wait(70); expect(reads).toBeGreaterThanOrEqual(3); }
   finally { polling.stop(); }
 });
@@ -59,5 +59,21 @@ test("binding completion stops repeated reads while foreground can still refresh
     polling.setVisible(false); polling.setVisible(true);
     expect(reads).toBe(afterBinding + 1);
     await wait(40); expect(reads).toBe(afterBinding + 1);
+  } finally { polling.stop(); }
+});
+
+test("failure delays grow to one minute, jitter stays bounded and Retry-After is a floor", () => {
+  expect([1,2,3,4,5,6].map(n => pollingDelay(n, 3000, 0, 0.5))).toEqual([5000,10000,20000,30000,60000,60000]);
+  expect(pollingDelay(1, 3000, 0, 0)).toBe(4250);
+  expect(pollingDelay(1, 3000, 0, 1)).toBe(5750);
+  expect(pollingDelay(1, 3000, 120_000, 0.5)).toBe(120_000);
+});
+test("focus and visibility cannot override Retry-After after a failed read", async () => {
+  let reads = 0;
+  const polling = new PagePolling(async () => { reads++; throw { retryAfterMs: 120_000 }; }, 10);
+  try {
+    polling.refresh(); await wait(5);
+    polling.refresh(); polling.refresh(); polling.setVisible(false); polling.setVisible(true);
+    await wait(20); expect(reads).toBe(1);
   } finally { polling.stop(); }
 });

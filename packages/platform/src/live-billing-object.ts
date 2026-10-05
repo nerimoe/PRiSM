@@ -7,6 +7,10 @@ import { isDeploymentMaintenance } from "./deployment-gate";
 type Visit = { shopId: string; playerId: string; revision: number };
 type Token = { id: string; token: string; environment: "sandbox" | "production"; bundle_id: string; session_id: string; created_at: string; started_at: string; ended_at: string | null; payment_status: string; checkout_total: number | null; settled_at: string | null };
 
+type Retry = { signature: string; failures: number; nextAt: number };
+type Snapshot = Awaited<ReturnType<typeof activityBill>>;
+type CachedBill = { revision: number; calculatedAt: number; snapshot: Snapshot };
+
 export class LiveBilling extends DurableObject<Env> {
   async refresh(shopId: string, playerId: string) {
     const previous = await this.ctx.storage.get<Visit>("visit");
@@ -43,10 +47,15 @@ export class LiveBilling extends DurableObject<Env> {
     if (expired.length) await this.env.DB.batch(expired.map(token =>
       this.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=? AND token=?").bind(token.id, token.token)));
     if (!valid.length) { await Promise.all([this.ctx.storage.deleteAlarm(), this.ctx.storage.deleteAll()]); return; }
-    const snapshot = await activityBill(this.env, shopId, playerId, new Date(now));
+    const cached = await this.ctx.storage.get<CachedBill>("bill");
+    const snapshot = cached && cached.revision === visit.revision && now - cached.calculatedAt < 30_000
+      && (!cached.snapshot?.nextCheckAt || cached.snapshot.nextCheckAt > now)
+      ? cached.snapshot : await activityBill(this.env, shopId, playerId, new Date(now));
+    if (!cached || snapshot !== cached.snapshot)
+      await this.ctx.storage.put("bill", { revision: visit.revision, calculatedAt: now, snapshot });
     if ((await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision) return;
     const pusher = new LiveActivityPusher({ config });
-    let failed = false;
+    let nextRetryAt = Infinity;
     for (const token of valid) {
       if ((await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision) return;
       const ended = token.payment_status === "paid" || !snapshot;
@@ -61,18 +70,31 @@ export class LiveBilling extends DurableObject<Env> {
       // Exclude asOf/timestamp from deduplication, but include token rotation.
       const signature = JSON.stringify([token.token, ended, snapshot?.endedAtUnix, bill && { ...bill, asOfUnix: 0 }]);
       if (await this.ctx.storage.get<string>(`sent:${token.id}`) === signature) continue;
+      const retryKey = `retry:${token.id}`;
+      const retry = await this.ctx.storage.get<Retry>(retryKey);
+      if (retry?.signature === signature && (retry.nextAt > now || retry.failures >= 6)) {
+        nextRetryAt = Math.min(nextRetryAt, retry.nextAt);
+        continue;
+      }
       const result = await pusher.send({ token: token.token, environment: token.environment, bundleId: token.bundle_id }, payload);
-      if (result.kind === "failed") { failed = true; continue; }
+      if (result.kind === "failed") {
+        const failures = (retry?.signature === signature ? retry.failures : 0) + 1;
+        const expiresAt = new Date(token.created_at).getTime() + 8 * 3600_000;
+        const nextAt = failures >= 6 ? expiresAt : now + Math.min(60_000, 5000 * 2 ** (failures - 1));
+        await this.ctx.storage.put(retryKey, { signature, failures, nextAt });
+        nextRetryAt = Math.min(nextRetryAt, nextAt);
+        continue;
+      }
+      await this.ctx.storage.delete(retryKey);
       if (result.kind === "expired" || (ended && result.kind === "delivered")) {
         await this.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=? AND token=?").bind(token.id, token.token).run();
       }
       if (result.kind === "delivered") await this.ctx.storage.put(`sent:${token.id}`, signature);
     }
     if ((await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision) return;
-    if (failed) throw new Error("Live Activity delivery failed");
     const expiresAt = Math.min(...valid.map(token => new Date(token.created_at).getTime() + 8 * 3600_000));
-    const next = Math.min(snapshot?.nextCheckAt ?? Infinity, expiresAt);
-    if (snapshot) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next));
+    const next = Math.min(snapshot?.nextCheckAt ?? Infinity, expiresAt, nextRetryAt);
+    if (snapshot || Number.isFinite(nextRetryAt)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, next));
     else await Promise.all([this.ctx.storage.deleteAlarm(), this.ctx.storage.deleteAll()]);
   }
 }

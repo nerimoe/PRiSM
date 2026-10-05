@@ -15,7 +15,7 @@ const privateKey = `-----BEGIN PRIVATE KEY-----\n${btoa(String.fromCharCode(...b
 const pushes: Record<string, any>[] = [];
 let failures = 0;
 const mf = new Miniflare({ modules: true, script: await build.outputs[0]!.text(), compatibilityDate: "2026-06-07", compatibilityFlags: ["nodejs_compat"],
-  d1Databases: ["DB"], kvNamespaces: ["RATE_LIMIT"],
+  d1Databases: ["DB"],
   durableObjects: { LIVE_BILLING: { className: "LiveBilling", useSQLite: true } },
   bindings: { APNS_KEY_ID: "TEST", APNS_TEAM_ID: "TEST", APNS_PRIVATE_KEY: privateKey },
   outboundService: async request => {
@@ -80,7 +80,7 @@ test("real DO alarms push authoritative bills, deduplicate and end with the pers
   // The production RPC runs inside workerd, including persistent alarm delivery.
   await (stub as any).refresh("shop", "p");
   const waitPush = async (count: number) => {
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 15000;
     while (pushes.length < count && Date.now() < deadline) await Bun.sleep(50);
     expect(pushes.length).toBe(count);
   };

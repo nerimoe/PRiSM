@@ -103,3 +103,16 @@ test("real maintenance -> verify -> live worker rollout migrates a fresh D1, sta
     expect((await mf.dispatchFetch("https://test/api/v1/health")).status).toBe(503);
   } finally { await mf.dispose(); rmSync(folder, { recursive: true, force: true }); }
 }, 30000);
+
+test("live assets bypass D1 while API and verify phase keep the maintenance fence", async () => {
+  for (const phase of ["live", "verify"] as const) {
+    const mf = new Miniflare({ ...await workerOptions(phase),
+      serviceBindings: { ASSETS: async () => new Response("static asset") } });
+    try {
+      for (const path of ["/m", "/assets/index.js", "/assets/index.css"])
+        expect((await mf.dispatchFetch(`https://test${path}`)).status).toBe(phase === "live" ? 200 : 503);
+      expect((await mf.dispatchFetch("https://test/api/v1/health")).status).toBe(503);
+      expect((await mf.dispatchFetch("https://test/t/shop/device")).status).toBe(503);
+    } finally { await mf.dispose(); }
+  }
+}, 30000);

@@ -6,10 +6,9 @@ import { z } from "zod";
 import { TTLockClient } from "@prism/runtime";
 import { normalizeTTLockConnectionConfig } from "@prism/application";
 import { requireUser } from "./auth";
-import { canAccessShop, getMachineByPublicId } from "./db";
+import { canAccessShop, getMachineByPublicId, machineSelect } from "./db";
 import { decryptSecret, encryptSecret, randomToken, sha256 } from "./crypto";
 import {
-  hasPlatformBinding,
   checkShopLocation,
   dependencies,
   getBillingShop,
@@ -83,6 +82,25 @@ export async function devicePower(
   }
 }
 
+type PowerState = Awaited<ReturnType<typeof devicePower>>;
+const powerCache = new WeakMap<object, Map<string, { expiresAt: number; value: Promise<PowerState> }>>();
+export function invalidateDevicePower(c: C, machine: MachineRow) {
+  powerCache.get(c.env.DB)?.delete(machine.ha_binding_encrypted ?? machine.id);
+}
+export function cachedDevicePower(c: C, machine: MachineRow): Promise<PowerState> {
+  let cache = powerCache.get(c.env.DB);
+  if (!cache) { cache = new Map(); powerCache.set(c.env.DB, cache); }
+  const key = machine.ha_binding_encrypted ?? machine.id;
+  const current = cache.get(key);
+  if (current && current.expiresAt > Date.now()) return current.value;
+  // Bound isolate memory even when many unrelated shops are queried.
+  for (const [id, item] of cache) if (item.expiresAt <= Date.now()) cache.delete(id);
+  if (cache.size >= 500) cache.delete(cache.keys().next().value!);
+  const value = devicePower(c, machine);
+  cache.set(key, { expiresAt: Date.now() + 5000, value });
+  return value;
+}
+
 export async function resolveLogicalDevice(
   c: C,
   shopId: string,
@@ -122,7 +140,7 @@ export async function listLogicalDevicePowerStates(c: C, shopId: string) {
     aliases: machineAliases(machine),
     targetKind: "facility",
     executorKind: "home_assistant",
-    state: await devicePower(c, machine),
+    state: await cachedDevicePower(c, machine),
   })));
 }
 export async function requirePoweredMachine(c: C, machine: MachineRow) {
@@ -177,15 +195,15 @@ export async function listDevices(c: C) {
   const canConfigure =
     requireUser(c).role === "admin" || mapping?.role !== "viewer";
   const rows = await c.env.DB.prepare(
-    "SELECT public_id FROM machines WHERE shop_id=? ORDER BY (ttlock_lock_id IS NOT NULL) DESC,created_at",
+    `${machineSelect} WHERE machines.shop_id=? ORDER BY (machines.ttlock_lock_id IS NOT NULL) DESC,machines.created_at`,
   )
     .bind(shopId)
-    .all<{ public_id: string }>();
+    .all<MachineRow>();
   const machines = await Promise.all(
     rows.results.map(async (row) =>
       merchantDevice(
         c,
-        (await getMachineByPublicId(c.env.DB, row.public_id))!,
+        row,
         canConfigure,
       ),
     ),
@@ -442,17 +460,21 @@ export function registerDeviceRoutes(app: Hono<AppBindings>) {
     ) {
       const user = requireUser(c);
       const player = await c.env.DB.prepare(
-        "SELECT a.player_id,p.status FROM shop_player_accounts a JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id WHERE a.shop_id=? AND a.user_id=?",
+        `SELECT a.player_id,p.status, EXISTS(SELECT 1 FROM shop_platform_bindings b
+          WHERE b.shop_id=ctx.shop_id AND b.user_id=ctx.user_id) AS identity_bound
+          FROM (SELECT ? AS shop_id, ? AS user_id) ctx
+          LEFT JOIN shop_player_accounts a ON a.shop_id=ctx.shop_id AND a.user_id=ctx.user_id
+          LEFT JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id`,
       )
         .bind(shop.id, user.id)
-        .first<{ player_id: string; status: string }>();
-      if (shop.identity_binding_required && !await hasPlatformBinding(c,shop.id,user.id)) gate = "binding";
-      else if (!player) gate = shop.billing_enabled ? "entry" : "ready";
+        .first<{ player_id: string | null; status: string | null; identity_bound: number }>();
+      if (shop.identity_binding_required && !player?.identity_bound) gate = "binding";
+      else if (!player?.player_id) gate = shop.billing_enabled ? "entry" : "ready";
       else if (player.status !== "active")
         jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
       else if (shop.billing_enabled) {
         try {
-          await requireActiveEntry(c, shop);
+          await requireActiveEntry(c, shop, player.player_id);
         } catch (error) {
           if (
             error instanceof Error &&
@@ -469,10 +491,15 @@ export function registerDeviceRoutes(app: Hono<AppBindings>) {
       coinUsed,
       mahjong: gate === "ready" ? await mahjongState(c, machine) : null,
       power:
-        gate === "ready" && !!machine.ha_binding_encrypted
+        gate === "ready" && !!machine.ha_binding_encrypted && c.req.query("includePower") !== "0"
           ? await devicePower(c, machine)
           : "unmanaged",
     });
+  });
+  app.get("/api/v1/devices/session/power", async (c) => {
+    requireUser(c);
+    const { machine } = await resolveMachineSession(c, c.req.query("ticket") ?? "");
+    return c.json({ power: await cachedDevicePower(c, machine) });
   });
   app.post("/api/v1/devices/session/actions", async (c) => {
     const body = actionSchema.parse(await c.req.json());
@@ -586,9 +613,9 @@ async function executeDeviceAction(
     async () => {
       await enforceRateLimits(c, [
         {
-          key: `device:${machine.id}:${user.id}:${Math.floor(Date.now() / 60000)}`,
+          key: `device:${machine.id}:${user.id}`,
           limit: 10,
-          windowSeconds: 90,
+          windowSeconds: 60,
         },
       ]);
       if (body.action === "coin") {
@@ -673,6 +700,7 @@ async function executeDeviceAction(
             },
           );
           if (!response.ok) throw new Error("HA request failed");
+          invalidateDevicePower(c, machine);
           result = { power: await devicePower(c, machine) };
         } else {
           const sent = await sendHinataCoin(

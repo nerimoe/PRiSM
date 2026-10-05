@@ -24,7 +24,6 @@ describe("deployment artifacts", () => {
         D1_DATABASE_NAME: "test-db",
         D1_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
         CLOUDFLARE_ACCOUNT_ID: "1".repeat(32),
-        RATE_LIMIT_KV_ID: "2".repeat(32),
         APP_ORIGIN: "https://test.example.com",
         CUSTOM_DOMAIN: "test.example.com",
         MUNET_CLIENT_ID: "test-client",
@@ -41,10 +40,10 @@ describe("deployment artifacts", () => {
         main: "packages/platform/src/worker.ts", workers_dev: false,
         routes: [{ pattern: "test.example.com", custom_domain: true }],
         d1_databases: [{ binding: "DB", database_id: env.D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
-        kv_namespaces: [{ binding: "RATE_LIMIT", id: env.RATE_LIMIT_KV_ID }],
         vars: { APP_ORIGIN: env.APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
       });
-      expect(run({ ...env, RATE_LIMIT_KV_ID: "" }).exitCode).not.toBe(0);
+      expect(config.kv_namespaces).toBeUndefined();
+      expect(config.ratelimits).toContainEqual({ name: "RATE_LIMIT_60", namespace_id: "73060", simple: { limit: 60, period: 60 } });
       expect(run({ ...env, APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
       expect(run(env, []).exitCode).toBe(0);
       expect((await Bun.file(join(root, "wrangler.generated.jsonc")).json()).main).toBe("packages/runtime/src/worker.ts");

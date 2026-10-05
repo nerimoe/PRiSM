@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Api, type User } from "../api";
+import { Api, invalidatePlayerReads, type User } from "../api";
 
 type AuthContextValue = {
   user: User | null;
@@ -38,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
+    invalidatePlayerReads();
     const result = await Api.me();
     sessionStorage.setItem("prism.user", result.user?.id ?? "");
     setUser(result.user);

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Power, DoorOpen, Coins, Loader2, Check } from "lucide-react";
-import { api, playerOperation, type PublicMachine } from "../api";
+import { api, invalidatePlayerReads, playerOperation, type PublicMachine } from "../api";
 import { useI18n } from "../i18n";
 import {
   operationLocation,
@@ -43,6 +43,7 @@ export function DeviceControls({
   const code = machine.shop.publicId!;
   const { setBillingActive } = useAuth();
   const [state, setState] = useState<DeviceState | null>(null);
+  const [power, setPower] = useState<DeviceState["power"]>("unknown");
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [password, setPassword] = useState<{
     temporaryPassword: string;
@@ -68,21 +69,14 @@ export function DeviceControls({
     [onExpired, errorText],
   );
   const refresh = useCallback(async (signal?: AbortSignal) => {
-    const [current, shop] = await Promise.all([
-      api<DeviceState>(
-        `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}`,
-        { signal },
-      ),
-      api<ShopInfo>(shopApi(code), { signal }),
-    ]);
+    const current = await api<DeviceState>(
+      `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}&includePower=0`, { signal });
     if (signal?.aborted) return;
     setState(current);
-    setInfo(shop);
-    if (current.power !== "off") setWaitingPower(false);
     const previousRefreshError = refreshError.current;
     setError(previous => previous === previousRefreshError ? "" : previous);
     refreshError.current = "";
-  }, [ticket, code]);
+  }, [ticket]);
   usePagePolling(async signal => {
     try { await refresh(signal); }
     catch (e) {
@@ -90,8 +84,31 @@ export function DeviceControls({
         refreshError.current = errorText(e instanceof Error ? e.message : "操作失败");
         failed(e);
       }
+      throw e;
     }
-  }, !busy && !cardBusy, ticket, !state || state.gate === "binding" || waitingPower || !!machine.capabilities.mahjong);
+  }, !busy && !cardBusy, ticket, !state || state.gate === "binding" || !!machine.capabilities.mahjong);
+  const previousGate = useRef<DeviceState["gate"] | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    if (previousGate.current !== undefined && previousGate.current !== state?.gate) invalidatePlayerReads();
+    previousGate.current = state?.gate;
+    api<ShopInfo>(shopApi(code)).then(shop => { if (!cancelled) setInfo(shop); }).catch(failed);
+    return () => { cancelled = true; };
+  }, [code, state?.gate, failed]);
+  usePagePolling(async signal => {
+    try {
+      const current = await api<{ power: DeviceState["power"] }>(
+        `/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`, { signal });
+      if (signal.aborted) return;
+      setPower(current.power);
+      if (current.power === "on") setWaitingPower(false);
+      if (current.power === "unknown") throw new TypeError("Power state unavailable");
+    } catch (error) {
+      if (!signal.aborted && !isTransientReadFailure(error)) failed(error);
+      throw error;
+    }
+  }, !!machine.capabilities.power && state?.gate === "ready" && !busy && !cardBusy, ticket,
+    waitingPower || power === "unknown");
   useEffect(() => {
     let cancelled = false;
     if (info?.shop.billingEnabled && info.membership) {
@@ -106,7 +123,7 @@ export function DeviceControls({
     setBusy(action);
     try {
       await fn();
-      await refresh();
+      await Promise.all([refresh(), api<ShopInfo>(shopApi(code)).then(setInfo)]);
     } catch (e) {
       if (
         e &&
@@ -150,7 +167,7 @@ export function DeviceControls({
   }
   const cap = machine.capabilities;
   if (!Object.values(cap).some(Boolean)) return <p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p>;
-  const powerBlocked = cap.power && state?.power === "off";
+  const powerBlocked = cap.power && power === "off";
   const hasReadyAction = cap.door || powerBlocked
     || (!powerBlocked && (cap.card || (cap.coin && !machine.coinAfterSwipe)
       || (cap.mahjong && state?.mahjong && (state.mahjong.seats.some(seat => seat.mine)
@@ -163,13 +180,13 @@ export function DeviceControls({
           <p className="text-sm leading-relaxed">{error}</p>
         </PlayerDialog>
       )}
-      {!state || !info ? (
-        error ? <button className="session-action" onClick={() => act("load", () => refresh())}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
+      {!state || state.gate === "entry" && !info ? (
+        error ? <button className="session-action" onClick={() => act("load", async () => { invalidatePlayerReads(); })}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
       ) : state.gate === "binding" ? (
         <PlatformBinding code={code} />
       ) : (
         <>
-          {state.gate === "entry" && (
+          {state.gate === "entry" && info && (
             <div className="grid gap-6">
               <h2>{t("确认入场")}</h2>
               <EntryPricing info={info} />
@@ -243,7 +260,7 @@ export function DeviceControls({
             </div>
           )}
           {state.gate === "ready" &&
-            (cap.power && state.power === "off" ? (
+            (cap.power && power === "off" ? (
               <div className="grid gap-7 text-center">
                 <h2>{t("设备尚未开机")}</h2>
                 <button

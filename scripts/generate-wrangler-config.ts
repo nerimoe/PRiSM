@@ -50,8 +50,7 @@ if (platform) {
     return value;
   };
   const accountId = required("CLOUDFLARE_ACCOUNT_ID", "00000000000000000000000000000000");
-  const kvId = required("RATE_LIMIT_KV_ID", "00000000000000000000000000000000");
-  for (const [name, value] of [["CLOUDFLARE_ACCOUNT_ID", accountId], ["RATE_LIMIT_KV_ID", kvId]]) {
+  for (const [name, value] of [["CLOUDFLARE_ACCOUNT_ID", accountId]]) {
     if (!/^[0-9a-f]{32}$/i.test(value!)) throw new Error(`${name} must be a 32-character hexadecimal ID.`);
   }
   const appOrigin = required("APP_ORIGIN", "http://localhost:8787");
@@ -64,7 +63,6 @@ if (platform) {
     name: workerName,
     ...(!localOnly ? { account_id: accountId } : {}),
     d1_databases: [{ ...databaseBinding, migrations_dir: "migrations" }],
-    kv_namespaces: [{ binding: "RATE_LIMIT", id: kvId }],
     workers_dev: !route,
     preview_urls: false,
     routes: route ? [{ pattern: route.replace(/\/\*$/, ""), custom_domain: true }] : [],

@@ -1,4 +1,11 @@
-export type Env = Cloudflare.Env & {
+export type Env = Omit<Cloudflare.Env, "RATE_LIMIT"> & {
+  RATE_LIMIT_3: RateLimit;
+  RATE_LIMIT_5: RateLimit;
+  RATE_LIMIT_10: RateLimit;
+  RATE_LIMIT_20: RateLimit;
+  RATE_LIMIT_30: RateLimit;
+  RATE_LIMIT_60: RateLimit;
+
   APP_ORIGIN: string;
   SESSION_SECRET: string;
   URL_ENCRYPTION_KEY: string;
