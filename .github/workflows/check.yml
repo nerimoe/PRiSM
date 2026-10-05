@@ -15,7 +15,7 @@ jobs:
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
-      - run: bun test
+      - run: bun test --timeout 30000
       - run: bun run typecheck
       - run: bun run check:platform
   browser:
@@ -35,7 +35,7 @@ jobs:
           PRISM_PLAYWRIGHT_MODULE: ${{ runner.temp }}/prism-browser/node_modules/playwright
           PRISM_SCAN_OUTPUT: .scan-check
         run: |
-          (cd packages/prism-web && ../../node_modules/.bin/vite preview --host 127.0.0.1 --port 4173) &
+          bun run --cwd packages/prism-web preview --host 127.0.0.1 --port 4173 &
           for attempt in $(seq 1 30); do
             if curl --silent --fail http://127.0.0.1:4173/ > /dev/null; then break; fi
             sleep 1

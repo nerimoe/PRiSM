@@ -24,6 +24,6 @@ Web 请求 `/devices/session/state?includePower=0`，先取得绑定/入场/麻�
 
 Worker CPU 上限为 1000ms，避免意外无限执行；应根据生产 CPU 分位数调整，不等同于端到端网络等待预算。现有 observability 保持启用，动态请求记录 1% 样本和全部 5xx 的 route/method/status/durationMs；不记录 ticket、明文二维码参数、IP 或玩家 ID。该样本适合比较延迟，不能直接当作精确 RPS。Cloudflare dashboard 分别查看 Worker request/CPU、D1 rows read/written、DO requests/alarms；尤其比较 `/t`、session/state 的调用量及 HA 超时。D1 暂时仍保留 isolate 内 memoized migration 兼容检查；它不是每请求扫描，生产发布脚本也会先执行迁移/转换。
 
-回归测试覆盖加密/过期/错误密钥、二维码无需 D1、旧 ticket JOIN、跨店与禁用设备、轮询冷却与 Retry-After、共享 GET 缓存、维护 fence、APNs retry 和有界 retention。`.github/workflows/check.yml` 使用 Bun 1.3.14 执行完整测试、类型检查及平台 dry-run，不部署生产环境。
+回归测试覆盖加密/过期/错误密钥、二维码无需 D1、旧 ticket JOIN、跨店与禁用设备、轮询冷却与 Retry-After、共享 GET 缓存、维护 fence、APNs retry 和有界 retention。`.github/workflows/check.yml` 使用 Bun 1.3.14 执行完整测试、类型检查及平台 dry-run，不部署生产环境。CI 测试超时为每个用例三十秒，容纳真实 Miniflare/D1 启动与事务；生成配置测试使用临时目录，不依赖本地未提交的 `wrangler.generated.jsonc`。
 
-浏览器回归由 `scripts/check-scan-browser.cjs` 使用模拟 API 验证 hero 先于 /me、卡片先于 HA、麻将动态轮询期间只获取一次店铺配置；CI 的 `scan-first-paint` artifact 保存两张移动端截图。截图使用虚构店铺与玩家，不执行真实设备操作。
+浏览器回归由 `scripts/check-scan-browser.cjs` 使用模拟 API 验证 hero 先于 /me、卡片先于 HA、麻将动态轮询期间只获取一次店铺配置；通过 `bun run --cwd packages/prism-web preview` 启动 production build，CI 的 `scan-first-paint` artifact 保存两张移动端截图。截图使用虚构店铺与玩家，不执行真实设备操作。

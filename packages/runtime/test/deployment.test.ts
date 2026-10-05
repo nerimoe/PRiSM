@@ -43,6 +43,8 @@ describe("deployment artifacts", () => {
         vars: { APP_ORIGIN: env.APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
       });
       expect(config.kv_namespaces).toBeUndefined();
+      expect(config.assets.run_worker_first).toContain("/t/*/*");
+      expect(config.assets.run_worker_first).not.toContain("/t/*");
       expect(config.ratelimits).toContainEqual({ name: "RATE_LIMIT_60", namespace_id: "73060", simple: { limit: 60, period: 60 } });
       expect(run({ ...env, APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
       expect(run(env, []).exitCode).toBe(0);
@@ -177,7 +179,8 @@ describe("deployment artifacts", () => {
     // `/t/:shopCode` (the ticket-free shop surface) must NOT be worker-first: Cloudflare's
     // single-page-application fallback has to serve index.html for React Router. Adding it
     // here would make the deep link 404 instead of rendering the bill page.
-    for (const file of ["wrangler.platform.jsonc", "wrangler.generated.jsonc"]) {
+    // Generated output is tested in the isolated generator fixture above.
+    for (const file of ["wrangler.platform.jsonc"]) {
       const source = await readProjectFile(file);
       const match = source.match(/"run_worker_first":\s*\[([^\]]*)\]/);
       if (!match) throw new Error(`${file} must declare run_worker_first`);
