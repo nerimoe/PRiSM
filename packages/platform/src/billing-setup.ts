@@ -2,6 +2,20 @@ import { serializePricingProviderConfig } from "@prism/storage-sql";
 import type { z } from "zod";
 import type { billingSetupSchema } from "./validators";
 
+/** Configuration readiness is separate from the owner's billing on/off switch. */
+export async function billingConfiguration(db: D1Database, shopId: string, entryPricingIds: readonly string[]) {
+  const [currency, pricing] = await Promise.all([
+    db.prepare("SELECT 1 FROM asset_definitions WHERE shop_id=? AND type='currency' AND status='active' LIMIT 1").bind(shopId).first(),
+    db.prepare("SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active' AND kind!='time.cap'")
+      .bind(shopId).all<{ id: string }>(),
+  ]);
+  const validIds = new Set(pricing.results.map(row => row.id));
+  const invalidEntryPricingIds = entryPricingIds.filter(id => !validIds.has(id));
+  const balanceAssetsReady = !!currency;
+  const entryPricingReady = entryPricingIds.length > 0 && invalidEntryPricingIds.length === 0;
+  return { ready: balanceAssetsReady && entryPricingReady, balanceAssetsReady, entryPricingReady, invalidEntryPricingIds };
+}
+
 /** Base billing configuration shared by new stores and existing-store setup. */
 export function billingSetupStatements(db: D1Database, shopId: string, setup: z.infer<typeof billingSetupSchema>) {
   const ruleId = crypto.randomUUID();

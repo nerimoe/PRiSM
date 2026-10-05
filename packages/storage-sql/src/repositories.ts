@@ -2432,6 +2432,9 @@ export function serializePricingProviderConfig(
   if (!("rules" in provider)) return provider;
   return {
     ...provider,
+    // New bare clocks are UTC. Keep explicit legacy source zones for migration;
+    // API writes normalize those before reaching persistence.
+    timeZone: provider.timeZone ?? "UTC",
     rules: provider.rules.map((rule) => {
       const { dateTimeRange, ...rest } = rule;
       return {

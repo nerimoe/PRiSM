@@ -392,6 +392,7 @@ describe("createSqliteRepositories", () => {
       status: "active",
       provider: {
         id: "time.default",
+        timeZone: "UTC",
         rules: [
           {
             id: "base",
@@ -456,6 +457,7 @@ describe("createSqliteRepositories", () => {
         status: "active",
         provider: {
           id: "time.default",
+          timeZone: "UTC",
           rules: [
             {
               id: "base",

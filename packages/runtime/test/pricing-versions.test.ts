@@ -1,4 +1,4 @@
-import { migrateLegacyPricingToUtc } from "@prism/storage-sql";
+import { migrateLegacyPricingToUtc, serializePricingProviderConfig } from "@prism/storage-sql";
 import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
@@ -134,7 +134,11 @@ test("UTC migration keeps legacy visit meanings and UI timezone changes do not p
   db.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES(?, 'old', 'Old', 'active', ?)", [shopId, clock.toISOString()]);
   const plan: PricingConfig = { id: "rate", name: "Legacy", kind: "time.priority", enabled: true, status: "active", createdAt: clock, updatedAt: clock,
     provider: { id: "provider", rules: [{ id: "base", label: "Base", priority: 1, timeRange: { start: "10:00", end: "03:00" }, pricing: { unitMinutes: 60, unitPrice: 18, roundGraceMinutes: 10, priceCap: 90 } }] } };
-  await repositories.pricingConfigs.save(plan);
+  // An unconverted stable database has implicit local clocks without the new UTC tag.
+  db.run(`INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at)
+    VALUES(?,?,?, ?,1,'active',json_remove(?,'$.timeZone'),?,?)`,
+    [shopId, plan.id, plan.kind, plan.name, JSON.stringify(serializePricingProviderConfig(plan.provider)),
+      plan.createdAt.toISOString(), plan.updatedAt.toISOString()]);
   const deps = createPrismRuntimeDependencies({ repositories, queries: RuntimeRepositories.queriesFromBunSqlite({ db, shopId, now }), now, id, pricingProviders: [], assetEffectProviders: [], coinCooldownMs: 0 });
   // SQL admission exercises the old trigger and binding without the new UTC default.
   db.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES(?,'session','old',?,'active','unpaid','[\"rate\"]')", [shopId, clock.toISOString()]);

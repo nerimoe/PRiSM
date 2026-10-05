@@ -11,6 +11,7 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import app from "../src/index";
 import { sha256 } from "../src/crypto";
 import type { Env } from "../src/types";
+import { utcWriteGuards } from "../src/deployment-gate";
 
 const mf = new Miniflare({ modules: true, script: "export default {fetch(){return new Response('test')}}", d1Databases: ["DB"],  compatibilityDate: "2026-06-07" });
 let env: Env;
@@ -18,7 +19,7 @@ const origin = "https://billing-setup.test";
 async function request(path: string, body?: unknown, session = "owner-session", method = body === undefined ? "GET" : "POST") {
   const response = await app.fetch(new Request(origin + path, { method, headers: { origin, cookie: `arcadelink_session=${session}`, "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), env);
-  const payload = await response.json() as { data?: any; error?: { code: string } };
+  const payload = await response.json() as { data?: any; error?: { code: string; message?: string; details?: any } };
   return { status: response.status, data: payload.data, error: payload.error };
 }
 const op = () => crypto.randomUUID();
@@ -35,6 +36,7 @@ beforeAll(async () => {
     await db.prepare("INSERT INTO auth_identities(id,user_id,provider,provider_subject,display_name) VALUES (?,?,'munet',?,?)").bind(user, user, user, user).run();
     await db.prepare("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES (?,?,?,'2999-01-01T00:00:00Z')").bind(user, user, await sha256(`${user}-session`)).run();
   }
+  for (const sql of utcWriteGuards) await db.prepare(sql).run();
 }, 30000);
 afterAll(() => mf.dispose());
 
@@ -156,6 +158,7 @@ test("conversion preserves store data, existing assets and rules; response repla
   const pricing = await repos.pricingConfigs.findById(converted.data.pricingConfigId);
   expect(pricing?.kind).toBe("time.priority");
   if (pricing?.kind !== "time.priority") throw new Error("Missing entry pricing");
+  expect(pricing.provider.timeZone).toBe("UTC");
   expect(pricing.provider.rules[0]?.pricing).toMatchObject({ unitPrice: 6.75, unitMinutes: 60, roundGraceMinutes: 5, priceCap: 36.5 });
 });
 
@@ -195,6 +198,57 @@ test("manual billing settings require assets and entry pricing but not a Bot tok
   expect(await count("api_tokens", shop.id)).toBe(0);
 });
 
+test("manual asset and pricing APIs complete setup without enabling billing or creating duplicate rules", async () => {
+  const shop = await store();
+  const base = `/api/v1/shops/${shop.publicId}`;
+  for (const code of ["paid", "free"]) {
+    expect((await request(`${base}/staff/asset-definitions/currency/${code}`, {
+      name: code, stackable: true,
+    }, "owner-session", "PUT")).status).toBe(200);
+  }
+  const created = await request(`${base}/staff/pricing-configs`, {
+    kind: "time.priority", name: "手动入场", enabled: true,
+    provider: { id: op(), timeZone: "UTC", rules: [{ id: op(), label: "全天", priority: 0,
+      timeRange: { start: "00:00", end: "00:00" },
+      pricing: { unitMinutes: 60, unitPrice: 18, roundGraceMinutes: 10, priceCap: 90 } }] },
+  });
+  expect(created.status).toBe(200);
+  const settings = (await request(`${base}/settings`)).data;
+  const selected = { ...settings, entryPricingIds: [created.data.pricingConfig.id] };
+  const saved = await request(`${base}/settings`, selected, "owner-session", "PUT");
+  expect(saved.status).toBe(200);
+  expect(saved.data.billingEnabled).toBe(false);
+  expect(saved.data.billingConfiguration).toMatchObject({ ready: true, balanceAssetsReady: true, entryPricingReady: true });
+  expect((await request(`${base}/settings`)).data.billingConfiguration.ready).toBe(true);
+  expect((await request(`${base}/settings`, { ...selected, billingEnabled: true }, "owner-session", "PUT")).status).toBe(200);
+  expect(await count("pricing_configs", shop.id)).toBe(1);
+  expect(await count("api_tokens", shop.id)).toBe(0);
+});
+
+test("settings identify stale selections and exclude caps from entry rules without accepting invalid configuration", async () => {
+  const shop = await store({ ...setup, autoRegister: false });
+  const base = `/api/v1/shops/${shop.publicId}`;
+  const settings = (await request(`${base}/settings`)).data;
+  const id = settings.entryPricingIds[0];
+  expect((await request(`${base}/staff/pricing-configs/${id}/archive`, {})).status).toBe(200);
+  const rejected = await request(`${base}/settings`, settings, "owner-session", "PUT");
+  expect(rejected.status).toBe(409);
+  expect(rejected.error?.details).toMatchObject({ balanceAssetsReady: true, entryPricingReady: false, invalidEntryPricingIds: [id] });
+  expect(rejected.error?.message).not.toBe("请先配置余额资产和入场规则");
+  const missing = await request(`${base}/settings`, { ...settings, entryPricingIds: [] }, "owner-session", "PUT");
+  expect(missing.error?.message).toBe("请选择至少一个入场计费规则");
+  const cap = await request(`${base}/staff/pricing-configs`, {
+    kind: "time.cap", name: "消费封顶", enabled: true,
+    provider: { id: op(), timeZone: "UTC", includedPricingConfigIds: [id], rules: [{ id: op(), label: "全天", priority: 0,
+      timeRange: { start: "00:00", end: "00:00" }, priceCap: 90 }] },
+  });
+  expect(cap.status).toBe(200);
+  const capId = cap.data.pricingConfig.id;
+  const invalidCap = await request(`${base}/settings`, { ...settings, entryPricingIds: [capId] }, "owner-session", "PUT");
+  expect(invalidCap.status).toBe(409);
+  expect(invalidCap.error?.details.invalidEntryPricingIds).toEqual([capId]);
+});
+
 test("conversion is owner-only and invalid requests write no configuration", async () => {
   const shop = await store();
   for (const role of ["manager", "viewer"]) {
@@ -217,14 +271,49 @@ test("conversion is owner-only and invalid requests write no configuration", asy
 
 test("a failed setup transaction rolls back assets, pricing and mode together", async () => {
   const shop = await store();
+  const operationId = op();
   await env.DB.prepare("CREATE TRIGGER fail_billing_setup BEFORE INSERT ON app_settings WHEN NEW.key='cashier.settings' BEGIN SELECT RAISE(ABORT,'test setup failure'); END").run();
-  try { expect((await convert(shop.publicId)).status).toBe(500); }
+  try { expect((await convert(shop.publicId, { operationId })).status).toBe(500); }
   finally { await env.DB.prepare("DROP TRIGGER fail_billing_setup").run(); }
   for (const table of ["asset_definitions", "pricing_configs", "shop_billing_settings"]) {
     expect(await count(table, shop.id)).toBe(0);
   }
+  expect(await count("player_operations", shop.id)).toBe(0);
   expect(await count("app_settings", shop.id)).toBe(1);
-  expect((await convert(shop.publicId)).status).toBe(200);
+  const retried = await convert(shop.publicId, { operationId });
+  expect(retried.status).toBe(200);
+  expect((await convert(shop.publicId, { operationId })).data).toEqual(retried.data);
+  expect(await count("pricing_configs", shop.id)).toBe(1);
+});
+
+test("conversion recovers old incomplete operation IDs after the UTC write failure without duplicate setup", async () => {
+  for (const status of ["unknown", "pending"]) {
+    const shop = await store();
+    const operationId = op();
+    const requestHash = await sha256(JSON.stringify({ ...setup, cashierEnabled: false }));
+    await env.DB.prepare(`INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash,created_at)
+      VALUES (?,'owner',?,'billing/setup',?,?,?)`).bind(shop.id, operationId, status, requestHash, new Date().toISOString()).run();
+    const converted = await convert(shop.publicId, { operationId });
+    expect(converted.status).toBe(200);
+    expect((await convert(shop.publicId, { operationId })).data).toEqual(converted.data);
+    expect(await count("pricing_configs", shop.id)).toBe(1);
+    expect(await count("player_operations", shop.id)).toBe(1);
+    expect(await env.DB.prepare("SELECT status FROM player_operations WHERE shop_id=? AND id=?")
+      .bind(shop.id, operationId).first("status")).toBe("completed");
+  }
+});
+
+test("failure to store the successful conversion response rolls back configuration too", async () => {
+  const shop = await store();
+  const operationId = op();
+  await env.DB.prepare(`CREATE TRIGGER fail_setup_response BEFORE UPDATE ON player_operations
+    WHEN NEW.kind='billing/setup' AND NEW.status='completed' BEGIN SELECT RAISE(ABORT,'test response failure'); END`).run();
+  try { expect((await convert(shop.publicId, { operationId })).status).toBe(500); }
+  finally { await env.DB.prepare("DROP TRIGGER fail_setup_response").run(); }
+  for (const table of ["asset_definitions", "pricing_configs", "shop_billing_settings", "player_operations"]) {
+    expect(await count(table, shop.id)).toBe(0);
+  }
+  expect((await convert(shop.publicId, { operationId })).status).toBe(200);
   expect(await count("pricing_configs", shop.id)).toBe(1);
 });
 
@@ -242,8 +331,9 @@ test("conversion uses the same shop lease as manual settings and front desk writ
   const leaseId = op();
   const now = new Date();
   expect(await repos.operationLocks.acquire("shop.cashier", shop.id, leaseId, now, new Date(+now + 60_000))).toBe(true);
-  try { expect((await convert(shop.publicId)).error?.code).toBe("OPERATION_IN_PROGRESS"); }
+  const operationId = op();
+  try { expect((await convert(shop.publicId, { operationId })).error?.code).toBe("OPERATION_IN_PROGRESS"); }
   finally { await repos.operationLocks.release("shop.cashier", shop.id, leaseId); }
-  expect((await convert(shop.publicId)).status).toBe(200);
+  expect((await convert(shop.publicId, { operationId })).status).toBe(200);
   expect(await count("pricing_configs", shop.id)).toBe(1);
 });

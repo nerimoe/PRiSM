@@ -17,7 +17,15 @@ export type Settings = {
   machineGeo: boolean;
   entryPricingIds: string[];
   botContact: string;
+  billingConfiguration?: {
+    ready: boolean;
+    balanceAssetsReady: boolean;
+    entryPricingReady: boolean;
+    invalidEntryPricingIds: string[];
+  };
 };
+type EntryRule = Pick<Pricing, "id" | "name" | "kind" | "enabled" | "status">;
+const availableEntryRule = (rule: EntryRule) => rule.enabled && rule.status !== "archived" && rule.kind !== "time.cap";
 export type ShopInfo = {
   entryPricing: Pricing[];
   pricingSchedule: {
@@ -116,9 +124,7 @@ export function BillingSettings({
 }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [rules, setRules] = useState<
-    { id: string; name: string; enabled: boolean }[]
-  >([]);
+  const [rules, setRules] = useState<EntryRule[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [savedSection, setSavedSection] = useState<typeof section>(null);
@@ -128,7 +134,7 @@ export function BillingSettings({
   const load = useCallback(async () => {
     const [s, r] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
-      api<{ pricingConfigs: { id: string; name: string; enabled: boolean }[] }>(
+      api<{ pricingConfigs: EntryRule[] }>(
         shopApi(shopCode, "staff/pricing-configs"),
       ),
     ]);
@@ -183,6 +189,7 @@ export function BillingSettings({
               body: JSON.stringify({ ...current, ...patch }),
             });
             setBillingActive(result.billingEnabled);
+            setSettings(previous => previous && { ...previous, billingConfiguration: result.billingConfiguration });
             setSavedSection(savingSection);
             window.dispatchEvent(new Event("prism-shop-settings"));
           } catch (e) {
@@ -202,7 +209,7 @@ export function BillingSettings({
                   : "入场与收银",
             )}
           </h4>
-          {section === "billing" && !billingActive && (
+          {section === "billing" && !billingActive && !settings.billingConfiguration?.ready && (
             <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
               <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
               <button
@@ -337,13 +344,16 @@ export function BillingSettings({
           {section === "billing" && (
             <fieldset>
               <legend>{t("普通入场计费规则")}</legend>
-              {!rules.some((rule) => rule.enabled) && (
+              <p className="mt-2 text-sm text-ink/60">
+                {t("创建规则后，还需在这里选中入场时使用的方案。消费封顶不能单独作为入场规则。")}
+              </p>
+              {!rules.some(availableEntryRule) && (
                 <p className="mt-2 text-sm text-ink/60">
                   {t("暂无启用的入场规则，请先在计费管理中配置。")}
                 </p>
               )}
               {rules
-                .filter((r) => r.enabled)
+                .filter((r) => availableEntryRule(r) || settings.entryPricingIds.includes(r.id))
                 .map((rule) => (
                   <label className="mt-2 flex gap-3" key={rule.id}>
                     <input
@@ -361,8 +371,17 @@ export function BillingSettings({
                       }
                     />
                     {rule.name}
+                    {!availableEntryRule(rule) && <span className="text-coral">{t("不可用，请取消选择")}</span>}
                   </label>
                 ))}
+              {settings.entryPricingIds.filter(id => !rules.some(rule => rule.id === id)).map(id => (
+                <label className="mt-2 flex gap-3 text-coral" key={id}>
+                  <input type="checkbox" checked onChange={() => setSettings({ ...settings,
+                    entryPricingIds: settings.entryPricingIds.filter(selected => selected !== id) })} />
+                  {t("入场规则不存在，请取消选择")}
+                  <code>{id}</code>
+                </label>
+              ))}
             </fieldset>
           )}
           {error && errorSection === section && <p role="alert">{error}</p>}
@@ -402,7 +421,7 @@ export function BillingSettings({
             setSavedSection("billing");
             setError("");
             const result = await api<{
-              pricingConfigs: { id: string; name: string; enabled: boolean }[];
+              pricingConfigs: EntryRule[];
             }>(shopApi(shopCode, "staff/pricing-configs"));
             setRules(result.pricingConfigs);
           }}

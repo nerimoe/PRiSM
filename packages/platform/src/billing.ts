@@ -39,7 +39,7 @@ import { jsonError } from "./http";
 import { enforceRateLimits } from "./risk";
 import type { AppBindings } from "./types";
 import { billingSetupSchema } from "./validators";
-import { billingSetupStatements } from "./billing-setup";
+import { billingConfiguration, billingSetupStatements } from "./billing-setup";
 
 type C = Context<AppBindings>;
 export type BillingShop = {
@@ -643,7 +643,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
   app.get("/api/v1/shops/:shopCode/settings", async (c) => {
     const shop = await getBillingShop(c, c.req.param("shopCode"));
     await staffPrincipal(c, shop);
-    return c.json(publicSettings(shop));
+    return c.json({ ...publicSettings(shop), billingConfiguration: await billingConfiguration(c.env.DB, shop.id, JSON.parse(shop.entry_pricing_ids_json)) });
   });
   app.put("/api/v1/shops/:shopCode/settings", async (c) => {
     const initialShop = await getBillingShop(c, c.req.param("shopCode"));
@@ -665,30 +665,13 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           WHERE s.shop_id=? AND s.payment_status='unpaid' LIMIT 1`).bind(shop.id).first();
         if (unpaid) jsonError(409, "存在未结清的前台账单，请先收款结账", "CASHIER_UNSETTLED_SESSIONS");
       }
-      if (body.billingEnabled) {
-        const configured = await c.env.DB.prepare(
-          "SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active'",
-        )
-          .bind(shop.id)
-          .all<{ id: string }>();
-        const currency = await c.env.DB.prepare(
-          "SELECT 1 FROM asset_definitions WHERE shop_id=? AND type='currency' AND status='active' LIMIT 1",
-        )
-          .bind(shop.id)
-          .first();
-        if (
-          !currency ||
-          !body.entryPricingIds.length ||
-          body.entryPricingIds.some(
-            (id) => !configured.results.some((r) => r.id === id),
-          )
-        )
-          jsonError(
-            409,
-            "请先配置余额资产和入场规则",
-            "BILLING_CONFIGURATION_REQUIRED",
-          );
-      }
+      const configuration = await billingConfiguration(c.env.DB, shop.id, body.entryPricingIds);
+      if (body.billingEnabled && !configuration.ready)
+        jsonError(409,
+          !configuration.balanceAssetsReady ? "请先配置有效的余额资产"
+            : !body.entryPricingIds.length ? "请选择至少一个入场计费规则"
+              : "选中的入场规则已停用、归档或不可用于入场，请重新选择",
+          "BILLING_CONFIGURATION_REQUIRED", configuration);
       if (shop.billing_enabled && !body.billingEnabled) {
         const active = await c.env.DB.prepare(
           "SELECT 1 FROM sessions WHERE shop_id=? AND payment_status='unpaid' LIMIT 1",
@@ -718,7 +701,7 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
           ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
           .bind(shop.id, JSON.stringify({ enabled: cashierEnabled }), new Date().toISOString()),
       ]);
-      return c.json({ ...body, cashierEnabled, identityBindingRequired });
+      return c.json({ ...body, cashierEnabled, identityBindingRequired, billingConfiguration: configuration });
     });
   });
   app.post("/api/v1/shops/:shopCode/billing/setup", async (c) => {
@@ -728,22 +711,44 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     const body = billingSetupSchema.omit({ autoRegister: true, botContact: true }).extend({
       operationId: z.string().uuid(), cashierEnabled: z.boolean().default(false),
     }).parse(await c.req.json());
-    return runPlayerOperation(c, shop.id, "billing/setup", body, async () => {
-      const repos = createD1Repositories({ db: c.env.DB, shopId: shop.id, id: crypto.randomUUID, now: () => new Date() });
-      return withOperationLease({ repository: repos.operationLocks, scope: "shop.cashier", resourceId: shop.id, now: () => new Date() }, async () => {
-        const current = await getBillingShop(c, c.req.param("shopCode"));
-        if (current.billing_enabled) jsonError(409, "店铺已启用计费，请在计费页面调整规则", "BILLING_ALREADY_ENABLED");
-        const archived = await c.env.DB.prepare(`SELECT 1 FROM asset_definitions
-          WHERE shop_id=? AND type='currency' AND code IN ('paid','free') AND status='archived' LIMIT 1`).bind(shop.id).first();
-        if (archived) jsonError(409, "基础余额资产已归档，请先恢复后再转换", "BILLING_ASSETS_ARCHIVED");
-        const setup = billingSetupStatements(c.env.DB, shop.id, { ...body, autoRegister: !!current.auto_register, botContact: current.bot_contact });
-        await c.env.DB.batch([...setup.statements,
-          c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'cashier.settings',?,?)
-            ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
-            .bind(shop.id, JSON.stringify({ enabled: body.cashierEnabled }), new Date().toISOString()),
-        ]);
-        return c.json({ ...publicSettings(await getBillingShop(c, c.req.param("shopCode"))), pricingConfigId: setup.ruleId });
-      });
+    const user = requireUser(c);
+    const { operationId, ...payload } = body;
+    const requestHash = await sha256(JSON.stringify(payload));
+    const repos = createD1Repositories({ db: c.env.DB, shopId: shop.id, id: crypto.randomUUID, now: () => new Date() });
+    return withOperationLease({ repository: repos.operationLocks, scope: "shop.cashier", resourceId: shop.id, now: () => new Date() }, async () => {
+      const operation = await c.env.DB.prepare("SELECT kind,request_hash,result_json FROM player_operations WHERE shop_id=? AND user_id=? AND id=?")
+        .bind(shop.id, user.id, operationId).first<{ kind: string; request_hash: string; result_json: string | null }>();
+      if (operation && (operation.kind !== "billing/setup" || operation.request_hash !== requestHash))
+        jsonError(409, "请求编号已用于其他操作", "OPERATION_CONFLICT");
+      if (operation?.result_json) {
+        const result = JSON.parse(operation.result_json) as { status: number; body: unknown };
+        return Response.json(result.body, { status: result.status });
+      }
+      const current = await getBillingShop(c, c.req.param("shopCode"));
+      if (current.billing_enabled) jsonError(409, "店铺已启用计费，请在计费页面调整规则", "BILLING_ALREADY_ENABLED");
+      const archived = await c.env.DB.prepare(`SELECT 1 FROM asset_definitions
+        WHERE shop_id=? AND type='currency' AND code IN ('paid','free') AND status='archived' LIMIT 1`).bind(shop.id).first();
+      if (archived) jsonError(409, "基础余额资产已归档，请先恢复后再转换", "BILLING_ASSETS_ARCHIVED");
+      const setup = billingSetupStatements(c.env.DB, shop.id, { ...body, autoRegister: !!current.auto_register, botContact: current.bot_contact });
+      const result = { ...publicSettings(current), billingEnabled: true, cashierEnabled: body.cashierEnabled,
+        entryPricingIds: [setup.ruleId], pricingConfigId: setup.ruleId,
+        billingConfiguration: { ready: true, balanceAssetsReady: true, entryPricingReady: true, invalidEntryPricingIds: [] } };
+      // Store the successful response in the SAME transaction as configuration. A failed
+      // batch is retryable; an old unknown/pending operation may retry only while billing
+      // is still disabled. The shop lease and enabled check prevent duplicate conversion.
+      await c.env.DB.batch([
+        c.env.DB.prepare(`INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash,created_at)
+          SELECT ?,?,?,'billing/setup','pending',?,? WHERE NOT EXISTS(
+            SELECT 1 FROM player_operations WHERE shop_id=? AND user_id=? AND id=? AND kind='billing/setup' AND request_hash=?)`)
+          .bind(shop.id, user.id, operationId, requestHash, new Date().toISOString(), shop.id, user.id, operationId, requestHash),
+        ...setup.statements,
+        c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'cashier.settings',?,?)
+          ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`)
+          .bind(shop.id, JSON.stringify({ enabled: body.cashierEnabled }), new Date().toISOString()),
+        c.env.DB.prepare("UPDATE player_operations SET status='completed',result_json=? WHERE shop_id=? AND user_id=? AND id=? AND kind='billing/setup' AND request_hash=?")
+          .bind(JSON.stringify({ status: 200, body: result }), shop.id, user.id, operationId, requestHash),
+      ]);
+      return c.json(result);
     });
   });
   app.post("/api/v1/shops/:shopCode/platform-binding", async (c) => {

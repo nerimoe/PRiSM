@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { centsOf, type PricingConfig } from "@prism/core";
 import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
-import { migrateLegacyPricingToUtc, sqliteSchema, utcPricingMigrationId } from "@prism/storage-sql";
+import { migrateLegacyPricingToUtc, serializePricingProviderConfig, sqliteSchema, utcPricingMigrationId } from "@prism/storage-sql";
 import { utcPricingSchema } from "../../storage-sql/src/utc-pricing-schema";
 import { createPrismRuntimeDependencies, RuntimeRepositories } from "../src";
 
@@ -27,6 +27,13 @@ function plan(at: Date): PricingConfig {
   return { id: "rate", kind: "time.priority", name: "Rate", enabled: true, status: "active", createdAt: at, updatedAt: at,
     provider: { id: "provider", rules: [{ id: "base", label: "Base", priority: 1, timeRange: { start: "10:00", end: "03:00" }, pricing: { unitMinutes: 60, unitPrice: 18, roundGraceMinutes: 10, priceCap: 90 } }] } };
 }
+function saveLegacyPlan(db: Database, config: PricingConfig) {
+  // Seed the actual old SQL representation, not the new writer's UTC default.
+  db.run(`INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at)
+    VALUES('shop',?,?,?,1,'active',json_remove(?,'$.timeZone'),?,?)`,
+    [config.id, config.kind, config.name, JSON.stringify(serializePricingProviderConfig(config.provider)),
+      config.createdAt.toISOString(), config.updatedAt.toISOString()]);
+}
 
 test("different release timezones sharing one version migrate without changing fees, identities or snapshots twice", async () => {
   const db = legacyDb();
@@ -34,7 +41,7 @@ test("different release timezones sharing one version migrate without changing f
   const { repositories, deps } = runtime(db, () => clock);
   player(db, "shanghai"); player(db, "tokyo");
   await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Shanghai" });
-  await repositories.pricingConfigs.save(plan(clock));
+  saveLegacyPlan(db, plan(clock));
   await repositories.pricingConfigs.save({ id: "fixed", kind: "charge.fixed", name: "Entry", enabled: true, status: "active", createdAt: clock, updatedAt: clock, provider: { id: "entry", label: "Entry", amount: 6 } });
   const a = await deps.playerCommands.startSession({ playerId: "shanghai", pricingConfigIds: ["rate", "fixed"] });
   await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Tokyo" });
@@ -85,7 +92,7 @@ test("historical DST calendars and cumulative caps keep UTC anchors and paid amo
   const rate = plan(clock);
   if (rate.kind !== "time.priority") throw new Error("type");
   rate.provider.rules = [{ ...rate.provider.rules[0]!, timeRange: { start: "00:00", end: "00:00" }, pricing: { unitMinutes: 60, unitPrice: 18, roundGraceMinutes: 0, priceCap: 90 } }];
-  await repositories.pricingConfigs.save(rate);
+  saveLegacyPlan(db, rate);
   for (const [id, start, end] of [["winter", "2026-01-02T05:00:00Z", "2026-01-02T08:00:00Z"], ["summer", "2026-07-02T04:00:00Z", "2026-07-02T07:00:00Z"], ["spring", "2026-03-08T05:00:00Z", "2026-03-09T04:00:00Z"]]) {
     player(db, id!);
     db.run("INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status,pricing_config_ids_json) VALUES('shop',?,?,?,?,'closed','unpaid','[\"rate\"]')", [id!, id!, start!, end!]);
@@ -125,7 +132,7 @@ test("failed conversion rolls back changes and marker; concurrent retries commit
   const db = legacyDb(), at = new Date("2026-10-02T12:00:00Z");
   const { repositories } = runtime(db, () => at);
   await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Shanghai" });
-  await repositories.pricingConfigs.save(plan(at));
+  saveLegacyPlan(db, plan(at));
   for (const sql of utcPricingSchema) db.run(sql);
   const executor = createBunSqliteExecutor(db), original = rows(db);
   const failing = { ...executor, batch: (statements: Parameters<typeof executor.batch>[0]) => executor.batch([...statements, { sql: "SELECT * FROM deliberately_missing_table" }]) };
