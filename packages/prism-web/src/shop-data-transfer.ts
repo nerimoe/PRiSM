@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 type Row = Record<string, string | number | null>;
 type Header = Record<string, unknown>;
@@ -237,9 +237,56 @@ export async function uploadShopBackup(path: string, file: Blob, progress: (coun
 }
 
 /** Each page request has bounded Worker memory and an independent subrequest budget. */
-export async function downloadShopBackup(path: string, scope: string, progress: (count: number) => void) {
-  const info = await api<ExportInfo>(`${path}/exports`, { method: "POST", body: JSON.stringify({ scope }) });
+const exportStorageKey = (path: string) => `prism.export:${path}`;
+export async function cancelShopExport(path: string, jobId: string) {
   try {
+    await api(`${path}/exports/${encodeURIComponent(jobId)}`, { method: "DELETE", keepalive: true });
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 404) throw error;
+  }
+  if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(exportStorageKey(path)) === jobId)
+    sessionStorage.removeItem(exportStorageKey(path));
+}
+/** Only cancel the interrupted task remembered by this tab, never another tab's live export. */
+export async function recoverInterruptedShopExport(path: string) {
+  const navigation = typeof window === "undefined" ? undefined :
+    window.performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+  if (navigation?.type === "navigate") {
+    // A newly opened tab can inherit sessionStorage from its opener. Do not cancel the opener's task.
+    sessionStorage.removeItem(exportStorageKey(path));
+    return;
+  }
+  const jobId = typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(exportStorageKey(path));
+  if (jobId) await cancelShopExport(path, jobId);
+}
+export async function downloadShopBackup(
+  path: string,
+  scope: string,
+  progress: (count: number) => void,
+  options: { signal?: AbortSignal; onStart?: (info: ExportInfo) => void } = {},
+) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  let info: ExportInfo | undefined;
+  const leave = () => {
+    abort();
+    if (!info) return;
+    const url = `${path}/exports/${encodeURIComponent(info.jobId)}/cancel`;
+    // Navigation cannot wait for finally; keepalive/beacon is best effort, with lease expiry as the fallback.
+    if (typeof navigator === "undefined" || !navigator.sendBeacon?.(url))
+      void api(url, { method: "POST", keepalive: true }).catch(() => {});
+  };
+  options.signal?.addEventListener("abort", abort);
+  if (options.signal?.aborted) abort();
+  if (typeof window !== "undefined") window.addEventListener("pagehide", leave);
+  try {
+    controller.signal.throwIfAborted();
+    // Let creation finish so a cancellation during the initial count can still release its known job.
+    info = await api<ExportInfo>(`${path}/exports`, { method: "POST", body: JSON.stringify({ scope }) });
+    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(exportStorageKey(path), info.jobId);
+    options.onStart?.(info);
+    progress(0);
+    controller.signal.throwIfAborted();
     const chunks: BlobPart[] = [info.headerJson.slice(0, -1) + ',"tables":{'];
     let cursor = 0,
       index = 0,
@@ -247,7 +294,7 @@ export async function downloadShopBackup(path: string, scope: string, progress: 
       hasRows = false,
       total = 0;
     for (;;) {
-      const page = await api<Page>(`${path}/exports/${info.jobId}/page?after=${cursor}`);
+      const page = await api<Page>(`${path}/exports/${info.jobId}/page?after=${cursor}`, { signal: controller.signal });
       if (page.done) break;
       if (page.cursor <= cursor || !page.rows.length) throw invalid();
       cursor = page.cursor;
@@ -285,6 +332,8 @@ export async function downloadShopBackup(path: string, scope: string, progress: 
     if (total !== expected) throw new Error("备份记录数量不一致，请重新导出");
     return { info, blob: new Blob(chunks, { type: "application/json" }) };
   } finally {
-    await api(`${path}/exports/${info.jobId}`, { method: "DELETE" }).catch(() => {});
+    options.signal?.removeEventListener("abort", abort);
+    if (typeof window !== "undefined") window.removeEventListener("pagehide", leave);
+    if (info) await cancelShopExport(path, info.jobId).catch(() => {});
   }
 }

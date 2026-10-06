@@ -816,3 +816,79 @@ test("indexed export pages handle composite keys, escaped IDs and more than one 
   expect(backup.tables.shop_billing_settings).toHaveLength(1);
   expect(backup.tables.pricing_release_heads).toHaveLength(1);
 }, 30000);
+
+test("export recovery exposes only live leases and any current owner can cancel without opening another user's pages", async () => {
+  const shop = await store(sourceEnv, true), otherShop = await store(sourceEnv);
+  await defaultAllowance(sourceEnv, shop);
+  await sourceEnv.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES (?,?,?,'owner')")
+    .bind(op(), shop.id, "other").run();
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  const id = started.data.jobId;
+  const status = (await request(sourceEnv, base(shop) + "/export-status", undefined, "other-session")).data;
+  expect(status.activeExport.jobId).toBe(id);
+  expect(status.activeExport.scope).toBe("business");
+  expect(Date.parse(status.activeExport.expiresAt)).toBeGreaterThan(Date.now());
+  expect((await request(sourceEnv, base(shop) + `/exports/${id}/page`, undefined, "other-session")).status).toBe(404);
+  expect((await request(sourceEnv, base(shop) + `/exports/${id}/cancel`, {}, "player-session")).status).toBe(403);
+  expect((await request(sourceEnv, base(otherShop) + `/exports/${id}/cancel`, {})).status).toBe(404);
+  // Recovery must work even for the old stuck reading=1 state.
+  await sourceEnv.DB.prepare("UPDATE shop_data_exports SET reading=1 WHERE id=?").bind(id).run();
+  for (let i = 0; i < 2; i++)
+    expect((await request(sourceEnv, base(shop) + `/exports/${id}/cancel`, undefined, "other-session", "POST")).status).toBe(200);
+  const recovered = (await request(sourceEnv, base(shop) + "/export-status")).data;
+  expect(recovered.locked).toBe(false);
+  expect(recovered.activeExport).toBeNull();
+  expect(recovered.used).toBe(1);
+  expect(recovered.remaining).toBe(0);
+  expect((await request(sourceEnv, base(shop) + `/exports/${id}/page`)).status).toBe(404);
+  await sourceEnv.DB.prepare("UPDATE shops SET name='恢复营业' WHERE id=?").bind(shop.id).run();
+  // Cancellation is also idempotent using the original DELETE route.
+  expect((await request(sourceEnv, base(shop) + `/exports/${id}`, undefined, "owner-session", "DELETE")).status).toBe(200);
+  const stale = await request(sourceEnv, base(otherShop) + "/exports", { scope: "business" });
+  await sourceEnv.DB.prepare("UPDATE shop_data_exports SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?").bind(stale.data.jobId).run();
+  const expired = (await request(sourceEnv, base(otherShop) + "/export-status")).data;
+  expect(expired.locked).toBe(false);
+  expect(expired.activeExport).toBeNull();
+}, 30000);
+
+test("a page failure after claiming its read releases the shop immediately", async () => {
+  const shop = await store(sourceEnv, true);
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  const id = started.data.jobId;
+  // Inject invalid count metadata, representing an exception after the atomic page claim.
+  await sourceEnv.DB.prepare("UPDATE shop_data_exports SET counts_json='invalid-json' WHERE id=?").bind(id).run();
+  const failed = await request(sourceEnv, base(shop) + `/exports/${id}/page`);
+  expect(failed.status).toBe(500);
+  expect(await sourceEnv.DB.prepare("SELECT status FROM shop_data_exports WHERE id=?").bind(id).first("status")).toBe("failed");
+  expect((await request(sourceEnv, base(shop) + "/export-status")).data.locked).toBe(false);
+  await sourceEnv.DB.prepare("UPDATE shops SET name='分页失败后恢复' WHERE id=?").bind(shop.id).run();
+}, 30000);
+
+
+test("cancelling an in-flight page rejects its result before business writes resume", async () => {
+  const shop = await store(sourceEnv, true), db = sourceEnv.DB;
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  const id = started.data.jobId;
+  let pause = false, entered!: () => void, resume!: () => void;
+  const claimed = new Promise<void>(resolve => { entered = resolve; });
+  const resumed = new Promise<void>(resolve => { resume = resolve; });
+  const env = { ...sourceEnv, DB: {
+    prepare(sql: string) {
+      if (sql.startsWith("SELECT 1 AS valid FROM shop_data_exports")) pause = true;
+      return db.prepare(sql);
+    },
+    async batch(statements: D1PreparedStatement[]) {
+      if (pause) { pause = false; entered(); await resumed; }
+      return db.batch(statements);
+    },
+  } as D1Database };
+  const pending = request(env, base(shop) + `/exports/${id}/page`);
+  try {
+    await claimed;
+    expect(await db.prepare("SELECT reading FROM shop_data_exports WHERE id=?").bind(id).first("reading")).toBe(1);
+    expect((await request(sourceEnv, base(shop) + `/exports/${id}/cancel`, undefined, "owner-session", "POST")).status).toBe(200);
+    await db.prepare("UPDATE shops SET name='取消在途分页后营业' WHERE id=?").bind(shop.id).run();
+  } finally { resume(); }
+  expect((await pending).status).toBe(410);
+  expect(await db.prepare("SELECT status FROM shop_data_exports WHERE id=?").bind(id).first("status")).toBe("cancelled");
+}, 30000);

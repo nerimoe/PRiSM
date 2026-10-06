@@ -1,7 +1,9 @@
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { api, ApiError } from "../../api";
 import {
   downloadShopBackup,
+  cancelShopExport,
+  recoverInterruptedShopExport,
   uploadShopBackup,
   type ExportInfo,
 } from "../../shop-data-transfer";
@@ -64,6 +66,8 @@ export function ShopDataTransfer() {
   const [jobId, setJobId] = useState("");
   const [progress, setProgress] = useState<number>();
   const [exported, setExported] = useState<ExportInfo>();
+  const [exporting, setExporting] = useState(false);
+  const exportController = useRef<AbortController | null>(null);
   const [filename, setFilename] = useState("");
   const [preview, setPreview] = useState<Preview>();
   const [operationId, setOperationId] = useState("");
@@ -76,15 +80,63 @@ export function ShopDataTransfer() {
     used: number;
     locked: boolean;
     importRemaining: number;
+    activeExport?: { jobId: string; expiresAt: string } | null;
   }>();
   const path = `/api/v1/shops/${encodeURIComponent(shopCode)}/data`;
   async function loadAllowance() {
     setAllowance(await api(`${path}/export-status`));
   }
   useEffect(() => {
+    let disposed = false;
     setAllowance(undefined);
-    void loadAllowance().catch(failed);
+    async function refresh() {
+      const value = await api<NonNullable<typeof allowance>>(
+        `${path}/export-status`,
+      );
+      if (!disposed) setAllowance(value);
+    }
+    const wake = () => {
+      void refresh().catch(failed);
+    };
+    const visible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    void recoverInterruptedShopExport(path)
+      .catch(failed)
+      .then(() => {
+        if (!disposed) wake();
+      });
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", wake);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      disposed = true;
+      exportController.current?.abort();
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pageshow", wake);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [shopCode]);
+  useEffect(() => {
+    if (!allowance?.locked) return;
+    // Recheck the actual lease, rather than keeping the initial locked response forever.
+    let disposed = false;
+    let timer: number;
+    async function poll() {
+      try {
+        await loadAllowance();
+      } catch (value) {
+        if (!disposed) failed(value);
+      } finally {
+        if (!disposed) timer = window.setTimeout(poll, 5000);
+      }
+    }
+    timer = window.setTimeout(poll, 5000);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [allowance?.locked, shopCode]);
   function failed(value: unknown) {
     setError(
       errorText(
@@ -93,13 +145,24 @@ export function ShopDataTransfer() {
     );
   }
   async function download() {
+    const controller = new AbortController();
+    exportController.current = controller;
+    setExporting(true);
     setBusy(true);
     setError("");
     try {
       setProgress(0);
       setExported(undefined);
-      const { info, blob } = await downloadShopBackup(path, scope, setProgress);
-      setExported(info);
+      const { info, blob } = await downloadShopBackup(
+        path,
+        scope,
+        setProgress,
+        {
+          signal: controller.signal,
+          onStart: setExported,
+        },
+      );
+      controller.signal.throwIfAborted();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -109,11 +172,31 @@ export function ShopDataTransfer() {
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (value) {
+      if (!controller.signal.aborted) failed(value);
+    } finally {
+      await loadAllowance().catch(failed);
+      setBusy(false);
+      setExporting(false);
+      if (exportController.current === controller)
+        exportController.current = null;
+      setProgress(undefined);
+    }
+  }
+  async function cancelExport() {
+    if (exportController.current) {
+      exportController.current.abort();
+      return;
+    }
+    if (!allowance?.activeExport) return;
+    setBusy(true);
+    setError("");
+    try {
+      await cancelShopExport(path, allowance.activeExport.jobId);
+    } catch (value) {
       failed(value);
     } finally {
       await loadAllowance().catch(failed);
       setBusy(false);
-      setProgress(undefined);
     }
   }
   function selectFile(event: ChangeEvent<HTMLInputElement>) {
@@ -229,6 +312,44 @@ export function ShopDataTransfer() {
         >
           {t("下载 JSON 文件")}
         </button>
+        {exporting && (
+          <div className="grid gap-2 text-sm" role="status">
+            {exported ? (
+              <>
+                <p>
+                  {t("已导出记录")}: {progress ?? 0} /{" "}
+                  {Object.values(exported.counts).reduce(
+                    (sum, n) => sum + n,
+                    0,
+                  )}
+                </p>
+                <progress
+                  className="h-2 w-full"
+                  aria-label={t("导出进度")}
+                  value={progress ?? 0}
+                  max={Math.max(
+                    1,
+                    Object.values(exported.counts).reduce(
+                      (sum, n) => sum + n,
+                      0,
+                    ),
+                  )}
+                />
+              </>
+            ) : (
+              <p>{t("正在统计备份数据…")}</p>
+            )}
+          </div>
+        )}
+        {(exporting || allowance?.activeExport) && (
+          <button
+            className={`${button} justify-self-start`}
+            disabled={busy && !exporting}
+            onClick={cancelExport}
+          >
+            {t("取消导出，恢复营业")}
+          </button>
+        )}
         {exported && (
           <div className="grid gap-2 text-sm" role="status">
             <p>
@@ -352,7 +473,7 @@ export function ShopDataTransfer() {
           </div>
         )}
       </section>
-      {progress !== undefined && (
+      {!exporting && progress !== undefined && (
         <p role="status" className="text-sm text-ink/60">
           {t("已传输记录")}: {progress}
         </p>

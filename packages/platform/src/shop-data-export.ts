@@ -101,7 +101,7 @@ export async function finishShopExport(
 ) {
   await db
     .prepare(
-      "UPDATE shop_data_exports SET status=? WHERE id=? AND status='active'",
+      "UPDATE shop_data_exports SET status=?,reading=0 WHERE id=? AND status='active'",
     )
     .bind(status, id)
     .run();
@@ -154,13 +154,13 @@ export async function startShopExport(
     expires_at: new Date(+now + leaseMs).toISOString(),
   } satisfies ExportJob;
 }
-async function getExport(c: C) {
+async function getExport(c: C, cancel = false) {
   const shop = await owner(c, false),
     user = requireUser(c);
   const job = await c.env.DB.prepare(
-    "SELECT * FROM shop_data_exports WHERE id=? AND shop_id=? AND user_id=?",
+    `SELECT * FROM shop_data_exports WHERE id=? AND shop_id=?${cancel ? "" : " AND user_id=?"}`,
   )
-    .bind(c.req.param("jobId"), shop.id, user.id)
+    .bind(c.req.param("jobId"), shop.id, ...(cancel ? [] : [user.id]))
     .first<ExportJob>();
   if (!job) jsonError(404, "备份任务不存在或已过期", "TRANSFER_NOT_FOUND");
   if (c.req.method === "GET" && job.status !== "active")
@@ -288,6 +288,15 @@ async function page(c: C, job: ExportJob, after: number) {
       "导出进度不匹配，请勿重复或跳过分页",
       "EXPORT_CURSOR_CHANGED",
     );
+  try {
+    return await readPage(c, job, after);
+  } catch (error) {
+    // A failed page must not leave reading=1 and fence the shop until the lease expires.
+    await finishShopExport(c.env.DB, job.id, "failed");
+    throw error;
+  }
+}
+async function readPage(c: C, job: ExportJob, after: number) {
   const tables = v2TablesFor(job.scope),
     rows: { seq: number; table_name: FullTable; payload_json: string }[] = [];
   const counts = JSON.parse(job.counts_json) as Record<string, number>;
@@ -415,11 +424,14 @@ async function page(c: C, job: ExportJob, after: number) {
 }
 async function allowance(c: C, shopId: string, zone: string) {
   const month = exportMonth(zone);
+  const now = new Date().toISOString();
   const row = await c.env.DB.prepare(
     `SELECT
     1+COALESCE((SELECT extra FROM shop_data_export_allowances WHERE shop_id=? AND month=?),0) AS allowance,
     (SELECT COUNT(*) FROM shop_data_exports WHERE shop_id=? AND month=?) AS used,
     EXISTS(SELECT 1 FROM shop_data_exports WHERE shop_id=? AND status='active' AND expires_at>?) AS locked,
+    (SELECT json_object('jobId',id,'scope',scope,'expiresAt',expires_at) FROM shop_data_exports
+      WHERE shop_id=? AND status='active' AND expires_at>? ORDER BY created_at DESC LIMIT 1) AS active_export,
     1+COALESCE((SELECT import_extra FROM shop_data_export_allowances WHERE shop_id=? AND month=?),0) AS import_allowance,
     (SELECT COUNT(*) FROM shop_data_import_attempts WHERE shop_id=? AND month=?) AS import_used`,
   )
@@ -429,7 +441,9 @@ async function allowance(c: C, shopId: string, zone: string) {
       shopId,
       month,
       shopId,
-      new Date().toISOString(),
+      now,
+      shopId,
+      now,
       shopId,
       month,
       shopId,
@@ -439,6 +453,7 @@ async function allowance(c: C, shopId: string, zone: string) {
       allowance: number;
       used: number;
       locked: number;
+      active_export: string | null;
       import_allowance: number;
       import_used: number;
     }>();
@@ -449,6 +464,7 @@ async function allowance(c: C, shopId: string, zone: string) {
     used: row!.used,
     remaining: Math.max(0, row!.allowance - row!.used),
     locked: !!row!.locked,
+    activeExport: row!.active_export ? JSON.parse(row!.active_export) : null,
     importAllowance: row!.import_allowance,
     importUsed: row!.import_used,
     importRemaining: Math.max(0, row!.import_allowance - row!.import_used),
@@ -481,11 +497,14 @@ export function registerShopExportRoutes(app: Hono<AppBindings>) {
     if (!parsed.success) jsonError(400, "导出进度无效", "INVALID_REQUEST");
     return c.json(await page(c, job, parsed.data));
   });
-  app.delete(base + "/exports/:jobId", async (c) => {
-    const { job } = await getExport(c);
+  async function cancelExport(c: C) {
+    // Any current shop owner can recover an interrupted export; page contents stay private to its creator.
+    const { job } = await getExport(c, true);
     await finishShopExport(c.env.DB, job.id, "cancelled");
     return c.json({ deleted: true });
-  });
+  }
+  app.delete(base + "/exports/:jobId", cancelExport);
+  app.post(base + "/exports/:jobId/cancel", cancelExport);
   app.get(base + "/export", async (c, next) => {
     if (c.req.query("version") === "1") return next();
     const shop = await owner(c),

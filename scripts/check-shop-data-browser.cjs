@@ -19,20 +19,32 @@ const backup = {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN', timezoneId: 'America/Los_Angeles' });
     const errors = [], applies = [], previews = [], exports = [], uploads = [], headers = [];
     let canImport = false, owner = true, imported = false, platformAdmin = false, remaining = 100, importRemaining = 100;
-    const allowanceSaves = [];
+    const allowanceSaves = [], cancellations = [];
+    let activeExport = null, holdFinalPage = false, releaseFinalPage, exportStatusFailures = 0;
+    const lockedMessage = '店铺正在导出数据，暂时不能进行业务操作，请稍后重试';
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url()), pathname = url.pathname;
       let data;
       if (pathname.endsWith('/data/export-status')) {
-        data = { remaining, used: exports.length, importRemaining, locked: false };
+        if (exportStatusFailures-- > 0) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: '操作失败，请稍后重试' } }) });
+        data = { remaining, used: exports.length, importRemaining, locked: !!activeExport, activeExport };
       } else if (pathname.endsWith('/data/exports')) {
         exports.push(req.postDataJSON().scope);
+        activeExport = { jobId: 'export-' + exports.length, expiresAt: new Date(Date.now() + 300000).toISOString(), scope: req.postDataJSON().scope };
         const { tables, ...header } = backup;
         data = { jobId: 'export-' + exports.length, headerJson: JSON.stringify(header), tables: Object.keys(tables),
           counts: Object.fromEntries(Object.entries(tables).map(([t,r])=>[t,r.length])), filename: 'prism-beta-shop.json' };
+      } else if (/\/data\/exports\/[^/]+(?:\/cancel)?$/.test(pathname) && ['DELETE','POST'].includes(req.method())) {
+        const id = pathname.split('/')[7];
+        cancellations.push([id, req.method()]);
+        if (activeExport?.jobId === id) activeExport = null;
+        releaseFinalPage?.(); releaseFinalPage = undefined;
+        data = { deleted: true };
       } else if (/\/data\/exports\/[^/]+\/page$/.test(pathname)) {
         const after = Number(url.searchParams.get('after') || '0');
+        if (after && holdFinalPage) await new Promise(resolve => { releaseFinalPage = resolve; });
+        if (after && activeExport?.jobId === pathname.split('/')[7]) activeExport = null;
         const rows = Object.entries(backup.tables).flatMap(([table,values])=>values.map(row=>({ table_name: table, payload_json: JSON.stringify(row) }))).map((r,i)=>({ ...r,seq:i+1 }));
         data = { rows: after ? [] : rows, cursor: after || rows.length, done: !!after };
       } else if (pathname.endsWith('/data/imports')) {
@@ -87,6 +99,34 @@ const backup = {
     await page.locator('select').filter({ has: page.getByRole('option', { name: '仅店铺配置（不含玩家和账单）', exact: true }) }).selectOption('configuration');
     await Promise.all([page.waitForEvent('download'), download.click()]);
     assert.deepEqual(exports, ['business', 'configuration']);
+    // Keep the last page pending so progress must appear before the file is downloaded.
+    holdFinalPage = true;
+    await download.click();
+    await page.getByText('已导出记录: 3 / 3', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('progressbar', { name: '导出进度', exact: true }).getAttribute('value'), '3');
+    await page.screenshot({ path: path.join(output, 'shop-data-export-progress.png'), fullPage: true });
+    const interruptedId = activeExport.jobId, starts = exports.length;
+    await page.reload();
+    holdFinalPage = false;
+    await download.waitFor();
+    await page.waitForFunction(() => !sessionStorage.getItem('prism.export:/api/v1/shops/demo/data'));
+    assert.equal(activeExport, null);
+    assert.ok(cancellations.some(([id]) => id === interruptedId));
+    assert.equal(exports.length, starts, 'Reload must not start a fresh monthly export');
+    assert.equal(await page.getByText(lockedMessage, { exact: true }).count(), 0);
+    // Older interrupted jobs have no tab checkpoint: the shop owner can still cancel them.
+    activeExport = { jobId: 'old-interrupted-job', scope: 'business', expiresAt: new Date(Date.now()+300000).toISOString() };
+    await page.reload();
+    await page.getByText(lockedMessage, { exact: true }).waitFor();
+    await page.getByRole('button', { name: '取消导出，恢复营业', exact: true }).click();
+    await page.getByText(lockedMessage, { exact: true }).waitFor({ state: 'hidden' });
+    assert.equal(activeExport, null);
+    // Querying the lock does not renew it: expired leases disappear without another page reload.
+    activeExport = { jobId: 'expires', scope: 'business', expiresAt: new Date(Date.now()+1000).toISOString() };
+    await page.reload();
+    await page.getByText(lockedMessage, { exact: true }).waitFor();
+    activeExport = null; exportStatusFailures = 1;
+    await page.getByText(lockedMessage, { exact: true }).waitFor({ state: 'hidden', timeout: 15000 });
     const input = page.getByLabel('JSON 备份文件', { exact: true });
     await input.setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{invalid') });
     await page.getByRole('button', { name: '预检导入', exact: true }).click();
@@ -146,6 +186,6 @@ const backup = {
     assert.deepEqual(allowanceSaves, [{ extra: 2, importExtra: 3 }]);
     await page.screenshot({ path: path.join(output, 'shop-data-admin-allowance.png'), fullPage: true });
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ checks: 'paged UTC JSON download, streamed upload, business/configuration scopes, invalid files, failed preflight, source identification and counts, confirmation, same-operation retries, mobile and English UI, owner-only access, exhausted monthly allowances, administrator import/export grants', errors }));
+    console.log(JSON.stringify({ checks: 'paged UTC JSON download, live export progress, reload cancellation and tab recovery, manual recovery of old interrupted jobs, lease expiry polling after a transient status failure, streamed upload, business/configuration scopes, invalid files, failed preflight, source identification and counts, confirmation, same-operation retries, mobile and English UI, owner-only access, exhausted monthly allowances, administrator import/export grants', errors }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });
