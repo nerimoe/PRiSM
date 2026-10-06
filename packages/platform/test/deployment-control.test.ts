@@ -134,3 +134,22 @@ test("a failed UTC conversion restores the marker, immutable data and write fenc
     expect((await control({ action: "convert" })).status).toBe(200);
   } finally { await mf.dispose(); }
 }, 30000);
+
+test("read-only export migration safely removes only staged legacy exports and retains business data under maintenance", async () => {
+  const { mf, env, DB, control, schema } = await fixture();
+  try {
+    expect((await control({ action: "begin" })).status).toBe(200);
+    await schema();
+    expect((await control({ action: "schema", name: "0031_shop_data_transfer.sql", sql: readFileSync(new URL("0031_shop_data_transfer.sql", root), "utf8") })).status).toBe(200);
+    await deploymentBatch(DB, env.PRISM_DEPLOY_TOKEN_HASH!, [
+      DB.prepare("INSERT INTO shop_data_jobs(id,shop_id,user_id,kind,status,header_json,created_at,expires_at) VALUES ('old-export','shop','owner','export','ready','{}','2026-10-06T00:00:00Z','2999-01-01T00:00:00Z')"),
+      DB.prepare("INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json) VALUES ('old-export',1,'players','{}')"),
+    ]);
+    const sql = readFileSync(new URL("0032_read_only_shop_export.sql", root), "utf8");
+    for (let i = 0; i < 2; i++) expect((await control({ action: "schema", name: "0032_read_only_shop_export.sql", sql })).status).toBe(200);
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM shop_data_rows").first("n")).toBe(0);
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM players").first("n")).toBe(1);
+    expect(await DB.prepare("SELECT quantity FROM asset_holdings").first("quantity")).toBe(10000);
+    await expect(DB.prepare("INSERT INTO shop_data_exports(id,shop_id,user_id,scope,month,status,created_at,expires_at) VALUES ('test','shop','owner','business','2026-10','active','2026-10-06T00:00:00.000Z','2999-01-01T00:00:00.000Z')").run()).rejects.toThrow("PRISM_MAINTENANCE");
+  } finally { await mf.dispose(); }
+}, 30000);

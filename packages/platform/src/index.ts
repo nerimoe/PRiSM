@@ -137,7 +137,7 @@ app.use(
       return allowedOrigins(c.env).has(origin) ? origin : "";
     },
     allowHeaders: ["content-type"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   }),
 );
@@ -1130,6 +1130,12 @@ app.delete("/api/v1/admin/bans/:id", async (c) => {
 });
 
 app.onError((error, c) => {
+  if (String(error).includes("SHOP_IMPORT_QUOTA"))
+    return c.json({ error: { code: "IMPORT_MONTHLY_LIMIT", message: "本月导入次数已用完，需要更多次数请联系平台管理员" } }, 429);
+  if (String(error).includes("SHOP_EXPORT_LOCKED"))
+    return c.json({ error: { code: "SHOP_EXPORT_LOCKED", message: "店铺正在导出数据，暂时不能进行业务操作，请稍后重试" } }, 423);
+  if (String(error).includes("SHOP_EXPORT_QUOTA"))
+    return c.json({ error: { code: "EXPORT_MONTHLY_LIMIT", message: "本月导出次数已用完，需要更多次数请联系平台管理员" } }, 429);
   if (error instanceof HTTPException) return error.getResponse();
   if (error instanceof z.ZodError) {
     const message = error.errors[0]?.message || "请检查填写内容";

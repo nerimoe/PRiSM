@@ -7,6 +7,7 @@ import { encryptSecret, decryptSecret, sha256 } from "../src/crypto";
 import { utcWriteGuards } from "../src/deployment-gate";
 import { createTestRateLimits } from "./rate-limit-fixture";
 import { uploadShopBackup, downloadShopBackup } from "../../prism-web/src/shop-data-transfer";
+import { exportMonth } from "../src/shop-data-export";
 import type { Env } from "../src/types";
 
 const rateLimits = createTestRateLimits();
@@ -41,7 +42,7 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
     "0023_remote_entry",
     "0024_drop_remote_entry",
     "0030_platform_identity_bindings",
-    "0031_shop_data_transfer",
+    "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export",
   ]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(
       /^\s*--.*$/gm,
@@ -49,11 +50,12 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
     );
     for (const part of splitD1MigrationStatements(sql)) await db.prepare(part).run();
   }
-  for (const name of ["owner", "player", "other"]) {
+  for (const name of ["owner", "player", "other", "admin"]) {
     await db
       .prepare("INSERT INTO users(id,role) VALUES (?,'user')")
       .bind(prefix + name)
       .run();
+    if (name === "admin") await db.prepare("UPDATE users SET role='admin' WHERE id=?").bind(prefix + name).run();
     await db
       .prepare(
         "INSERT INTO auth_identities(id,user_id,provider,provider_subject,display_name) VALUES (?,?,'munet',?,?)",
@@ -112,7 +114,10 @@ async function store(env = sourceEnv, configured = false) {
       : {}),
   });
   expect(result.status).toBe(201);
-  return result.data.shop as { id: string; publicId: string };
+  const shop = result.data.shop as { id: string; publicId: string };
+  await env.DB.prepare("INSERT INTO shop_data_export_allowances(shop_id,month,extra,import_extra,updated_at) VALUES (?,?,100,100,?)")
+    .bind(shop.id, exportMonth("Asia/Shanghai"), new Date().toISOString()).run();
+  return shop;
 }
 const base = (shop: { publicId: string }) => `/api/v1/shops/${shop.publicId}/data`;
 const rows = async (env: Env, table: string, id: string) =>
@@ -458,7 +463,7 @@ test("the browser job protocol round-trips a backup above 10 MiB with 350 KiB in
   ).toBe(true);
 }, 60000);
 
-test("paged exports use a consistent snapshot and enforce job owner/shop isolation", async () => {
+test("paged exports lock writes and enforce job owner/shop isolation", async () => {
   const source = await store(sourceEnv, true),
     other = await store(),
     now = "2026-10-02T02:08:00.000Z";
@@ -469,14 +474,13 @@ test("paged exports use a consistent snapshot and enforce job owner/shop isolati
     .run();
   const job = await request(sourceEnv, base(source) + "/exports", { scope: "business" });
   expect(job.status).toBe(200);
-  await sourceEnv.DB.prepare("UPDATE players SET display_name='新名字' WHERE shop_id=? AND id='p'")
-    .bind(source.id)
-    .run();
-  await sourceEnv.DB.prepare(
-    "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'new','快照后新增','active',?)",
-  )
-    .bind(source.id, now)
-    .run();
+  await expect(sourceEnv.DB.prepare("UPDATE players SET display_name='新名字' WHERE shop_id=? AND id='p'")
+    .bind(source.id).run()).rejects.toThrow("SHOP_EXPORT_LOCKED");
+  await expect(sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'new','新增','active',?)")
+    .bind(source.id, now).run()).rejects.toThrow("SHOP_EXPORT_LOCKED");
+  await sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'other','其他店','active',?)")
+    .bind(other.id, now).run();
+  expect((await sourceEnv.DB.prepare("SELECT COUNT(*) AS n FROM shop_data_rows").first<{ n: number }>())!.n).toBe(0);
   let cursor = 0;
   const collected: any[] = [];
   for (;;) {
@@ -510,6 +514,7 @@ test("paged exports use a consistent snapshot and enforce job owner/shop isolati
     ).status,
   ).toBe(200);
   expect((await request(sourceEnv, base(source) + `/exports/${job.data.jobId}/page`)).status).toBe(404);
+  await sourceEnv.DB.prepare("UPDATE players SET display_name='新名字' WHERE shop_id=? AND id='p'").bind(source.id).run();
 }, 30000);
 
 test("staged import accepts identical part retries, rejects changed/late parts and validates the complete manifest", async () => {
@@ -661,4 +666,153 @@ test("legacy web identities without a membership row are preserved as portable a
       .bind(target.id)
       .first("player_id"),
   ).toBe("old");
+}, 30000);
+
+async function defaultAllowance(env: Env, shop: { id: string }) {
+  await env.DB.prepare("DELETE FROM shop_data_export_allowances WHERE shop_id=?").bind(shop.id).run();
+}
+test("monthly export quota is atomic, cancellation consumes it, and only admins can grant independent allowances", async () => {
+  const shop = await store(sourceEnv, true);
+  await defaultAllowance(sourceEnv, shop);
+  const status = await request(sourceEnv, base(shop) + "/export-status");
+  expect(status.data.remaining).toBe(1);
+  expect(status.data.importRemaining).toBe(1);
+  const started = await Promise.all([request(sourceEnv, base(shop) + "/exports", { scope: "business" }),
+    request(sourceEnv, base(shop) + "/exports", { scope: "configuration" })]);
+  expect(started.map(r => r.status).sort()).toEqual([200, 423]);
+  const id = started.find(r => r.status === 200)!.data.jobId;
+  const blocked = await request(sourceEnv, `/api/v1/merchant/shops/${shop.id}`, { name: "改名", latitude: 31.23, longitude: 121.47, radiusMeters: 80 }, "owner-session", "PATCH");
+  expect(blocked.status).toBe(423);
+  expect(blocked.error.code).toBe("SHOP_EXPORT_LOCKED");
+  await request(sourceEnv, base(shop) + `/exports/${id}`, undefined, "owner-session", "DELETE");
+  const limited = await request(sourceEnv, base(shop) + "/exports", { scope: "configuration" });
+  expect(limited.status).toBe(429);
+  expect(limited.error.code).toBe("EXPORT_MONTHLY_LIMIT");
+  expect((await request(sourceEnv, base(shop) + "/export?version=1")).status).toBe(429);
+  const adminPath = `/api/v1/admin/shops/${shop.publicId}/transfer-allowance`;
+  expect((await request(sourceEnv, adminPath, { extra: 1, importExtra: 2 }, "owner-session", "PUT")).status).toBe(403);
+  for (let i = 0; i < 2; i++) {
+    const granted = await request(sourceEnv, adminPath, { extra: 1, importExtra: 2 }, "admin-session", "PUT");
+    expect(granted.status).toBe(200);
+    expect(granted.data.allowance).toBe(2);
+    expect(granted.data.remaining).toBe(1);
+    expect(granted.data.importRemaining).toBe(3);
+  }
+  const job = await request(sourceEnv, base(shop) + "/exports", { scope: "configuration" });
+  expect(job.status).toBe(200);
+  await request(sourceEnv, base(shop) + `/exports/${job.data.jobId}`, undefined, "owner-session", "DELETE");
+  expect((await request(sourceEnv, base(shop) + "/exports", { scope: "business" })).status).toBe(429);
+}, 30000);
+
+test("import creation consumes one independent monthly slot and retries within the job do not consume another", async () => {
+  const source = await store(sourceEnv, true), target = await store(targetEnv), backup = await download(sourceEnv, source);
+  await defaultAllowance(targetEnv, target);
+  const { tables, ...header } = backup;
+  expect((await request(targetEnv, base(target) + "/imports", { ...header, version: 99 })).status).toBe(400);
+  const job = await upload(targetEnv, target, backup);
+  const checked = await preview(targetEnv, target, job);
+  expect(checked.data.canImport).toBe(true);
+  const over = await request(targetEnv, base(target) + "/imports", header);
+  expect(over.status).toBe(429);
+  expect(over.error.code).toBe("IMPORT_MONTHLY_LIMIT");
+  const id = op();
+  for (let i = 0; i < 2; i++) expect((await apply(targetEnv, target, job.jobId, checked.data.fingerprint, id)).status).toBe(200);
+  const status = (await request(targetEnv, base(target) + "/export-status")).data;
+  expect(status.importUsed).toBe(1);
+  expect(status.importRemaining).toBe(0);
+  expect(status.remaining).toBe(1);
+}, 30000);
+
+test("expired exports unlock without a cleanup write and cannot resume or produce an empty success", async () => {
+  const shop = await store(sourceEnv, true);
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  await sourceEnv.DB.prepare("UPDATE shop_data_exports SET expires_at='2000-01-01T00:00:00.000Z' WHERE id=?")
+    .bind(started.data.jobId).run();
+  const before = (await request(sourceEnv, base(shop) + "/export-status")).data;
+  expect(before.locked).toBe(false);
+  await sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'after-expiry','解锁后','active','2026-10-06T00:00:00.000Z')").bind(shop.id).run();
+  const page = await request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page`);
+  expect(page.status).toBe(410);
+  expect(page.error.code).toBe("EXPORT_EXPIRED");
+  expect((await sourceEnv.DB.prepare("SELECT status FROM shop_data_exports WHERE id=?").bind(started.data.jobId).first())!.status).toBe("active");
+}, 30000);
+
+test("export waits for live operation leases and database fences roll back multi-table and cross-shop writes", async () => {
+  const shop = await store(sourceEnv, true), other = await store(sourceEnv, true), now = new Date().toISOString();
+  await sourceEnv.DB.prepare("INSERT INTO operation_locks(shop_id,scope,resource_id,lock_id,acquired_at,expires_at) VALUES (?,'player.assets','p','lease',?,?)")
+    .bind(shop.id, now, new Date(Date.now() + 60_000).toISOString()).run();
+  const busy = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  expect(busy.status).toBe(409);
+  expect(busy.error.code).toBe("SHOP_EXPORT_BUSY");
+  expect((await request(sourceEnv, base(shop) + "/export-status")).data.used).toBe(0);
+  await sourceEnv.DB.prepare("DELETE FROM operation_locks WHERE shop_id=?").bind(shop.id).run();
+  await sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'move','不能移走','active','2026-10-06T00:00:00.000Z')").bind(shop.id).run();
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  expect(started.status).toBe(200);
+  await expect(sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'rollback','其他店','active','2026-10-06T00:00:00.000Z')").bind(other.id),
+    sourceEnv.DB.prepare("UPDATE app_settings SET value_json='{}' WHERE shop_id=?").bind(shop.id),
+  ])).rejects.toThrow("SHOP_EXPORT_LOCKED");
+  expect((await sourceEnv.DB.prepare("SELECT COUNT(*) AS n FROM players WHERE shop_id=? AND id='rollback'").bind(other.id).first())!.n).toBe(0);
+  await expect(sourceEnv.DB.prepare("UPDATE players SET shop_id=? WHERE shop_id=?").bind(other.id, shop.id).run()).rejects.toThrow("SHOP_EXPORT_LOCKED");
+  await expect(sourceEnv.DB.prepare("UPDATE auth_identities SET provider_subject='改身份' WHERE user_id='owner'").run()).rejects.toThrow("SHOP_EXPORT_LOCKED");
+  const staged = await sourceEnv.DB.prepare("SELECT COUNT(*) AS n FROM shop_data_rows").first<{ n: number }>();
+  expect(staged!.n).toBe(0);
+  let cursor = 0;
+  const parallel = await Promise.all([request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=0`),
+    request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=0`)]);
+  expect(parallel.map(r => r.status).sort()).toEqual([200, 409]);
+  const first = parallel.find(r => r.status === 200)!;
+  cursor = first.data.cursor;
+  expect((await request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=0`)).status).toBe(409);
+  for (;;) {
+    const result = await request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=${cursor}`);
+    expect(result.status).toBe(200);
+    if (result.data.done) break;
+    cursor = result.data.cursor;
+  }
+  expect((await request(sourceEnv, base(shop) + "/export-status")).data.locked).toBe(false);
+}, 30000);
+
+test("monthly periods use store calendar dates, including year boundaries and DST zones", () => {
+  expect(exportMonth("Asia/Shanghai", new Date("2026-10-31T16:00:00Z"))).toBe("2026-11");
+  expect(exportMonth("UTC", new Date("2026-10-31T16:00:00Z"))).toBe("2026-10");
+  expect(exportMonth("Asia/Tokyo", new Date("2026-12-31T15:00:00Z"))).toBe("2027-01");
+  expect(exportMonth("America/New_York", new Date("2026-11-01T03:30:00Z"))).toBe("2026-10");
+});
+
+test("legacy import applies are quota-limited but completed operation retries remain idempotent", async () => {
+  const source = await store(sourceEnv), target = await store(targetEnv);
+  await defaultAllowance(targetEnv, target);
+  const backup = (await request(sourceEnv, base(source) + "/export?version=1&scope=configuration")).backup;
+  const inspected = await request(targetEnv, base(target) + "/import/preview", { backup });
+  expect(inspected.data.canImport).toBe(true);
+  const id = op(), body = { backup, fingerprint: inspected.data.fingerprint, operationId: id };
+  for (let i = 0; i < 2; i++) expect((await request(targetEnv, base(target) + "/import/apply", body)).status).toBe(200);
+  const next = await request(targetEnv, base(target) + "/import/preview", { backup });
+  expect(next.data.canImport).toBe(true);
+  const limited = await request(targetEnv, base(target) + "/import/apply", { backup, fingerprint: next.data.fingerprint, operationId: op() });
+  expect(limited.status).toBe(429);
+  expect(limited.error.code).toBe("IMPORT_MONTHLY_LIMIT");
+  expect((await request(targetEnv, base(target) + "/export-status")).data.importUsed).toBe(1);
+}, 30000);
+
+test("indexed export pages handle composite keys, escaped IDs and more than one page of account links", async () => {
+  const shop = await store(sourceEnv, true), values = Array.from({ length: 75 }, (_, i) => ({
+    id: `bulk-${String(i).padStart(3, '0')}${i === 74 ? '"末尾' : ''}`, player: `p-${String(i).padStart(3, '0')}`,
+  })), input = JSON.stringify(values), now = new Date().toISOString();
+  await sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("INSERT INTO users(id,role) SELECT json_extract(value,'$.id'),'user' FROM json_each(?)").bind(input),
+    sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) SELECT ?,json_extract(value,'$.player'),json_extract(value,'$.id'),'active',? FROM json_each(?)").bind(shop.id, now, input),
+    sourceEnv.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) SELECT ?,json_extract(value,'$.player'),'web-account',json_extract(value,'$.id'),? FROM json_each(?)").bind(shop.id, now, input),
+    sourceEnv.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.player'),? FROM json_each(?)").bind(shop.id, now, input),
+  ]);
+  const backup = await download(sourceEnv, shop);
+  expect(backup.tables.players).toHaveLength(75);
+  expect(backup.tables.account_links).toHaveLength(76);
+  expect(backup.tables.account_links.filter((row: any) => row.player_id).map((row: any) => row.source_user_id).sort()).toEqual(values.map(row => row.id).sort());
+  expect(backup.tables.player_identities).toHaveLength(75);
+  expect(backup.tables.asset_definitions.map((row: any) => row.code).sort()).toEqual(['free', 'paid']);
+  expect(backup.tables.shop_billing_settings).toHaveLength(1);
+  expect(backup.tables.pricing_release_heads).toHaveLength(1);
 }, 30000);

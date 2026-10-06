@@ -18,12 +18,15 @@ const backup = {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN', timezoneId: 'America/Los_Angeles' });
     const errors = [], applies = [], previews = [], exports = [], uploads = [], headers = [];
-    let canImport = false, owner = true, imported = false;
+    let canImport = false, owner = true, imported = false, platformAdmin = false, remaining = 100, importRemaining = 100;
+    const allowanceSaves = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url()), pathname = url.pathname;
       let data;
-      if (pathname.endsWith('/data/exports')) {
+      if (pathname.endsWith('/data/export-status')) {
+        data = { remaining, used: exports.length, importRemaining, locked: false };
+      } else if (pathname.endsWith('/data/exports')) {
         exports.push(req.postDataJSON().scope);
         const { tables, ...header } = backup;
         data = { jobId: 'export-' + exports.length, headerJson: JSON.stringify(header), tables: Object.keys(tables),
@@ -47,7 +50,15 @@ const backup = {
         applies.push(req.postDataJSON());
         if (applies.length === 1) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: '操作失败，请稍后重试' } }) });
         imported = true; data = { imported: true };
-      } else if (pathname === '/api/v1/me') data = { user: { id: 'owner', username: 'owner', displayName: '店主', role: 'user', hasShops: true } };
+      } else if (pathname === '/api/v1/me') data = { user: { id: 'owner', username: 'owner', displayName: '店主', role: platformAdmin ? 'admin' : 'user', hasShops: true } };
+      else if (pathname === '/api/v1/admin/users') data = { users: [] };
+      else if (pathname === '/api/v1/admin/bans') data = { bans: [] };
+      else if (pathname.endsWith('/transfer-allowance')) {
+        if (req.method() === 'PUT') allowanceSaves.push(req.postDataJSON());
+        const saved = allowanceSaves.at(-1) || { extra: 0, importExtra: 0 };
+        data = { month: '2026-10', timeZone: 'Asia/Shanghai', allowance: 1 + saved.extra, used: 1,
+          remaining: saved.extra, importAllowance: 1 + saved.importExtra, importUsed: 1, importRemaining: saved.importExtra };
+      }
       else if (pathname === '/api/v1/merchant/shops') data = { shops: [{ ...shop, name: imported ? '来源店铺' : shop.name }] };
       else if (pathname === '/api/v1/merchant/shop-members') data = { members: [] };
       else if (pathname === '/api/v1/shops/demo') data = { shop: { ...shop, billingEnabled: imported, cashierEnabled: false } };
@@ -117,7 +128,24 @@ const backup = {
     owner = false; await page.reload();
     await page.getByRole('combobox', { name: 'Switch store', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Download JSON file', exact: true }).count(), 0);
+    owner = true; remaining = 0; importRemaining = 0;
+    await page.goto(origin + '/merchant/demo/settings?group=data');
+    await page.getByRole('button', { name: 'Download JSON file', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Download JSON file', exact: true }).isEnabled(), false);
+    await page.getByLabel('JSON backup file', { exact: true }).setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
+    assert.equal(await page.getByRole('button', { name: 'Preview import', exact: true }).isEnabled(), false);
+    platformAdmin = true;
+    await page.evaluate(() => localStorage.setItem('prism.locale', 'zh'));
+    await page.goto(origin + '/admin');
+    await page.getByLabel('店铺编号', { exact: true }).fill('demo');
+    await page.getByRole('button', { name: '查询额度', exact: true }).click();
+    await page.getByLabel('当月额外导出次数', { exact: true }).fill('2');
+    await page.getByLabel('当月额外导入次数', { exact: true }).fill('3');
+    await page.getByRole('button', { name: '保存额度', exact: true }).click();
+    await page.getByText('本月剩余导入次数: 3', { exact: true }).waitFor();
+    assert.deepEqual(allowanceSaves, [{ extra: 2, importExtra: 3 }]);
+    await page.screenshot({ path: path.join(output, 'shop-data-admin-allowance.png'), fullPage: true });
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ checks: 'paged UTC JSON download, streamed upload, business/configuration scopes, invalid files, failed preflight, source identification and counts, confirmation, same-operation retries, mobile and English UI, owner-only access', errors }));
+    console.log(JSON.stringify({ checks: 'paged UTC JSON download, streamed upload, business/configuration scopes, invalid files, failed preflight, source identification and counts, confirmation, same-operation retries, mobile and English UI, owner-only access, exhausted monthly allowances, administrator import/export grants', errors }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });

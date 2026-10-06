@@ -85,7 +85,7 @@ const coordinates = z.object({
   accuracy: z.number().finite().min(0).max(10000),
 });
 
-export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
+export async function getBillingShop(c: C, code: string, reconnect = true): Promise<BillingShop> {
   const shop = await c.env.DB.prepare(
     `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
     COALESCE(b.billing_enabled,0) AS billing_enabled, COALESCE(b.auto_register,0) AS auto_register,
@@ -101,7 +101,7 @@ export async function getBillingShop(c: C, code: string): Promise<BillingShop> {
     .first<BillingShop>();
   if (!shop) jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
   c.set("responseTimeZone", shop.time_zone);
-  await reconnectImportedAccount(c, shop.id);
+  if (reconnect) await reconnectImportedAccount(c, shop.id);
   // Preserve older clients while enforcing one location policy for every player action.
   const enabled = +(!!(shop.checkin_geo || shop.checkout_geo || shop.machine_geo));
   return { ...shop, checkin_geo: enabled, checkout_geo: enabled, machine_geo: enabled };
@@ -217,6 +217,7 @@ function publicSettings(shop: BillingShop) {
 export async function staffPrincipal(
   c: C,
   shop: BillingShop,
+  readOnly = false,
 ): Promise<Extract<Principal, { role: "staff" }>> {
   const user = requireUser(c);
   const mapping = await c.env.DB.prepare(
@@ -241,6 +242,7 @@ export async function staffPrincipal(
   if (member?.role !== "owner" && user.role !== "admin")
     jsonError(403, "没有店铺账务管理权限", "FORBIDDEN");
   const staffId = `account:${user.id}`;
+  if (readOnly) return { role: "staff", staffId, staffRole: "owner" };
   await c.env.DB.batch([
     c.env.DB.prepare(
       "INSERT INTO staff_users (shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES (?,?,?,?,?,?,'owner','active',?,?) ON CONFLICT(shop_id,id) DO NOTHING",

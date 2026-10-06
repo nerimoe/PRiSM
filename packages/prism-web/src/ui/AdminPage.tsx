@@ -1,7 +1,7 @@
 import { useI18n } from "../i18n";
 import { useEffect, useState, type FormEvent } from "react";
 import { Ban, ShieldCheck, Trash2, UserCog, X } from "lucide-react";
-import { Api, type Ban as BanRecord, type User, type UserSummary } from "../api";
+import { Api, api, type Ban as BanRecord, type User, type UserSummary } from "../api";
 import { RequireLogin } from "./RequireLogin";
 import { useAuth } from "./AuthContext";
 import { Modal } from "./merchant/shared";
@@ -43,6 +43,7 @@ export function AdminPage() {
     <RequireLogin roles={["admin"]}>
       <section className="grid gap-6 lg:grid-cols-[1fr_360px]">
         <div className="grid content-start gap-4">
+          <ExportAllowanceForm />
           <h1 className="text-2xl font-semibold">{t("账号管理")}</h1>
           <p className="text-sm text-ink/60">{t("删除测试账号后，再次用 MuNET 登录会重新进入注册流程。")}</p>
           {error && <p className="rounded border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">{errorText(error)}</p>}
@@ -95,6 +96,46 @@ export function AdminPage() {
       </section>
     </RequireLogin>
   );
+}
+
+function ExportAllowanceForm() {
+  const { t, errorText } = useI18n();
+  const [shopCode, setShopCode] = useState("");
+  const [extra, setExtra] = useState(0);
+  const [importExtra, setImportExtra] = useState(0);
+  const [status, setStatus] = useState<{ month: string; timeZone: string; allowance: number; used: number; remaining: number; importAllowance: number; importUsed: number; importRemaining: number }>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function request(save: boolean) {
+    setBusy(true); setError("");
+    try {
+      const result = await api<NonNullable<typeof status>>(`/api/v1/admin/shops/${encodeURIComponent(shopCode.trim())}/transfer-allowance`,
+        save ? { method: "PUT", body: JSON.stringify({ extra, importExtra }) } : undefined);
+      setStatus(result); setExtra(result.allowance - 1); setImportExtra(result.importAllowance - 1);
+    } catch (caught) { setError(errorText(caught instanceof Error ? caught.message : "操作失败")); }
+    finally { setBusy(false); }
+  }
+  return <section className="grid gap-3 rounded border border-ink/10 bg-panel p-4">
+    <h2 className="font-semibold">{t("店铺导入导出额度")}</h2>
+    <p className="text-sm text-ink/60">{t("导入、导出分别默认每月一次。额外次数仅对店铺当前月份有效。")}</p>
+    <label className="grid gap-1 text-sm">{t("店铺编号")}
+      <input className="focus-ring min-h-11 rounded border border-ink/10 bg-surface px-3" value={shopCode} disabled={busy}
+        onChange={event => { setShopCode(event.target.value); setStatus(undefined); }} />
+    </label>
+    <button className="focus-ring min-h-11 rounded border border-ink/10 px-3 disabled:opacity-50" disabled={busy || !shopCode.trim()} onClick={() => void request(false)}>{t("查询额度")}</button>
+    {status && <>
+      <p className="text-sm">{status.month} · {status.timeZone}<br />{t("已使用")}: {status.used} · {t("剩余")}: {status.remaining}</p>
+      <label className="grid gap-1 text-sm">{t("当月额外导出次数")}
+        <input className="focus-ring min-h-11 rounded border border-ink/10 bg-surface px-3" type="number" min={0} max={100} value={extra} disabled={busy} onChange={event => setExtra(Number(event.target.value))} />
+      </label>
+      <label className="grid gap-1 text-sm">{t("当月额外导入次数")}
+        <input className="focus-ring min-h-11 rounded border border-ink/10 bg-surface px-3" type="number" min={0} max={100} value={importExtra} disabled={busy} onChange={event => setImportExtra(Number(event.target.value))} />
+      </label>
+      <p className="text-sm">{t("本月剩余导入次数")}: {status.importRemaining}</p>
+      <button className="focus-ring min-h-11 rounded bg-ink px-3 text-canvas disabled:opacity-50" disabled={busy || !Number.isInteger(importExtra) || importExtra < 0 || importExtra > 100 || !Number.isInteger(extra) || extra < 0 || extra > 100} onClick={() => void request(true)}>{t("保存额度")}</button>
+    </>}
+    {error && <p role="alert" className="text-sm text-coral">{error}</p>}
+  </section>;
 }
 
 function UserRow({ user, onChanged }: { user: UserSummary; onChanged: () => void | Promise<void> }) {

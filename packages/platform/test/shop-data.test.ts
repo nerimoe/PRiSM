@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { sqliteSchema } from "@prism/storage-sql";
 import app from "../src/index";
 import { sha256 } from "../src/crypto";
+import { exportMonth } from "../src/shop-data-export";
 import type { Env } from "../src/types";
 import { utcWriteGuards } from "../src/deployment-gate";
 
@@ -25,7 +26,7 @@ const op = () => crypto.randomUUID();
 async function initialize(db: D1Database, prefix = ""): Promise<Env> {
   const fixture = { DB: db, ...rateLimits.bindings, APP_ORIGIN: origin, SESSION_SECRET: "test-only", URL_ENCRYPTION_KEY: "test-only", MUNET_CLIENT_ID: "", MUNET_CLIENT_SECRET: "", APPLE_TEAM_ID: "TEST" } as Env;
   for (const sql of sqliteSchema) await db.prepare(sql).run();
-  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings", "0031_shop_data_transfer"]) {
+  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings", "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export"]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(/^\s*--.*$/gm, "");
     for (const statement of splitD1MigrationStatements(sql)) await db.prepare(statement).run();
   }
@@ -48,7 +49,10 @@ async function store(configured = false) {
     ...(configured ? { billingSetup: setup } : {}),
   });
   expect(result.status).toBe(201);
-  return result.data.shop as { id: string; publicId: string };
+  const shop = result.data.shop as { id: string; publicId: string };
+  await env.DB.prepare("INSERT INTO shop_data_export_allowances(shop_id,month,extra,import_extra,updated_at) VALUES (?,?,100,100,?)")
+    .bind(shop.id, exportMonth("Asia/Tokyo"), new Date().toISOString()).run();
+  return shop;
 }
 const base = (shop: { publicId: string }) => `/api/v1/shops/${shop.publicId}/data`;
 async function exportData(shop: { publicId: string }, scope = "business", session = "owner-session", legacy = false) {

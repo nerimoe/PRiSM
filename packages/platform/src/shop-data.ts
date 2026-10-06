@@ -1,4 +1,5 @@
 import { registerShopDataJobRoutes } from "./shop-data-jobs";
+import { startShopExport, finishShopExport, importAttemptStatement } from "./shop-data-export";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { createD1Repositories } from "@prism/adapter-d1";
@@ -42,8 +43,8 @@ export async function targetState(c: C, shopId: string) {
   return state;
 }
 export async function owner(c: C, rate = true) {
-  const shop = await getBillingShop(c, c.req.param("shopCode")!);
-  const principal = await staffPrincipal(c, shop);
+  const shop = await getBillingShop(c, c.req.param("shopCode")!, false);
+  const principal = await staffPrincipal(c, shop, true);
   if (principal.staffRole !== "owner") jsonError(403, "只有店铺负责人可以导入和导出数据", "FORBIDDEN");
   if (rate) await enforceRateLimits(c, [{ key: `shop-data:${shop.id}:${requireUser(c).id}`, limit: 10, windowSeconds: 60 }]);
   return shop;
@@ -120,7 +121,11 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
   app.get("/api/v1/shops/:shopCode/data/export", async c => {
     const shop = await owner(c);
     const scope = parseBody(scopeSchema, c.req.query("scope") ?? "business");
-    const backup = await exportBackup(c, shop, scope);
+    const job = await startShopExport(c, shop, scope);
+    let backup: ShopBackup;
+    try { backup = await exportBackup(c, shop, scope); }
+    catch (error) { await finishShopExport(c.env.DB, job.id, "failed"); throw error; }
+    await finishShopExport(c.env.DB, job.id, "completed");
     const file = `prism-${shop.public_id}-${scope}-${backup.exportedAt.slice(0, 10)}.json`;
     return c.body(JSON.stringify(backup, null, 2), 200, {
       "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="${file}"`,
@@ -156,6 +161,7 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
       const now = new Date().toISOString();
       const result = { imported: true, scope: backup.scope, counts: preview.counts };
       const statements: D1PreparedStatement[] = [
+        importAttemptStatement(c, shop, operationId),
         // A NOT NULL failure aborts the entire batch if an ordinary writer changed the target.
         c.env.DB.prepare(`INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash,result_json,created_at)
           SELECT ?,?,CASE WHEN json_array(rows,settings,billing)=? THEN ? ELSE NULL END,'data/import','completed',?,?,?

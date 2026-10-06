@@ -1,6 +1,10 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import { api, ApiError } from "../../api";
-import { downloadShopBackup, uploadShopBackup, type ExportInfo } from "../../shop-data-transfer";
+import {
+  downloadShopBackup,
+  uploadShopBackup,
+  type ExportInfo,
+} from "../../shop-data-transfer";
 import { useI18n } from "../../i18n";
 import { button, primary, input, Field, Modal, useMerchant } from "./shared";
 
@@ -67,9 +71,26 @@ export function ShopDataTransfer() {
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
+  const [allowance, setAllowance] = useState<{
+    remaining: number;
+    used: number;
+    locked: boolean;
+    importRemaining: number;
+  }>();
   const path = `/api/v1/shops/${encodeURIComponent(shopCode)}/data`;
+  async function loadAllowance() {
+    setAllowance(await api(`${path}/export-status`));
+  }
+  useEffect(() => {
+    setAllowance(undefined);
+    void loadAllowance().catch(failed);
+  }, [shopCode]);
   function failed(value: unknown) {
-    setError(errorText(value instanceof Error ? value.message : "操作失败，请稍后重试"));
+    setError(
+      errorText(
+        value instanceof Error ? value.message : "操作失败，请稍后重试",
+      ),
+    );
   }
   async function download() {
     setBusy(true);
@@ -90,6 +111,7 @@ export function ShopDataTransfer() {
     } catch (value) {
       failed(value);
     } finally {
+      await loadAllowance().catch(failed);
       setBusy(false);
       setProgress(undefined);
     }
@@ -124,6 +146,7 @@ export function ShopDataTransfer() {
     } finally {
       setBusy(false);
       setProgress(undefined);
+      await loadAllowance().catch(failed);
     }
   }
   async function apply() {
@@ -158,10 +181,14 @@ export function ShopDataTransfer() {
       <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">
         <h4 className="font-semibold">{t("导出 JSON 备份")}</h4>
         <p className="text-sm leading-relaxed text-ink/60">
-          {t("用于数据备份，以及 beta 与正式版之间的店铺业务数据迁移。金额和时间保留原值。")}
+          {t(
+            "用于数据备份，以及 beta 与正式版之间的店铺业务数据迁移。金额和时间保留原值。",
+          )}
         </p>
         <p className="text-sm leading-relaxed text-ink/60">
-          {t("跨环境迁移时，请先停止旧环境营业，核对导入结果后再在新环境营业，避免两边同时计费。")}
+          {t(
+            "跨环境迁移时，请先停止旧环境营业，核对导入结果后再在新环境营业，避免两边同时计费。",
+          )}
         </p>
         <Field label="导出范围">
           <select
@@ -170,34 +197,75 @@ export function ShopDataTransfer() {
             disabled={busy}
             onChange={(event) => setScope(event.target.value as typeof scope)}
           >
-            <option value="business">{t("业务备份（玩家、余额、账单和配置）")}</option>
-            <option value="configuration">{t("仅店铺配置（不含玩家和账单）")}</option>
+            <option value="business">
+              {t("业务备份（玩家、余额、账单和配置）")}
+            </option>
+            <option value="configuration">
+              {t("仅店铺配置（不含玩家和账单）")}
+            </option>
           </select>
         </Field>
-        <button className={`${button} justify-self-start`} disabled={busy} onClick={download}>
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "每店每月可导出一次，需要更多次数请联系平台管理员。开始导出即使用次数；导出期间暂停本店业务操作，完成或取消后恢复，断线后最多 5 分钟自动解锁。",
+          )}
+        </p>
+        {allowance && (
+          <p className="text-sm">
+            {t("本月剩余导出次数")}: {allowance.remaining}
+          </p>
+        )}
+        {allowance?.locked && (
+          <p className="text-sm text-amber-600">
+            {t("店铺正在导出数据，暂时不能进行业务操作，请稍后重试")}
+          </p>
+        )}
+        <button
+          className={`${button} justify-self-start`}
+          disabled={
+            busy || !allowance || allowance.remaining === 0 || allowance.locked
+          }
+          onClick={download}
+        >
           {t("下载 JSON 文件")}
         </button>
         {exported && (
           <div className="grid gap-2 text-sm" role="status">
             <p>
-              {t("来源环境")}: {String(JSON.parse(exported.headerJson).source.origin)}
+              {t("来源环境")}:{" "}
+              {String(JSON.parse(exported.headerJson).source.origin)}
             </p>
             <p>
-              {t("来源店铺")}: {String(JSON.parse(exported.headerJson).source.name)} · {shopCode}
+              {t("来源店铺")}:{" "}
+              {String(JSON.parse(exported.headerJson).source.name)} · {shopCode}
             </p>
             <p>
               {t("玩家")}: {exported.counts.players ?? 0} · {t("前台玩家")}:{" "}
               {exported.counts.cashier_profiles ?? 0} · {t("结账记录")}:{" "}
-              {exported.counts.player_checkouts ?? 0} · {t("设备")}: {exported.counts.machines ?? 0}
+              {exported.counts.player_checkouts ?? 0} · {t("设备")}:{" "}
+              {exported.counts.machines ?? 0}
             </p>
-            {JSON.parse(exported.headerJson).scope === "business" && !exported.counts.players && (
-              <p className="text-amber-600">{t("导出文件没有玩家，请核对来源环境和店铺。")}</p>
-            )}
+            {JSON.parse(exported.headerJson).scope === "business" &&
+              !exported.counts.players && (
+                <p className="text-amber-600">
+                  {t("导出文件没有玩家，请核对来源环境和店铺。")}
+                </p>
+              )}
           </div>
         )}
       </section>
       <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">
         <h4 className="font-semibold">{t("从 JSON 导入")}</h4>
+        <p className="text-sm text-ink/60">
+          {t(
+            "每店每月可导入一次，需要更多次数请联系平台管理员。开始上传即使用次数，同一任务内重试不重复计数。",
+          )}
+        </p>
+        {allowance && (
+          <p className="text-sm">
+            {t("本月剩余导入次数")}: {allowance.importRemaining}
+          </p>
+        )}
         <p className="text-sm leading-relaxed text-ink/60">
           {t(
             "导入到空店铺，先预检再确认。恢复来源店铺的资料、设置和业务数据，保留目标店铺编号和当前管理员。",
@@ -222,7 +290,14 @@ export function ShopDataTransfer() {
         </p>
         <button
           className={`${button} justify-self-start`}
-          disabled={busy || !file || success}
+          disabled={
+            busy ||
+            !file ||
+            success ||
+            !allowance ||
+            allowance.importRemaining === 0 ||
+            allowance.locked
+          }
           onClick={preflight}
         >
           {t(busy ? "处理中…" : "预检导入")}
@@ -249,14 +324,21 @@ export function ShopDataTransfer() {
                 ))}
             </dl>
             {preview.errors.length > 0 && (
-              <ul role="alert" className="list-disc space-y-1 pl-5 text-sm text-rose-600">
+              <ul
+                role="alert"
+                className="list-disc space-y-1 pl-5 text-sm text-rose-600"
+              >
                 {preview.errors.map((message, index) => (
                   <li key={index}>{t(message)}</li>
                 ))}
               </ul>
             )}
             <p role="status" className="text-sm">
-              {t(preview.canImport ? "预检通过，可以确认导入。" : "预检未通过，请处理上述问题后重试。")}
+              {t(
+                preview.canImport
+                  ? "预检通过，可以确认导入。"
+                  : "预检未通过，请处理上述问题后重试。",
+              )}
             </p>
             {preview.canImport && (
               <button
@@ -286,7 +368,11 @@ export function ShopDataTransfer() {
         </p>
       )}
       {confirm && preview && (
-        <Modal title="确认导入店铺数据" close={() => setConfirm(false)} dismissDisabled={busy}>
+        <Modal
+          title="确认导入店铺数据"
+          close={() => setConfirm(false)}
+          dismissDisabled={busy}
+        >
           <div className="grid gap-4 p-5">
             <p>{t("将来源店铺的业务数据导入当前空店铺。")}</p>
             <p className="font-medium">

@@ -1,3 +1,4 @@
+import { registerShopExportRoutes, sourceColumns, importAttemptStatement, shopExportError } from "./shop-data-export";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { validatePricingConfig, resolveLocationTimeZone } from "@prism/core";
@@ -6,14 +7,13 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import { requireUser } from "./auth";
 import { type BillingShop } from "./billing";
-import { decryptSecret, encryptSecret, sha256 } from "./crypto";
+import { encryptSecret, sha256 } from "./crypto";
 import { jsonError } from "./http";
 import { owner, targetState, snapshotSql, snapshotBindings, snapshotKey } from "./shop-data";
 import {
   fullHeaderSchema,
   fullTables,
   schemas,
-  transferPageBytes,
   uploadBytes,
   validateRows,
   type FullHeader,
@@ -36,19 +36,6 @@ type Job = {
 const base = "/api/v1/shops/:shopCode/data";
 const primitive = z.union([z.string(), z.number().finite(), z.null()]);
 const q = (key: string) => `json_extract(value,'$.${key}')`;
-const sourceColumns = (table: FullTable) =>
-  table === "machines"
-    ? schemas[table].columns.map(
-        (c) =>
-          ({
-            hinata_url: "hinata_url_encrypted",
-            hinata_password: "hinata_password_encrypted",
-            ha_binding_json: "ha_binding_encrypted",
-          })[c.name] ?? c.name,
-      )
-    : schemas[table].columns.map((c) => c.name);
-const objectSql = (table: FullTable, alias = "") =>
-  `json_object(${schemas[table].columns.map((c, i) => `'${c.name}',${alias}${sourceColumns(table)[i]}`).join(",")})`;
 const expiry = () => new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 async function body(c: C): Promise<unknown> {
   const reader = c.req.raw.body?.getReader();
@@ -104,191 +91,6 @@ const counts = async (db: D1Database, id: string, tables: readonly FullTable[]) 
 };
 async function cleanup(db: D1Database) {
   await db.prepare("DELETE FROM shop_data_jobs WHERE expires_at<?").bind(new Date().toISOString()).run();
-}
-
-async function makeSnapshot(c: C, shop: BillingShop, scope: "business" | "configuration") {
-  await cleanup(c.env.DB);
-  const id = crypto.randomUUID(),
-    now = new Date().toISOString();
-  const header: FullHeader = {
-    format: "prism-shop-data",
-    version: 2,
-    scope,
-    exportedAt: now,
-    source: {
-      publicId: shop.public_id,
-      name: shop.name,
-      timeZone: shop.time_zone,
-      origin: new URL(c.req.url).origin,
-      location: { latitude: shop.latitude, longitude: shop.longitude, radiusMeters: shop.radius_meters },
-    },
-    storage: { timeZone: "UTC", money: "minor-units" },
-    settings: {
-      billingEnabled: !!shop.billing_enabled,
-      cashierEnabled: !!shop.cashier_enabled,
-      autoRegister: !!shop.auto_register,
-      identityBindingRequired: !!shop.identity_binding_required,
-      checkinGeo: !!shop.checkin_geo,
-      checkoutGeo: !!shop.checkout_geo,
-      machineGeo: !!shop.machine_geo,
-      entryPricingIds: JSON.parse(shop.entry_pricing_ids_json),
-      botContact: shop.bot_contact,
-      coinCooldownMs: 60000,
-      defaultPresentId: null,
-    },
-  };
-  const tables = fullTables(header);
-  const statements = [
-    c.env.DB.prepare(
-      "INSERT INTO shop_data_jobs(id,shop_id,user_id,kind,status,header_json,created_at,expires_at) VALUES (?,?,?,'export','ready',?,?,?)",
-    ).bind(id, shop.id, requireUser(c).id, JSON.stringify(header), now, expiry()),
-  ];
-  const storedTables = tables.filter((table) => table !== "account_links");
-  // Keep compound SELECTs below D1's term limit while capturing every page in one transaction.
-  for (let offset = 0; offset < storedTables.length; offset += 5) {
-    const group = storedTables.slice(offset, offset + 5);
-    statements.push(
-      c.env.DB.prepare(
-        `INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json)
-      SELECT ?,seq,table_name,payload_json FROM (${group
-        .map(
-          (table) => `SELECT
-        ${tables.indexOf(table) * 1000000000}+ROW_NUMBER() OVER(ORDER BY rowid) AS seq,
-        '${table}' AS table_name,${objectSql(table)} AS payload_json FROM ${table} WHERE shop_id=?`,
-        )
-        .join(" UNION ALL ")})`,
-      ).bind(id, ...group.map(() => shop.id)),
-    );
-  }
-  for (const table of tables) {
-    if (table === "account_links") {
-      statements.push(
-        c.env.DB.prepare(
-          `INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json)
-        SELECT ?,COALESCE((SELECT MAX(seq) FROM shop_data_rows WHERE job_id=?),0)+ROW_NUMBER() OVER(ORDER BY u.id),'account_links',
-        json_object('source_user_id',u.id,'player_id',COALESCE(a.player_id,h.player_id,w.player_id),'staff_id',COALESCE(f.staff_id,h.staff_id),'member_role',COALESCE(m.role,h.member_role),'verified_at',COALESCE(a.verified_at,h.verified_at,w.created_at),
-          'identities_json',(SELECT json_group_array(json_object('provider',i.provider,'subject',i.provider_subject)) FROM auth_identities i WHERE i.user_id=u.id)||'',
-          'platform_bindings_json',COALESCE(NULLIF((SELECT json_group_array(json_object('provider',b.provider,'subject',b.subject,'verified_at',b.verified_at)) FROM shop_platform_bindings b WHERE b.shop_id=? AND b.user_id=u.id)||'','[]'),h.platform_bindings_json,'[]'))
-        FROM users u LEFT JOIN shop_player_accounts a ON a.user_id=u.id AND a.shop_id=?
-        LEFT JOIN shop_staff_accounts f ON f.user_id=u.id AND f.shop_id=? LEFT JOIN shop_members m ON m.user_id=u.id AND m.shop_id=?
-        LEFT JOIN player_identities w ON w.subject=u.id AND w.provider='web-account' AND w.shop_id=?
-        LEFT JOIN shop_imported_accounts h ON h.source_user_id=u.id AND h.shop_id=? AND h.matched_user_id IS NULL
-        WHERE a.user_id IS NOT NULL OR f.user_id IS NOT NULL OR m.user_id IS NOT NULL OR w.subject IS NOT NULL`,
-        ).bind(id, id, shop.id, shop.id, shop.id, shop.id, shop.id, shop.id),
-      );
-      statements.push(
-        c.env.DB.prepare(
-          `INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json)
-        SELECT ?,COALESCE((SELECT MAX(seq) FROM shop_data_rows WHERE job_id=?),0)+ROW_NUMBER() OVER(ORDER BY source_user_id),'account_links',
-        json_object('source_user_id',source_user_id,'player_id',player_id,'staff_id',staff_id,'member_role',member_role,'verified_at',verified_at,
-        'identities_json',identities_json,'platform_bindings_json',platform_bindings_json)
-        FROM shop_imported_accounts h WHERE shop_id=? AND matched_user_id IS NULL
-        AND NOT EXISTS(SELECT 1 FROM shop_data_rows r WHERE r.job_id=? AND r.table_name='account_links' AND json_extract(r.payload_json,'$.source_user_id')=h.source_user_id)`,
-        ).bind(id, id, shop.id, id),
-      );
-      statements.push(
-        c.env.DB.prepare(
-          `INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json)
-        SELECT ?,COALESCE((SELECT MAX(seq) FROM shop_data_rows WHERE job_id=?),0)+ROW_NUMBER() OVER(ORDER BY i.subject),'account_links',
-        json_object('source_user_id',i.subject,'player_id',i.player_id,'staff_id',NULL,'member_role',NULL,'verified_at',i.created_at,
-          'identities_json','[]','platform_bindings_json','[]') FROM player_identities i WHERE i.shop_id=? AND i.provider='web-account'
-        AND NOT EXISTS(SELECT 1 FROM shop_data_rows r WHERE r.job_id=? AND r.table_name='account_links' AND json_extract(r.payload_json,'$.source_user_id')=i.subject)`,
-        ).bind(id, id, shop.id, id),
-      );
-    }
-  }
-  // Metadata and all records are read in the same transaction; downloading can take any amount of time.
-  statements.push(
-    c.env.DB.prepare(
-      `UPDATE shop_data_jobs SET header_json=json_set(header_json,
-    '$.source.name',(SELECT name FROM shops WHERE id=?),
-    '$.source.location',(SELECT json_object('latitude',latitude,'longitude',longitude,'radiusMeters',radius_meters) FROM shops WHERE id=?),
-    '$.source.timeZone',COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=? AND key='store.profile'),'Asia/Shanghai'),
-    '$.shopProfile',(SELECT json_object('name',name,'latitude',latitude,'longitude',longitude,'radiusMeters',radius_meters,'heroData',hero_data) FROM shops WHERE id=?),
-    '$.settings',(SELECT json_object(
-      'billingEnabled',json(CASE WHEN COALESCE(b.billing_enabled,0) THEN 'true' ELSE 'false' END),
-      'autoRegister',json(CASE WHEN COALESCE(b.auto_register,0) THEN 'true' ELSE 'false' END),
-      'identityBindingRequired',json(CASE WHEN COALESCE(b.identity_binding_required,1) THEN 'true' ELSE 'false' END),
-      'checkinGeo',json(CASE WHEN COALESCE(b.checkin_geo,0) THEN 'true' ELSE 'false' END),
-      'checkoutGeo',json(CASE WHEN COALESCE(b.checkout_geo,0) THEN 'true' ELSE 'false' END),
-      'machineGeo',json(CASE WHEN COALESCE(b.machine_geo,0) THEN 'true' ELSE 'false' END),
-      'entryPricingIds',json(COALESCE(b.entry_pricing_ids_json,'[]')),'botContact',COALESCE(b.bot_contact,''),
-      'cashierEnabled',json(CASE WHEN COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='cashier.settings'),0) THEN 'true' ELSE 'false' END),
-      'coinCooldownMs',COALESCE((SELECT json_extract(value_json,'$.coinCooldownMs') FROM app_settings WHERE shop_id=s.id AND key='venue.operations'),60000),
-      'defaultPresentId',(SELECT json_extract(value_json,'$.defaultPresentId') FROM app_settings WHERE shop_id=s.id AND key='player.registration'))
-      FROM shops s LEFT JOIN shop_billing_settings b ON b.shop_id=s.id WHERE s.id=?)) WHERE id=?`,
-    ).bind(shop.id, shop.id, shop.id, shop.id, shop.id, id),
-  );
-  await c.env.DB.batch(statements);
-  const job = (await c.env.DB.prepare("SELECT header_json FROM shop_data_jobs WHERE id=?")
-    .bind(id)
-    .first<{ header_json: string }>())!;
-  return {
-    jobId: id,
-    headerJson: job.header_json,
-    tables,
-    counts: await counts(c.env.DB, id, tables),
-    filename: `prism-${shop.public_id}-${scope}-${now.slice(0, 10)}.json`,
-  };
-}
-async function page(c: C, id: string, after: number) {
-  const rows = (
-    await c.env.DB.prepare(
-      `WITH candidates AS (
-    SELECT seq,table_name,payload_json FROM shop_data_rows WHERE job_id=? AND seq>? ORDER BY seq LIMIT 1000),
-    sized AS (SELECT *,SUM(length(CAST(payload_json AS BLOB))) OVER(ORDER BY seq) AS bytes FROM candidates)
-    SELECT seq,table_name,payload_json FROM sized WHERE bytes<=? OR seq=(SELECT MIN(seq) FROM candidates) ORDER BY seq`,
-    )
-      .bind(id, after, transferPageBytes)
-      .all<{ seq: number; table_name: FullTable; payload_json: string }>()
-  ).results;
-  for (const row of rows)
-    if (row.table_name === "machines") {
-      const value = JSON.parse(row.payload_json) as DataRow;
-      for (const key of ["hinata_url", "hinata_password", "ha_binding_json"])
-        if (value[key]) value[key] = await decryptSecret(String(value[key]), c.env.URL_ENCRYPTION_KEY);
-      row.payload_json = JSON.stringify(value);
-    }
-  return { rows, cursor: rows.at(-1)?.seq ?? after, done: rows.length === 0 };
-}
-async function* filePieces(c: C, id: string, headerJson: string, tables: readonly FullTable[]) {
-  yield headerJson.slice(0, -1) + ',"tables":{';
-  let cursor = 0,
-    index = 0,
-    open = false,
-    hasRows = false;
-  for (;;) {
-    const next = await page(c, id, cursor);
-    if (next.done) break;
-    cursor = next.cursor;
-    for (const row of next.rows) {
-      while (tables[index] !== row.table_name) {
-        if (open) yield "]";
-        else yield `${JSON.stringify(tables[index])}:[]`;
-        yield ",";
-        open = false;
-        hasRows = false;
-        index++;
-        if (index >= tables.length) throw new Error("Invalid snapshot table sequence");
-      }
-      if (!open) {
-        yield `${JSON.stringify(tables[index])}:[`;
-        open = true;
-      }
-      if (hasRows) yield ",";
-      yield row.payload_json;
-      hasRows = true;
-    }
-  }
-  if (open) {
-    yield "]";
-    index++;
-  }
-  while (index < tables.length) {
-    if (index > 0) yield ",";
-    yield `${JSON.stringify(tables[index++])}:[]`;
-  }
-  yield "}}";
 }
 
 async function stage(
@@ -868,24 +670,7 @@ async function applyJob(
 }
 
 export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
-  app.post(base + "/exports", async (c) => {
-    const shop = await owner(c);
-    const input = parse(
-      z.object({ scope: z.enum(["business", "configuration"]).default("business") }).strict(),
-      await body(c),
-    );
-    return c.json(await makeSnapshot(c, shop, input.scope ?? "business"));
-  });
-  app.get(base + "/exports/:jobId/page", async (c) => {
-    const { job } = await getJob(c, "export");
-    const after = parse(z.coerce.number().int().nonnegative(), c.req.query("after") ?? 0);
-    return c.json(await page(c, job.id, after));
-  });
-  app.delete(base + "/exports/:jobId", async (c) => {
-    const { job } = await getJob(c, "export");
-    await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=?").bind(job.id).run();
-    return c.json({ deleted: true });
-  });
+  registerShopExportRoutes(app);
   app.delete(base + "/imports/:jobId", async (c) => {
     const { job } = await getJob(c, "import");
     if (job.status === "completed") jsonError(409, "已完成导入不能撤销", "TRANSFER_LOCKED");
@@ -894,49 +679,19 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
       .run();
     return c.json({ deleted: true });
   });
-  app.get(base + "/export", async (c, next) => {
-    if (c.req.query("version") === "1") return next();
-    const shop = await owner(c);
-    const scope = parse(z.enum(["business", "configuration"]), c.req.query("scope") ?? "business");
-    const snapshot = await makeSnapshot(c, shop, scope),
-      iterator = filePieces(c, snapshot.jobId, snapshot.headerJson, snapshot.tables),
-      encoder = new TextEncoder();
-    const stream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const next = await iterator.next();
-          if (next.done) {
-            controller.close();
-            await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=?").bind(snapshot.jobId).run();
-          } else controller.enqueue(encoder.encode(next.value));
-        } catch (error) {
-          controller.error(error);
-        }
-      },
-      async cancel() {
-        await iterator.return(undefined);
-        await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=?").bind(snapshot.jobId).run();
-      },
-    });
-    return new Response(stream, {
-      headers: {
-        "content-type": "application/json; charset=utf-8",
-        "content-disposition": `attachment; filename="${snapshot.filename}"`,
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-      },
-    });
-  });
   app.post(base + "/imports", async (c) => {
     const shop = await owner(c);
     await cleanup(c.env.DB);
     const header = parse(fullHeaderSchema, await body(c));
     const id = crypto.randomUUID();
-    await c.env.DB.prepare(
-      "INSERT INTO shop_data_jobs(id,shop_id,user_id,kind,status,header_json,created_at,expires_at) VALUES (?,?,?,'import','uploading',?,?,?)",
-    )
-      .bind(id, shop.id, requireUser(c).id, JSON.stringify(header), new Date().toISOString(), expiry())
-      .run();
+    try {
+      await c.env.DB.batch([
+        importAttemptStatement(c, shop, id),
+        c.env.DB.prepare(
+          "INSERT INTO shop_data_jobs(id,shop_id,user_id,kind,status,header_json,created_at,expires_at) VALUES (?,?,?,'import','uploading',?,?,?)",
+        ).bind(id, shop.id, requireUser(c).id, JSON.stringify(header), new Date().toISOString(), expiry()),
+      ]);
+    } catch (error) { shopExportError(error); }
     return c.json({ jobId: id, tables: fullTables(header) });
   });
   app.post(base + "/imports/:jobId/parts", async (c) => {

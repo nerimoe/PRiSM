@@ -479,3 +479,9 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 ### 店铺 JSON 数据备份与迁移
 
 店主可以使用 `/api/v1/shops/:shopCode/data/export` 下载原始 JSON 文件，大文件通过 `data/exports` 任务分页下载，通过 `data/imports` 分片上传、预检并原子恢复到空店铺。新版后台支持 v1／v2 文件，旧整文件接口仅为兼容保留。此附件保留数据库原始 UTC 时间、整数货币和历史计费版本，不进行展示时区转换。范围、权限、格式、限制及跨环境迁移注意事项见 [店铺数据导入导出](shop-data-transfer.md)。
+
+### 店铺只读导出及月度额度
+
+导出期间锁定该店铺业务写入，直接分页读取原表，不在 D1 保存导出内容。仅保存锁、游标和月度次数元数据；完成／取消解锁，断线至多 5 分钟解锁，任务最长 2 小时。每店按店铺时区自然月默认导出一次、导入一次，两个额度独立。v2 从开始导出／上传时扣除，任务内导入重试不重复计数；旧版下载和整文件导入亦受额度限制。
+
+`GET /api/v1/shops/:shopCode/data/export-status` 返回 `{ month, timeZone, allowance, used, remaining, locked, importAllowance, importUsed, importRemaining }`。平台管理员可 `GET/PUT /api/v1/admin/shops/:shopCode/transfer-allowance`；PUT 以 `{ extra, importExtra }` 设置当月额外次数，范围均为整数 0–100，幂等设置。超额返回 429 `EXPORT_MONTHLY_LIMIT` / `IMPORT_MONTHLY_LIMIT`，锁店业务返回 423 `SHOP_EXPORT_LOCKED`。导出游标仅接受当前进度，无法反复读取已完成页面或跳页。完整策略见 [shop-data-transfer.md](shop-data-transfer.md)。

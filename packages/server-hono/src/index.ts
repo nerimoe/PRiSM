@@ -210,6 +210,8 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   };
 
   app.onError((error, context) => {
+    if (String(error).includes("SHOP_EXPORT_LOCKED"))
+      return context.json({ error: { code: "SHOP_EXPORT_LOCKED", message: "店铺正在导出数据，暂时不能进行业务操作，请稍后重试" } }, 423);
     if (error instanceof PrismDomainError) {
       return context.json(
         {
