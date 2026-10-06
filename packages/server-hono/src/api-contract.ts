@@ -9,6 +9,8 @@ export function apiErrorCode(status: number): string {
 
 export async function wrapApiResponse(response: Response, timeZone?: string | (() => Promise<string>)): Promise<Response> {
   if (response.status === 204 || response.status === 304) return response;
+  // Downloadable JSON is a storage artifact: keep its bytes, UTC clocks and root shape intact.
+  if (response.ok && response.headers.get("content-disposition")?.startsWith("attachment;")) return response;
   const json = response.headers.get("content-type")?.includes("application/json");
   if (response.ok && !json) return response;
   const payload: unknown = json ? await response.json() : null;
@@ -36,6 +38,7 @@ export async function unwrapLegacyResponse(response: Response): Promise<Response
   const headers = new Headers(response.headers);
   headers.set("deprecation", "true");
   headers.delete("content-length");
+  if (headers.get("content-disposition")?.startsWith("attachment;")) return new Response(response.body, { status: response.status, headers });
   if (!headers.get("content-type")?.includes("application/json")) return new Response(response.body, { status: response.status, headers });
   const body = await response.json() as ApiResponse<unknown>;
   return Response.json("data" in body ? body.data : body, { status: response.status, headers });

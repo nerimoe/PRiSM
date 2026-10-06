@@ -28,3 +28,11 @@ test("non-event payloads, errors and non-JSON responses do not trigger a time-zo
   expect((await (await wrapApiResponse(Response.json({ error: "Denied" }, { status: 403 }), zone)).json()).error.message).toBe("Denied");
   expect(await (await wrapApiResponse(new Response("image"), zone)).text()).toBe("image");
 });
+
+test("JSON attachments retain their root format and UTC storage values", async () => {
+  const content = JSON.stringify({ format: "prism-shop-data", version: 1, startedAt: "2026-10-03T02:08:00Z" }, null, 2);
+  const response = new Response(content, { headers: { "content-type": "application/json", "content-disposition": 'attachment; filename="backup.json"', "cache-control": "no-store" } });
+  expect(await (await wrapApiResponse(response, "Asia/Shanghai")).text()).toBe(content);
+  const error = await wrapApiResponse(Response.json({ error: "Denied" }, { status: 403, headers: { "content-disposition": 'attachment; filename="backup.json"' } }), "Asia/Shanghai");
+  expect((await error.json()).error.code).toBe("FORBIDDEN");
+});

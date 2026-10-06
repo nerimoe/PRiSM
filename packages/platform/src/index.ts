@@ -1,3 +1,4 @@
+import { registerShopDataRoutes } from "./shop-data";
 import { munetSuccessReturn, munetFailureReturn } from "./auth-return";
 import { ensureD1UtcPricing } from "@prism/runtime";
 import { registerCashierRoutes } from "./cashier";
@@ -171,6 +172,7 @@ app.use("/callback*", attachUser);
 registerDeviceRoutes(app);
 registerBillingRoutes(app);
 registerCashierRoutes(app);
+registerShopDataRoutes(app);
 
 app.get("/api/v1/health", (c) => c.json({ ok: true }));
 

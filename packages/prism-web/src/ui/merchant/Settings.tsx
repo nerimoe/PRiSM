@@ -1,7 +1,8 @@
+import { ShopDataTransfer } from "./ShopDataTransfer";
 import { IdentityConverter } from "./IdentityConverter";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Store, Receipt, Users, MapPin, Plug, ShieldCheck } from "lucide-react";
+import { Store, Receipt, Users, MapPin, Plug, ShieldCheck, Database } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { BillingSettings } from "../BillingPages";
 import {
@@ -83,6 +84,12 @@ const groups = [
     label: "Bot 与接入",
     description: "Bot 配置与机台接入凭据。",
     icon: Plug,
+  },
+  {
+    id: "data",
+    label: "数据管理",
+    description: "JSON 备份、恢复与跨环境迁移。",
+    icon: Database,
   },
   {
     id: "members",
@@ -285,6 +292,7 @@ export function SettingsPage({
           <div hidden={group.id !== "integrations"}>
             <Tokens shopCode={shopCode} />
           </div>
+          <div hidden={group.id !== "data"}><ShopDataTransfer key={shopCode} /></div>
           <div hidden={group.id !== "members"}>{members}</div>
         </div>
       </div>
