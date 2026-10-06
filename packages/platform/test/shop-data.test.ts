@@ -25,7 +25,7 @@ const op = () => crypto.randomUUID();
 async function initialize(db: D1Database, prefix = ""): Promise<Env> {
   const fixture = { DB: db, ...rateLimits.bindings, APP_ORIGIN: origin, SESSION_SECRET: "test-only", URL_ENCRYPTION_KEY: "test-only", MUNET_CLIENT_ID: "", MUNET_CLIENT_SECRET: "", APPLE_TEAM_ID: "TEST" } as Env;
   for (const sql of sqliteSchema) await db.prepare(sql).run();
-  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings"]) {
+  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings", "0031_shop_data_transfer"]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(/^\s*--.*$/gm, "");
     for (const statement of splitD1MigrationStatements(sql)) await db.prepare(statement).run();
   }
@@ -52,7 +52,7 @@ async function store(configured = false) {
 }
 const base = (shop: { publicId: string }) => `/api/v1/shops/${shop.publicId}/data`;
 async function exportData(shop: { publicId: string }, scope = "business", session = "owner-session", legacy = false) {
-  const path = `${base(shop)}/export?scope=${scope}`.replace(legacy ? "/api/v1/" : "___", "/api/");
+  const path = `${base(shop)}/export?version=1&scope=${scope}`.replace(legacy ? "/api/v1/" : "___", "/api/");
   const response = await app.fetch(new Request(origin + path, { headers: { cookie: `arcadelink_session=${session}` } }), env);
   return { response, backup: await response.json() as any };
 }

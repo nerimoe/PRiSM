@@ -50,7 +50,10 @@ function MerchantContent() {
     [],
   );
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    const refresh = () => { void load().catch((e) => setError(e.message)); };
+    refresh();
+    window.addEventListener("prism-shop-settings", refresh);
+    return () => window.removeEventListener("prism-shop-settings", refresh);
   }, [load]);
   if (!shops) return <State error={error} />;
   const shop = shops.find((s) => s.publicId === shopCode);

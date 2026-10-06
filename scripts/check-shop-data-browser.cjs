@@ -7,7 +7,7 @@ const output = process.env.PRISM_SHOP_DATA_OUTPUT || '.scan-check';
 fs.mkdirSync(output, { recursive: true });
 const shop = { id: 'shop', publicId: 'demo', name: '目标测试店铺', timeZone: 'Asia/Tokyo', latitude: 35, longitude: 139, radiusMeters: 80 };
 const backup = {
-  format: 'prism-shop-data', version: 1, scope: 'business', exportedAt: '2026-10-06T02:08:00.000Z',
+  format: 'prism-shop-data', version: 2, shopProfile: { name: "来源店铺", latitude: 31.23, longitude: 121.47, radiusMeters: 80, heroData: null }, scope: 'business', exportedAt: '2026-10-06T02:08:00.000Z',
   source: { publicId: 'beta-shop', name: '来源店铺', timeZone: 'Asia/Shanghai', origin: 'https://beta.example.com' },
   storage: { timeZone: 'UTC', money: 'minor-units' }, settings: {},
   tables: { players: [{ id: 'p', display_name: '玩家' }], asset_holdings: [{ quantity: 12345 }], sessions: [{ started_at: '2026-10-06T02:08:00.000Z' }] },
@@ -17,28 +17,38 @@ const backup = {
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}), args: ['--no-sandbox'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN', timezoneId: 'America/Los_Angeles' });
-    const errors = [], applies = [], previews = [], exports = [];
+    const errors = [], applies = [], previews = [], exports = [], uploads = [], headers = [];
     let canImport = false, owner = true, imported = false;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url()), pathname = url.pathname;
       let data;
-      if (pathname.endsWith('/data/export')) {
-        exports.push(url.searchParams.get('scope'));
-        return route.fulfill({ status: 200, headers: { 'content-type': 'application/json', 'content-disposition': 'attachment; filename="prism-beta-shop.json"' }, body: JSON.stringify(backup, null, 2) });
-      }
-      if (pathname.endsWith('/data/import/preview')) {
+      if (pathname.endsWith('/data/exports')) {
+        exports.push(req.postDataJSON().scope);
+        const { tables, ...header } = backup;
+        data = { jobId: 'export-' + exports.length, headerJson: JSON.stringify(header), tables: Object.keys(tables),
+          counts: Object.fromEntries(Object.entries(tables).map(([t,r])=>[t,r.length])), filename: 'prism-beta-shop.json' };
+      } else if (/\/data\/exports\/[^/]+\/page$/.test(pathname)) {
+        const after = Number(url.searchParams.get('after') || '0');
+        const rows = Object.entries(backup.tables).flatMap(([table,values])=>values.map(row=>({ table_name: table, payload_json: JSON.stringify(row) }))).map((r,i)=>({ ...r,seq:i+1 }));
+        data = { rows: after ? [] : rows, cursor: after || rows.length, done: !!after };
+      } else if (pathname.endsWith('/data/imports')) {
+        headers.push(req.postDataJSON());
+        data = { jobId: 'import-' + headers.length, tables: Object.keys(backup.tables) };
+      } else if (/\/data\/imports\/[^/]+\/parts$/.test(pathname)) {
+        uploads.push(req.postDataJSON()); data = { accepted: true };
+      } else if (/\/data\/imports\/[^/]+\/preview$/.test(pathname)) {
         previews.push(req.postDataJSON());
         data = { canImport, fingerprint: 'a'.repeat(43), scope: 'business', source: backup.source,
           counts: { players: 1, asset_holdings: 1, asset_ledger_entries: 27, sessions: 1 },
           errors: canImport ? [] : ['目标店铺已有玩家、账单、配置或设备，请选择空店铺导入'],
-          warnings: ['仅导入空店铺，保留目标店铺的名称、位置、时区、封面和管理员。'] };
-      } else if (pathname.endsWith('/data/import/apply')) {
+          warnings: ['将恢复完整店铺资料、设置、设备连接及业务记录。目标店铺编号和当前管理员保留。'] };
+      } else if (/\/data\/imports\/[^/]+\/apply$/.test(pathname)) {
         applies.push(req.postDataJSON());
         if (applies.length === 1) return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: '操作失败，请稍后重试' } }) });
         imported = true; data = { imported: true };
       } else if (pathname === '/api/v1/me') data = { user: { id: 'owner', username: 'owner', displayName: '店主', role: 'user', hasShops: true } };
-      else if (pathname === '/api/v1/merchant/shops') data = { shops: [shop] };
+      else if (pathname === '/api/v1/merchant/shops') data = { shops: [{ ...shop, name: imported ? '来源店铺' : shop.name }] };
       else if (pathname === '/api/v1/merchant/shop-members') data = { members: [] };
       else if (pathname === '/api/v1/shops/demo') data = { shop: { ...shop, billingEnabled: imported, cashierEnabled: false } };
       else if (pathname.endsWith('/staff/me')) data = { staff: { canWrite: owner, role: owner ? 'owner' : 'viewer' } };
@@ -68,6 +78,7 @@ const backup = {
     assert.deepEqual(exports, ['business', 'configuration']);
     const input = page.getByLabel('JSON 备份文件', { exact: true });
     await input.setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{invalid') });
+    await page.getByRole('button', { name: '预检导入', exact: true }).click();
     await page.getByRole('alert').filter({ hasText: '请选择有效的 JSON 备份文件' }).waitFor();
     await input.setInputFiles({ name: 'beta-backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)) });
     await page.getByRole('button', { name: '预检导入', exact: true }).click();
@@ -76,8 +87,11 @@ const backup = {
     canImport = true;
     await page.getByRole('button', { name: '预检导入', exact: true }).click();
     await page.getByText('预检通过，可以确认导入。', { exact: true }).waitFor();
-    assert.ok(await page.getByText('来源环境: https://beta.example.com', { exact: true }).isVisible());
-    assert.deepEqual(previews[0].backup, backup);
+    assert.ok(await page.getByText('来源环境: https://beta.example.com', { exact: true }).last().isVisible());
+    const { tables, ...header } = backup;
+    assert.deepEqual(headers[0], header);
+    assert.deepEqual(previews[0], { counts: Object.fromEntries(Object.entries(tables).map(([t,r])=>[t,r.length])), parts: 3 });
+    assert.deepEqual(uploads.slice(0,3).map(p=>[p.table,p.rows]), Object.entries(tables));
     await page.screenshot({ path: path.join(output, 'shop-data-desktop.png'), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole('button', { name: '确认导入', exact: true }).click();
@@ -89,10 +103,11 @@ const backup = {
     await page.getByRole('alert').filter({ hasText: '操作失败，请稍后重试' }).waitFor();
     await page.getByRole('button', { name: '确认导入', exact: true }).click();
     await dialog.getByRole('button', { name: '开始导入', exact: true }).click();
-    await page.getByText('导入完成，请检查计费设置并重新配置设备与接入凭据。', { exact: true }).waitFor();
+    await page.getByText('导入完成，请核对玩家、余额、账单及设备设置后再营业。', { exact: true }).waitFor();
+    await page.getByRole('combobox', { name: '切换店铺', exact: true }).getByRole('option', { name: '来源店铺', exact: true }).waitFor({ state: 'attached' });
     assert.equal(applies.length, 2);
     assert.deepEqual(applies[0], applies[1]);
-    assert.deepEqual(applies[1].backup, backup);
+    assert.equal(applies[1].backup, undefined);
     assert.ok(applies[1].operationId);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
     await page.evaluate(() => localStorage.setItem('prism.locale', 'en'));
@@ -103,6 +118,6 @@ const backup = {
     await page.getByRole('combobox', { name: 'Switch store', exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Download JSON file', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ checks: 'raw UTC JSON download, business/configuration scopes, invalid files, failed preflight, source identification, confirmation, same-operation retries, mobile and English UI, owner-only access', errors }));
+    console.log(JSON.stringify({ checks: 'paged UTC JSON download, streamed upload, business/configuration scopes, invalid files, failed preflight, source identification and counts, confirmation, same-operation retries, mobile and English UI, owner-only access', errors }));
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exit(1); });

@@ -1,3 +1,4 @@
+import { registerShopDataJobRoutes } from "./shop-data-jobs";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { createD1Repositories } from "@prism/adapter-d1";
@@ -20,27 +21,31 @@ const warnings = [
   "不包含网页登录账号关联、登录凭据、Bot 凭据或设备连接；导入后需要重新绑定和配置设备。",
   "业务备份包含玩家平台身份、卡片标识及财务数据，请妥善保管文件。",
 ];
-const settingsState = `(SELECT COALESCE(json_group_array(json_array(key,value_json,updated_at)),'[]')
-  FROM (SELECT key,value_json,updated_at FROM app_settings WHERE shop_id=? ORDER BY key))`;
+const settingsState = `(SELECT json_array(
+  (SELECT COALESCE(json_group_array(json_array(key,value_json,updated_at)),'[]')
+    FROM (SELECT key,value_json,updated_at FROM app_settings WHERE shop_id=s.id ORDER BY key)),
+  json_array(s.name,s.latitude,s.longitude,s.radius_meters,s.hero_data,s.hero_hash,s.updated_at)) FROM shops s WHERE s.id=?)`;
 const billingState = `(SELECT COALESCE(json_group_array(json_array(billing_enabled,auto_register,checkin_geo,checkout_geo,
   machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)),'[]') FROM shop_billing_settings WHERE shop_id=?)`;
-const emptyTables = [...businessTables, "machines", "shop_player_accounts", "shop_platform_bindings", "mahjong_seats", "device_commands", "device_states", "machine_connections"];
+const emptyTables = [...businessTables, "api_tokens", "machines", "shop_player_accounts", "shop_platform_bindings", "mahjong_seats", "device_commands", "device_states", "machine_connections"];
 // One statement captures all target state and is reused as the atomic apply condition.
-const snapshotSql = `SELECT (${emptyTables.map(table => `(SELECT COUNT(*) FROM ${table} WHERE shop_id=?)`).join("+")}) AS rows,
+export const snapshotSql = `SELECT (${emptyTables.map(table => `(SELECT COUNT(*) FROM ${table} WHERE shop_id=?)`).join("+")})
+  +(SELECT COUNT(*) FROM staff_users WHERE shop_id=? AND id NOT LIKE 'account:%')
+  +(SELECT MAX(COUNT(*)-1,0) FROM shop_staff_accounts WHERE shop_id=?) AS rows,
   ${settingsState} AS settings, ${billingState} AS billing`;
-const snapshotBindings = (shopId: string) => Array(emptyTables.length + 2).fill(shopId) as string[];
+export const snapshotBindings = (shopId: string) => Array(emptyTables.length + 4).fill(shopId) as string[];
 type Snapshot = { rows: number; settings: string; billing: string };
-const snapshotKey = (state: Snapshot) => JSON.stringify([state.rows, state.settings, state.billing]);
-async function targetState(c: C, shopId: string) {
+export const snapshotKey = (state: Snapshot) => JSON.stringify([state.rows, state.settings, state.billing]);
+export async function targetState(c: C, shopId: string) {
   const state = await c.env.DB.prepare(snapshotSql).bind(...snapshotBindings(shopId)).first<Snapshot>();
   if (!state) throw new Error("Missing shop data snapshot");
   return state;
 }
-async function owner(c: C) {
+export async function owner(c: C, rate = true) {
   const shop = await getBillingShop(c, c.req.param("shopCode")!);
   const principal = await staffPrincipal(c, shop);
   if (principal.staffRole !== "owner") jsonError(403, "只有店铺负责人可以导入和导出数据", "FORBIDDEN");
-  await enforceRateLimits(c, [{ key: `shop-data:${shop.id}:${requireUser(c).id}`, limit: 10, windowSeconds: 60 }]);
+  if (rate) await enforceRateLimits(c, [{ key: `shop-data:${shop.id}:${requireUser(c).id}`, limit: 10, windowSeconds: 60 }]);
   return shop;
 }
 async function readBody(c: C) {
@@ -111,6 +116,7 @@ async function exportBackup(c: C, shop: BillingShop, scope: ShopBackup["scope"])
 }
 
 export function registerShopDataRoutes(app: Hono<AppBindings>) {
+  registerShopDataJobRoutes(app);
   app.get("/api/v1/shops/:shopCode/data/export", async c => {
     const shop = await owner(c);
     const scope = parseBody(scopeSchema, c.req.query("scope") ?? "business");
