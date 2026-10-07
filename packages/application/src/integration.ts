@@ -19,8 +19,8 @@ import type { PlayerCommandService, StartPlayerSessionCommand } from "./player-c
 import type {
   PlayerCheckoutInput,
   SettlementService,
-} from "./settlement";
-import type { RedeemService } from "./redeem";
+} from "./settlement-service";
+import type { RedeemService } from "./redeem-service";
 import type { DeviceActionService } from "./device-actions";
 import type { StaffAssetService } from "./staff-assets";
 

@@ -29,7 +29,7 @@
 - **仓储、设置向导与初始化**：`serializePricingProviderConfig` 对未声明时区的计时／封顶规则默认 UTC，不移动任何时钟；显式源时区保持原值。旧库转换器直接解析原始 JSON，不经新序列化器，因而不会先把隐式旧规则错误标成 UTC。
 - **SQL 发布与会话**：0028 为旧状态建立版本、发布和会话绑定，发布保留旧业务时区；0029 将之后的新发布改为 UTC。`repositories.findRelease` 查询 `time_zone` 并返回它。SQLite bootstrap 同样包含这套结构和发布 SQL。
 - **收费、入场与封顶**：runtime 优先使用 `provider.timeZone`，缺省使用已固定的发布时区；core 的时段、日期匹配、封顶锚点仍接受这些时区参数。平台的 Live Activity、麻将入场检查也读取方案／发布时区。数据迁移完成后这些值为 UTC，当前代码仍有依赖。
-- **优惠日期与日限额**：`asset-definition-effects.ts` / `settlement.ts` 已明确使用 UTC，与方案的时区属性无关。此次字段退役判断不等于把优惠日历改回店铺时区。
+- **优惠日期与日限额**：`asset-definition-effects.ts` / `settlement-service.ts` 已明确使用 UTC，与方案的时区属性无关。此次字段退役判断不等于把优惠日历改回店铺时区。
 - **事件 API、账单 Web UI**：API 仅在响应边界格式化事件时间点；规则 provider、裸时钟和计费解释不会被递归投影。商户账单按店铺时区、玩家账单按设备时区展示。带偏移的 ISO 时间保持同一时间点。
 - **Swift（`hinata_go/ios/PrismClip`）**：模型中的 provider 时区是可选字段，规则组件缺省 UTC，再投影到 `shop.timeZone`；账单事件使用手机时区。这两个读取点允许未来省略 provider 标签，仍需保留店铺展示时区。
 - **Koishi 子模块**：`display-time.ts` 解析 API 时间点并使用响应携带的偏移展示，不读取计费 provider 或发布的业务时区。删除计费业务字段不会直接影响机器人时间显示；API 事件偏移仍须保留。

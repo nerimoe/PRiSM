@@ -10,7 +10,7 @@ import {
   type SessionRepository,
   type SettlementRepository,
 } from "@prism/core";
-import { createSettlementService } from "./settlement";
+import { createSettlementService } from "./settlement-service";
 import { createAvailableAssetReader } from "./available-assets";
 import { createAssetDefinitionEffectProvider } from "./asset-definition-effects";
 import { createVersionedPricingResolvers } from "./versioned-pricing";

@@ -6,7 +6,7 @@ import {
   type PricingProvider,
   type PricingHistoryRepository,
 } from "@prism/core";
-import type { SettlementServiceDependencies } from "./settlement";
+import type { SettlementServiceDependencies } from "./settlement-service";
 
 export function createVersionedPricingResolvers(input: {
   sessionPricing: (

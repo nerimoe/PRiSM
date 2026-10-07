@@ -43,7 +43,7 @@
 
 - 在 `forward()` 外层包一层即可覆盖**所有**渠道，将来新增渠道也不会漏掉；
 - APNs 令牌属于**传输层**关注点，`server-hono` / `application` / `core` 核心域不应知道 APNs 的存在，传输埋点不进入这些层；计费节点计算仍复用 core 的纯函数；
-- 反过来若埋点在 `application/src/player-commands.ts` 与 `settlement.ts` 的 `sessions.save` 处，虽然更集中，但需要给核心域新增端口，侵入性更大。
+- 反过来若埋点在 `application/src/player-commands.ts` 与 `settlement-service.ts` 的 `sessions.save` 处，虽然更集中，但需要给核心域新增端口，侵入性更大。
 
 `live-activity/register` 与 `live-activity/unregister` 两个路由同样**不进入** `forward()`，由 platform 直接处理。
 
