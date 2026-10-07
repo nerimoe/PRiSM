@@ -26,6 +26,7 @@ import {
   createStaffPricingEffectService,
   createStaffRedeemService,
   createStaffOperationsService,
+  createVersionedPricingResolvers,
   createStaffUserService,
   type ApplicationQueries,
   type DeviceActionExecutor,
@@ -38,7 +39,7 @@ import {
   type StaffPricingExtension,
   type StaffPricingExtensionRequiredAsset,
 } from "@prism/application";
-import { canStartPriorityTimePricingSession, collectPriorityTimePricingHistoryLookupKeys, createPricingProviderFromConfig, isActiveInWindow, PrismDomainError } from "@prism/core";
+import { canStartPriorityTimePricingSession, isActiveInWindow, PrismDomainError } from "@prism/core";
 import type { AssetDefinition, AssetEffectProvider, BusinessItem, DeviceCommandType, DeviceTarget, PricingConfig, PricingProvider } from "@prism/core";
 import type { AssetDefinitionRepository } from "@prism/core";
 import { createPrismApp } from "@prism/server-hono";
@@ -212,14 +213,6 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     if (!release) throw new PrismDomainError("Pinned pricing release not found.", "PRICING_RELEASE_NOT_FOUND");
     return { configs: release.configs.filter(config => config.enabled && config.status !== "archived"), timeZone: release.timeZone };
   };
-  const versioned = (config: PricingConfig): PricingConfig => {
-    if (config.kind === "time.priority" && config.provider.historyProviderId) {
-      return { ...config, provider: { ...config.provider, id: config.provider.historyProviderId } };
-    }
-    // Version 1 keeps the pre-migration history key so an upgrade cannot reset caps.
-    if (!config.versionId || config.version === 1) return config;
-    return { ...config, provider: { ...config.provider, id: config.versionId } } as PricingConfig;
-  };
   const playerPricing = async (playerId: string) => {
     const sessions = [...await input.repositories.sessions.findActiveByPlayerId(playerId), ...await input.repositories.sessions.findUnpaidClosedByPlayerId!(playerId)];
     const first = sessions.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || a.id.localeCompare(b.id))[0];
@@ -239,46 +232,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     pricingCapHistory: input.repositories.pricingCapHistory,
     deviceCommands: input.repositories.deviceCommands,
     pricingProviders: [...fallbackPricingProviders, ...pluginPricingProviders],
-    async pricingProviderResolver(context) {
-      const pinned = await sessionPricing(context.session);
-      const allConfigs = pinned.configs;
-      const sessionConfigIds = context.session.pricingConfigIds ?? [];
-      const configs = (sessionConfigIds.length > 0
-        ? allConfigs.filter((config) => sessionConfigIds.includes(config.id))
-        : allConfigs).filter((config) => config.kind !== "time.cap").map(versioned);
-
-      if (configs.length === 0) return [...fallbackPricingProviders, ...pluginPricingProviders];
-      const storeTimeZone = pinned.timeZone ?? "UTC";
-      const resolvedConfigs = await withRuntimePricingHistory(configs, {
-        playerId: context.playerId,
-        startedAt: context.session.startedAt,
-        endedAt: context.session.endedAt ?? context.now,
-        storeTimeZone,
-        pricingHistory: input.repositories.pricingHistory,
-      });
-      return [
-        ...pluginPricingProviders,
-        ...resolvedConfigs.map((config) => createPricingProviderFromConfig(config)),
-      ];
-    },
-    async globalCapResolver(context) {
-      const storeTimeZone = "UTC";
-      const releases = new Map(context.sessions.map(session => [session.pricingReleaseId ?? "legacy", session]));
-      if (releases.size > 1) throw new PrismDomainError("Unsettled sessions use different pricing releases.", "PRICING_RELEASE_MISMATCH");
-      const result: import("@prism/core").TimeCapPricingProviderConfig[] = [];
-      for (const session of releases.values()) {
-        const pinned = await sessionPricing(session);
-        for (const config of pinned.configs) {
-          if (config.kind !== "time.cap") continue;
-          result.push({ ...config.provider, name: config.name,
-            // A publication pins both the cap and its included plan versions.
-            pricingConfigId: config.version === 1 ? config.id : (config.versionId ?? config.id),
-            includedPricingConfigIds: config.provider.includedPricingConfigIds,
-            timeZone: config.provider.timeZone ?? pinned.timeZone ?? context.timeZone ?? storeTimeZone });
-        }
-      }
-      return result;
-    },
+    ...createVersionedPricingResolvers({ sessionPricing, pricingHistory: input.repositories.pricingHistory, fallbackPricingProviders, pluginPricingProviders }),
     assetEffectProviders,
     id: input.id,
     now: input.now,
@@ -461,6 +415,8 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     },
     staffCheckoutCommands: playerCheckoutCommands,
     staffOperations,
+    staffLiveBillingSnapshot: input.repositories.readLiveBillingSnapshot && !fallbackPricingProviders.length && !pluginPricingProviders.length && !input.assetEffectProviders.length && !pluginRuntime.assetEffectProviders.length
+      ? (playerIds) => input.repositories.readLiveBillingSnapshot!(playerIds, input.now()) : undefined,
     playerRedeemCommands,
     staffPlayerCommands,
     staffAssetDefinitionCommands,
@@ -554,44 +510,6 @@ function cloneBusinessItem(item: BusinessItem): BusinessItem {
   };
 }
 
-async function withRuntimePricingHistory(
-  configs: readonly PricingConfig[],
-  input: {
-    playerId: string;
-    startedAt: Date;
-    endedAt: Date;
-    storeTimeZone?: string;
-    pricingHistory: RuntimeRepositoryInput["pricingHistory"];
-  },
-): Promise<PricingConfig[]> {
-  const providersByConfigId = new Map<string, Extract<PricingConfig, { kind: "time.priority" }>["provider"]>();
-  const keys = configs.flatMap((config) => {
-    if (config.kind !== "time.priority") return [];
-    const provider = {
-      ...config.provider,
-      timeZone: config.provider.timeZone ?? input.storeTimeZone,
-      pricingConfigId: config.id,
-    };
-    providersByConfigId.set(config.id, provider);
-    return collectPriorityTimePricingHistoryLookupKeys({
-      config: provider,
-      startedAt: input.startedAt,
-      endedAt: input.endedAt,
-    });
-  });
-  const paidHistory = await input.pricingHistory.sumByPlayerAndKeys(input.playerId, keys);
-
-  return configs.map((config) => {
-    if (config.kind !== "time.priority") return config;
-    return {
-      ...config,
-      provider: {
-        ...providersByConfigId.get(config.id)!,
-        paidHistory,
-      },
-    };
-  });
-}
 
 function assetDefinitionKey(assetType: string, assetCode: string): string {
   return `${assetType}\u0000${assetCode}`;

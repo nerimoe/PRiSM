@@ -1556,9 +1556,17 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
 
-    const rows = await staffOperations.listLivePlayers();
+    const playerId = context.req.query("playerId");
+    if (playerId !== undefined && (!playerId.trim() || playerId.length > 256)) {
+      return context.json({ error: { code: "INVALID_REQUEST", message: "无效的玩家编号" } }, 400);
+    }
+    const clientCalculation = !playerId && !!dependencies.staffLiveBillingSnapshot;
+    const rows = await staffOperations.listLivePlayers({ playerId, summary: clientCalculation });
+    const billingSnapshot = clientCalculation
+      ? await dependencies.staffLiveBillingSnapshot!(rows.map(row => row.playerId)) : undefined;
     return context.json({
       players: rows,
+      ...(billingSnapshot ? { billingSnapshot } : {}),
     });
   });
 

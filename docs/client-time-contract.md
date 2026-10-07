@@ -29,6 +29,7 @@ Swift `Date` 与 JavaScript `Date` 解析带偏移时间后得到绝对时间点
 
 - `startedAt`、`endedAt`、`settledAt`、`createdAt`、`expiresAt`、收费实际边界、报表 `from/to`、时间轴事件 `at` 等事件字段按店铺时间输出；店铺无关接口保持 UTC。
 - `provider` 内的计费规则、`timeRange`、`dateTimeRange`、星期、指定日期和计费解释仍是 UTC 的业务配置；规则编辑器按店铺时区转换。用户元数据、身份值、凭据及数字 Unix 时间不进行字符串投影。
+- 在店页 `billingSnapshot` 整体是浏览器计费引擎输入，时间保持 UTC，不进行展示时区投影；页面外层 `players` 与浏览器计算出的时间轴按店铺时区展示。详见[在店计费预估](live-billing-performance.md)。
 - 店铺资料／规则接口保留 IANA 地区时区，用于其他日期与循环时段的转换。仅有 `+08:00` 不能推断地理区域或未来夏令时规则。
 - 计费日预览段增加 `startedAt/endedAt`，对应实际绝对边界；旧 `startLabel/endLabel` 仍表示所选店铺日期下的当地时钟，包含 `24:00`。
 - `event.time/date` 和 `periodLabel` 保留为兼容展示文字。新客户端从 `event.at` 和收费段起止生成文字，避免旧文字与当前展示时区不一致。

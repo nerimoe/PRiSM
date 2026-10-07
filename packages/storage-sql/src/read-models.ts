@@ -299,7 +299,9 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
       return groupStaffActiveSessions(rows, now);
     },
 
-    async listLiveSessions() {
+    async listLiveSessions(options) {
+      const ids = options?.playerIds;
+      if (ids?.length === 0) return [];
       const rows = await input.executor.all<StaffActiveSessionRow & { status: string }>(
         `SELECT
            s.id,
@@ -311,8 +313,10 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            s.status
          FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
          INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
-         WHERE s.status = 'active' OR s.payment_status = 'unpaid'
+         WHERE (s.status = 'active' OR s.payment_status = 'unpaid')
+           ${ids ? 'AND s.player_id IN (SELECT value FROM json_each(?))' : ''}
          ORDER BY s.started_at`,
+        ids ? [JSON.stringify(ids)] : [],
       );
       const now = input.now();
 

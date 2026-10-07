@@ -388,6 +388,7 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_asset_ledger_player_created ON asset_ledger_entries(shop_id, player_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_redeem_records_code ON redeem_records(shop_id, code_id)`,
   `CREATE INDEX IF NOT EXISTS idx_device_commands_status_requested ON device_commands(shop_id, status, requested_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_device_commands_player_requested ON device_commands(shop_id, player_id, requested_at, type, status)`,
   `CREATE INDEX IF NOT EXISTS idx_device_states_reported_at ON device_states(shop_id, reported_at)`,
   `CREATE INDEX IF NOT EXISTS idx_machine_connections_status_seen ON machine_connections(shop_id, status, last_seen_at)`,
   `CREATE INDEX IF NOT EXISTS idx_player_checkouts_player_settled ON player_checkouts(shop_id, player_id, settled_at)`,

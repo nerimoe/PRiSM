@@ -60,7 +60,7 @@ export function Players({ live = false }: { live?: boolean }) {
       : `${identity.provider}:${identity.subject}`;
   const request = useStaffApi();
   const list = useResource<{ players: Player[] }>(live ? null : "players");
-  const onSite = useResource<{ players: LivePlayer[] }>(live ? "live-players" : null);
+  const onSite = useResource<{ players: LivePlayer[]; billingSnapshot?: unknown }>(live ? "live-players" : null);
   const [search, setSearch] = useState("");
   const [create, setCreate] = useState(false);
   const [bind, setBind] = useState(false);
@@ -125,7 +125,7 @@ export function Players({ live = false }: { live?: boolean }) {
       ) : !rows.length ? (
         <State empty />
       ) : live ? (
-        <LivePlayers players={onSite.data!.players.filter(p => visibleIds.has(p.playerId))}
+        <LivePlayers players={onSite.data!.players} visibleIds={visibleIds} billingSnapshot={onSite.data!.billingSnapshot}
           refresh={refresh} onManage={id => setParams({ player: id })} />
       ) : (
         <>

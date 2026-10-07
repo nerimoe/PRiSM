@@ -1,3 +1,4 @@
+import { dateTimeFormatterCache } from "./date-time-formatter";
 import { PrismDomainError } from "./errors";
 import {
   type Cents,
@@ -1019,18 +1020,24 @@ type ZonedParts = {
   weekday: number;
 };
 
+const pricingFormatter = dateTimeFormatterCache({
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  weekday: "short",
+});
+
 function getZonedParts(date: Date, timeZone: string): ZonedParts {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    weekday: "short",
-  }).formatToParts(date);
+  if (timeZone === "UTC") {
+    if (!Number.isFinite(date.getTime())) throw new RangeError("Invalid time value");
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(),
+      hour: date.getUTCHours(), minute: date.getUTCMinutes(), second: date.getUTCSeconds(), weekday: date.getUTCDay() };
+  }
+  const parts = pricingFormatter(timeZone).formatToParts(date);
   const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return {
     year: Number(map.year),
@@ -1048,6 +1055,7 @@ function zonedLocalTimeToUtc(
   timeZone: string,
 ): Date {
   let utc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0);
+  if (timeZone === "UTC") return new Date(utc);
   for (let iteration = 0; iteration < 3; iteration += 1) {
     const offset = getTimeZoneOffsetMs(new Date(utc), timeZone);
     utc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0) - offset;

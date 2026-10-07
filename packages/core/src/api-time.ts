@@ -1,15 +1,20 @@
+import { dateTimeFormatterCache } from "./date-time-formatter";
+
 /** Wire instants retain an explicit offset; business Date values remain unchanged. */
 const instantPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 export function isApiInstant(value: unknown): value is string {
   return typeof value === "string" && instantPattern.test(value) && Number.isFinite(Date.parse(value));
 }
 
+const offsetFormatter = dateTimeFormatterCache({
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
+
 export function formatOffsetTimestamp(value: string, timeZone: string): string {
   if (!isApiInstant(value)) return value;
   const date = new Date(value);
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-  }).formatToParts(date);
+  if (timeZone === "UTC") return date.toISOString();
+  const parts = offsetFormatter(timeZone).formatToParts(date);
   const get = (type: string) => parts.find(part => part.type === type)!.value;
   const local = `${get("year").padStart(4, "0")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
   const offsetMinutes = Math.round((Date.parse(`${local}Z`) - Math.floor(date.getTime() / 1000) * 1000) / 60_000);

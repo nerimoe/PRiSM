@@ -71,6 +71,7 @@
     "packages/prism-web": {
       "name": "@prism/web",
       "dependencies": {
+        "@prism/application": "workspace:*",
         "@prism/core": "workspace:*",
         "@simplewebauthn/browser": "^14.0.0",
         "leaflet": "^1.9.4",

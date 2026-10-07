@@ -36,3 +36,17 @@ test("JSON attachments retain their root format and UTC storage values", async (
   const error = await wrapApiResponse(Response.json({ error: "Denied" }, { status: 403, headers: { "content-disposition": 'attachment; filename="backup.json"' } }), "Asia/Shanghai");
   expect((await error.json()).error.code).toBe("FORBIDDEN");
 });
+
+test("one response projects repeated boundaries once and leaves billing inputs in UTC", () => {
+  const at = "2026-10-03T02:08:00.123Z";
+  const snapshot = { capturedAt: at, sessions: [{ startedAt: at }], holdings: [{ expiresAt: at }] };
+  let calls = 0;
+  const original = Intl.DateTimeFormat.prototype.formatToParts;
+  Intl.DateTimeFormat.prototype.formatToParts = function(date) { calls++; return original.call(this, date); };
+  try {
+    const result = projectApiTimes({ players: Array.from({ length: 100 }, () => ({ startedAt: at, endedAt: at })), billingSnapshot: snapshot }, "Asia/Shanghai") as { players: {startedAt:string}[]; billingSnapshot: typeof snapshot };
+    expect(calls).toBe(1);
+    expect(result.players.every(row => row.startedAt === "2026-10-03T10:08:00.123+08:00")).toBe(true);
+    expect(result.billingSnapshot).toBe(snapshot);
+  } finally { Intl.DateTimeFormat.prototype.formatToParts = original; }
+});

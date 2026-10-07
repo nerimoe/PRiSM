@@ -108,6 +108,6 @@
 - 跨方案封顶独立展示历史已计入、本次参与金额、本次计入和封顶上限。
 - 保留不分组、按状态或进行中的计费方案组合分组；同一个玩家不重复计数。
 - 店员可停止单个计费会话，或先预览再确认整单结账；资料管理继续复用玩家弹窗。
-- 全部展示数据复用 live-players。预估为空时不显示成零元；未增加轮询或逐人请求。
+- 全部展示数据复用 live-players 的玩家列表与 UTC 计费快照；预估和时间轴在浏览器 Web Worker 中使用后端同一套引擎计算。预估为空时不显示成零元；未增加轮询或逐人请求。结账仍由服务器重新核算。快照字段与资源优化见[在店计费预估](live-billing-performance.md)。
 
 主要代码：`packages/platform/src/billing.ts`、`packages/application/src/player-commands.ts`、`packages/runtime/src/index.ts`、`packages/core/src/pricing-time.ts`、`packages/application/src/settlement.ts`、`packages/application/src/asset-definition-effects.ts`。

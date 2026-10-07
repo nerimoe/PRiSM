@@ -126,7 +126,7 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 - 员工前台覆盖结算（Checkout Override）：手动改单，溢出部分自动以 `staff.override` 存入调整记录。
 - 财务报表读模型：聚合收入、场次数量、正向资产流水笔数和出币次数；结账明细与玩家排行使用 `limit`/`offset` 分页并返回 `hasMore`，避免 Dashboard 把首屏结果误作完整数据。
 - 基于 Hono 的员工 API，以及 `packages/prism-web` React 后台。独立 API 的 `/admin` 保留部署提示页；统一平台的店铺后台使用 `/merchant`。
-- 现场运营读模型：`/rpc/staff/live-players` 将玩家、钱包、在场时间、预计应付和未结 sessions 聚合为玩家优先的视图。未结 sessions 包含 active sessions，以及已经停止但仍是 unpaid 的 closed sessions；停止后的计时项仍留在玩家账单中，直到玩家级统一结账。每条 session 会带出当前结算预览中的 `pricingCharges`，展示该计时实际命中的计费方案、时段规则和金额；方案名称来自员工计费配置，取不到时才退回方案 ID。单条 `stop` 只停止某个 session 计时，不扣款；玩家级 `preview`/`confirm` 负责统一预览与结算。管理员加开计时时可指定这条计时使用哪些计费方案，后续资产计费效果也可以继续精确到这些方案和规则。
+- 现场运营读模型：`/rpc/staff/live-players` 将玩家、钱包、在场时间和未结 sessions 聚合为玩家优先的视图，同时批量读取只读 UTC 计费快照。统一平台的预估和时间轴由浏览器 Web Worker 复用应用层计费引擎生成，服务器保留结账核算；详见[在店计费预估](live-billing-performance.md)。未结 sessions 包含 active sessions，以及已经停止但仍是 unpaid 的 closed sessions；停止后的计时项仍留在玩家账单中，直到玩家级统一结账。每条 session 会带出当前结算预览中的 `pricingCharges`，展示该计时实际命中的计费方案、时段规则和金额；方案名称来自员工计费配置，取不到时才退回方案 ID。单条 `stop` 只停止某个 session 计时，不扣款；玩家级 `preview`/`confirm` 负责统一预览与结算。管理员加开计时时可指定这条计时使用哪些计费方案，后续资产计费效果也可以继续精确到这些方案和规则。
 
 ## 暂缓实现（Deferred）
 

@@ -168,7 +168,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players/:playerId/checkout/confirm` | 关闭该玩家所有 active session，并统一结算所有未结 session。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/override` | 后台特权改单结算：指定最终金额与改单备注，存入审计项。 |
 | `POST` | `/rpc/staff/players/:playerId/sessions/:sessionId/stop` | 只停止指定 session 的计时，保留为待结算，不立即扣款。 |
-| `GET` | `/rpc/staff/live-players` | 获取现场页玩家聚合读模型：每名在场玩家一行，包含钱包、在场时间、预计应付、平级 session 明细，以及按锚定封顶窗口分组的 `globalCapWindows`。session 同时保留紧凑的 `pricingCharges` 摘要，并提供带实际时段解释的 `pricingSegments`。 |
+| `GET` | `/rpc/staff/live-players` | 获取在店玩家和 `billingSnapshot` 只读计费快照；浏览器后台线程复用引擎生成预估与时间轴。默认 `estimatedTotal` 为 `null`；显式 `?playerId=...` 返回单玩家后端预估。 |
 | `GET` | `/rpc/staff/sessions/active` | 获取全场当前的活跃场次。 |
 | `POST` | `/rpc/staff/sessions/active/checkout` | 一键结账/清理全场所有活跃场次。 |
 | `GET` | `/rpc/staff/pricing-effects` | 列出可绑定到资产的计费效果，如免时费、固定抵扣或比例折扣。 |
@@ -216,7 +216,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 员工用户因审计需求而被保留。禁用员工用户可阻止登录，但会保留旧场次、指令和资产操作记录可读。PRiSM 会拒绝禁用或降权最后一名制造的所有者（owner）。
 
-现场运营页以玩家为一级对象。`/rpc/staff/live-players` 会把同一玩家名下的多个未结 session 聚合为一行，并把每个 session 作为平级明细返回；这里的未结 session 包括 active session，以及已停止但 `payment_status = unpaid` 的 closed session。active session 的 `endedAt` 为 `null`，closed/unpaid session 会返回停止时写入的 `endedAt`，并且 `elapsedMinutes` 按 `startedAt` 到 `endedAt` 计算而不是继续滚到当前时间。若 session 没有标签，明细中的可选 `label` 字段会省略，而不是返回 `null`。`stayDurationMinutes` 按该玩家当前最久的未结 session 计算。session 明细保留来自当前玩家级结算预览的 `pricingCharges`，字段包含 `pricingConfigId`、`planName`、`ruleLabel` 和 `amount`，用于紧凑地说明这一条计时实际用了哪些计费方案。
+现场运营页以玩家为一级对象。`/rpc/staff/live-players` 会把同一玩家名下的多个未结 session 聚合为一行，并把每个 session 作为平级明细返回；这里的未结 session 包括 active session，以及已停止但 `payment_status = unpaid` 的 closed session。active session 的 `endedAt` 为 `null`，closed/unpaid session 会返回停止时写入的 `endedAt`，并且 `elapsedMinutes` 按 `startedAt` 到 `endedAt` 计算而不是继续滚到当前时间。若 session 没有标签，明细中的可选 `label` 字段会省略，而不是返回 `null`。`stayDurationMinutes` 按该玩家当前最久的未结 session 计算。统一平台默认响应包含 `billingSnapshot`，浏览器据此生成预估、时间轴、`globalCapWindows`、`pricingSegments` 与 `pricingCharges`；详见[在店预估快照](live-billing-performance.md)。自定义运行时无快照能力和显式 `?playerId=...` 请求保留后端预估。计算完成后的 `pricingCharges` 字段包含 `pricingConfigId`、`planName`、`ruleLabel` 和 `amount`，用于紧凑地说明这一条计时实际用了哪些计费方案。
 
 同一条 session 的 `pricingSegments` 是可展开的逐段计费解释；每段包含 `pricingConfigId`、`planName`、`providerId`、`ruleId`、`ruleLabel`、`actualStartedAt`、`actualEndedAt`、`ruleTimeRange`、`amount`、`intervalCap` 和 `intervalCapReached`。`actualStartedAt` 与 `actualEndedAt` 是后端以带明确偏移的 ISO 8601 时间戳（按店铺时区，UTC 可用 `Z`）返回的这次实际计费边界，不是仅有时钟的规则配置；`ruleTimeRange` 才是匹配规则的 `{ start, end }` 时钟范围。只有 `intervalCapReached = true` 时客户端才应显示该段的区间封顶状态，未达到时仍保留该段的真实金额而不显示封顶徽标。
 

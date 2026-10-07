@@ -108,6 +108,10 @@ test("register, entry, exact-preview external payment and replay leave no assets
   expect(list.data.players.find((p: any) => p.id === id).paymentMode).toBe("cashier");
   const live = await request("/api/v1/shops/a/staff/live-players");
   expect(live.data.players.find((p: any) => p.playerId === id).paymentMode).toBe("cashier");
+  expect(live.data.billingSnapshot.version).toBe(1);
+  const { createLiveBillingCalculator, hydrateLiveBillingSnapshot } = await import("@prism/application");
+  const client = createLiveBillingCalculator(hydrateLiveBillingSnapshot(live.data.billingSnapshot), live.data.players);
+  expect((await client.calculatePlayer(id)).estimatedTotal).toBe(12);
   expect((await request(`/api/v1/shops/a/staff/players/${id}/assets/grants`, { grants: [{ assetType: "currency", assetCode: "paid", amount: 100 }], operationId: op() })).status).toBe(409);
   expect((await request(`/api/v1/shops/a/staff/players/${id}/checkout/confirm`, { operationId: op() })).status).toBe(409);
   const preview = await request(`${base}/profiles/${id}/checkout/preview`, {});

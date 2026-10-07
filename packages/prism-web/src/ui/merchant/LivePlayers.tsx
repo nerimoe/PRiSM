@@ -5,9 +5,10 @@ import { useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { ActionForm, Modal, button, input, money, primary, segment, useMerchant, useStaffApi, type LivePlayer, type Preview } from "./shared";
 import { liveBilling, stayDuration } from "./live-billing";
+import { useLiveBilling } from "./use-live-billing";
 
-export function LivePlayers({ players, refresh, onManage }: {
-  players: LivePlayer[]; refresh: () => void; onManage: (id: string) => void;
+export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot, refresh, onManage }: {
+  players: LivePlayer[]; visibleIds: Set<string>; billingSnapshot?: unknown; refresh: () => void; onManage: (id: string) => void;
 }) {
   const { t } = useI18n();
   const { timeZone, canWrite, shopCode, cashierEnabled } = useMerchant();
@@ -19,7 +20,11 @@ export function LivePlayers({ players, refresh, onManage }: {
   const [error, setError] = useState("");
   const [checkout, setCheckout] = useState<{ player: LivePlayer; preview: Preview } | null>(null);
   const [stop, setStop] = useState<{ playerId: string; session: LivePlayer["sessions"][number] } | null>(null);
-  const selected = players.find(p => p.playerId === selectedId) ?? players[0];
+  const selectedPlayerId = basePlayers.find(player => visibleIds.has(player.playerId) && player.playerId === selectedId)?.playerId
+    ?? basePlayers.find(player => visibleIds.has(player.playerId))?.playerId;
+  const calculation = useLiveBilling(basePlayers, billingSnapshot, selectedPlayerId);
+  const players = calculation.players.filter(player => visibleIds.has(player.playerId));
+  const selected = players.find(p => p.playerId === selectedPlayerId);
   const groups = new Map<string, { label: string; players: LivePlayer[] }>();
   for (const player of players) {
     const bill = liveBilling(player);
@@ -80,6 +85,11 @@ export function LivePlayers({ players, refresh, onManage }: {
           <div className="text-right"><dt className="text-xs text-ink/60">{t("应付")}</dt><dd className="mt-1 break-all text-2xl font-semibold leading-tight tabular-nums">{money(selected.estimatedTotal)}</dd><dd className="mt-1 text-xs text-ink/50">{selected.paymentMode === "cashier" ? t("现场收款") : <>{t("余额")} {money(selected.walletTotal)}</>}</dd></div>
         </dl>
         <div className="max-h-[60vh] overflow-y-auto p-4">
+          {selected.quoteState === "loading" && <p role="status" className="mb-3 text-sm text-ink/60">{t("正在计算账单")}</p>}
+          {selected.quoteState === "error" && <div role="alert" className="mb-3 flex items-center gap-3 text-sm text-coral">
+            <span>{t(selected.quoteError || "账单预估失败，请刷新后重试")}</span>
+            <button className={button} onClick={refresh}>{t("重试")}</button>
+          </div>}
           {selected.timeline && <BillTimeline timeZone={timeZone || undefined} preview={{ settlementPreview: { total: selected.estimatedTotal ?? 0 }, timeline: selected.timeline, chargeItems: [], adjustments: [] }} />}
           {canWrite && selected.sessions.filter(session => session.status === "active").map(session => <div key={session.id} className="flex items-center justify-between gap-3 border-t border-ink/10 py-3 text-sm">
             <span>{[...new Set(session.pricingCharges.map(charge => charge.planName))].join(" + ") || title(session)}</span>

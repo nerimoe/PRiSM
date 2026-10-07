@@ -1,5 +1,6 @@
 import { parseLocalDateTime } from "./pricing-time";
 import { PrismDomainError } from "./errors";
+import { formatOffsetTimestamp, timestampDisplayParts } from "./api-time";
 type ClockRule = {
   timeRange?: { start: string; end: string };
   weekdays?: readonly number[];
@@ -12,12 +13,8 @@ export function convertPricingRuleClock<T extends ClockRule>(
 ): T {
   if (!rule.timeRange || fromTimeZone === toTimeZone) return { ...rule };
   const parts = (at: Date) => {
-    const fields = new Intl.DateTimeFormat("en-CA", {
-      timeZone: toTimeZone, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-    }).formatToParts(at);
-    const field = (name: string) => fields.find(part => part.type === name)!.value;
-    return { date: `${field("year")}-${field("month")}-${field("day")}`, clock: `${field("hour")}:${field("minute")}` };
+    const fields = timestampDisplayParts(formatOffsetTimestamp(at.toISOString(), toTimeZone))!;
+    return { date: fields.date, clock: fields.time };
   };
   const anchorDate = rule.specificDates?.[0] ?? referenceDate;
   const start = parts(parseLocalDateTime(anchorDate, rule.timeRange.start, fromTimeZone));

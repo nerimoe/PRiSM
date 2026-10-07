@@ -85,7 +85,7 @@ export type LiveCheckoutPreview = {
 };
 
 export type StaffOperationsService<TCheckoutResult> = {
-  listLivePlayers(): Promise<LivePlayerView[]>;
+  listLivePlayers(input?: { playerId?: string; summary?: boolean }): Promise<LivePlayerView[]>;
   checkoutAllActivePlayers(): Promise<TCheckoutResult[]>;
 };
 
@@ -103,12 +103,14 @@ export function createStaffOperationsService<TCheckoutResult>(
   dependencies: StaffOperationsServiceDependencies<TCheckoutResult>,
 ): StaffOperationsService<TCheckoutResult> {
   return {
-    async listLivePlayers() {
-      const sessions = await (dependencies.staffQueries.listLiveSessions?.() ?? dependencies.staffQueries.listActiveSessions());
+    async listLivePlayers(input) {
+      const options = input?.playerId ? { playerIds: [input.playerId] } : undefined;
+      const allSessions = await (dependencies.staffQueries.listLiveSessions?.(options) ?? dependencies.staffQueries.listActiveSessions());
+      const sessions = input?.playerId ? allSessions.filter(session => session.playerId === input.playerId) : allSessions;
       if (!sessions.length) return [];
       const [players, pricingConfigs] = await Promise.all([
         dependencies.staffQueries.listPlayers({ playerIds: [...new Set(sessions.map(s => s.playerId))] }),
-        dependencies.listPricingConfigs?.() ?? Promise.resolve([]),
+        input?.summary ? Promise.resolve([]) : dependencies.listPricingConfigs?.() ?? Promise.resolve([]),
       ]);
       const playerById = new Map(players.map((player) => [player.id, player]));
       const pricingConfigNameById = new Map(pricingConfigs.map((config) => [config.id, config.name]));
@@ -128,7 +130,7 @@ export function createStaffOperationsService<TCheckoutResult>(
           if (!entry) return;
           const [playerId, playerSessions] = entry;
           const player = playerById.get(playerId);
-          const preview = dependencies.checkout?.previewCheckout
+          const preview = !input?.summary && dependencies.checkout?.previewCheckout
             ? await dependencies.checkout.previewCheckout({ playerId })
             : null;
           const previewBySessionId = new Map(

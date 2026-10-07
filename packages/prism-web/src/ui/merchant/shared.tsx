@@ -231,6 +231,8 @@ export type Player = {
   identities?: { provider: string; subject: string; displayName?: string }[];
 };
 export type LivePlayer = {
+  quoteState?: "loading" | "ready" | "error";
+  quoteError?: string;
   paymentMode?: "cashier";
   timeline?: import("@prism/core").BillTimeline;
   status: string;

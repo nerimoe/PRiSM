@@ -1,3 +1,4 @@
+import type { LiveBillingSnapshot } from "@prism/core";
 import {
   centsOf,
   assetQuantityOf,
@@ -76,6 +77,7 @@ export type SqlExecutor = {
 };
 
 export type SqlRepositories = {
+  readLiveBillingSnapshot?(playerIds: readonly string[], at: Date): Promise<LiveBillingSnapshot>;
   commitCheckout(input: CheckoutCommit): Promise<void>;
   system: SystemRepository;
   players: PlayerRepository;
@@ -108,6 +110,7 @@ export function createSqlRepositories(
   input: CreateSqlRepositoriesInput,
 ): SqlRepositories {
   return {
+    readLiveBillingSnapshot: (playerIds, at) => readLiveBillingSnapshot(input, playerIds, at),
     async commitCheckout(checkout) {
       const statements: SqlStatement[] = [];
       const writer: SqlExecutor = {
@@ -2523,5 +2526,174 @@ function deserializeTimeCapPricingProviderConfig(
           : {}),
       };
     }),
+  };
+}
+
+async function readLiveBillingSnapshot(
+  input: CreateSqlRepositoriesInput,
+  playerIds: readonly string[],
+  at: Date,
+): Promise<LiveBillingSnapshot> {
+  const empty: LiveBillingSnapshot = {
+    version: 1,
+    capturedAt: at,
+    players: [],
+    assetDefinitions: [],
+    currentPricingConfigs: [],
+    pricingReleases: [],
+  };
+  if (!playerIds.length) return empty;
+  const executor = input.executor,
+    shop = sqlShop(executor),
+    ids = JSON.stringify(playerIds);
+  const [
+    sessionRows,
+    holdings,
+    adjustments,
+    history,
+    capHistory,
+    definitions,
+    configs,
+  ] = await Promise.all([
+    executor.all<SessionRow & { device_operated: number }>(
+      `SELECT s.*, b.release_id AS pricing_release_id,
+         EXISTS(SELECT 1 FROM device_commands c WHERE c.shop_id=s.shop_id AND c.player_id=s.player_id
+           AND c.type!='door.open' AND c.status NOT IN ('expired','rejected')
+           AND c.requested_at>=s.started_at AND c.requested_at<=COALESCE(s.ended_at,?)) AS device_operated
+       FROM sessions s LEFT JOIN session_pricing_releases b ON b.shop_id=s.shop_id AND b.session_id=s.id
+       WHERE s.shop_id=${shop} AND s.player_id IN (SELECT value FROM json_each(?))
+         AND (s.status='active' OR (s.status='closed' AND s.payment_status='unpaid')) ORDER BY s.started_at,s.id`,
+      [at.toISOString(), ids],
+    ),
+    executor.all<AssetHoldingRow & { player_id: string }>(
+      `SELECT * FROM asset_holdings WHERE shop_id=${shop} AND player_id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+      [ids],
+    ),
+    executor.all<{ player_id: string; source: string; started_at: string }>(
+      `SELECT s.player_id,sa.source,s.started_at FROM settlement_adjustments sa
+       JOIN sessions s ON s.shop_id=sa.shop_id AND s.id=sa.session_id
+       JOIN settlements st ON st.shop_id=s.shop_id AND st.session_id=s.id
+       WHERE s.shop_id=${shop} AND s.player_id IN (SELECT value FROM json_each(?))`,
+      [ids],
+    ),
+    executor.all<PricingHistoryTotalRow & { player_id: string }>(
+      `SELECT player_id,pricing_config_id,provider_id,rule_id,rule_anchor_at,SUM(amount) AS total FROM pricing_history_entries
+       WHERE shop_id=${shop} AND player_id IN (SELECT value FROM json_each(?)) GROUP BY player_id,pricing_config_id,provider_id,rule_id,rule_anchor_at`,
+      [ids],
+    ),
+    executor.all<PricingCapHistoryTotalRow & { player_id: string }>(
+      `SELECT player_id,cap_config_id,cap_rule_id,cap_anchor_at,SUM(amount) AS total FROM pricing_cap_history_entries
+       WHERE shop_id=${shop} AND player_id IN (SELECT value FROM json_each(?)) GROUP BY player_id,cap_config_id,cap_rule_id,cap_anchor_at`,
+      [ids],
+    ),
+    createAssetDefinitionRepository(executor).listAll(),
+    createPricingConfigRepository(executor).listAll(),
+  ]);
+  const sessions = sessionRows.map((row) => {
+    const session = toSession(row);
+    // Only billing activity flags leave the server; omit arbitrary operation metadata.
+    session.metadata = {
+      deviceOperated: Boolean(
+        session.metadata?.deviceOperated || row.device_operated,
+      ),
+      hasDeviceActivity: Boolean(session.metadata?.hasDeviceActivity),
+    };
+    return session;
+  });
+  const releaseIds = [
+    ...new Set(
+      sessions.flatMap((session) =>
+        session.pricingReleaseId ? [session.pricingReleaseId] : [],
+      ),
+    ),
+  ];
+  // Read all publications and shared version bodies in two queries, regardless of visit count.
+  const releaseIdsJson = JSON.stringify(releaseIds);
+  const [releaseRows, versionRows] = releaseIds.length
+    ? await Promise.all([
+        executor.all<{
+          id: string;
+          time_zone: string;
+          version_ids_json: string;
+        }>(
+          `SELECT id,time_zone,version_ids_json FROM pricing_releases WHERE shop_id=${shop} AND id IN (SELECT value FROM json_each(?))`,
+          [releaseIdsJson],
+        ),
+        executor.all<PricingConfigRow>(
+          `SELECT v.*,v.config_id AS id FROM pricing_config_versions v WHERE v.shop_id=${shop}
+       AND v.version_id IN (SELECT j.value FROM pricing_releases r,json_each(r.version_ids_json) j
+         WHERE r.shop_id=${shop} AND r.id IN (SELECT value FROM json_each(?))) ORDER BY v.config_id`,
+          [releaseIdsJson],
+        ),
+      ])
+    : [[], []];
+  if (releaseRows.length !== releaseIds.length)
+    throw new PrismDomainError(
+      "Pinned pricing release not found.",
+      "PRICING_RELEASE_NOT_FOUND",
+    );
+  const configsByVersion = new Map(
+    versionRows.map((row) => [row.version_id, toPricingConfig(row)]),
+  );
+  const releases = releaseRows.map((row) => {
+    const ids = new Set<string>(JSON.parse(row.version_ids_json));
+    return {
+      id: row.id,
+      timeZone: row.time_zone,
+      configs: [...configsByVersion]
+        .filter(([version]) => version && ids.has(version))
+        .map(([, config]) => config),
+    };
+  });
+  // Group each input once: large paid histories must not be scanned again for every player.
+  const players = new Map<string, LiveBillingSnapshot["players"][number]>(
+    playerIds.map((playerId) => [
+      playerId,
+      {
+        playerId,
+        sessions: [],
+        holdings: [],
+        pastAppliedAdjustments: [],
+        pricingPaidHistory: {},
+        capPaidHistory: {},
+      },
+    ]),
+  );
+  for (const session of sessions)
+    players.get(session.playerId)?.sessions.push(session);
+  for (const row of holdings)
+    players.get(row.player_id)?.holdings.push(toAssetHolding(row));
+  for (const row of adjustments)
+    players
+      .get(row.player_id)
+      ?.pastAppliedAdjustments.push({
+        source: row.source,
+        sessionStartedAt: new Date(row.started_at),
+      });
+  for (const row of history) {
+    const player = players.get(row.player_id);
+    if (player)
+      player.pricingPaidHistory[
+        pricingHistoryKey({
+          pricingConfigId: row.pricing_config_id,
+          providerId: row.provider_id,
+          ruleId: row.rule_id,
+          ruleAnchorAt: new Date(row.rule_anchor_at),
+        })
+      ] = centsOfInteger(row.total);
+  }
+  for (const row of capHistory) {
+    const player = players.get(row.player_id);
+    if (player)
+      player.capPaidHistory[
+        `${row.cap_config_id}@${row.cap_rule_id}@${new Date(row.cap_anchor_at).toISOString()}`
+      ] = centsOfInteger(row.total);
+  }
+  return {
+    ...empty,
+    assetDefinitions: definitions,
+    currentPricingConfigs: configs,
+    pricingReleases: releases,
+    players: [...players.values()],
   };
 }

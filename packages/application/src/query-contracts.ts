@@ -200,7 +200,7 @@ export type StaffReportPlayerListItem = {
 export type StaffQueries = {
   listPlayers(input?: { playerIds?: readonly string[] }): Promise<StaffPlayerListItem[]>;
   listActiveSessions(): Promise<StaffActiveSessionListItem[]>;
-  listLiveSessions?(): Promise<StaffActiveSessionListItem[]>;
+  listLiveSessions?(input?: { playerIds?: readonly string[] }): Promise<StaffActiveSessionListItem[]>;
   getPlayerAssets?(playerId: string): Promise<PlayerAssets>;
   getPlayerSessionHistory?(playerId: string): Promise<SessionHistoryListItem[]>;
   getPlayerSessionHistoryDetail?(playerId: string, sessionId: string): Promise<SessionHistoryDetail | null>;
