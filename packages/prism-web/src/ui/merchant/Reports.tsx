@@ -1,35 +1,43 @@
-import { displayDateTime } from "../bill-time";
+import type {
+  ReportArchiveFilter,
+  StaffReportCheckout,
+  StaffReportCheckoutDetail,
+} from "@prism/application";
 import { addLocalDays, formatLocalDate, parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
 import { useI18n } from "../../i18n";
+import { BillTimeline, BillTotal } from "../BillTimeline";
+import { displayDateTime } from "../bill-time";
 import {
   Field,
+  Modal,
   State,
   Table,
   button,
   cell,
   input,
   money,
+  primary,
+  segment,
   useResource,
   useMerchant,
+  useStaffApi,
 } from "./shared";
 
-type Settlement = {
-  externalPayment?: { method: string; staffId: string };
-  settlementId: string;
-  playerDisplayName: string;
-  settledAt: string;
-  durationMinutes: number;
-  total: number;
-};
+function payment(record: StaffReportCheckout, t: (key: string) => string) {
+  return record.externalPayment
+    ? `${t("现场收款")} · ${t(({ wechat: "微信", alipay: "支付宝", cash: "现金", other: "其他" } as Record<string, string>)[record.externalPayment.method] ?? record.externalPayment.method)}`
+    : t("资产结算");
+}
+
 export function ReportsPage() {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
-  const payment = (s: Settlement) => s.externalPayment ? t("现场收款") + " · " + t(({ wechat: "微信", alipay: "支付宝", cash: "现金", other: "其他" } as Record<string, string>)[s.externalPayment.method] ?? s.externalPayment.method) : t("资产结算");
   const [from, setFrom] = useState(
     () => formatLocalDate(new Date(), timeZone).slice(0, 8) + "01",
   );
   const [to, setTo] = useState(() => formatLocalDate(new Date(), timeZone));
+  const [archive, setArchive] = useState<ReportArchiveFilter>("active");
   const [offset, setOffset] = useState(0);
   const start = from
     ? parseLocalDateTime(from, "00:00", timeZone)
@@ -41,22 +49,12 @@ export function ReportsPage() {
     Number.isFinite(start.getTime()) &&
     Number.isFinite(end.getTime()) &&
     start < end;
-  const range = new URLSearchParams({
-    from: valid ? start.toISOString() : "",
-    to: valid ? end.toISOString() : "",
-  }).toString();
-  const summary = useResource<{
-    summary: {
-      revenueTotal: number;
-      sessionCount: number;
-      assetGrantTotal: number;
-      coinCommandCount: number;
-    };
-  }>(`reports/summary?${range}`);
-  const settlements = useResource<{
-    settlements: Settlement[];
-    page: { hasMore: boolean };
-  }>(`reports/settlements?${range}&limit=50&offset=${offset}`);
+  const range = valid
+    ? new URLSearchParams({
+        from: start.toISOString(),
+        to: end.toISOString(),
+      }).toString()
+    : "";
   return (
     <div className="grid gap-5">
       <h2 className="text-xl font-semibold">{t("营业记录")}</h2>
@@ -87,83 +85,380 @@ export function ReportsPage() {
             }}
           />
         </Field>
+        <Field label="归档筛选">
+          <select
+            className={input}
+            value={archive}
+            onChange={(e) => {
+              setArchive(e.target.value as ReportArchiveFilter);
+              setOffset(0);
+            }}
+          >
+            <option value="active">{t("未归档")}</option>
+            <option value="archived">{t("已归档")}</option>
+            <option value="all">{t("全部账单")}</option>
+          </select>
+        </Field>
       </div>
-      {summary.data && (
-        <dl className="grid grid-cols-2 gap-5 border-y border-ink/10 py-5 sm:grid-cols-4">
-          {[
-            ["营业额", money(summary.data.summary.revenueTotal)],
-            ["消费笔数", summary.data.summary.sessionCount],
-            ["发放笔数", summary.data.summary.assetGrantTotal],
-            ["投币次数", summary.data.summary.coinCommandCount],
-          ].map(([label, value]) => (
-            <div key={label}>
-              <dt className="text-xs text-ink/60">{t(String(label))}</dt>
-              <dd className="mt-2 text-2xl font-semibold tabular-nums">
-                {value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      )}
-      {!valid ? (
+      {valid ? (
+        <ReportResults
+          key={`${range}:${archive}:${offset}`}
+          range={range}
+          archive={archive}
+          offset={offset}
+          setOffset={setOffset}
+        />
+      ) : (
         <State error={t("请选择有效日期")} />
-      ) : !settlements.data ? (
-        <State error={settlements.error || summary.error} />
-      ) : !settlements.data.settlements.length ? (
+      )}
+    </div>
+  );
+}
+
+function ReportResults({
+  range,
+  archive,
+  offset,
+  setOffset,
+}: {
+  range: string;
+  archive: ReportArchiveFilter;
+  offset: number;
+  setOffset: (offset: number) => void;
+}) {
+  const { t, errorText } = useI18n();
+  const { timeZone } = useMerchant();
+  const [selected, setSelected] = useState<string | null>(null);
+  const summary = useResource<{
+    summary: {
+      revenueTotal: number;
+      sessionCount: number;
+      assetGrantTotal: number;
+      coinCommandCount: number;
+    };
+  }>(`reports/summary?${range}`);
+  const checkouts = useResource<{
+    records: StaffReportCheckout[];
+    page: { hasMore: boolean };
+  }>(`reports/checkouts?${range}&archive=${archive}&limit=50&offset=${offset}`);
+  function changed() {
+    setSelected(null);
+    summary.reload();
+    checkouts.reload();
+    // Return to the first page when a row disappears, avoiding an empty last page.
+    if (offset && archive !== "all") setOffset(0);
+  }
+  const open = (record: StaffReportCheckout) => (
+    <button className={button} onClick={() => setSelected(record.checkoutId)}>
+      {t("账单详情")}
+    </button>
+  );
+  return (
+    <>
+      {summary.error ? (
+        <State error={errorText(summary.error)} />
+      ) : (
+        summary.data && (
+          <>
+            <dl className="grid grid-cols-2 gap-5 border-y border-ink/10 py-5 sm:grid-cols-4">
+              {[
+                ["营业额", money(summary.data.summary.revenueTotal)],
+                ["消费笔数", summary.data.summary.sessionCount],
+                ["发放笔数", summary.data.summary.assetGrantTotal],
+                ["投币次数", summary.data.summary.coinCommandCount],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-xs text-ink/60">{t(String(label))}</dt>
+                  <dd className="mt-2 text-2xl font-semibold tabular-nums">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-sm text-ink/60">
+              {t("营业额不包含已归档账单；消费笔数等其他统计保持不变。")}
+            </p>
+          </>
+        )
+      )}
+      {checkouts.error ? (
+        <State error={errorText(checkouts.error)} />
+      ) : !checkouts.data ? (
+        <State />
+      ) : !checkouts.data.records.length ? (
         <State empty />
       ) : (
         <>
           <div className="divide-y divide-ink/10 rounded-xl bg-panel md:hidden">
-            {settlements.data.settlements.map((s) => (
+            {checkouts.data.records.map((record) => (
               <div
-                key={s.settlementId}
+                key={record.checkoutId}
                 className="grid grid-cols-[1fr_auto] gap-2 p-4"
               >
-                <strong>{s.playerDisplayName}</strong>
-                <span className="col-span-2 text-xs text-ink/60">{payment(s)}</span>
-                <strong className="tabular-nums">{money(s.total)}</strong>
+                <strong>{record.playerDisplayName}</strong>
+                <strong className="tabular-nums">{money(record.total)}</strong>
+                <span className="col-span-2 text-xs text-ink/60">
+                  {displayDateTime(record.settledAt, timeZone)} ·{" "}
+                  {payment(record, t)}
+                </span>
                 <span className="text-xs text-ink/60">
-                  {displayDateTime(s.settledAt, timeZone)}
+                  {record.sessionCount} {t("项计时")} · {record.durationMinutes}{" "}
+                  {t("分钟")} · {t(record.archived ? "已归档" : "未归档")}
                 </span>
-                <span className="text-right text-xs text-ink/60">
-                  {Math.round(s.durationMinutes)} {t("分钟")}
-                </span>
+                {open(record)}
               </div>
             ))}
           </div>
           <div className="hidden md:block">
-            <Table headers={["玩家", "结账时间", "时长（分钟）", "金额", "收款方式"]}>
-              {settlements.data.settlements.map((s) => (
-                <tr key={s.settlementId}>
-                  <td className={cell}>{s.playerDisplayName}</td>
-                  <td className={`${cell} whitespace-nowrap`}>
-                    {displayDateTime(s.settledAt, timeZone)}
+            <Table
+              headers={[
+                "玩家",
+                "结账时间",
+                "累计时长（分钟）",
+                "金额",
+                "收款方式",
+                "归档状态",
+                "操作",
+              ]}
+            >
+              {checkouts.data.records.map((record) => (
+                <tr key={record.checkoutId}>
+                  <td className={cell}>
+                    <strong>{record.playerDisplayName}</strong>
+                    <p className="text-xs text-ink/60">
+                      {record.sessionCount} {t("项计时")}
+                    </p>
                   </td>
-                  <td className={cell}>{Math.round(s.durationMinutes)}</td>
-                  <td className={cell}>{money(s.total)}</td>
-                  <td className={cell} title={s.externalPayment?.staffId}>{payment(s)}</td>
+                  <td className={`${cell} whitespace-nowrap`}>
+                    {displayDateTime(record.settledAt, timeZone)}
+                  </td>
+                  <td className={cell}>{record.durationMinutes}</td>
+                  <td className={cell}>{money(record.total)}</td>
+                  <td className={cell}>{payment(record, t)}</td>
+                  <td className={cell}>
+                    {t(record.archived ? "已归档" : "未归档")}
+                  </td>
+                  <td className={cell}>{open(record)}</td>
                 </tr>
               ))}
             </Table>
           </div>
-          <div className="flex justify-end gap-2">
-            <button
-              className={button}
-              disabled={!offset}
-              onClick={() => setOffset(Math.max(0, offset - 50))}
-            >
-              {t("上一页")}
-            </button>
-            <button
-              className={button}
-              disabled={!settlements.data.page.hasMore}
-              onClick={() => setOffset(offset + 50)}
-            >
-              {t("下一页")}
-            </button>
-          </div>
         </>
       )}
-    </div>
+      {checkouts.data && (
+        <div className="flex justify-end gap-2">
+          <button
+            className={button}
+            disabled={!offset}
+            onClick={() => setOffset(Math.max(0, offset - 50))}
+          >
+            {t("上一页")}
+          </button>
+          <button
+            className={button}
+            disabled={!checkouts.data.page.hasMore}
+            onClick={() => setOffset(offset + 50)}
+          >
+            {t("下一页")}
+          </button>
+        </div>
+      )}
+      {(summary.error || checkouts.error) && (
+        <button
+          className={`${button} justify-self-start`}
+          onClick={() => {
+            summary.reload();
+            checkouts.reload();
+          }}
+        >
+          {t("重试")}
+        </button>
+      )}
+      {selected && (
+        <ReportDetail
+          key={selected}
+          checkoutId={selected}
+          close={() => setSelected(null)}
+          changed={changed}
+        />
+      )}
+    </>
+  );
+}
+
+function ReportDetail({
+  checkoutId,
+  close,
+  changed,
+}: {
+  checkoutId: string;
+  close: () => void;
+  changed: () => void;
+}) {
+  const { t, errorText } = useI18n();
+  const { timeZone, canWrite } = useMerchant();
+  const request = useStaffApi();
+  const detail = useResource<StaffReportCheckoutDetail>(
+    `reports/checkouts/${segment(checkoutId)}`,
+  );
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const at = (value: string | null | undefined) =>
+    value ? displayDateTime(value, timeZone) : "—";
+  async function changeArchive() {
+    if (busy || !detail.data) return;
+    setBusy(true);
+    setError("");
+    try {
+      await request(
+        `reports/checkouts/${segment(checkoutId)}/archive`,
+        "POST",
+        { archived: !detail.data.record.archived },
+      );
+      changed();
+    } catch (e) {
+      setError(errorText(e instanceof Error ? e.message : "操作失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="账单详情" close={close} dismissDisabled={busy}>
+      {detail.error ? (
+        <State error={errorText(detail.error)} />
+      ) : !detail.data ? (
+        <State />
+      ) : (
+        (() => {
+          const { record, receipt } = detail.data;
+          const bill = {
+            ...receipt,
+            settlementPreview: receipt.playerSettlement,
+          };
+          const fields = [
+            ["玩家", record.playerDisplayName],
+            ["玩家 ID", record.playerId],
+            ["账单 ID", record.checkoutId],
+            ["入场时间", at(record.startedAt)],
+            ["结束时间", at(record.endedAt)],
+            ["结账时间", at(record.settledAt)],
+            ["累计时长（分钟）", record.durationMinutes],
+            ["收款方式", payment(record, t)],
+            ["计费小计", money(record.subtotal)],
+            ["归档状态", t(record.archived ? "已归档" : "未归档")],
+            ...(record.externalPayment
+              ? [
+                  ["收款员工", record.externalPayment.staffId],
+                  ["收款时间", at(record.externalPayment.collectedAt)],
+                ]
+              : []),
+            ...(record.updatedAt
+              ? [
+                  ["最近归档操作时间", at(record.updatedAt)],
+                  ["操作员工", record.updatedBy],
+                ]
+              : []),
+            ...(receipt.wallet
+              ? [["结账后余额", money(receipt.wallet.balanceAfter)]]
+              : []),
+          ];
+          return (
+            <div className="grid gap-5">
+              <dl className="grid grid-cols-2 gap-3">
+                {fields.map(([label, value]) => (
+                  <div key={String(label)} className="min-w-0">
+                    <dt className="text-xs text-ink/60">{t(String(label))}</dt>
+                    <dd className="mt-1 break-words text-sm">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <BillTotal preview={bill} />
+              <h3 className="font-semibold">{t("完整时间轴")}</h3>
+              <BillTimeline preview={bill} timeZone={timeZone} />
+              <details className="rounded-xl border border-ink/10 p-4">
+                <summary className="cursor-pointer font-medium">
+                  {t("计时与收费明细")}
+                </summary>
+                <div className="mt-4 grid gap-3 text-sm">
+                  {(receipt.settlements ?? []).map(({ settlement }) => (
+                    <div key={settlement.sessionId} className="break-words">
+                      <p>
+                        {t("计时 ID")} · {settlement.sessionId}
+                      </p>
+                      <p className="text-ink/60">
+                        {at(settlement.startedAt)} – {at(settlement.endedAt)}
+                      </p>
+                    </div>
+                  ))}
+                  {[...receipt.chargeItems, ...receipt.adjustments].map(
+                    (item, i) => (
+                      <div key={i} className="flex justify-between gap-4">
+                        <span>{item.label}</span>
+                        <span className="tabular-nums">
+                          {money(item.amount)}
+                        </span>
+                      </div>
+                    ),
+                  )}
+                </div>
+              </details>
+              <p className="text-sm text-ink/60">
+                {t(
+                  "归档会隐藏账单并从营业额中排除；玩家记录、余额和其他统计不变。恢复后重新计入营业额。",
+                )}
+              </p>
+              {canWrite &&
+                (!confirming ? (
+                  <button
+                    className={`${button} justify-self-start`}
+                    onClick={() => setConfirming(true)}
+                  >
+                    {t(record.archived ? "恢复账单" : "归档账单")}
+                  </button>
+                ) : (
+                  <div className="grid gap-3 rounded-xl border border-ink/20 p-4">
+                    <p className="text-sm">
+                      {t(
+                        record.archived
+                          ? "恢复此账单后，营业额将增加 {amount}。"
+                          : "归档此账单后，营业额将减少 {amount}。",
+                        { amount: money(record.total) },
+                      )}
+                    </p>
+                    {error && (
+                      <p role="alert" className="text-sm text-coral">
+                        {error}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className={primary}
+                        disabled={busy}
+                        onClick={() => void changeArchive()}
+                      >
+                        {t(
+                          busy
+                            ? "处理中…"
+                            : record.archived
+                              ? "确认恢复"
+                              : "确认归档",
+                        )}
+                      </button>
+                      <button
+                        className={button}
+                        disabled={busy}
+                        onClick={() => setConfirming(false)}
+                      >
+                        {t("取消")}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          );
+        })()
+      )}
+    </Modal>
   );
 }

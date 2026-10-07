@@ -189,7 +189,8 @@ export async function uploadShopBackup(path: string, file: Blob, progress: (coun
     total = 0,
     activeTable = "",
     rows: Row[] = [],
-    bytes = 2;
+    bytes = 2,
+    legacyV2Business = false;
   const flush = async () => {
     if (!rows.length) return;
     const body = JSON.stringify({ table: activeTable, part, rows });
@@ -204,6 +205,7 @@ export async function uploadShopBackup(path: string, file: Blob, progress: (coun
   try {
     const counts = await readShopBackup(file.stream(), {
       async header(header) {
+        legacyV2Business = header.version === 2 && header.scope === "business";
         const job = await api<{ jobId: string; tables: string[] }>(`${path}/imports`, {
           method: "POST",
           body: JSON.stringify(header),
@@ -228,6 +230,8 @@ export async function uploadShopBackup(path: string, file: Blob, progress: (coun
         await flush();
       },
     });
+    if (legacyV2Business && tables.includes("checkout_report_states") &&
+        !Object.hasOwn(counts, "checkout_report_states")) counts.checkout_report_states = 0;
     if (Object.keys(counts).sort().join(",") !== [...tables].sort().join(",")) throw invalid();
     return { jobId, counts, parts: part };
   } catch (error) {

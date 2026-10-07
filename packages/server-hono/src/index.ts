@@ -220,7 +220,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
             message: error.message,
           },
         },
-        error.code === "INSUFFICIENT_BALANCE" ? 409 : 400,
+        error.code === "CHECKOUT_NOT_FOUND" ? 404 : error.code === "INSUFFICIENT_BALANCE" ? 409 : 400,
       );
     }
     console.error("[prism] unhandled route error:", error);
@@ -1681,6 +1681,101 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
       machineConnections: connections.map(toMachineConnectionView),
     });
   });
+
+  app.get("/api/v1/staff/reports/checkouts", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    const from = parseRequiredDate(context.req.query("from")),
+      to = parseRequiredDate(context.req.query("to"));
+    const archive = context.req.query("archive") ?? "active";
+    if (!from || !to || from >= to)
+      return context.json(
+        { error: { code: "INVALID_REPORT_RANGE", message: "请选择有效日期" } },
+        400,
+      );
+    if (archive !== "active" && archive !== "archived" && archive !== "all")
+      return context.json(
+        { error: { code: "INVALID_REPORT_FILTER", message: "无效的归档筛选" } },
+        400,
+      );
+    if (!dependencies.staffQueries.listReportCheckouts)
+      return context.json(
+        {
+          error: {
+            code: "STAFF_REPORT_QUERIES_NOT_CONFIGURED",
+            message: "Report queries are not configured.",
+          },
+        },
+        503,
+      );
+    const limit = normalizeLimit(context.req.query("limit"), 50, 200),
+      offset = normalizeOffset(context.req.query("offset"));
+    const records = await dependencies.staffQueries.listReportCheckouts({
+      from,
+      to,
+      archive,
+      limit: limit + 1,
+      offset,
+    });
+    return context.json({
+      records: records.slice(0, limit),
+      page: { limit, offset, hasMore: records.length > limit },
+    });
+  });
+  app.get("/api/v1/staff/reports/checkouts/:checkoutId", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    if (!dependencies.staffQueries.getReportCheckout)
+      return context.json(
+        {
+          error: {
+            code: "STAFF_REPORT_QUERIES_NOT_CONFIGURED",
+            message: "Report queries are not configured.",
+          },
+        },
+        503,
+      );
+    const detail = await dependencies.staffQueries.getReportCheckout(
+      context.req.param("checkoutId"),
+    );
+    return detail
+      ? context.json(detail)
+      : context.json(
+          {
+            error: { code: "CHECKOUT_NOT_FOUND", message: "Checkout not found." },
+          },
+          404,
+        );
+  });
+  app.post(
+    "/api/v1/staff/reports/checkouts/:checkoutId/archive",
+    async (context) => {
+      const principal = await staffWritePrincipal(context);
+      if (principal instanceof Response) return principal;
+      if (!dependencies.staffReportCommands)
+        return context.json(
+          {
+            error: {
+              code: "STAFF_REPORT_COMMANDS_NOT_CONFIGURED",
+              message: "Report commands are not configured.",
+            },
+          },
+          503,
+        );
+      const body = await context.req.json<{ archived?: unknown }>();
+      if (typeof body?.archived !== "boolean")
+        return context.json(
+          { error: { code: "INVALID_REQUEST", message: "无效的归档状态" } },
+          400,
+        );
+      await dependencies.staffReportCommands.setArchived({
+        checkoutId: context.req.param("checkoutId"),
+        archived: body.archived,
+        staffId: principal.staffId,
+      });
+      return context.json({ archived: body.archived });
+    },
+  );
 
   app.get("/api/v1/staff/reports/summary", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);

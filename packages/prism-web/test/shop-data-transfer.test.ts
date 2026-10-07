@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   readShopBackup,
+  uploadShopBackup,
   downloadShopBackup,
   recoverInterruptedShopExport,
 } from "../src/shop-data-transfer";
@@ -318,4 +319,26 @@ test("a new tab does not cancel an export whose checkpoint was copied from its o
       Object.defineProperty(globalThis, "sessionStorage", previousStorage);
     else Reflect.deleteProperty(globalThis, "sessionStorage");
   }
+});
+
+
+test("old v2 business backups omit only the new archive table; other missing tables remain invalid", async () => {
+  const original = globalThis.fetch;
+  const requests: { method: string | undefined; body: unknown }[] = [];
+  globalThis.fetch = (async (_url, init) => {
+    requests.push({ method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : null });
+    return Response.json({ data: init?.method === "POST"
+      ? { jobId: "job", tables: ["players", "checkout_report_states"] } : { deleted: true } });
+  }) as typeof fetch;
+  try {
+    const backup = { version: 2, scope: "business", tables: { players: [] } };
+    expect(await uploadShopBackup("/api/data", new Blob([JSON.stringify(backup)]), () => {}))
+      .toEqual({ jobId: "job", counts: { players: 0, checkout_report_states: 0 }, parts: 0 });
+    for (const invalidBackup of [
+      { version: 2, scope: "business", tables: { checkout_report_states: [] } },
+      { version: 1, scope: "business", tables: { players: [] } },
+      { version: 2, scope: "configuration", tables: { players: [] } },
+    ]) await expect(uploadShopBackup("/api/data", new Blob([JSON.stringify(invalidBackup)]), () => {})).rejects.toThrow("请选择有效的 JSON 备份文件");
+    expect(requests.filter(r => r.method === "DELETE")).toHaveLength(3);
+  } finally { globalThis.fetch = original; }
 });

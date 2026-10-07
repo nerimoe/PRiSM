@@ -77,6 +77,7 @@ export type SqlExecutor = {
 };
 
 export type SqlRepositories = {
+  reportArchives?: import("@prism/core").ReportArchiveRepository;
   readLiveBillingSnapshot?(playerIds: readonly string[], at: Date): Promise<LiveBillingSnapshot>;
   commitCheckout(input: CheckoutCommit): Promise<void>;
   system: SystemRepository;
@@ -110,6 +111,26 @@ export function createSqlRepositories(
   input: CreateSqlRepositoriesInput,
 ): SqlRepositories {
   return {
+    reportArchives: {
+      async setArchived(command) {
+        const executor = input.executor;
+        const shop = sqlShop(executor);
+        const checkout = await executor.first(
+          `SELECT 1 FROM player_checkouts WHERE shop_id=${shop} AND id=?`,
+          [command.checkoutId],
+        );
+        if (!checkout) return false;
+        await executor.run(
+          `INSERT INTO checkout_report_states(shop_id,checkout_id,archived,updated_at,updated_by)
+           SELECT shop_id,id,?,?,? FROM player_checkouts WHERE shop_id=${shop} AND id=?
+           ON CONFLICT(shop_id,checkout_id) DO UPDATE SET
+             archived=excluded.archived,updated_at=excluded.updated_at,updated_by=excluded.updated_by
+           WHERE checkout_report_states.archived!=excluded.archived`,
+          [+command.archived, command.at.toISOString(), command.staffId, command.checkoutId],
+        );
+        return true;
+      },
+    },
     readLiveBillingSnapshot: (playerIds, at) => readLiveBillingSnapshot(input, playerIds, at),
     async commitCheckout(checkout) {
       const statements: SqlStatement[] = [];

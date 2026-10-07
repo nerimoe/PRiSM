@@ -41,7 +41,7 @@ jobs:
       - run: bun run build:web
       - run: npm install --prefix "$RUNNER_TEMP/prism-browser" playwright@1.62.1
       - run: node "$RUNNER_TEMP/prism-browser/node_modules/playwright/cli.js" install --with-deps chromium --only-shell
-      - name: Check scan flows, shop data transfer, player identities and live billing
+      - name: Check scan flows, shop data transfer, player identities, live billing and reports
         env:
           PRISM_PLAYWRIGHT_MODULE: ${{ runner.temp }}/prism-browser/node_modules/playwright
           PRISM_SCAN_OUTPUT: .scan-check
@@ -55,6 +55,7 @@ jobs:
           node scripts/check-shop-data-browser.cjs
           node scripts/check-player-identities-browser.cjs
           node scripts/check-live-billing-browser.cjs
+          node scripts/check-reports-browser.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:

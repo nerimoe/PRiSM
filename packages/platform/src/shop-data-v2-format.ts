@@ -52,6 +52,7 @@ export const fullBusinessTables = [
   "device_states",
   "machine_connections",
   "account_links",
+  "checkout_report_states",
 ] as const;
 export type FullTable = (typeof fullBusinessTables)[number];
 export const v2TablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>

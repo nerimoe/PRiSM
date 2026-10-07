@@ -24,6 +24,7 @@ export * from "./staff-pricing-effects";
 export * from "./staff-redeem";
 export * from "./staff-users";
 export * from "./staff-operations";
+export * from "./staff-reports";
 
 export * from "./operation-lock";
 

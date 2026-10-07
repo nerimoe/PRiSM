@@ -40,6 +40,7 @@ const labels: Record<string, string> = {
   redeem_records: "兑换记录",
   player_checkouts: "结账记录",
   checkout_timelines: "账单时间轴",
+  checkout_report_states: "账单归档状态",
   settlements: "会话账单",
   settlement_charge_items: "收费明细",
   settlement_adjustments: "费用调整",

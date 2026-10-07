@@ -411,6 +411,15 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
     async listReportPlayers(query) {
       return listReportPlayers(input, query);
     },
+    listReportCheckouts: (query) => listReportCheckouts(input, query),
+    async getReportCheckout(checkoutId) {
+      const record = (await listReportCheckouts(input, {
+        checkoutId, limit: 1, archive: "all",
+      }))[0];
+      if (!record) return null;
+      const receipt = await getPlayerCheckout(input, record.playerId, checkoutId);
+      return receipt ? { record, receipt } : null;
+    },
   };
 }
 
@@ -455,6 +464,7 @@ async function getReportsSummary(
        FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
+         AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=pc.shop_id AND a.checkout_id=pc.id AND a.archived=1)
      ), asset_summary AS (
        SELECT COUNT(*) AS asset_grant_total
        FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${sqlShop(input.executor)}), bounds
@@ -504,6 +514,7 @@ async function listReportSettlements(
      INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
      LEFT JOIN cashier_payments payment ON payment.shop_id = ${sqlShop(input.executor)} AND payment.checkout_id = st.checkout_id
      WHERE st.settled_at >= ? AND st.settled_at < ?
+       AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=st.shop_id AND a.checkout_id=st.checkout_id AND a.archived=1)
      ORDER BY st.settled_at DESC, st.id DESC
      LIMIT ? OFFSET ?`,
     [query.from.toISOString(), query.to.toISOString(), query.limit, query.offset ?? 0],
@@ -554,6 +565,7 @@ async function listReportPlayers(
        FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
+         AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=pc.shop_id AND a.checkout_id=pc.id AND a.archived=1)
        GROUP BY pc.player_id
      ), player_activity AS (
        SELECT
@@ -569,11 +581,11 @@ async function listReportPlayers(
        player_activity.player_id,
        player_activity.player_display_name,
        player_activity.settlement_count,
-       player_revenue.revenue_total,
+       COALESCE(player_revenue.revenue_total, 0) AS revenue_total,
        player_activity.total_duration_minutes,
        player_activity.last_settled_at
      FROM player_activity
-     INNER JOIN player_revenue ON player_revenue.player_id = player_activity.player_id
+     LEFT JOIN player_revenue ON player_revenue.player_id = player_activity.player_id
      ORDER BY revenue_total DESC, settlement_count DESC, last_settled_at DESC, player_activity.player_id
      LIMIT ? OFFSET ?`,
     [query.from.toISOString(), query.to.toISOString(), query.limit, query.offset ?? 0],
@@ -1155,4 +1167,81 @@ function toPlayerView(row: PlayerRow): PlayerSummary["player"] {
     displayName: row.display_name,
     status: row.status,
   };
+}
+
+async function listReportCheckouts(
+  input: CreateSqlReadModelsInput,
+  query: {
+    from?: Date;
+    to?: Date;
+    checkoutId?: string;
+    limit: number;
+    offset?: number;
+    archive?: import("@prism/application").ReportArchiveFilter;
+  },
+): Promise<import("@prism/application").StaffReportCheckout[]> {
+  const shop = sqlShop(input.executor);
+  const archive = query.archive ?? "active";
+  const rows = await input.executor.all<{
+    checkout_id: string;
+    player_id: string;
+    display_name: string;
+    started_at: string | null;
+    ended_at: string | null;
+    settled_at: string;
+    subtotal: number;
+    total: number;
+    session_count: number;
+    duration_minutes: number;
+    archived: number;
+    updated_at: string | null;
+    updated_by: string | null;
+    method: string | null;
+    staff_id: string | null;
+    collected_at: string | null;
+  }>(
+    `SELECT c.id AS checkout_id,c.player_id,p.display_name,MIN(s.started_at) AS started_at,MAX(s.ended_at) AS ended_at,
+      c.settled_at,c.subtotal,c.total,COUNT(s.id) AS session_count,
+      COALESCE(SUM(CASE WHEN s.ended_at IS NOT NULL THEN MAX(0,CAST(ROUND((julianday(s.ended_at)-julianday(s.started_at))*86400000)/60000 AS INTEGER)) ELSE 0 END),0) AS duration_minutes,
+      COALESCE(a.archived,0) AS archived,a.updated_at,a.updated_by,payment.method,payment.staff_id,payment.collected_at
+    FROM player_checkouts c JOIN players p ON p.shop_id=c.shop_id AND p.id=c.player_id
+    LEFT JOIN settlements st ON st.shop_id=c.shop_id AND st.checkout_id=c.id
+    LEFT JOIN sessions s ON s.shop_id=st.shop_id AND s.id=st.session_id AND s.player_id=c.player_id
+    LEFT JOIN checkout_report_states a ON a.shop_id=c.shop_id AND a.checkout_id=c.id
+    LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
+    WHERE c.shop_id=${shop} AND ${query.checkoutId ? "c.id=?" : "c.settled_at>=? AND c.settled_at<?"}
+      ${archive === "all" ? "" : `AND COALESCE(a.archived,0)=${archive === "archived" ? 1 : 0}`}
+    GROUP BY c.id ORDER BY c.settled_at DESC,c.id DESC LIMIT ? OFFSET ?`,
+    [
+      ...(query.checkoutId
+        ? [query.checkoutId]
+        : [query.from!.toISOString(), query.to!.toISOString()]),
+      query.limit,
+      query.offset ?? 0,
+    ],
+  );
+  return rows.map((row) => ({
+    checkoutId: row.checkout_id,
+    playerId: row.player_id,
+    playerDisplayName: row.display_name,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    settledAt: row.settled_at,
+    durationMinutes: row.duration_minutes,
+    sessionCount: row.session_count,
+    subtotal: yuanOf(centsOfInteger(row.subtotal)),
+    total: yuanOf(centsOfInteger(row.total)),
+    archived: !!row.archived,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+    ...(row.method
+      ? {
+          externalPayment: {
+            method: row.method,
+            staffId: row.staff_id!,
+            collectedAt: row.collected_at!,
+          },
+        }
+      : {}),
+  }));
 }

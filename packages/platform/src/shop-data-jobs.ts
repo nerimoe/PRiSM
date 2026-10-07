@@ -180,6 +180,12 @@ async function previewJob(
   const errors: string[] = [],
     tables = fullTables(header),
     actual = await counts(c.env.DB, job.id, tables);
+  // v2 backups created before report archiving have no metadata table.
+  // Only an absent, empty new table is compatible; never ignore uploaded rows.
+  if (header.version === 2 && header.scope === "business" &&
+      !Object.hasOwn(manifest.counts, "checkout_report_states") && actual.checkout_report_states === 0) {
+    manifest = { ...manifest, counts: { ...manifest.counts, checkout_report_states: 0 } };
+  }
   if (
     Object.keys(manifest.counts).sort().join(",") !== [...tables].sort().join(",") ||
     tables.some((t) => manifest.counts[t] !== actual[t])

@@ -155,3 +155,5 @@ iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup
 ![电源设备通电后显示无可操作项提示](images/device-no-actions-mobile.png)
 
 扫码入口、客户端刷新预算、HA 观察缓存、APNs 重试与临时状态清理的现行约定见 [扫码性能与请求预算](scan-performance.md)。
+
+营业报表归档采用独立的 `checkout_report_states` 表，按完整 checkout 归档并从报表营业额排除；不改金融结算、余额、玩家历史或收费/封顶历史。员工账单详情复用玩家历史 receipt 查询及 Web 时间轴组件。迁移、权限和备份兼容见 [营业记录归档](./merchant-report-archive.md)。

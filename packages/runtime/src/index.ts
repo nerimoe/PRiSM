@@ -26,6 +26,7 @@ import {
   createStaffPricingEffectService,
   createStaffRedeemService,
   createStaffOperationsService,
+  createStaffReportService,
   createVersionedPricingResolvers,
   createStaffUserService,
   type ApplicationQueries,
@@ -415,6 +416,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     },
     staffCheckoutCommands: playerCheckoutCommands,
     staffOperations,
+    staffReportCommands: input.repositories.reportArchives ? createStaffReportService({ archives: input.repositories.reportArchives, now: input.now }) : undefined,
     staffLiveBillingSnapshot: input.repositories.readLiveBillingSnapshot && !fallbackPricingProviders.length && !pluginPricingProviders.length && !input.assetEffectProviders.length && !pluginRuntime.assetEffectProviders.length
       ? (playerIds) => input.repositories.readLiveBillingSnapshot!(playerIds, input.now()) : undefined,
     playerRedeemCommands,

@@ -208,8 +208,11 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/machine-connections` | 获取游戏机器软件的 WebSocket 在线状态、能力列表、连接时间、最后心跳和断开时间。 |
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |
 | `GET` | `/rpc/staff/device-commands?limit=50` | 审计近期所有硬件发送指令的流水。失败命令会在 `payload.executorFailure.message` 中返回执行器原因，设备看板会直接展示。 |
-| `GET` | `/rpc/staff/reports/summary?from=<iso>&to=<iso>` | 查询特定时段内的收入、开单数、分发道具数和投币次数。 |
+| `GET` | `/rpc/staff/reports/summary?from=<iso>&to=<iso>` | 查询特定时段内未归档账单的收入；消费笔数、分发道具数和投币次数仍含归档账单。 |
 | `GET` | `/rpc/staff/reports/settlements?from=<iso>&to=<iso>&limit=50&offset=0` | 分页查询特定时段内结账流水；返回 `settlements` 和 `{ limit, offset, hasMore }`。 |
+| `GET` | `/rpc/staff/reports/checkouts?from=<iso>&to=<iso>&archive=active&limit=50&offset=0` | 整张账单分页，筛选 active / archived / all；返回 records 和 page。 |
+| `GET` | `/rpc/staff/reports/checkouts/:checkoutId` | 店铺范围完整历史账单，返回 record 与玩家同源的 receipt/时间轴。 |
+| `POST` | `/rpc/staff/reports/checkouts/:checkoutId/archive` | 店主/manager 输入 archived 布尔值归档或恢复；同步调整营业额，其他统计、玩家历史和余额不变。 |
 | `GET` | `/rpc/staff/reports/players?from=<iso>&to=<iso>&limit=20&offset=0` | 分页查询特定时段内玩家消费贡献榜；返回 `players` 和 `{ limit, offset, hasMore }`。 |
 
 已归档的资产定义、计费效果、礼物、商品项目和计费配置都会保留供历史账单与审计视图查阅。新员工赠送和新礼物不能使用已归档或不在有效期内的资产定义；已归档或过期的礼物不能被兑换；兑换码过期也会拒绝兑换。礼物过期但兑换码没过期、礼物没过期但兑换码过期，都会无法兑换；礼物和兑换码都有效但礼物内容过期时，兑换会成功记录，但过期内容不会到账。现有的兑换码、商品项目、插件和账本历史流水保持可读。已归档的资产定义、计费效果、礼物、商品项目和计费配置可以从 Staff Web 还原；已归档计费方案允许编辑并保存到原记录，但会继续保持归档和禁用，直到员工显式还原并开启。错误的草稿规则会从当前编辑列表中物理移除。导入的礼物授予日期会在仓储层恢复为 `Date | null`，避免旧 JSON 字符串破坏员工接口。导入的提供商有效负载可能仍包含退役的时间规则行或整段日期时间范围，以供迁移上下文使用；结算报价、会话启动营业时间验证、已启用配置验证和时间轴渲染会按领域规则处理这些历史行。
@@ -485,3 +488,5 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 导出期间锁定该店铺业务写入，直接分页读取原表，不在 D1 保存导出内容。仅保存锁、游标和月度次数元数据；完成／取消解锁，断线至多 5 分钟解锁，任务最长 2 小时。每店按店铺时区自然月默认导出一次、导入一次，两个额度独立。v2 从开始导出／上传时扣除，任务内导入重试不重复计数；旧版下载和整文件导入亦受额度限制。
 
 `GET /api/v1/shops/:shopCode/data/export-status` 返回 `{ month, timeZone, allowance, used, remaining, locked, importAllowance, importUsed, importRemaining }`。平台管理员可 `GET/PUT /api/v1/admin/shops/:shopCode/transfer-allowance`；PUT 以 `{ extra, importExtra }` 设置当月额外次数，范围均为整数 0–100，幂等设置。超额返回 429 `EXPORT_MONTHLY_LIMIT` / `IMPORT_MONTHLY_LIMIT`，锁店业务返回 423 `SHOP_EXPORT_LOCKED`。导出游标仅接受当前进度，无法反复读取已完成页面或跳页。完整策略见 [shop-data-transfer.md](shop-data-transfer.md)。
+
+营业记录完整账单、归档元数据及恢复规则见 [营业记录归档与账单详情](./merchant-report-archive.md)。旧 `reports/settlements` 隐藏已归档账单，`reports/players` 营业额排除归档金额，其他活动统计不变。

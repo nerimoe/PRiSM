@@ -256,6 +256,15 @@ export type SettlementRepository = {
   listPastAppliedAdjustmentsByPlayerId(playerId: string): Promise<PastAppliedAdjustment[]>;
 };
 
+export type ReportArchiveRepository = {
+  setArchived(input: {
+    checkoutId: string;
+    archived: boolean;
+    staffId: string;
+    at: Date;
+  }): Promise<boolean>;
+};
+
 export type PricingConfigRepository = {
   findRelease?(releaseId: string): Promise<import("./pricing-config").PricingRelease | null>;
   save(config: PricingConfig): Promise<void>;

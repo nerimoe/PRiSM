@@ -42,7 +42,7 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
     "0023_remote_entry",
     "0024_drop_remote_entry",
     "0030_platform_identity_bindings",
-    "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export",
+    "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export", "0035_checkout_report_states",
   ]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(
       /^\s*--.*$/gm,
@@ -215,6 +215,19 @@ test("pure cashier players and paid bills are exported without platform identiti
     sessionIds: check.data.settlementPreview.sessionIds,
   });
   expect(paid.status).toBe(200);
+  const checkout = await sourceEnv.DB.prepare("SELECT id FROM player_checkouts WHERE shop_id=?").bind(shop.id).first<{id:string}>();
+  const reportPath = `/api/v1/shops/${shop.publicId}/staff/reports/checkouts/${encodeURIComponent(checkout!.id)}`;
+  const detail = await request(sourceEnv, reportPath);
+  expect(detail.status).toBe(200);
+  expect(detail.data.receipt.timeline.events.length).toBeGreaterThan(0);
+  expect(detail.data.record.externalPayment.method).toBe("wechat");
+  expect(detail.data.record.settledAt).toMatch(/\+08:00$/);
+  expect((await request(sourceEnv, reportPath + "/archive", { archived: true, staffId: "forged" })).status).toBe(200);
+  expect((await rows(sourceEnv, "checkout_report_states", shop.id))[0]).toMatchObject({archived:1});
+  const locked = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  expect(locked.status).toBe(200);
+  expect((await request(sourceEnv, reportPath + "/archive", { archived: false })).status).toBe(423);
+  expect((await request(sourceEnv, base(shop) + `/exports/${locked.data.jobId}`, undefined, "owner-session", "DELETE")).status).toBe(200);
   const backup = await download(sourceEnv, shop);
   expect(backup.version).toBe(2);
   expect(backup.source.origin).toBe(origin);
@@ -236,8 +249,22 @@ test("pure cashier players and paid bills are exported without platform identiti
     "settlements",
     "cashier_payments",
     "checkout_timelines",
+    "checkout_report_states",
   ])
     expect(targetBackup.tables[table]).toEqual(backup.tables[table]);
+  const search = "?from=2026-01-01T00:00:00Z&to=2999-01-01T00:00:00Z";
+  expect((await request(targetEnv, `/api/v1/shops/${target.publicId}/staff/reports/summary${search}`)).data.summary.revenueTotal).toBe(0);
+  expect((await request(targetEnv, `/api/v1/shops/${target.publicId}/staff/reports/checkouts${search}`)).data.records).toHaveLength(0);
+  expect((await request(targetEnv, `/api/v1/shops/${target.publicId}/staff/reports/checkouts${search}&archive=archived`)).data.records).toHaveLength(1);
+  // Old v2 backups omitted this newly added table. Both streaming client and API accept it as empty.
+  const legacyBackup = structuredClone(backup);
+  delete legacyBackup.tables.checkout_report_states;
+  const legacyTarget = await store(targetEnv);
+  const legacyUpload = await upload(targetEnv, legacyTarget, legacyBackup);
+  const legacyPreview = await preview(targetEnv, legacyTarget, legacyUpload);
+  expect(legacyPreview.data.errors).toEqual([]);
+  expect((await apply(targetEnv, legacyTarget, legacyUpload.jobId, legacyPreview.data.fingerprint)).status).toBe(200);
+  expect(await rows(targetEnv, "checkout_report_states", legacyTarget.id)).toEqual([]);
 }, 30000);
 
 test("cashier identities and verified accounts survive backup and cross-database restore without gaining assets", async () => {

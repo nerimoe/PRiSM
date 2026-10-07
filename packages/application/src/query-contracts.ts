@@ -188,6 +188,28 @@ export type StaffReportSettlementListItem = {
   total: Cents;
 };
 
+export type ReportArchiveFilter = "active" | "archived" | "all";
+export type StaffReportCheckout = {
+  checkoutId: string;
+  playerId: string;
+  playerDisplayName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  settledAt: string;
+  durationMinutes: number;
+  sessionCount: number;
+  subtotal: number;
+  total: number;
+  archived: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  externalPayment?: { method: string; staffId: string; collectedAt: string };
+};
+export type StaffReportCheckoutDetail = {
+  record: StaffReportCheckout;
+  receipt: PlayerCheckoutReceipt;
+};
+
 export type StaffReportPlayerListItem = {
   playerId: string;
   playerDisplayName: string;
@@ -209,6 +231,8 @@ export type StaffQueries = {
   listDeviceStates?(): Promise<DeviceState[]>;
   listMachineConnections?(): Promise<MachineConnection[]>;
   getReportsSummary?(input: StaffReportsSummaryInput): Promise<StaffReportsSummary>;
+  listReportCheckouts?(input: StaffReportsSummaryInput & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
+  getReportCheckout?(checkoutId: string): Promise<StaffReportCheckoutDetail | null>;
   listReportSettlements?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportSettlementListItem[]>;
   listReportPlayers?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportPlayerListItem[]>;
 };

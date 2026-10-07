@@ -46,6 +46,7 @@ describe("sqliteSchema", () => {
       "business_items",
       "cashier_payments",
       "cashier_profiles",
+      "checkout_report_states",
       "checkout_timelines",
       "device_commands",
       "device_states",
