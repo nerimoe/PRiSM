@@ -5,3 +5,4 @@ export * from "./platform/shops.js";
 export * from "./system/health.js";
 export * from "./system/version.js";
 export * from "./web-assets.js";
+export * from "./shops/index.js";

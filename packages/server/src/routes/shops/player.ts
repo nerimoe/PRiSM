@@ -1,0 +1,324 @@
+import { Hono, type Context } from "hono";
+import { createD1Repositories } from "@prism/adapter-d1";
+import { withOperationLease } from "@prism/application";
+import type { AppBindings, TenantShop } from "../../bindings.js";
+import { jsonError } from "../../http.js";
+import { requireUser } from "../../middleware/auth.js";
+import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import {
+  toPlayerAssetsView,
+  toPlayerCheckoutPreviewView,
+  toPlayerCheckoutResultView,
+  toPlayerRedeemRecordsView,
+  toPlayerSummaryView,
+  toRedeemGiftView,
+  toSessionHistoryDetailView,
+  toSessionHistoryView,
+  toSessionView,
+  toStoppedSessionView,
+  toDeviceCommandView,
+  toBusinessItemOrderView,
+} from "./views.js";
+
+export async function hasPlatformBinding(
+  c: Context<AppBindings>,
+  shopId: string,
+  userId: string,
+): Promise<boolean> {
+  return !!(await c.env.DB.prepare(
+    "SELECT 1 FROM shop_platform_bindings WHERE shop_id = ? AND user_id = ? LIMIT 1",
+  )
+    .bind(shopId, userId)
+    .first());
+}
+
+export async function requireShopPlayer(
+  c: Context<AppBindings>,
+  shop: TenantShop,
+  deviceOnly = false,
+  enforceBinding = true,
+): Promise<{ id: string; status: string }> {
+  const playerIdHeader = c.req.header("X-PRiSM-Player-Id");
+  if (playerIdHeader) {
+    const playerRow = await c.env.DB.prepare(
+      "SELECT id, status FROM players WHERE shop_id = ? AND id = ?",
+    )
+      .bind(shop.id, playerIdHeader)
+      .first<{ id: string; status: string }>();
+    if (playerRow) {
+      if (playerRow.status !== "active") {
+        jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
+      }
+      return playerRow;
+    }
+  }
+
+  const user = requireUser(c);
+  if (!shop.billing_enabled && !deviceOnly) {
+    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
+  }
+
+  const find = () =>
+    c.env.DB.prepare(
+      `SELECT p.id, p.status FROM shop_player_accounts a
+       JOIN players p ON p.shop_id = a.shop_id AND p.id = a.player_id
+       WHERE a.shop_id = ? AND a.user_id = ?`,
+    )
+      .bind(shop.id, user.id)
+      .first<{ id: string; status: string }>();
+
+  let player = await find();
+  if (
+    shop.identity_binding_required &&
+    (!player || enforceBinding) &&
+    !(await hasPlatformBinding(c, shop.id, user.id))
+  ) {
+    jsonError(403, "请先绑定平台身份", "PLATFORM_BINDING_REQUIRED");
+  }
+
+  if (!player) {
+    const deps = getShopDeps(c);
+    const repos = createD1Repositories({
+      db: c.env.DB,
+      shopId: shop.id,
+      id: crypto.randomUUID,
+      now: () => new Date(),
+    });
+    player = await withOperationLease(
+      {
+        repository: repos.operationLocks,
+        scope: "platform.membership",
+        resourceId: user.id,
+        now: () => new Date(),
+      },
+      async () => {
+        const current = await find();
+        if (current) return current;
+        const created = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity({
+          identity: { provider: "web-account", subject: user.id },
+          autoRegister: true,
+          displayName: user.displayName || user.username || "玩家",
+        });
+        await c.env.DB.prepare(
+          "INSERT INTO shop_player_accounts(shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, ?)",
+        )
+          .bind(shop.id, user.id, created.id, new Date().toISOString())
+          .run();
+        return created;
+      },
+    );
+  }
+
+  if (player.status !== "active") {
+    jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
+  }
+  return player;
+}
+
+export const playerRouter = new Hono<AppBindings>();
+
+// Player Summary
+playerRouter.get("/me", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const summary = await deps.playerQueries.getPlayerSummary(player.id);
+  return c.json(toPlayerSummaryView(summary));
+});
+
+// Player Assets
+playerRouter.get("/assets", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const assets = deps.playerQueries.listPlayerAssets
+    ? await deps.playerQueries.listPlayerAssets(player.id)
+    : { holdings: [], ledgerEntries: [] };
+  return c.json(toPlayerAssetsView(assets));
+});
+
+// Checkout History
+playerRouter.get("/checkouts/history", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const offset = Number(c.req.query("offset") ?? 0);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    jsonError(400, "Invalid history offset.", "INVALID_OFFSET");
+  }
+  if (!deps.playerQueries.listPlayerCheckouts) {
+    jsonError(503, "Checkout queries are not configured.", "CHECKOUT_QUERIES_NOT_CONFIGURED");
+  }
+  return c.json(await deps.playerQueries.listPlayerCheckouts(player.id, offset));
+});
+
+// Single Checkout Detail
+playerRouter.get("/checkouts/:checkoutId", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.playerQueries.getPlayerCheckout) {
+    jsonError(503, "Checkout queries are not configured.", "CHECKOUT_QUERIES_NOT_CONFIGURED");
+  }
+  const receipt = await deps.playerQueries.getPlayerCheckout(player.id, c.req.param("checkoutId"));
+  if (!receipt) {
+    jsonError(404, "Checkout not found.", "CHECKOUT_NOT_FOUND");
+  }
+  return c.json({ receipt });
+});
+
+// Latest Checkout
+playerRouter.get("/checkout/latest", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.playerQueries.getLatestPlayerCheckout) {
+    jsonError(503, "Checkout queries are not configured.", "CHECKOUT_QUERIES_NOT_CONFIGURED");
+  }
+  return c.json({ receipt: await deps.playerQueries.getLatestPlayerCheckout(player.id) });
+});
+
+// Session History
+playerRouter.get("/sessions/history", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.playerQueries.listPlayerSessionHistory) {
+    jsonError(503, "Player session history queries are not configured.", "PLAYER_SESSION_HISTORY_QUERIES_NOT_CONFIGURED");
+  }
+  const sessions = await deps.playerQueries.listPlayerSessionHistory(player.id);
+  return c.json(toSessionHistoryView(sessions));
+});
+
+// Single Session History Detail
+playerRouter.get("/sessions/:sessionId/history", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.playerQueries.getPlayerSessionHistoryDetail) {
+    jsonError(503, "Player session history queries are not configured.", "PLAYER_SESSION_HISTORY_QUERIES_NOT_CONFIGURED");
+  }
+  const detail = await deps.playerQueries.getPlayerSessionHistoryDetail(player.id, c.req.param("sessionId"));
+  if (!detail) {
+    jsonError(404, "Session not found.", "SESSION_NOT_FOUND");
+  }
+  return c.json(toSessionHistoryDetailView(detail));
+});
+
+// Start Session
+playerRouter.post("/session/start", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop, false, true);
+  const deps = getShopDeps(c);
+  let pricingConfigIds: string[] | undefined = undefined;
+  let label: string | undefined = undefined;
+  try {
+    const body = (await c.req.json<{ pricingConfigIds?: string[]; label?: string }>().catch(() => ({}))) as {
+      pricingConfigIds?: string[];
+      label?: string;
+    };
+    pricingConfigIds = body?.pricingConfigIds;
+    label = body?.label;
+  } catch {}
+
+  const session = await deps.playerCommands.startSession({
+    playerId: player.id,
+    pricingConfigIds,
+    label,
+  });
+  return c.json({ session: toSessionView(session) });
+});
+
+// Stop Session
+playerRouter.post("/sessions/:sessionId/stop", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const session = await deps.playerCheckoutCommands.stopSession({
+    playerId: player.id,
+    sessionId: c.req.param("sessionId"),
+  });
+  return c.json(toStoppedSessionView(session));
+});
+
+// Checkout Preview
+playerRouter.post("/checkout/preview", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+
+  const result = await deps.playerCheckoutCommands.previewCheckout({
+    playerId: player.id,
+  });
+  return c.json(toPlayerCheckoutPreviewView(result));
+});
+
+// Checkout Confirm
+playerRouter.post("/checkout/confirm", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+
+  const result = await deps.playerCheckoutCommands.checkout({
+    playerId: player.id,
+  });
+  return c.json(toPlayerCheckoutResultView(result));
+});
+
+// Redeem
+playerRouter.post("/redeem", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const body = await c.req.json<{ code: string }>();
+  if (!body?.code?.trim()) {
+    jsonError(400, "请输入兑换码", "INVALID_CODE");
+  }
+  const result = await deps.playerRedeemCommands.redeemCode({
+    playerId: player.id,
+    code: body.code.trim(),
+  });
+  return c.json(toRedeemGiftView(result));
+});
+
+// Device Commands
+playerRouter.post("/device-commands", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop, true, true);
+  const deps = getShopDeps(c);
+  const body = await c.req.json<{ type: any; target: any; payload?: any }>();
+  const command = await deps.playerCommands.requestDeviceCommand({
+    playerId: player.id,
+    type: body.type,
+    target: body.target,
+    payload: body.payload,
+  });
+  return c.json({ command: toDeviceCommandView(command) });
+});
+
+// Purchase Business Item
+playerRouter.post("/business-items/:businessItemId/purchase", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const body = (await c.req.json<{ metadata?: Record<string, unknown> | null }>().catch(() => ({}))) as {
+    metadata?: Record<string, unknown> | null;
+  };
+  const result = await deps.businessItemOrderCommands.purchaseBusinessItem({
+    businessItemId: c.req.param("businessItemId"),
+    playerId: player.id,
+    metadata: body?.metadata ?? null,
+  });
+  return c.json({ order: toBusinessItemOrderView(result.order) }, 201);
+});
+
+// Business Item Orders
+playerRouter.get("/business-item-orders", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  const orders = await deps.businessItemOrderCommands.listPlayerBusinessItemOrders({
+    playerId: player.id,
+  });
+  return c.json({ orders: orders.map(toBusinessItemOrderView) });
+});

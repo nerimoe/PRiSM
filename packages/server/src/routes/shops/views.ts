@@ -1,0 +1,689 @@
+import { buildBillTimeline } from "@prism/application";
+import type {
+  ChargeItem,
+  DeviceCommand,
+  DeviceState,
+  MachineConnection,
+  AssetDefinition,
+  ApiToken,
+  BusinessItem,
+  BusinessItemOrder,
+  GrantAssetsResult,
+  Player,
+  PlayerIdentity,
+  PricingConfig,
+  PricingEffect,
+  Present,
+  RedeemCode,
+  Session,
+  SettlementAdjustment,
+  TimeCapPricingWindow,
+} from "@prism/core";
+import { assetQuantityToNatural, yuanOf } from "@prism/core";
+import type {
+  PlayerAssets,
+  RedeemCodeResult,
+  SessionHistoryDetail,
+  PlayerSummary,
+  SessionHistoryListItem,
+  StaffActiveSessionListItem,
+  StaffDeviceCommandListItem,
+  StaffReportPlayerListItem,
+  StaffReportSettlementListItem,
+  StaffPricingExtension,
+  StaffReportsSummary,
+  StaffRedeemCodeRedemptionListItem,
+  PlayerRedeemRecordListItem,
+  PreviewPlayerCheckoutResult,
+  SettlePlayerCheckoutResult,
+} from "@prism/application";
+
+export type StaffUserView = {
+  id: string;
+  username: string;
+  displayName: string;
+  role: "owner" | "manager" | "viewer";
+  status: "active" | "disabled";
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type PlayerSummaryView = {
+  player: {
+    id: string;
+    displayName: string;
+    status: "active" | "disabled" | "banned";
+  };
+  wallet: Array<{
+    assetCode: string;
+    quantity: number;
+  }>;
+  activeSession: {
+    id: string;
+    startedAt: string;
+  } | null;
+};
+
+export function toPlayerSummaryView(summary: PlayerSummary): PlayerSummaryView {
+  return {
+    player: summary.player,
+    wallet: summary.wallet.map((entry) => ({ ...entry, quantity: yuanOf(entry.quantity) })),
+    activeSession: summary.activeSession
+      ? {
+          id: summary.activeSession.id,
+          startedAt: summary.activeSession.startedAt.toISOString(),
+        }
+      : null,
+  };
+}
+
+export function toPlayerAssetsView(
+  assets: PlayerAssets,
+): Record<string, unknown> {
+  return {
+    holdings: assets.holdings.map((holding) => ({
+      ...holding,
+      quantity: assetQuantityToNatural(holding.assetType, holding.quantity),
+      activeAt: holding.activeAt?.toISOString() ?? null,
+      expiresAt: holding.expiresAt?.toISOString() ?? null,
+    })),
+    ledgerEntries: assets.ledgerEntries.map((entry) => ({
+      ...entry,
+      delta: assetQuantityToNatural(entry.assetType, entry.delta),
+      createdAt: entry.createdAt.toISOString(),
+    })),
+  };
+}
+
+export function toSessionHistoryView(
+  sessions: readonly SessionHistoryListItem[],
+): Record<string, unknown> {
+  return {
+    sessions: sessions.map((session) => ({
+      sessionId: session.sessionId,
+      startedAt: session.startedAt.toISOString(),
+      endedAt: session.endedAt?.toISOString() ?? null,
+      durationMinutes: session.durationMinutes,
+      subtotal: session.subtotal === null ? null : yuanOf(session.subtotal),
+      total: session.total === null ? null : yuanOf(session.total),
+      status: session.status,
+      settledAt: session.settledAt?.toISOString() ?? null,
+    })),
+  };
+}
+
+export function toPlayerRedeemRecordsView(
+  records: readonly PlayerRedeemRecordListItem[],
+): Record<string, unknown> {
+  return {
+    redeemRecords: records.map((record) => ({
+      ...record,
+      redeemedAt: record.redeemedAt.toISOString(),
+    })),
+  };
+}
+
+export function toSessionHistoryDetailView(
+  session: SessionHistoryDetail,
+): Record<string, unknown> {
+  return {
+    session: {
+      sessionId: session.sessionId,
+      startedAt: session.startedAt.toISOString(),
+      endedAt: session.endedAt?.toISOString() ?? null,
+      durationMinutes: session.durationMinutes,
+      subtotal: session.subtotal === null ? null : yuanOf(session.subtotal),
+      total: session.total === null ? null : yuanOf(session.total),
+      status: session.status,
+      settledAt: session.settledAt?.toISOString() ?? null,
+      chargeItems: session.chargeItems.map(toChargeItemView),
+      adjustments: session.adjustments.map(toAdjustmentView),
+    },
+  };
+}
+
+export function toSessionView(session: Session & { status: "active" }): {
+  id: string;
+  playerId: string;
+  startedAt: string;
+  status: "active";
+  label?: string;
+} {
+  const view = {
+    id: session.id,
+    playerId: session.playerId,
+    startedAt: session.startedAt.toISOString(),
+    status: session.status,
+  };
+  return session.label == null ? view : { ...view, label: session.label };
+}
+
+export function toStoppedSessionView(
+  session: Session & { status: "closed"; endedAt: Date },
+): Record<string, unknown> {
+  return {
+    session: {
+      id: session.id,
+      playerId: session.playerId,
+      startedAt: session.startedAt.toISOString(),
+      endedAt: session.endedAt.toISOString(),
+      status: session.status,
+      paymentStatus: session.paymentStatus ?? "unpaid",
+      label: session.label,
+    },
+  };
+}
+
+export function toDeviceCommandView(
+  command: DeviceCommand,
+): Record<string, unknown> {
+  return {
+    id: command.id,
+    type: command.type,
+    deviceId: command.deviceId,
+    target: command.deviceId === null
+      ? { kind: command.targetKind, all: true }
+      : { kind: command.targetKind, id: command.deviceId },
+    executorKind: command.executorKind,
+    playerId: command.playerId,
+    staffId: command.staffId,
+    status: command.status,
+    payload: command.payload,
+    requestedAt: command.requestedAt.toISOString(),
+    ackedAt: command.ackedAt?.toISOString(),
+    expiredAt: command.expiredAt?.toISOString(),
+  };
+}
+
+export function toStaffActiveSessionView(
+  session: StaffActiveSessionListItem,
+): Record<string, unknown> {
+  const view = {
+    id: session.id,
+    playerId: session.playerId,
+    playerDisplayName: session.playerDisplayName,
+    startedAt: session.startedAt.toISOString(),
+    elapsedMinutes: session.elapsedMinutes,
+    label: session.label,
+    identities: session.identities ?? [],
+  };
+  return session.endedAt === undefined ? view : { ...view, endedAt: session.endedAt?.toISOString() ?? null };
+}
+
+export function toStaffDeviceCommandView(
+  command: StaffDeviceCommandListItem,
+): Record<string, unknown> {
+  return {
+    id: command.id,
+    type: command.type,
+    deviceId: command.deviceId,
+    target: command.deviceId === null
+      ? { kind: command.targetKind, all: true }
+      : { kind: command.targetKind, id: command.deviceId },
+    executorKind: command.executorKind,
+    playerId: command.playerId,
+    staffId: command.staffId,
+    status: command.status,
+    requestedAt: command.requestedAt.toISOString(),
+    ackedAt: command.ackedAt?.toISOString() ?? null,
+    expiredAt: command.expiredAt?.toISOString() ?? null,
+    payload: command.payload,
+  };
+}
+
+export function toDeviceStateView(state: DeviceState): Record<string, unknown> {
+  return {
+    deviceId: state.deviceId,
+    type: state.type,
+    targetKind: state.targetKind,
+    executorKind: state.executorKind,
+    label: state.label,
+    status: state.status,
+    state: state.state,
+    metadata: state.metadata,
+    reportedAt: state.reportedAt.toISOString(),
+    reportedBy: state.reportedBy,
+  };
+}
+
+export function toMachineConnectionView(connection: MachineConnection): Record<string, unknown> {
+  return {
+    machineId: connection.machineId,
+    status: connection.status,
+    capabilities: connection.capabilities,
+    connectedAt: connection.connectedAt.toISOString(),
+    lastSeenAt: connection.lastSeenAt.toISOString(),
+    disconnectedAt: connection.disconnectedAt?.toISOString() ?? null,
+  };
+}
+
+export function toStaffReportsSummaryView(
+  summary: StaffReportsSummary,
+): Record<string, unknown> {
+  return {
+    summary: {
+      from: summary.from.toISOString(),
+      to: summary.to.toISOString(),
+      revenueTotal: yuanOf(summary.revenueTotal),
+      sessionCount: summary.sessionCount,
+      assetGrantTotal: summary.assetGrantTotal,
+      coinCommandCount: summary.coinCommandCount,
+    },
+  };
+}
+
+export function toStaffReportSettlementView(
+  settlement: StaffReportSettlementListItem,
+): Record<string, unknown> {
+  return {
+    ...(settlement.externalPayment ? { externalPayment: settlement.externalPayment } : {}),
+    settlementId: settlement.settlementId,
+    sessionId: settlement.sessionId,
+    playerId: settlement.playerId,
+    playerDisplayName: settlement.playerDisplayName,
+    startedAt: settlement.startedAt.toISOString(),
+    endedAt: settlement.endedAt?.toISOString() ?? null,
+    settledAt: settlement.settledAt.toISOString(),
+    durationMinutes: settlement.durationMinutes,
+    subtotal: yuanOf(settlement.subtotal),
+    total: yuanOf(settlement.total),
+  };
+}
+
+export function toStaffReportPlayerView(
+  player: StaffReportPlayerListItem,
+): Record<string, unknown> {
+  return {
+    playerId: player.playerId,
+    playerDisplayName: player.playerDisplayName,
+    settlementCount: player.settlementCount,
+    totalDurationMinutes: player.totalDurationMinutes,
+    revenueTotal: yuanOf(player.revenueTotal),
+    lastSettledAt: player.lastSettledAt.toISOString(),
+  };
+}
+
+export function toPlayerCheckoutPreviewView(
+  result: PreviewPlayerCheckoutResult,
+): Record<string, unknown> {
+  return {
+    timeline: buildBillTimeline({ at: result.settlementPreview.previewedAt, sessions: result.sessionPreviews, adjustments: result.adjustments, globalCapWindows: result.globalCapWindows }),
+    settlementPreview: {
+      ...result.settlementPreview,
+      subtotal: yuanOf(result.settlementPreview.subtotal),
+      total: yuanOf(result.settlementPreview.total),
+      previewedAt: result.settlementPreview.previewedAt.toISOString(),
+    },
+    sessionPreviews: result.sessionPreviews.map((preview) => ({
+      sessionId: preview.sessionId,
+      label: preview.label,
+      startedAt: preview.startedAt.toISOString(),
+      endedAt: preview.endedAt?.toISOString() ?? null,
+      status: preview.status,
+      subtotal: yuanOf(preview.subtotal),
+      total: yuanOf(preview.total),
+      chargeItems: preview.chargeItems.map(toChargeItemView),
+      adjustments: preview.adjustments.map(toAdjustmentView),
+    })),
+    chargeItems: result.chargeItems.map(toChargeItemView),
+    adjustments: result.adjustments.map(toAdjustmentView),
+    checkoutAdjustments: result.checkoutAdjustments.map(toAdjustmentView),
+    pricingCapAdjustments: result.pricingCapAdjustments.map(toAdjustmentView),
+    wallet: {
+      balanceBefore: yuanOf(result.wallet.balanceBefore),
+      balanceAfter: yuanOf(result.wallet.balanceAfter),
+    },
+    globalCapWindows: result.globalCapWindows.map(toGlobalCapWindowView),
+  };
+}
+
+export function toPlayerCheckoutResultView(
+  result: SettlePlayerCheckoutResult,
+): Record<string, unknown> {
+  const detailsBySessionId = new Map(result.sessionDetails.map((detail) => [detail.sessionId, detail]));
+  return {
+    timeline: buildBillTimeline({ at: result.playerSettlement.settledAt, sessions: result.sessionDetails.map(detail => ({ ...detail, endedAt: detail.endedAt ?? result.playerSettlement.settledAt, chargeItems: result.settlements.find(record => record.settlement.sessionId === detail.sessionId)?.chargeItems ?? [] })), adjustments: result.adjustments, globalCapWindows: result.globalCapWindows }),
+    playerSettlement: {
+      ...result.playerSettlement,
+      subtotal: yuanOf(result.playerSettlement.subtotal),
+      total: yuanOf(result.playerSettlement.total),
+      settledAt: result.playerSettlement.settledAt.toISOString(),
+    },
+    settlements: result.settlements.map((record) => {
+      const detail = detailsBySessionId.get(record.settlement.sessionId);
+      return ({
+      settlement: {
+        ...record.settlement,
+        subtotal: yuanOf(record.settlement.subtotal),
+        total: yuanOf(record.settlement.total),
+        settledAt: record.settlement.settledAt.toISOString(),
+        ...(detail ? {
+          label: detail.label,
+          startedAt: detail.startedAt.toISOString(),
+          endedAt: detail.endedAt?.toISOString() ?? null,
+        } : {}),
+      },
+      chargeItems: record.chargeItems.map(toChargeItemView),
+      adjustments: record.adjustments.map(toAdjustmentView),
+      });
+    }),
+    chargeItems: result.chargeItems.map(toChargeItemView),
+    adjustments: result.adjustments.map(toAdjustmentView),
+    checkoutAdjustments: result.checkoutAdjustments.map(toAdjustmentView),
+    pricingCapAdjustments: result.pricingCapAdjustments.map(toAdjustmentView),
+    globalCapWindows: result.globalCapWindows.map(toGlobalCapWindowView),
+    assetLedgerEntries: result.assetLedgerEntries.map((entry) => ({
+      ...entry,
+      delta: assetQuantityToNatural(entry.assetType, entry.delta),
+    })),
+    wallet: {
+      balanceBefore: yuanOf(result.wallet.balanceBefore),
+      balanceAfter: yuanOf(result.wallet.balanceAfter),
+    },
+  };
+}
+
+function toGlobalCapWindowView(window: TimeCapPricingWindow): Record<string, unknown> {
+  return {
+    ...window,
+    priceCap: yuanOf(window.priceCap),
+    paidBefore: yuanOf(window.paidBefore),
+    currentAmount: yuanOf(window.currentAmount),
+    amountApplied: yuanOf(window.amountApplied),
+    contributions: window.contributions.map((contribution) => ({
+      ...contribution,
+      amount: yuanOf(contribution.amount),
+    })),
+    windowStartedAt: window.windowStartedAt.toISOString(),
+    windowEndedAt: window.windowEndedAt.toISOString(),
+  };
+}
+
+function toChargeItemView(item: ChargeItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    source: item.source,
+    label: item.label,
+    amount: yuanOf(item.amount),
+    period: item.period,
+    pricingExplanation: item.pricingExplanation,
+  };
+}
+
+function toAdjustmentView(adjustment: SettlementAdjustment): Record<string, unknown> {
+  return { ...adjustment, amount: yuanOf(adjustment.amount) };
+}
+
+export function toRedeemGiftView(
+  result: RedeemCodeResult,
+): Record<string, unknown> {
+  return {
+    redeemRecord: {
+      ...result.redeemRecord,
+      redeemedAt: result.redeemRecord.redeemedAt.toISOString(),
+    },
+    grantedAssets: result.grantedAssets.map((holding) => ({
+      ...holding,
+      quantity: assetQuantityToNatural(holding.assetType, holding.quantity),
+    })),
+    currentHoldings: result.availableHoldings.map((holding) => ({
+      ...holding,
+      quantity: assetQuantityToNatural(holding.assetType, holding.quantity),
+    })),
+    assetLedgerEntries: result.assetLedgerEntries.map((entry) => ({
+      ...entry,
+      delta: assetQuantityToNatural(entry.assetType, entry.delta),
+    })),
+  };
+}
+
+export function toGrantAssetsView(
+  result: GrantAssetsResult,
+): Record<string, unknown> {
+  return {
+    holdings: result.holdings.map((holding) => ({
+      ...holding,
+      quantity: assetQuantityToNatural(holding.assetType, holding.quantity),
+      activeAt: holding.activeAt?.toISOString() ?? null,
+      expiresAt: holding.expiresAt?.toISOString() ?? null,
+    })),
+    assetLedgerEntries: result.assetLedgerEntries.map((entry) => ({
+      ...entry,
+      delta: assetQuantityToNatural(entry.assetType, entry.delta),
+    })),
+  };
+}
+
+export function toAssetDefinitionManagementView(
+  definition: AssetDefinition,
+): Record<string, unknown> {
+  return {
+    type: definition.type,
+    code: definition.code,
+    name: definition.name,
+    stackable: definition.stackable,
+    status: definition.status ?? "active",
+    pricingEffectId: definition.pricingEffectId ?? null,
+    pricingEffect: definition.pricingEffect
+      ? toPricingEffectManagementView(definition.pricingEffect)
+      : null,
+    activeAt: definition.activeAt?.toISOString() ?? null,
+    expiresAt: definition.expiresAt?.toISOString() ?? null,
+    metadata: definition.metadata,
+  };
+}
+
+export function toPricingEffectManagementView(
+  effect: PricingEffect,
+): Record<string, unknown> {
+  return {
+    id: effect.id,
+    name: effect.name,
+    type: effect.type,
+    scope: effect.scope,
+    value: effect.value,
+    consumable: effect.consumable,
+    limitPerDay: effect.limitPerDay,
+    activeAt: effect.activeAt?.toISOString() ?? null,
+    expiresAt: effect.expiresAt?.toISOString() ?? null,
+    status: effect.status ?? "active",
+    config: effect.config,
+  };
+}
+
+export function toPlayerManagementView(
+  player: { id: string; displayName: string; status: Player["status"]; createdAt?: Date },
+): Record<string, unknown> {
+  return {
+    id: player.id,
+    displayName: player.displayName,
+    status: player.status,
+    ...(player.createdAt ? { createdAt: player.createdAt.toISOString() } : {}),
+  };
+}
+
+export function toPlayerIdentityView(
+  identity: PlayerIdentity,
+): Record<string, unknown> {
+  return {
+    playerId: identity.playerId,
+    provider: identity.provider,
+    subject: identity.subject,
+    createdAt: identity.createdAt.toISOString(),
+  };
+}
+
+export function toPresentManagementView(
+  present: Present,
+): Record<string, unknown> {
+  return {
+    id: present.id,
+    name: present.name,
+    oncePerPlayer: present.oncePerPlayer,
+    activeAt: present.activeAt?.toISOString() ?? null,
+    expiresAt: present.expiresAt?.toISOString() ?? null,
+    status: present.status ?? "active",
+    grants: present.grants.map((grant) => ({
+      ...grant,
+      activeAt: grant.activeAt?.toISOString() ?? null,
+      expiresAt: grant.expiresAt?.toISOString() ?? null,
+    })),
+  };
+}
+
+export function toRedeemCodeManagementView(
+  code: RedeemCode,
+  redemptions: readonly StaffRedeemCodeRedemptionListItem[] = [],
+): Record<string, unknown> {
+  const view: Record<string, unknown> = {
+    id: code.id,
+    code: code.code,
+    presentId: code.presentId,
+    activeAt: code.activeAt?.toISOString() ?? null,
+    expiresAt: code.expiresAt?.toISOString() ?? null,
+    maxUseCount: code.maxUseCount,
+    usageCount: code.usageCount ?? 0,
+  };
+  if (redemptions.length > 0) {
+    view.redemptions = redemptions.map((redemption) => ({
+      playerId: redemption.playerId,
+      playerDisplayName: redemption.playerDisplayName,
+      redeemedAt: redemption.redeemedAt.toISOString(),
+    }));
+  }
+  return view;
+}
+
+export function toPricingConfigManagementView(
+  config: PricingConfig,
+): Record<string, unknown> {
+  const provider =
+    config.kind === "time.priority" || config.kind === "time.cap"
+      ? {
+          ...config.provider,
+          rules: config.provider.rules.map((rule) => {
+            const { dateTimeRange, ...rest } = rule;
+            return {
+              ...rest,
+              ...(dateTimeRange
+                ? {
+                    dateTimeRange: {
+                      start: dateTimeRange.start.toISOString(),
+                      end: dateTimeRange.end.toISOString(),
+                    },
+                  }
+                : {}),
+            };
+          }),
+        }
+      : config.provider;
+
+  return {
+    id: config.id,
+    versionId: config.versionId,
+    version: config.version,
+    kind: config.kind,
+    name: config.name,
+    enabled: config.enabled,
+    status: config.status ?? "active",
+    provider,
+    createdAt: config.createdAt.toISOString(),
+    updatedAt: config.updatedAt.toISOString(),
+  };
+}
+
+export function toBusinessItemManagementView(
+  item: BusinessItem,
+): Record<string, unknown> {
+  return {
+    id: item.id,
+    kind: item.kind,
+    name: item.name,
+    status: item.status,
+    price: yuanOf(item.price),
+    assetType: item.assetType,
+    assetCode: item.assetCode,
+    activeAt: item.activeAt?.toISOString() ?? null,
+    expiresAt: item.expiresAt?.toISOString() ?? null,
+    metadata: item.metadata,
+    createdAt: item.createdAt.toISOString(),
+    updatedAt: item.updatedAt.toISOString(),
+  };
+}
+
+export function toBusinessItemOrderView(
+  order: BusinessItemOrder,
+): Record<string, unknown> {
+  return {
+    id: order.id,
+    businessItemId: order.businessItemId,
+    businessItemKind: order.businessItemKind,
+    businessItemName: order.businessItemName,
+    playerId: order.playerId,
+    sessionId: order.sessionId,
+    status: order.status,
+    price: yuanOf(order.price),
+    assetType: order.assetType,
+    assetCode: order.assetCode,
+    metadata: order.metadata,
+    createdAt: order.createdAt.toISOString(),
+    updatedAt: order.updatedAt.toISOString(),
+    fulfilledAt: order.fulfilledAt?.toISOString() ?? null,
+    cancelledAt: order.cancelledAt?.toISOString() ?? null,
+  };
+}
+
+export function toStaffPricingExtensionView(
+  extension: StaffPricingExtension,
+): Record<string, unknown> {
+  const view: Record<string, unknown> = {
+    id: extension.id,
+    name: extension.name,
+    kind: extension.kind,
+    summary: extension.summary,
+    status: extension.status,
+    configuredBy: extension.configuredBy,
+    capabilities: [...extension.capabilities],
+  };
+  if (extension.configurationStatus) {
+    view.configurationStatus = extension.configurationStatus;
+  }
+  if (extension.requiredAssets) {
+    view.requiredAssets = extension.requiredAssets.map((asset) => ({
+      type: asset.type,
+      code: asset.code,
+      name: asset.name,
+      status: asset.status ?? "missing",
+    }));
+  }
+  return view;
+}
+
+export function toApiTokenManagementView(
+  token: Omit<ApiToken, "tokenHash">,
+): Record<string, unknown> {
+  return {
+    id: token.id,
+    label: token.label,
+    role: token.role,
+    tokenPrefix: token.tokenPrefix,
+    status: token.status,
+    createdAt: token.createdAt.toISOString(),
+    lastUsedAt: token.lastUsedAt?.toISOString() ?? null,
+    revokedAt: token.revokedAt?.toISOString() ?? null,
+  };
+}
+
+export function toStaffUserManagementView(
+  user: StaffUserView,
+): Record<string, unknown> {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
+    status: user.status,
+    createdAt: user.createdAt.toISOString(),
+    updatedAt: user.updatedAt.toISOString(),
+  };
+}
