@@ -18,6 +18,8 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 - `packages/storage-sql`：兼容 SQLite/D1 的 DDL、写仓储和 SQL 读模型。需要聚合多张表的列表由这里用单条关联查询完成，再调用 core 的统一领域判断；运行时适配器仅提供 SQL 执行器。
 - `packages/adapter-sqlite`：本地部署下的 Bun SQLite 执行器包装。
 - `packages/adapter-d1`：Cloudflare Worker 部署下的 D1 执行器包装。
+- `packages/server`：统一合并的 PRiSM 服务端包，收拢原 `platform`、`runtime` 与 `server-hono` 的服务端能力。
+  - `src/hardware`：统一整合的硬件驱动与执行器模块。包含 Hinata E2EE 卡片/投币驱动与执行器（`hinata.ts`，统一 PBKDF2/AES-GCM 与重试回退语义）、TTLock 云开锁与临时密码执行器（`ttlock.ts`）、Home Assistant 设施实体动作与状态执行器（`home-assistant.ts`）以及街机机台 WebSocket 协议处理器（`machine-ws.ts`）。
 - `packages/server-hono`：Hono 路由应用工厂和强类型 RPC/API 层。只负责鉴权、参数解析、调用应用服务和映射视图模型，不直接执行 SQL，也不承载玩家批量结账、实时聚合或 Home Assistant 同步等业务流程。
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作、设备状态同步和统一资产效果；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。
