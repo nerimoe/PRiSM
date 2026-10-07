@@ -798,8 +798,8 @@ test("legacy import applies are quota-limited but completed operation retries re
 }, 30000);
 
 test("indexed export pages handle composite keys, escaped IDs and more than one page of account links", async () => {
-  const shop = await store(sourceEnv, true), values = Array.from({ length: 75 }, (_, i) => ({
-    id: `bulk-${String(i).padStart(3, '0')}${i === 74 ? '"末尾' : ''}`, player: `p-${String(i).padStart(3, '0')}`,
+  const shop = await store(sourceEnv, true), values = Array.from({ length: 1100 }, (_, i) => ({
+    id: `bulk-${String(i).padStart(3, '0')}${i === 1099 ? '"末尾' : ''}`, player: `p-${String(i).padStart(3, '0')}`,
   })), input = JSON.stringify(values), now = new Date().toISOString();
   await sourceEnv.DB.batch([
     sourceEnv.DB.prepare("INSERT INTO users(id,role) SELECT json_extract(value,'$.id'),'user' FROM json_each(?)").bind(input),
@@ -808,10 +808,10 @@ test("indexed export pages handle composite keys, escaped IDs and more than one 
     sourceEnv.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) SELECT ?,json_extract(value,'$.id'),json_extract(value,'$.player'),? FROM json_each(?)").bind(shop.id, now, input),
   ]);
   const backup = await download(sourceEnv, shop);
-  expect(backup.tables.players).toHaveLength(75);
-  expect(backup.tables.account_links).toHaveLength(76);
+  expect(backup.tables.players).toHaveLength(1100);
+  expect(backup.tables.account_links).toHaveLength(1101);
   expect(backup.tables.account_links.filter((row: any) => row.player_id).map((row: any) => row.source_user_id).sort()).toEqual(values.map(row => row.id).sort());
-  expect(backup.tables.player_identities).toHaveLength(75);
+  expect(backup.tables.player_identities).toHaveLength(1100);
   expect(backup.tables.asset_definitions.map((row: any) => row.code).sort()).toEqual(['free', 'paid']);
   expect(backup.tables.shop_billing_settings).toHaveLength(1);
   expect(backup.tables.pricing_release_heads).toHaveLength(1);
@@ -891,4 +891,102 @@ test("cancelling an in-flight page rejects its result before business writes res
   } finally { resume(); }
   expect((await pending).status).toBe(410);
   expect(await db.prepare("SELECT status FROM shop_data_exports WHERE id=?").bind(id).first("status")).toBe("cancelled");
+}, 30000);
+
+test("export throughput fixture preserves ten thousand ledger records", async () => {
+  const shop = await store(sourceEnv, true);
+  await sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'throughput','速度测试','active','2026-10-07T00:00:00.000Z')").bind(shop.id),
+    sourceEnv.DB.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000)
+      INSERT INTO asset_transactions(shop_id,id,player_id,kind,ref_id,created_at,metadata_json)
+      SELECT ?,printf('tx-%08d',x),'throughput','test','historical','2026-10-07T00:00:00.000Z',json_object('amount',x) FROM n`).bind(shop.id),
+  ]);
+  const start = performance.now();
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  expect(started.status).toBe(200);
+  let cursor = 0, pages = 0, total = 0;
+  const ids = new Set<string>();
+  for (;;) {
+    const page = await request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=${cursor}`);
+    expect(page.status).toBe(200);
+    pages++;
+    if (page.data.done) break;
+    for (const row of page.data.rows) {
+      total++;
+      if (row.table_name === "asset_transactions") ids.add(JSON.parse(row.payload_json).id);
+    }
+    cursor = page.data.cursor;
+  }
+  expect(ids.size).toBe(10000);
+  expect(pages).toBeLessThanOrEqual(12);
+  expect(total).toBe(Object.values(started.data.counts).reduce((sum: number, n) => sum + Number(n), 0));
+  console.log(JSON.stringify({ benchmark: "10000 asset transactions", pages, records: total, elapsedMs: Math.round(performance.now() - start) }));
+}, 120000);
+
+test("large escaped rows after small rows stay complete and bounded across combined-table pages", async () => {
+  const shop = await store(sourceEnv, true), encoder = new TextEncoder();
+  const wide = JSON.stringify({ note: '"\\\n'.repeat(150000) });
+  const medium = JSON.stringify({ note: '"\\\n'.repeat(30000) });
+  const expected = new Map<string, string>([['b-wide', wide], ['c-medium', medium], ['d-medium', medium], ['e-medium', medium]]);
+  await sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'mixed','大小混合','active','2026-10-07T00:00:00.000Z')").bind(shop.id),
+    sourceEnv.DB.prepare(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<270)
+      INSERT INTO asset_transactions(shop_id,id,player_id,kind,ref_id,created_at,metadata_json)
+      SELECT ?,printf('a-%04d',x),'mixed','test','small','2026-10-07T00:00:00.000Z','{}' FROM n`).bind(shop.id),
+    ...[...expected].map(([id, metadata]) => sourceEnv.DB.prepare(
+      "INSERT INTO asset_transactions(shop_id,id,player_id,kind,ref_id,created_at,metadata_json) VALUES (?,?,'mixed','test','large','2026-10-07T00:00:00.000Z',?)"
+    ).bind(shop.id, id, metadata)),
+  ]);
+  const started = await request(sourceEnv, base(shop) + "/exports", { scope: "business" });
+  let cursor = 0, rows = 0, oversized = 0, combined = false;
+  const seen = new Set<string>();
+  for (;;) {
+    const response = await request(sourceEnv, base(shop) + `/exports/${started.data.jobId}/page?after=${cursor}`);
+    expect(response.status).toBe(200);
+    if (response.data.done) break;
+    const page = response.data.rows as { seq: number; table_name: string; payload_json: string }[];
+    expect(page.length).toBeLessThanOrEqual(4096);
+    const bytes = page.reduce((sum, row) => sum + encoder.encode(row.payload_json).length, 0);
+    if (bytes > 1024 * 1024) { expect(page).toHaveLength(1); oversized++; }
+    combined ||= new Set(page.map(row => row.table_name)).size > 1;
+    for (const row of page) {
+      rows++;
+      expect(row.seq).toBeGreaterThan(cursor);
+      if (row.table_name === "asset_transactions") {
+        const value = JSON.parse(row.payload_json);
+        expect(seen.has(value.id)).toBe(false);
+        seen.add(value.id);
+        if (expected.has(value.id)) expect(value.metadata_json).toBe(expected.get(value.id));
+      }
+    }
+    cursor = response.data.cursor;
+  }
+  expect(oversized).toBe(1);
+  expect(combined).toBe(true);
+  expect(seen.size).toBe(274);
+  expect(rows).toBe(Object.values(started.data.counts).reduce((sum: number, n) => sum + Number(n), 0));
+  expect((await request(sourceEnv, base(shop) + "/export-status")).data.locked).toBe(false);
+}, 30000);
+
+test("batched export permissions preserve the existing owner and active staff mapping rules", async () => {
+  const shop = await store(sourceEnv);
+  await sourceEnv.DB.prepare(`INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at)
+    VALUES (?,'permission','permission','权限测试','test','test','owner','active','2026-10-07T00:00:00.000Z','2026-10-07T00:00:00.000Z')`).bind(shop.id).run();
+  for (const [membership, mappedRole, status, allowed] of [
+    ['owner', null, 'active', true], ['staff', null, 'active', false],
+    ['owner', 'manager', 'active', false], ['staff', 'owner', 'active', true],
+    ['owner', 'viewer', 'disabled', true], ['staff', 'owner', 'disabled', false],
+    [null, 'owner', 'active', false],
+  ] as const) {
+    await sourceEnv.DB.batch([
+      sourceEnv.DB.prepare("DELETE FROM shop_members WHERE shop_id=? AND user_id='other'").bind(shop.id),
+      sourceEnv.DB.prepare("DELETE FROM shop_staff_accounts WHERE shop_id=? AND user_id='other'").bind(shop.id),
+      sourceEnv.DB.prepare("UPDATE staff_users SET role=?,status=? WHERE shop_id=? AND id='permission'").bind(mappedRole ?? 'owner', status, shop.id),
+      ...(membership ? [sourceEnv.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES (?,?,'other',?)").bind(op(), shop.id, membership)] : []),
+      ...(mappedRole ? [sourceEnv.DB.prepare("INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES (?,'other','permission')").bind(shop.id)] : []),
+    ]);
+    // export-status still uses the shared owner() implementation; cancel uses the new batched query.
+    expect((await request(sourceEnv, base(shop) + "/export-status", undefined, "other-session")).status).toBe(allowed ? 200 : 403);
+    expect((await request(sourceEnv, base(shop) + "/exports/not-a-job", undefined, "other-session", "DELETE")).status).toBe(allowed ? 404 : 403);
+  }
 }, 30000);

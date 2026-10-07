@@ -116,7 +116,6 @@ export const fullHeaderSchema = backupSchema
   .strict()
   .refine((value) => value.version === 1 || !!value.shopProfile, "v2 requires shopProfile");
 export type FullHeader = z.infer<typeof fullHeaderSchema>;
-export const transferPageBytes = 256 * 1024;
 export const uploadBytes = 2 * 1024 * 1024 - 8192;
 export function fullTables(header: FullHeader): readonly FullTable[] {
   return header.version === 1

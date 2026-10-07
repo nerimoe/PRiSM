@@ -5,12 +5,7 @@ import type { BillingShop } from "./billing";
 import { decryptSecret } from "./crypto";
 import { jsonError } from "./http";
 import { owner } from "./shop-data";
-import {
-  schemas,
-  v2TablesFor,
-  transferPageBytes,
-  type FullTable,
-} from "./shop-data-v2-format";
+import { schemas, v2TablesFor, type FullTable } from "./shop-data-v2-format";
 import type { AppBindings } from "./types";
 
 type C = Context<AppBindings>;
@@ -33,6 +28,12 @@ const base = "/api/v1/shops/:shopCode/data";
 const stride = 1000000000;
 const leaseMs = 5 * 60_000;
 const maximumMs = 2 * 3600_000;
+const exportPageBytes = 1024 * 1024;
+const exportPageRows = 4096;
+const initialPageRows = 256;
+const accountPageRows = 512;
+const pageTables = 8;
+const rowEncoder = new TextEncoder();
 export const sourceColumns = (table: FullTable) =>
   schemas[table].columns.map((c) =>
     table === "machines"
@@ -45,8 +46,8 @@ export const sourceColumns = (table: FullTable) =>
         )[c.name] ?? c.name)
       : c.name,
   );
-const objectSql = (table: FullTable) =>
-  `json_object(${schemas[table].columns.map((c, i) => `'${c.name}',${sourceColumns(table)[i]}`).join(",")})`;
+const objectSql = (table: FullTable, alias = "") =>
+  `json_object(${schemas[table].columns.map((c, i) => `'${c.name}',${alias}${sourceColumns(table)[i]}`).join(",")})`;
 export function exportMonth(zone: string, date = new Date()) {
   const parts = new Intl.DateTimeFormat("en", {
     timeZone: zone,
@@ -155,17 +156,33 @@ export async function startShopExport(
   } satisfies ExportJob;
 }
 async function getExport(c: C, cancel = false) {
-  const shop = await owner(c, false),
-    user = requireUser(c);
-  const job = await c.env.DB.prepare(
-    `SELECT * FROM shop_data_exports WHERE id=? AND shop_id=?${cancel ? "" : " AND user_id=?"}`,
-  )
-    .bind(c.req.param("jobId"), shop.id, ...(cancel ? [] : [user.id]))
-    .first<ExportJob>();
-  if (!job) jsonError(404, "备份任务不存在或已过期", "TRANSFER_NOT_FOUND");
-  if (c.req.method === "GET" && job.status !== "active")
+  const user = requireUser(c),
+    code = c.req.param("shopCode")!;
+  // Match staffPrincipal's owner rules without fetching billing/settings or doing three serial permission reads.
+  const [permission, jobs] = await c.env.DB.batch<
+    ExportJob & { allowed: number }
+  >([
+    c.env.DB.prepare(
+      `SELECT s.id,
+      (m.user_id IS NOT NULL OR ?='admin') AND
+      CASE WHEN f.status='active' THEN f.role='owner' ELSE (m.role='owner' OR ?='admin') END AS allowed
+      FROM shops s LEFT JOIN shop_members m ON m.shop_id=s.id AND m.user_id=?
+      LEFT JOIN shop_staff_accounts a ON a.shop_id=s.id AND a.user_id=?
+      LEFT JOIN staff_users f ON f.shop_id=a.shop_id AND f.id=a.staff_id WHERE s.public_id=?`,
+    ).bind(user.role, user.role, user.id, user.id, code),
+    c.env.DB.prepare(
+      `SELECT * FROM shop_data_exports WHERE id=?
+      AND shop_id=(SELECT id FROM shops WHERE public_id=?)${cancel ? "" : " AND user_id=?"}`,
+    ).bind(c.req.param("jobId"), code, ...(cancel ? [] : [user.id])),
+  ]);
+  if (!permission!.results.length)
+    jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
+  if (!permission!.results[0]!.allowed)
+    jsonError(403, "只有店铺负责人可以导入和导出数据", "FORBIDDEN");
+  const job = jobs!.results[0];
+  if (!job || (c.req.method === "GET" && job.status !== "active"))
     jsonError(404, "备份任务不存在或已过期", "TRANSFER_NOT_FOUND");
-  return { shop, job };
+  return { job };
 }
 // Each UNION branch uses its existing (shop_id, account ID) index. Page only the selected IDs before constructing JSON.
 const accountIdsSql = `WITH related AS (
@@ -173,10 +190,20 @@ const accountIdsSql = `WITH related AS (
  UNION SELECT user_id FROM shop_members WHERE shop_id=? UNION SELECT subject FROM player_identities WHERE shop_id=? AND provider='web-account'
  UNION SELECT source_user_id FROM shop_imported_accounts WHERE shop_id=? AND matched_user_id IS NULL
 )`;
-const accountSql =
-  accountIdsSql.slice(0, -1) +
-  `), selected AS (
- SELECT user_id FROM related WHERE user_id>? ORDER BY user_id LIMIT ?
+const accountSources = [
+  ["shop_player_accounts", "user_id", ""],
+  ["shop_staff_accounts", "user_id", ""],
+  ["shop_members", "user_id", ""],
+  ["player_identities", "subject", " AND provider='web-account'"],
+  ["shop_imported_accounts", "source_user_id", " AND matched_user_id IS NULL"],
+] as const;
+const accountSql = `WITH related AS (${accountSources
+  .map(
+    ([table, key, filter]) =>
+      `SELECT user_id FROM (SELECT ${key} AS user_id FROM ${table} WHERE shop_id=? AND ${key}>?${filter} ORDER BY ${key} LIMIT ?)`,
+  )
+  .join(" UNION ")}), selected AS (
+ SELECT user_id FROM related ORDER BY user_id LIMIT ?
 ), links AS (
  SELECT r.user_id AS source_user_id,COALESCE(a.player_id,h.player_id,w.player_id) AS player_id,
  COALESCE(f.staff_id,h.staff_id) AS staff_id,COALESCE(m.role,h.member_role) AS member_role,
@@ -300,17 +327,18 @@ async function readPage(c: C, job: ExportJob, after: number) {
   const tables = v2TablesFor(job.scope),
     rows: { seq: number; table_name: FullTable; payload_json: string }[] = [];
   const counts = JSON.parse(job.counts_json) as Record<string, number>;
-  let rowCursor = job.row_cursor;
-  let nextPageRows = job.page_rows;
+  let rowCursor = job.row_cursor,
+    nextPageRows = job.page_rows,
+    bytes = 0,
+    reads = 0;
   for (let i = Math.floor(after / stride); i < tables.length; i++) {
     const table = tables[i]!,
       offset = i === Math.floor(after / stride) ? after % stride : 0;
-    if (!counts[table]) continue;
+    if (offset >= (counts[table] ?? 0)) continue;
     const keys =
       table === "account_links"
         ? ["source_user_id"]
         : (schemas[table].keys[0] ?? []);
-    if (!keys.length && offset > 0) continue; // A shop-only primary key has at most one record.
     const previous =
       i === Math.floor(after / stride)
         ? (JSON.parse(job.row_cursor) as (string | number)[])
@@ -325,33 +353,61 @@ async function readPage(c: C, job: ExportJob, after: number) {
     const keyFilter = previous.length
       ? ` AND (${keys.join(",")})>(${keys.map(() => "?").join(",")})`
       : "";
+    const remainingBytes = Math.max(1, exportPageBytes - bytes);
+    const limit = Math.max(
+      1,
+      Math.min(
+        exportPageRows - rows.length,
+        table === "account_links" ? accountPageRows : exportPageRows,
+        i === Math.floor(after / stride) ? job.page_rows : initialPageRows,
+      ),
+    );
+    // Bound by raw column bytes before JSON serialization: a small-row page followed by huge invoices
+    // must not serialize thousands of invoices merely to discard almost all of them.
+    const rawBytes = sourceColumns(table)
+      .map((column) => `COALESCE(length(CAST(${column} AS BLOB)),4)`)
+      .join("+");
     const candidates =
       table === "account_links"
         ? `SELECT json_array(source_user_id) AS row_key,source_user_id AS k0,${objectSql(table)} AS payload_json FROM links ORDER BY source_user_id`
-        : `SELECT json_array(${keys.join(",")}) AS row_key,${keyColumns},${objectSql(table)} AS payload_json FROM ${table}
-        WHERE shop_id=?${keyFilter} ORDER BY ${order} LIMIT ?`;
+        : `SELECT json_array(${keys.join(",")}) AS row_key,${keyColumns},(${rawBytes}) AS raw_bytes
+          FROM ${table} WHERE shop_id=?${keyFilter} ORDER BY ${order} LIMIT ?`;
+    const boundedPayloads =
+      table === "account_links"
+        ? ""
+        : `,
+      raw_sized AS (SELECT *,ROW_NUMBER() OVER(ORDER BY ${windowOrder}) AS item_index,
+        SUM(raw_bytes) OVER(ORDER BY ${windowOrder}) AS bytes FROM candidates),
+      bounded AS MATERIALIZED (SELECT * FROM raw_sized WHERE bytes<=? OR item_index=1),
+      payloads AS MATERIALIZED (SELECT b.row_key,${keys.length ? keys.map((_, n) => `b.k${n}`).join(",") : "b.k0"},${objectSql(table, "s.")} AS payload_json
+        FROM bounded b CROSS JOIN ${table} s WHERE s.shop_id=?${keys.map((key, n) => ` AND s.${key}=b.k${n}`).join("")})`;
     const sql =
       (table === "account_links" ? accountSql + "," : "WITH ") +
-      `candidates AS (${candidates}),
+      `candidates AS MATERIALIZED (${candidates})${boundedPayloads},
       sized AS (SELECT *,ROW_NUMBER() OVER(ORDER BY ${windowOrder}) AS item_index,
-        SUM(length(CAST(payload_json AS BLOB))) OVER(ORDER BY ${windowOrder}) AS bytes FROM candidates)
+        SUM(length(CAST(payload_json AS BLOB))) OVER(ORDER BY ${windowOrder}) AS bytes FROM ${table === "account_links" ? "candidates" : "payloads"})
       SELECT row_key,payload_json FROM sized WHERE bytes<=? OR item_index=1 ORDER BY item_index`;
     const query =
       table === "account_links"
         ? c.env.DB.prepare(sql).bind(
-            ...accountBindings(job.shop_id),
-            previous[0] ?? "",
-            job.page_rows,
+            ...accountSources.flatMap(() => [
+              job.shop_id,
+              previous[0] ?? "",
+              limit,
+            ]),
+            limit,
             ...Array(6).fill(job.shop_id),
-            transferPageBytes,
+            remainingBytes,
           )
         : c.env.DB.prepare(sql).bind(
             job.shop_id,
             ...previous,
-            job.page_rows,
-            transferPageBytes,
+            limit,
+            remainingBytes,
+            job.shop_id,
+            remainingBytes,
           );
-    // Lock validity and each page read share one transaction. Expiry never produces a successful truncated backup.
+    // Lock validity and each source read share a transaction; the final CAS also rejects in-flight cancellation.
     const [check, data] = await c.env.DB.batch<Record<string, string | number>>(
       [
         c.env.DB.prepare(validJobSql).bind(
@@ -364,11 +420,11 @@ async function readPage(c: C, job: ExportJob, after: number) {
     );
     if (!check!.results.length)
       jsonError(410, "导出锁已过期，请联系平台管理员重试", "EXPORT_EXPIRED");
-    let bytes = 0;
+    reads++;
+    let tableRows = 0,
+      tableBytes = 0;
     for (const raw of data!.results) {
       let payload = String(raw.payload_json);
-      const size = new TextEncoder().encode(payload).length;
-      if (rows.length && bytes + size > transferPageBytes) break;
       if (table === "machines") {
         const value = JSON.parse(payload) as Record<string, unknown>;
         for (const key of ["hinata_url", "hinata_password", "ha_binding_json"])
@@ -379,24 +435,33 @@ async function readPage(c: C, job: ExportJob, after: number) {
             );
         payload = JSON.stringify(value);
       }
+      const size = rowEncoder.encode(payload).length;
+      if (rows.length && bytes + size > exportPageBytes) break;
+      tableRows++;
       rows.push({
-        seq: i * stride + offset + rows.length + 1,
+        seq: i * stride + offset + tableRows,
         table_name: table,
         payload_json: payload,
       });
       rowCursor = String(raw.row_key);
       bytes += size;
+      tableBytes += size;
     }
-    if (rows.length) {
+    if (tableRows)
       nextPageRows = Math.max(
         1,
         Math.min(
-          64,
-          Math.floor((transferPageBytes * rows.length) / Math.max(1, bytes)),
+          exportPageRows,
+          Math.floor((exportPageBytes * tableRows) / Math.max(1, tableBytes)),
         ),
       );
+    if (
+      offset + tableRows < counts[table]! ||
+      bytes >= exportPageBytes ||
+      rows.length >= exportPageRows ||
+      reads >= pageTables
+    )
       break;
-    }
   }
   const cursor = rows.at(-1)?.seq ?? after,
     done = rows.length === 0;
