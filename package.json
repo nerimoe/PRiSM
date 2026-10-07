@@ -10,6 +10,7 @@
     "packages/core",
     "packages/migration",
     "packages/runtime",
+    "packages/server",
     "packages/server-hono",
     "packages/storage-sql",
     "packages/platform",

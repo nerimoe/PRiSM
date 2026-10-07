@@ -20,6 +20,9 @@
       "path": "./packages/server-hono"
     },
     {
+      "path": "./packages/server"
+    },
+    {
       "path": "./packages/runtime"
     },
     {

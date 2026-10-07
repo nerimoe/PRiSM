@@ -37,19 +37,19 @@
 - Consumes: `@prism/core` pure functions (`settleSession`, `previewSessionSettlement`, `redeemGift`).
 - Produces: `createSettlementService`, `createRedeemService` re-exported from `@prism/application`.
 
-- [ ] **Step 1: Check existing tests pass before modification**
+- [x] **Step 1: Check existing tests pass before modification**
 
 Run: `bun test packages/application`
 Expected: PASS
 
-- [ ] **Step 2: Rename files using git mv to preserve history**
+- [x] **Step 2: Rename files using git mv to preserve history**
 
 ```bash
 git mv packages/application/src/settlement.ts packages/application/src/settlement-service.ts
 git mv packages/application/src/redeem.ts packages/application/src/redeem-service.ts
 ```
 
-- [ ] **Step 3: Update imports within `packages/application`**
+- [x] **Step 3: Update imports within `packages/application`**
 
 In `packages/application/src/index.ts`:
 ```ts
@@ -63,12 +63,12 @@ import { createSettlementService } from "./settlement-service";
 In `packages/application/src/staff-operations.ts` and `player-commands.ts`:
 Update any relative imports from `./settlement` or `./redeem` to `./settlement-service` or `./redeem-service`.
 
-- [ ] **Step 4: Verify tests and typecheck**
+- [x] **Step 4: Verify tests and typecheck**
 
 Run: `bun test packages/application && bun run typecheck`
 Expected: PASS with 0 errors.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/application
@@ -93,7 +93,7 @@ git commit -m "refactor(application): disambiguate settlement and redeem service
 - Consumes: `@prism/core`, `@prism/application`, `@prism/storage-sql`, `@prism/adapter-d1`, `@prism/adapter-sqlite`.
 - Produces: `@prism/server` package registered in monorepo workspace.
 
-- [ ] **Step 1: Create `packages/server/package.json`**
+- [x] **Step 1: Create `packages/server/package.json`**
 
 ```json
 {
@@ -124,7 +124,7 @@ git commit -m "refactor(application): disambiguate settlement and redeem service
 }
 ```
 
-- [ ] **Step 2: Create `packages/server/tsconfig.json`**
+- [x] **Step 2: Create `packages/server/tsconfig.json`**
 
 ```json
 {
@@ -150,12 +150,12 @@ git commit -m "refactor(application): disambiguate settlement and redeem service
 }
 ```
 
-- [ ] **Step 3: Update root `package.json` and root `tsconfig.json`**
+- [x] **Step 3: Update root `package.json` and root `tsconfig.json`**
 
 Add `"packages/server"` to `workspaces` in root `package.json`.
 Add `{ "path": "packages/server" }` to `references` in root `tsconfig.json`.
 
-- [ ] **Step 4: Create smoke test and verify**
+- [x] **Step 4: Create smoke test and verify**
 
 Create `packages/server/test/smoke.test.ts`:
 ```ts
@@ -170,7 +170,7 @@ describe("@prism/server smoke", () => {
 Run: `bun install && bun test packages/server && bun run typecheck`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add package.json tsconfig.json packages/server

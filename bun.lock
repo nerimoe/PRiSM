@@ -107,6 +107,25 @@
         "hono": "^4.10.7",
       },
     },
+    "packages/server": {
+      "name": "@prism/server",
+      "version": "1.0.0",
+      "dependencies": {
+        "@prism/adapter-d1": "workspace:*",
+        "@prism/adapter-sqlite": "workspace:*",
+        "@prism/application": "workspace:*",
+        "@prism/core": "workspace:*",
+        "@prism/storage-sql": "workspace:*",
+        "@simplewebauthn/server": "^14.0.0",
+        "hono": "^4.10.7",
+        "zod": "^3.25.56",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "^4.20250224.0",
+        "bun-types": "1.3.14",
+        "typescript": "^5.9.3",
+      },
+    },
     "packages/server-hono": {
       "name": "@prism/server-hono",
       "version": "0.0.0",
@@ -361,6 +380,8 @@
     "@prism/platform": ["@prism/platform@workspace:packages/platform"],
 
     "@prism/runtime": ["@prism/runtime@workspace:packages/runtime"],
+
+    "@prism/server": ["@prism/server@workspace:packages/server"],
 
     "@prism/server-hono": ["@prism/server-hono@workspace:packages/server-hono"],
 
