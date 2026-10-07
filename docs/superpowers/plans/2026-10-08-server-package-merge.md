@@ -202,20 +202,20 @@ git commit -m "chore: scaffold @prism/server package in workspaces"
   - `createHomeAssistantExecutor`, `executeHomeAssistantAction`
   - `machineWebSocketHandler`
 
-- [ ] **Step 1: Write test for consolidated Hinata E2EE and device action execution**
+- [x] **Step 1: Write test for consolidated Hinata E2EE and device action execution**
 
 Write `packages/server/test/hardware.test.ts` testing card and coin payload construction, PBKDF2 salt and AES-GCM encryption.
 
-- [ ] **Step 2: Implement consolidated hardware modules**
+- [x] **Step 2: Implement consolidated hardware modules**
 
 Port and unify `hinata.ts` (unifying PBKDF2/AES-GCM encryption with fallback and retry semantics), `ttlock.ts`, `home-assistant.ts`, and `machine-ws.ts` into `packages/server/src/hardware/`.
 
-- [ ] **Step 3: Run hardware tests**
+- [x] **Step 3: Run hardware tests**
 
 Run: `bun test packages/server/test/hardware.test.ts`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add packages/server/src/hardware packages/server/test/hardware.test.ts
@@ -242,11 +242,11 @@ git commit -m "feat(server): consolidate hardware drivers and executors into har
 - Consumes: Hono context, `@prism/storage-sql`, `@prism/adapter-d1`, `@prism/core` (`formatOffsetTimestamp`).
 - Produces: Hono middleware functions injecting `user`, `shop`, `deps`, handling safe CORS, and projecting local timestamps.
 
-- [ ] **Step 1: Write tests for `tenantMiddleware` and `responseTimeProjection`**
+- [x] **Step 1: Write tests for `tenantMiddleware` and `responseTimeProjection`**
 
 Test that `:shopCode` parameter resolves shop and injects dependencies into `c.var.deps`, and test response time projection.
 
-- [ ] **Step 2: Implement `bindings.ts` and middleware**
+- [x] **Step 2: Implement `bindings.ts` and middleware**
 
 Implement:
 - `bindings.ts`: Definition of `AppBindings` with `Env` (DB, LIVE_BILLING, ASSETS, secrets) and `Variables` (user, shop, deps).
@@ -254,12 +254,12 @@ Implement:
 - `cors.ts`: Strict CORS origin validation without credentials reflection.
 - `response-time.ts`: Intercept JSON responses on `/api/v1/*` and project UTC instants into shop local time strings.
 
-- [ ] **Step 3: Run middleware tests**
+- [x] **Step 3: Run middleware tests**
 
 Run: `bun test packages/server/test/middleware.test.ts`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add packages/server/src/bindings.ts packages/server/src/middleware packages/server/test/middleware.test.ts

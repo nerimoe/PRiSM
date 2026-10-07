@@ -19,6 +19,14 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 - `packages/adapter-sqlite`：本地部署下的 Bun SQLite 执行器包装。
 - `packages/adapter-d1`：Cloudflare Worker 部署下的 D1 执行器包装。
 - `packages/server`：统一合并的 PRiSM 服务端包，收拢原 `platform`、`runtime` 与 `server-hono` 的服务端能力。
+  - `src/bindings.ts`：Hono 上下文核心类型定义（`AppBindings`、`Env`、`Variables`、`TenantShop`、`AuthUser`、`PrismAppDependencies`）。
+  - `src/middleware`：核心中间件集合。
+    - `auth.ts`：统一身份认证与会话中间件（Bearer token / Cookie 会话提取、`attachUser`、`requireUser`、`optionalUser`、`requireAdmin`、`staffPrincipal` 权限解析与店铺员工账户自举）。
+    - `tenant.ts`：多租户店铺解析与依赖注入中间件（根据 `:shopCode` 从数据库解析店铺，自动组装并内存缓存店铺级应用依赖 `PrismAppDependencies`，注入 `c.set("shop", shop)` 和 `c.set("deps", deps)`，并注入时区 `responseTimeZone`）。
+    - `cors.ts`：安全 CORS 中间件（严格校验 `APP_ORIGIN` 与 `EXTRA_ALLOWED_ORIGINS`，禁止在携带凭据时反射未受信任的任意 Origin，拦截未授权来源的状态变更请求）。
+    - `rate-limit.ts`：限流中间件（优先调用 Cloudflare Worker 原生 `RATE_LIMIT_*` 绑定，本地或单机环境平滑降级至内存滑动窗口限流）。
+    - `geo.ts`：地理围栏校验与店铺距离计算（基于 Haversine 公式与精度限制进行进出店及设备操作的围栏校验）。
+    - `response-time.ts`：API 响应时间投影与格式包装中间件（拦截 `/api/v1/*` 响应，自动将 UTC 瞬时时间戳按店铺当地时区转换为带偏移量的时间字符串并包装统一 JSON 响应）。
   - `src/hardware`：统一整合的硬件驱动与执行器模块。包含 Hinata E2EE 卡片/投币驱动与执行器（`hinata.ts`，统一 PBKDF2/AES-GCM 与重试回退语义）、TTLock 云开锁与临时密码执行器（`ttlock.ts`）、Home Assistant 设施实体动作与状态执行器（`home-assistant.ts`）以及街机机台 WebSocket 协议处理器（`machine-ws.ts`）。
 - `packages/server-hono`：Hono 路由应用工厂和强类型 RPC/API 层。只负责鉴权、参数解析、调用应用服务和映射视图模型，不直接执行 SQL，也不承载玩家批量结账、实时聚合或 Home Assistant 同步等业务流程。
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
