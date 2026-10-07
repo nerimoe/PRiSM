@@ -19,3 +19,4 @@ coverage/
 /packages/prism-web/dist/
 
 /packages/platform/scripts/*.local.ts
+.drafts/
