@@ -25,7 +25,12 @@ export const attachUser: MiddlewareHandler<AppBindings> = async (c, next) => {
             users.role, users.banned_at
      FROM auth_sessions AS sessions
      JOIN users ON users.id = sessions.user_id
-     LEFT JOIN auth_identities AS identities ON identities.user_id = users.id AND identities.provider = 'munet'
+     LEFT JOIN auth_identities AS identities ON identities.id = (
+       SELECT id FROM auth_identities
+       WHERE user_id = users.id
+       ORDER BY CASE WHEN provider = 'munet' THEN 0 ELSE 1 END, created_at ASC
+       LIMIT 1
+     )
      WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
   )
     .bind(tokenHash, nowIso())

@@ -167,3 +167,13 @@ iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup
 扫码入口、客户端刷新预算、HA 观察缓存、APNs 重试与临时状态清理的现行约定见 [扫码性能与请求预算](scan-performance.md)。
 
 营业报表归档采用独立的 `checkout_report_states` 表，按完整 checkout 归档并从报表营业额排除；不改金融结算、余额、玩家历史或收费/封顶历史。员工账单详情复用玩家历史 receipt 查询及 Web 时间轴组件。迁移、权限和备份兼容见 [营业记录归档](./merchant-report-archive.md)。
+
+## 统一服务端路由体系 (`@prism/server`)
+
+在 `@prism/server` 合并架构中，路由层通过清晰的子路由分层，直接依托应用层用例与纯粹的依赖注入：
+
+- **平台级认证路由 (`/api/v1/auth`)**：提供用户会话管理（登录、注册、注销）、WebAuthn Passkey 挑战生成与校验（`/passkey/options`, `/passkey/register`）。
+- **用户与账号路由 (`/api/v1/user`, `/api/v1/account`)**：暴露用户信息、店铺管理员归属判断、多认证身份（MuNET 等）及 Passkey 凭据的重命名与撤销管理。
+- **商户店铺路由 (`/api/v1/shops`, `/api/v1/merchant/shops`)**：支持店铺全生命周期（创建、查询、更新、删除）、基于经纬度的展示时区推导、初始账务设置与 Bot 令牌配置，并支持封面图的二进制分发与 `ETag` 304 缓存。
+- **系统运行路由 (`/health`, `/version`)**：提供无状态健康探针与版本号、Git 修订号查询。
+- **静态前端资源 (`web-assets.ts`)**：通过 `serveWebAssets` 挂载 Cloudflare `ASSETS`，并在维护期拦截和对 HTML 导航实施 SPA 回退。
