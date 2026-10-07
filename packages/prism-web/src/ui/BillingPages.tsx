@@ -1,6 +1,8 @@
+import { pricingPreview } from "./merchant/pricing-preview";
+import { billTime } from "./bill-time";
 import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useI18n } from "../i18n";
@@ -25,10 +27,12 @@ export type Settings = {
   };
 };
 type EntryRule = Pick<Pricing, "id" | "name" | "kind" | "enabled" | "status">;
-const availableEntryRule = (rule: EntryRule) => rule.enabled && rule.status !== "archived" && rule.kind !== "time.cap";
+const availableEntryRule = (rule: EntryRule) =>
+  rule.enabled && rule.status !== "archived" && rule.kind !== "time.cap";
 export type ShopInfo = {
   entryPricing: Pricing[];
   pricingSchedule: {
+    clientCalculation?: boolean;
     localDate: string;
     timeZone: string;
     groups: {
@@ -52,7 +56,12 @@ export type ShopInfo = {
       }[];
     }[];
   };
-  shop: Settings & { publicId: string; name: string; timeZone: string; heroUrl?: string | null };
+  shop: Settings & {
+    publicId: string;
+    name: string;
+    timeZone: string;
+    heroUrl?: string | null;
+  };
   membership: { playerId: string; identityBound: boolean } | null;
 };
 export type Summary = {
@@ -89,7 +98,7 @@ export const control =
   "focus-ring rounded border border-ink/15 bg-panel px-4 py-3 disabled:opacity-50";
 export const panel = "rounded border border-ink/10 bg-panel p-5";
 export const shopApi = (code: string, path = "") =>
-  `/api/v1/shops/${encodeURIComponent(code)}${path ? `/${path}` : ""}`;
+  `/api/v1/shops/${encodeURIComponent(code)}${path ? `/${path}` : "?pricing=raw"}`;
 export const post = (body: unknown = {}) => ({
   method: "POST",
   body: JSON.stringify(body),
@@ -437,9 +446,70 @@ export function EntryPricing({ info }: { info: ShopInfo }) {
     weekday: "short",
     timeZone: "UTC",
   });
-  const plans = info.entryPricing.map(plan => pricingInZone(plan, plan.kind === "charge.fixed" ? "UTC" : plan.provider.timeZone ?? "UTC", info.shop.timeZone ?? "UTC", info.pricingSchedule.localDate)).filter(
-    (plan) => plan.enabled !== false && plan.status !== "archived",
-  );
+  const plans = useMemo(() => {
+    const zone = info.shop.timeZone ?? "UTC",
+      day = info.pricingSchedule.localDate;
+    const displayRuleTime = (instant: string) => {
+      const parts = billTime(instant, zone);
+      return `${parts.date} ${parts.seconds}`;
+    };
+    return info.entryPricing
+      .map((plan) => {
+        if (
+          !info.pricingSchedule.clientCalculation ||
+          plan.kind === "charge.fixed"
+        )
+          return plan;
+        const timeline = pricingPreview(plan, day, zone);
+        const active = new Set(
+          timeline?.segments
+            .filter((segment) => !segment.isClosed)
+            .map((segment) => segment.ruleId),
+        );
+        return {
+          ...plan,
+          provider: {
+            ...plan.provider,
+            rules: plan.provider.rules
+              ?.filter(
+                (rule) => rule.status !== "archived" && active.has(rule.id),
+              )
+              .sort((a, b) => b.priority - a.priority),
+          },
+        };
+      })
+      .filter(
+        (plan) => plan.kind === "charge.fixed" || plan.provider.rules?.length,
+      )
+      .map((plan) =>
+        pricingInZone(
+          plan,
+          plan.kind === "charge.fixed"
+            ? "UTC"
+            : (plan.provider.timeZone ?? "UTC"),
+          zone,
+          day,
+        ),
+      )
+      .map((plan) => ({
+        ...plan,
+        provider: {
+          ...plan.provider,
+          rules: plan.provider.rules?.map((rule) => ({
+            ...rule,
+            ...(rule.dateTimeRange
+              ? {
+                  displayDateTimeRange: {
+                    start: displayRuleTime(rule.dateTimeRange.start),
+                    end: displayRuleTime(rule.dateTimeRange.end),
+                  },
+                }
+              : {}),
+          })),
+        },
+      }))
+      .filter((plan) => plan.enabled !== false && plan.status !== "archived");
+  }, [info]);
   return (
     <div className="entry-pricing">
       {plans.map((plan) => (

@@ -324,6 +324,15 @@ test("Web and Bot entry share one session; insufficient balance keeps timing; op
       "SELECT COUNT(*) AS n FROM sessions WHERE shop_id='a' AND player_id='p'",
     ).first("n"),
   ).toBe(1);
+  const inputsResponse = await request("/api/v1/shops/a/player/billing-inputs?playerId=foreign");
+  expect(inputsResponse.status).toBe(200);
+  const inputs = (await inputsResponse.json() as any).data;
+  expect(inputs.playerId).toBe("p");
+  expect(inputs.billingSnapshot.players.map((player: any) => player.playerId)).toEqual(["p"]);
+  const { createLiveBillingCalculator, hydrateLiveBillingSnapshot } = await import("@prism/application");
+  const quote = await createLiveBillingCalculator(hydrateLiveBillingSnapshot(inputs.billingSnapshot)).previewCheckout("p");
+  expect(quote.settlementPreview.total).toBe(1200);
+  expect(quote.settlementPreview.sessionIds).toHaveLength(1);
   const operationId = crypto.randomUUID();
   const denied = await request("/api/v1/shops/a/player/checkout/confirm", {
     operationId,
@@ -1390,6 +1399,22 @@ test("player rate schedule resolves production-style priorities, dated overnight
       .find((g: any) => g.kind === "time.cap")
       .segments.some((s: any) => s.priceCap === 30),
   ).toBe(true);
+  const { pricingPreview } = await import("../../prism-web/src/ui/merchant/pricing-preview");
+  for (const date of ["2026-01-01", "2026-02-18", "2026-09-11", "2026-09-12"]) {
+    const raw = (await (await request(`/api/v1/shops/a?date=${date}&pricing=raw`)).json() as any).data;
+    const legacy = (await (await request(`/api/v1/shops/a?date=${date}`)).json() as any).data;
+    expect(raw.pricingSchedule.clientCalculation).toBe(true);
+    expect(raw.pricingSchedule.groups).toEqual([]);
+    expect(raw.entryPricing.find((p: any) => p.id === "schedule").provider.rules).toHaveLength(5);
+    for (const plan of raw.entryPricing) {
+      const calculated = pricingPreview(plan, date, raw.shop.timeZone);
+      if (calculated) expect(JSON.parse(JSON.stringify(calculated.segments))).toEqual(
+        legacy.pricingSchedule.groups.find((g: any) => g.id === plan.id).segments.map((segment: any) => ({
+          ...segment, startedAt: new Date(segment.startedAt).toISOString(), endedAt: new Date(segment.endedAt).toISOString(),
+        })),
+      );
+    }
+  }
 });
 
 test("merchant location toggle synchronizes legacy flags and native session policy without billing", async () => {

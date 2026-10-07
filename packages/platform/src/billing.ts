@@ -554,6 +554,13 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
             ids.includes(id),
           )),
       );
+    // Web clients build calendars from raw rules; older clients keep the prepared schedule.
+    if (c.req.query("pricing") === "raw") return c.json({
+      entryPricing: configs,
+      pricingSchedule: { localDate, timeZone: shop.time_zone, groups: [], clientCalculation: true },
+      shop: { publicId: shop.public_id, name: shop.name, timeZone: shop.time_zone, heroUrl: shop.hero_url, ...publicSettings(shop) },
+      membership: membership ? { ...membership, identityBound: !!membership.identityBound } : null,
+    });
     const groups = configs.map((row) => {
       const config = {
         ...row,

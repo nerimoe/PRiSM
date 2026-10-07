@@ -646,6 +646,20 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
+  app.get("/api/v1/player/billing-inputs", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.billingInputs) return context.json({ error: {
+      code: "CLIENT_BILLING_UNAVAILABLE", message: "Client billing is unavailable for this runtime.",
+    } }, 503);
+    const billingSnapshot = await dependencies.billingInputs([principal.playerId]);
+    // Only definitions held by this player are needed for their asset effects.
+    const held = new Set(billingSnapshot.players.flatMap(player => player.holdings.map(holding => `${holding.assetType}:${holding.assetCode}`)));
+    return context.json({ playerId: principal.playerId, billingSnapshot: {
+      ...billingSnapshot, assetDefinitions: billingSnapshot.assetDefinitions.filter(definition => held.has(`${definition.type}:${definition.code}`)),
+    } });
+  });
+
   app.post("/api/v1/player/checkout/preview", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
     if (!principal || principal.role !== "player_session") {
@@ -1421,6 +1435,18 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json({
       session: toSessionView(session),
     });
+  });
+
+  app.get("/api/v1/staff/players/:playerId/billing-inputs", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    const playerId = context.req.param("playerId");
+    const [player] = await dependencies.staffQueries.listPlayers({ playerIds: [playerId] });
+    if (!player) return context.json({ error: { code: "PLAYER_NOT_FOUND", message: "Player not found." } }, 404);
+    if (!dependencies.billingInputs) return context.json({ error: {
+      code: "CLIENT_BILLING_UNAVAILABLE", message: "Client billing is unavailable for this runtime.",
+    } }, 503);
+    return context.json({ playerId, billingSnapshot: await dependencies.billingInputs([playerId]) });
   });
 
   app.post("/api/v1/staff/players/:playerId/checkout/preview", async (context) => {

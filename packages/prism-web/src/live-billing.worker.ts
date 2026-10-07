@@ -4,15 +4,22 @@ import {
   type LivePlayerView,
 } from "@prism/application";
 
+import {
+  checkoutPreviewView,
+  type BrowserCheckoutPreview,
+} from "./checkout-preview";
+
 type Request =
   | { type: "init"; snapshot: unknown; players: LivePlayerView[] }
-  | { type: "calculate"; playerIds: string[] };
+  | { type: "calculate"; playerIds: string[] }
+  | { type: "preview"; playerId: string };
 const scope = globalThis as unknown as {
   onmessage: (event: MessageEvent<Request>) => void;
   postMessage: (message: {
     playerId?: string;
     player?: LivePlayerView;
     error?: string;
+    preview?: BrowserCheckoutPreview;
   }) => void;
 };
 let calculator: ReturnType<typeof createLiveBillingCalculator> | undefined;
@@ -51,6 +58,15 @@ scope.onmessage = (event) => {
     } catch {
       scope.postMessage({ error: "计费数据加载失败，请刷新后重试" });
     }
+  } else if (event.data.type === "preview") {
+    const playerId = event.data.playerId;
+    void Promise.resolve()
+      .then(async () => {
+        if (!calculator) throw new Error("Missing billing inputs");
+        return checkoutPreviewView(await calculator.previewCheckout(playerId));
+      })
+      .then((preview) => scope.postMessage({ preview }))
+      .catch(() => scope.postMessage({ error: "账单预估失败，请刷新后重试" }));
   } else {
     queue = [...new Set([...event.data.playerIds, ...queue])];
     void drain();

@@ -93,6 +93,14 @@ export function registerCashierRoutes(app: Hono<AppBindings>) {
       });
     });
   });
+  app.get(base + "/profiles/:playerId/billing-inputs", async c => {
+    const shop = await getBillingShop(c, c.req.param("shopCode")!);
+    const playerId = c.req.param("playerId")!;
+    await profile(c, shop, playerId);
+    const read = dependencies(c, shop).billingInputs;
+    if (!read) jsonError(503, "Client billing is unavailable for this runtime.", "CLIENT_BILLING_UNAVAILABLE");
+    return c.json({ playerId, billingSnapshot: await read!([playerId]) });
+  });
   app.post(base + "/profiles/:playerId/checkout/preview", async c => {
     const shop = await getBillingShop(c, c.req.param("shopCode")!);
     const playerId = c.req.param("playerId")!;

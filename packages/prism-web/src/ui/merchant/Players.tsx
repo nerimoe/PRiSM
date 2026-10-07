@@ -1,5 +1,7 @@
+import { shopApi } from "../BillingPages";
+import { browserCheckoutPreview } from "../../browser-billing";
 import { BillTotal, BillTimeline } from "../BillTimeline";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Plus, RefreshCw } from "lucide-react";
 import { useI18n } from "../../i18n";
@@ -290,6 +292,8 @@ function PlayerDetail({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const quoteRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { quoteRequest.current?.abort(); }, []);
   const done = () => {
     setAction(null);
     setPreview(null);
@@ -301,15 +305,17 @@ function PlayerDetail({
     if (busy) return;
     setBusy(true);
     setError("");
+    const controller = new AbortController();
+    quoteRequest.current = controller;
     try {
-      setPreview(
-        await request<Preview>(`${base}/checkout/preview`, "POST", {}),
-      );
+      const result = await browserCheckoutPreview(shopApi(shopCode, `staff/${base}/billing-inputs`), shopApi(shopCode, `staff/${base}/checkout/preview`), controller.signal);
+      if (controller.signal.aborted) return;
+      setPreview(result);
       setAction("checkout");
     } catch (e) {
-      setError((e as Error).message);
+      if (!controller.signal.aborted) setError((e as Error).message);
     } finally {
-      setBusy(false);
+      if (!controller.signal.aborted) setBusy(false);
     }
   }
   return (

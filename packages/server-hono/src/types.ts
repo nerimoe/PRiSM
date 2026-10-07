@@ -576,6 +576,7 @@ export type PrismAppDependencies = {
   staffCheckoutCommands?: StaffCheckoutCommands;
   staffOperations: StaffOperationsService<SettlePlayerCheckoutResult>;
   staffReportCommands?: import("@prism/application").StaffReportService;
+  billingInputs?: (playerIds: readonly string[]) => Promise<import("@prism/core").LiveBillingSnapshot>;
   staffLiveBillingSnapshot?: (playerIds: readonly string[]) => Promise<import("@prism/core").LiveBillingSnapshot>;
   staffPlayerCommands?: StaffPlayerCommands;
   staffAssetDefinitionCommands?: StaffAssetDefinitionCommands;

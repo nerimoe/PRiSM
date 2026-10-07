@@ -1,3 +1,4 @@
+import { browserCheckoutPreview } from "../../browser-billing";
 import { displayDateTime } from "../bill-time";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -36,13 +37,26 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   const working = useRef(false);
   const occupied = useRef(false);
   const mounted = useRef(true);
+  const quoteRequest = useRef<AbortController | null>(null);
   const read = useCallback(<T,>(path: string, body?: unknown) => api<T>(shopApi(shopCode, `cashier/${path}`),
     body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }), [shopCode]);
   const write = <T,>(path: string, body: Record<string, unknown> = {}) => playerOperation<T>(shopApi(shopCode, `cashier/${path}`), body);
+  const refreshQuote = useCallback(async (id: string) => {
+    quoteRequest.current?.abort();
+    const controller = new AbortController();
+    quoteRequest.current = controller;
+    try {
+      const result = await browserCheckoutPreview(shopApi(shopCode, `cashier/profiles/${segment(id)}/billing-inputs`), shopApi(shopCode, `cashier/profiles/${segment(id)}/checkout/preview`), controller.signal);
+      if (mounted.current && !controller.signal.aborted) setPreview(result);
+    } finally {
+      if (quoteRequest.current === controller) quoteRequest.current = null;
+    }
+  }, [shopCode]);
   const loadProfile = useCallback(async (profile: Profile | null, card: BasicCard) => {
+    quoteRequest.current?.abort();
     setScan({ profile, card }); setPreview(null); setReceipt(null); setNotice("");
-    if (profile?.sessions.length) setPreview(await read<CashierPreview>(`profiles/${segment(profile.id)}/checkout/preview`, {}));
-  }, [read]);
+    if (profile?.sessions.length) await refreshQuote(profile.id);
+  }, [refreshQuote]);
   useEffect(() => {
     if (scan) panel.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [scan, preview]);
@@ -60,7 +74,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   };
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; quoteRequest.current?.abort(); };
   }, []);
   useEffect(() => {
     const hid = browserHid();
@@ -100,7 +114,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
       .then(result => { if (current) { resolved = true; return loadProfile(result.profile, { kind: result.profile.kind, uid: result.profile.uid }); } })
       .catch(e => { if (current) { setError(e.message); occupied.current = resolved; } })
       .finally(() => { if (current) { working.current = false; setBusy(false); } });
-    return () => { current = false; };
+    return () => { current = false; quoteRequest.current?.abort(); };
   }, [playerId, canWrite, read, loadProfile]);
   async function connect() {
     setConnecting(true); setReaderError(""); setReaderDetail("");
@@ -113,10 +127,11 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   async function act(action: () => Promise<void>) {
     if (working.current) return;
     working.current = true; setBusy(true); setError("");
-    try { await action(); } catch (e) { setError((e as Error).message); }
-    finally { working.current = false; setBusy(false); }
+    try { await action(); } catch (e) { if (mounted.current && (e as Error).name !== "AbortError") setError((e as Error).message); }
+    finally { working.current = false; if (mounted.current) setBusy(false); }
   }
   function next() {
+    quoteRequest.current?.abort();
     occupied.current = false; setScan(null); setPreview(null); setNotice(""); setError("");
     if (playerId) setParams(previous => { const next = new URLSearchParams(previous); next.delete("cashierPlayer"); return next; });
   }
@@ -180,7 +195,7 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="collected" required key={preview.settlementPreview.previewedAt} />{t("我已通过上述方式收到款项")}</label>
             <button className={primary} disabled={busy}>{t("确认已收款并结账")}</button>
           </form> : null}
-          <button className={button} disabled={busy} onClick={() => act(async () => setPreview(await read<CashierPreview>(`profiles/${segment(scan.profile!.id)}/checkout/preview`, {})))}>{t("刷新账单")}</button>
+          <button className={button} disabled={busy} onClick={() => act(() => refreshQuote(scan.profile!.id))}>{t("刷新账单")}</button>
         </>}
     </section>}
     <p className="text-xs text-ink/50">{t("卡片 UID 可被复制，请由店员核对玩家。此模式不存储资产，也不提供在线支付。")}</p>

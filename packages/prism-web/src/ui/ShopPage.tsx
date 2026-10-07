@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { api } from "../api";
+import { browserCheckoutPreview } from "../browser-billing";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import { post, shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
+import { shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
 import { ShopHero, SessionSignIn, PlatformBinding } from "./SessionContent";
 import { BillTotal, BillTimeline } from "./BillTimeline";
 import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
@@ -36,7 +37,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
       const shop = await api<ShopInfo>(shopApi(shopCode), { signal });
       const current = user && shop.shop.billingEnabled && (shop.membership || !shop.shop.identityBindingRequired)
         ? await api<Summary>(shopApi(shopCode, "player/me"), { signal }) : null;
-      const preview = current?.activeSession ? await api<Preview>(shopApi(shopCode, "player/checkout/preview"), { ...post(), signal }) : null;
+      const preview = current?.activeSession ? await browserCheckoutPreview(shopApi(shopCode, "player/billing-inputs"), shopApi(shopCode, "player/checkout/preview"), signal) : null;
       const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest"), { signal }) : null;
       if (signal.aborted || checkoutPending.current || revision !== checkoutRevision.current) return;
       setInfo(shop); setBill(preview); setReceipt(latest?.receipt ?? null);

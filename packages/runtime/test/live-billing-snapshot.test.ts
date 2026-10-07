@@ -279,10 +279,31 @@ test("browser previews retain pinned versions, paid cap history, stopped session
         .pastAppliedAdjustments,
     ).toHaveLength(1);
     const client = createLiveBillingCalculator(snapshot, base);
-    for (const row of await f.deps.staffOperations.listLivePlayers())
+    for (const row of await f.deps.staffOperations.listLivePlayers()) {
       expect(JSON.stringify(await client.calculatePlayer(row.playerId))).toBe(
         JSON.stringify(row),
       );
+      const authoritative =
+        await f.deps.playerCheckoutCommands!.previewCheckout({
+          playerId: row.playerId,
+        });
+      expect(JSON.stringify(await client.previewCheckout(row.playerId))).toBe(
+        JSON.stringify(authoritative),
+      );
+      const app = createPrismApp({
+        ...f.deps,
+        authenticatedPrincipal: { role: "player_session", playerId: row.playerId },
+      });
+      const response = await app.request("/api/v1/player/billing-inputs");
+      expect(response.status).toBe(200);
+      const inputs = ((await response.json()) as any).data;
+      const scoped = createLiveBillingCalculator(
+        hydrateLiveBillingSnapshot(inputs.billingSnapshot),
+      );
+      expect(JSON.stringify(await scoped.previewCheckout(row.playerId))).toBe(
+        JSON.stringify(authoritative),
+      );
+    }
     expect((await client.calculatePlayer("used")).estimatedTotal).toBe(32);
     expect((await client.calculatePlayer("discounted")).estimatedTotal).toBe(
       47,
@@ -358,10 +379,31 @@ test("snapshot sanitizes device command details, honors grace activity and stays
       hydrateLiveBillingSnapshot(JSON.parse(JSON.stringify(raw))),
       rows,
     );
-    for (const row of await f.deps.staffOperations.listLivePlayers())
+    for (const row of await f.deps.staffOperations.listLivePlayers()) {
       expect(JSON.stringify(await client.calculatePlayer(row.playerId))).toBe(
         JSON.stringify(row),
       );
+      const authoritative =
+        await f.deps.playerCheckoutCommands!.previewCheckout({
+          playerId: row.playerId,
+        });
+      expect(JSON.stringify(await client.previewCheckout(row.playerId))).toBe(
+        JSON.stringify(authoritative),
+      );
+      const app = createPrismApp({
+        ...f.deps,
+        authenticatedPrincipal: { role: "player_session", playerId: row.playerId },
+      });
+      const response = await app.request("/api/v1/player/billing-inputs");
+      expect(response.status).toBe(200);
+      const inputs = ((await response.json()) as any).data;
+      const scoped = createLiveBillingCalculator(
+        hydrateLiveBillingSnapshot(inputs.billingSnapshot),
+      );
+      expect(JSON.stringify(await scoped.previewCheckout(row.playerId))).toBe(
+        JSON.stringify(authoritative),
+      );
+    }
     expect((await client.calculatePlayer("machine")).estimatedTotal).toBe(18);
     expect((await client.calculatePlayer("door")).estimatedTotal).toBe(0);
     expect((await client.calculatePlayer("rejected")).estimatedTotal).toBe(0);
@@ -406,6 +448,107 @@ test("many different publications still use bounded bulk reads and preserve each
       expect((await client.calculatePlayer(`p${i}`)).estimatedTotal).toBe(
         i + 1,
       );
+  } finally {
+    f.db.close();
+  }
+});
+
+test("browser checkout quotes match authoritative preview fields for pinned rules, caps and asset effects", async () => {
+  const f = fixture();
+  try {
+    await f.repositories.pricingConfigs.save(f.rate);
+    await f.player("p");
+    f.clock("2026-10-07T10:00:00Z");
+    const raw = await f.deps.billingInputs!(["p"]);
+    const calculator = createLiveBillingCalculator(
+      hydrateLiveBillingSnapshot(JSON.parse(JSON.stringify(raw))),
+    );
+    const server = await f.deps.playerCheckoutCommands!.previewCheckout({
+      playerId: "p",
+    });
+    const client = await calculator.previewCheckout("p");
+    expect(JSON.parse(JSON.stringify(client))).toEqual(
+      JSON.parse(JSON.stringify(server)),
+    );
+    expect(client.settlementPreview.total).toBe(centsOf(2790));
+    expect(client.settlementPreview.previewedAt.toISOString()).toBe(
+      raw.capturedAt.toISOString(),
+    );
+    await expect(calculator.previewCheckout("other")).rejects.toThrow(
+      "Player not found.",
+    );
+  } finally {
+    f.db.close();
+  }
+});
+
+test("billing input endpoints isolate player/shops, permit viewer reads and never run quotes or write rows", async () => {
+  const f = fixture();
+  try {
+    await f.repositories.pricingConfigs.save(f.rate);
+    await f.player("one");
+    await f.player("two");
+    const before = f.db.query("SELECT total_changes() AS n").get();
+    const original = f.deps.playerCheckoutCommands!.previewCheckout;
+    let quotes = 0;
+    f.deps.playerCheckoutCommands!.previewCheckout = async (input) => {
+      quotes++;
+      return original(input);
+    };
+    const request = (
+      path: string,
+      principal: import("@prism/server-hono").Principal,
+    ) =>
+      createPrismApp({ ...f.deps, authenticatedPrincipal: principal }).request(
+        path,
+      );
+    const player: import("@prism/server-hono").Principal = {
+      role: "player_session",
+      playerId: "one",
+    };
+    const response = await request(
+      "/api/v1/player/billing-inputs?playerId=two",
+      player,
+    );
+    expect(response.status).toBe(200);
+    const { data } = await response.json();
+    expect(data.playerId).toBe("one");
+    expect(data.billingSnapshot.players.map((p: any) => p.playerId)).toEqual([
+      "one",
+    ]);
+    expect(
+      (await request("/api/v1/staff/players/two/billing-inputs", player))
+        .status,
+    ).toBe(403);
+    expect(
+      (await request("/api/v1/player/billing-inputs", { role: "integration" }))
+        .status,
+    ).toBe(403);
+    expect((await request("/api/v1/player/billing-inputs", { role: "player", playerId: "one" })).status).toBe(403);
+    const viewer: import("@prism/server-hono").Principal = {
+      role: "staff",
+      staffId: "viewer",
+      staffRole: "viewer",
+    };
+    expect(
+      (await request("/api/v1/staff/players/two/billing-inputs", viewer))
+        .status,
+    ).toBe(200);
+    expect(
+      (await request("/api/v1/staff/players/missing/billing-inputs", viewer))
+        .status,
+    ).toBe(404);
+    const unavailable = await createPrismApp({
+      ...f.deps,
+      billingInputs: undefined,
+      authenticatedPrincipal: player,
+    }).request("/api/v1/player/billing-inputs");
+    expect(unavailable.status).toBe(503);
+    expect((await unavailable.json()).error.code).toBe(
+      "CLIENT_BILLING_UNAVAILABLE",
+    );
+    expect(quotes).toBe(0);
+    expect(f.db.query("SELECT total_changes() AS n").get()).toEqual(before);
   } finally {
     f.db.close();
   }

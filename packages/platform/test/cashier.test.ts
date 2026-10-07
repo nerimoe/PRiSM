@@ -11,6 +11,7 @@ import { createPrismWorkerDependencies } from "@prism/runtime";
 import { createD1Repositories } from "@prism/adapter-d1";
 import app from "../src/index";
 import { sha256 } from "../src/crypto";
+import { checkoutPreviewView } from "../../prism-web/src/checkout-preview";
 import type { Env } from "../src/types";
 
 const mf = new Miniflare({ modules: true, script: "export default {fetch(){return new Response('test')}}", d1Databases: ["DB"],  compatibilityDate: "2026-06-07" });
@@ -117,8 +118,16 @@ test("register, entry, exact-preview external payment and replay leave no assets
   const preview = await request(`${base}/profiles/${id}/checkout/preview`, {});
   expect(preview.status).toBe(200);
   expect(preview.data.settlementPreview.total).toBe(12);
-  const collection = { method: "wechat", collected: true, expectedTotal: 12, previewedAt: preview.data.settlementPreview.previewedAt,
-    sessionIds: preview.data.settlementPreview.sessionIds, operationId: op() };
+  const inputs = await request(`${base}/profiles/${id}/billing-inputs`);
+  expect(inputs.status).toBe(200);
+  expect(inputs.data.playerId).toBe(id);
+  expect(inputs.data.billingSnapshot.players.map((p: any) => p.playerId)).toEqual([id]);
+  expect((await request(`${base}/profiles/${id}/billing-inputs`, undefined, "viewer-session")).status).toBe(403);
+  expect((await request(`/api/v1/shops/b/cashier/profiles/${id}/billing-inputs`)).status).toBe(404);
+  const browser = checkoutPreviewView(await createLiveBillingCalculator(hydrateLiveBillingSnapshot(inputs.data.billingSnapshot)).previewCheckout(id));
+  expect(browser.settlementPreview.total).toBe(preview.data.settlementPreview.total);
+  const collection = { method: "wechat", collected: true, expectedTotal: browser.settlementPreview.total, previewedAt: browser.settlementPreview.previewedAt,
+    sessionIds: browser.settlementPreview.sessionIds, operationId: op() };
   expect((await request(`${base}/profiles/${id}/checkout/confirm`, { ...collection, collected: false })).status).toBe(400);
   const invalid = await request(`${base}/profiles/${id}/checkout/confirm`, { ...collection, expectedTotal: 1, operationId: op() });
   expect(invalid.error?.code).toBe("CASHIER_PREVIEW_CHANGED");
