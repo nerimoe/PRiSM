@@ -143,7 +143,7 @@ export function validateBackup(backup: ShopBackup): string[] {
     const bound = new Set(backup.tables.session_pricing_releases!.map(row => row.session_id));
     if (backup.tables.sessions!.some(row => row.payment_status === "unpaid" && !bound.has(row.id))) add("未结会话缺少计费版本绑定");
     const cashierPlayers = new Set(backup.tables.cashier_profiles!.map(row => row.player_id));
-    if ([...backup.tables.player_identities!, ...backup.tables.asset_holdings!].some(row => cashierPlayers.has(row.player_id))) add("前台玩家不可同时拥有平台身份或余额资产");
+    if (backup.tables.asset_holdings!.some(row => cashierPlayers.has(row.player_id))) add("前台玩家不可拥有余额资产");
   }
   return errors;
 }

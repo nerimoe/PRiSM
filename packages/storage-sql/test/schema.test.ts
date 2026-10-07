@@ -442,3 +442,35 @@ function runMigrationFile(db: Database, filePath: string): void {
   const sql = readFileSync(filePath, "utf8");
   db.exec(sql);
 }
+
+for (const upgrade of ["d1", "sqlite"] as const) {
+  it(`upgrades old cashier identity guards safely and idempotently (${upgrade})`, () => {
+    const db = new Database(":memory:");
+    try {
+      db.run("PRAGMA foreign_keys=ON");
+      for (const sql of sqliteSchema) db.run(sql);
+      db.exec(readFileSync(resolve(import.meta.dir, "../../../migrations/0029_cashier.sql"), "utf8"));
+      db.run("INSERT INTO players(id,display_name,status,created_at) VALUES ('cashier','前台玩家','active','2026-01-01'),('balance','账号玩家','active','2026-01-01')");
+      db.run("INSERT INTO cashier_profiles(player_id,card_kind,card_uid,created_at) VALUES ('cashier','type-a','AABBCCDD','2026-01-01')");
+      db.run("INSERT INTO asset_definitions(type,code,name) VALUES ('currency','paid','余额')");
+      db.run("INSERT INTO asset_holdings(id,player_id,asset_type,asset_code,quantity) VALUES ('paid','balance','currency','paid',12345)");
+      const identity = "INSERT INTO player_identities(player_id,provider,subject,created_at) VALUES ('cashier','onebot','114514','2026-01-01')";
+      expect(() => db.run(identity)).toThrow("CASHIER_PROFILE_RESTRICTED");
+      const before = ["players", "cashier_profiles", "asset_holdings"].map(table => db.query(`SELECT * FROM ${table}`).all());
+      const apply = () => {
+        if (upgrade === "d1") db.exec(readFileSync(resolve(import.meta.dir, "../../../migrations/0033_cashier_player_identities.sql"), "utf8"));
+        else for (const sql of sqliteSchema) db.run(sql);
+      };
+      apply();
+      apply();
+      expect(["players", "cashier_profiles", "asset_holdings"].map(table => db.query(`SELECT * FROM ${table}`).all())).toEqual(before);
+      db.run(identity);
+      db.run("INSERT INTO player_identities(player_id,provider,subject,created_at) VALUES ('cashier','web-account','verified-account','2026-01-01')");
+      db.run("INSERT INTO player_sessions(id,player_id,token_hash,expires_at,created_at,last_used_at) VALUES ('token','cashier','hash','2999-01-01','2026-01-01','2026-01-01')");
+      expect(() => db.run("INSERT INTO asset_holdings(id,player_id,asset_type,asset_code,quantity) VALUES ('forbidden','cashier','currency','paid',1)")).toThrow("CASHIER_PROFILE_RESTRICTED");
+      expect(() => db.run("UPDATE asset_holdings SET player_id='cashier' WHERE id='paid'")).toThrow("CASHIER_PROFILE_RESTRICTED");
+      expect(() => db.run("INSERT INTO cashier_profiles(player_id,card_kind,card_uid,created_at) VALUES ('balance','type-a','11223344','2026-01-01')")).toThrow("CASHIER_PROFILE_RESTRICTED");
+      expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { db.close(); }
+  });
+}

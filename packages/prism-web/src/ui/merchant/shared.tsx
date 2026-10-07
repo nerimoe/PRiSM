@@ -228,13 +228,13 @@ export type Player = {
   status: string;
   activeSessionId: string | null;
   hasUnpaidSession?: boolean;
-  identities?: { provider: string; subject: string }[];
+  identities?: { provider: string; subject: string; displayName?: string }[];
 };
 export type LivePlayer = {
   paymentMode?: "cashier";
   timeline?: import("@prism/core").BillTimeline;
   status: string;
-  identities?: { provider: string; subject: string }[];
+  identities?: { provider: string; subject: string; displayName?: string }[];
   playerId: string;
   displayName: string;
   walletTotal: number;

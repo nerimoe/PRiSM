@@ -29,11 +29,11 @@ beforeAll(async () => {
   const db = await mf.getD1Database("DB");
   env = { DB: db, ...rateLimits.bindings, APP_ORIGIN: origin, SESSION_SECRET: "test-only", URL_ENCRYPTION_KEY: "test-only", MUNET_CLIENT_ID: "", MUNET_CLIENT_SECRET: "", APPLE_TEAM_ID: "TEST" } as Env;
   for (const sql of sqliteSchema) await db.prepare(sql).run();
-  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings"]) {
+  for (const name of ["0017_platform_accounts", "0018_unified_devices", "0019_ticket_coin", "0020_mahjong_devices", "0021_machine_aliases", "0023_remote_entry", "0024_drop_remote_entry", "0030_platform_identity_bindings", "0029_cashier", "0033_cashier_player_identities"]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(/^\s*--.*$/gm, "");
     for (const statement of splitD1MigrationStatements(sql)) await db.prepare(statement).run();
   }
-  for (const user of ["owner", "viewer", "other"]) {
+  for (const user of ["owner", "viewer", "manager", "other"]) {
     await db.prepare("INSERT INTO users(id,role) VALUES (?,'user')").bind(user).run();
     await db.prepare("INSERT INTO auth_identities(id,user_id,provider,provider_subject,display_name) VALUES (?,?,'munet',?,?)").bind(user, user, user, user).run();
     await db.prepare("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES (?,?,?,'2999-01-01T00:00:00Z')").bind(user, user, await sha256(`${user}-session`)).run();
@@ -52,6 +52,9 @@ beforeAll(async () => {
   await db.prepare("INSERT INTO shop_members(shop_id,user_id,role) VALUES ('a','viewer','staff')").run();
   await db.prepare("INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES ('a','viewer','viewer','Viewer','x','x','viewer','active','2026-01-01','2026-01-01')").run();
   await db.prepare("INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES ('a','viewer','viewer')").run();
+  await db.prepare("INSERT INTO shop_members(shop_id,user_id,role) VALUES ('a','manager','staff')").run();
+  await db.prepare("INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES ('a','manager','manager','Manager','x','x','manager','active','2026-01-01','2026-01-01')").run();
+  await db.prepare("INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES ('a','manager','manager')").run();
 }, 30000);
 afterAll(() => mf.dispose());
 
@@ -106,7 +109,6 @@ test("register, entry, exact-preview external payment and replay leave no assets
   const live = await request("/api/v1/shops/a/staff/live-players");
   expect(live.data.players.find((p: any) => p.playerId === id).paymentMode).toBe("cashier");
   expect((await request(`/api/v1/shops/a/staff/players/${id}/assets/grants`, { grants: [{ assetType: "currency", assetCode: "paid", amount: 100 }], operationId: op() })).status).toBe(409);
-  expect((await request(`/api/v1/shops/a/staff/players/${id}/identities`, { provider: "qq", subject: "123456" })).status).toBe(409);
   expect((await request(`/api/v1/shops/a/staff/players/${id}/checkout/confirm`, { operationId: op() })).status).toBe(409);
   const preview = await request(`${base}/profiles/${id}/checkout/preview`, {});
   expect(preview.status).toBe(200);
@@ -138,11 +140,10 @@ test("register, entry, exact-preview external payment and replay leave no assets
   expect((await request("/api/v1/shops/b/cashier/register", { card, displayName: "独立档案", operationId: op() })).status).toBe(201);
 });
 
-test("storage rejects assets and login identities even outside cashier routes", async () => {
+test("storage still rejects cashier assets even outside cashier routes", async () => {
   const lookup = await request(base + "/lookup", card);
   const id = lookup.data.profile.id;
   await expect(env.DB.prepare("INSERT INTO asset_holdings(shop_id,id,player_id,asset_type,asset_code,quantity) VALUES ('a','forbidden',?,'currency','paid',100)").bind(id).run()).rejects.toThrow("CASHIER_PROFILE_RESTRICTED");
-  await expect(env.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('a',?,'qq','123456','2026-01-01')").bind(id).run()).rejects.toThrow("CASHIER_PROFILE_RESTRICTED");
 });
 
 test("FeliCa IDm is accepted without game-card parsing and stale visits cannot be collected", async () => {
@@ -214,4 +215,50 @@ test("mode updates and cashier writes share a shop lease", async () => {
     expect((await request("/api/v1/shops/c/cashier/register", { card, displayName: "并发玩家", operationId: op() })).error?.code).toBe("OPERATION_IN_PROGRESS");
   } finally { await repos.operationLocks.release("shop.cashier", "c", leaseId); }
   expect((await setCashier("c", false)).status).toBe(200);
+});
+
+test("staff can bind cashier platform identities and verified PRiSM membership appears in both player views", async () => {
+  const registered = await request(base + "/register", { card: { kind: "type-a", uid: "FFEEDDCC" }, displayName: "有身份的前台玩家", operationId: op() });
+  expect(registered.status).toBe(201);
+  const id = registered.data.profile.id, identities = `/api/v1/shops/a/staff/players/${id}/identities`;
+  const identity = { provider: "onebot", subject: "114514" };
+  expect((await request(identities, identity, "viewer-session")).status).toBe(403);
+  expect((await request(identities, identity, "manager-session")).status).toBe(200);
+  expect((await request(identities, identity, "manager-session")).status).toBe(200);
+  expect((await request(identities, { provider: "telegram", subject: "114514" }, "manager-session")).status).toBe(200);
+  expect((await request(identities, { provider: "web-account", subject: "other" })).error?.code).toBe("ACCOUNT_IDENTITY_READ_ONLY");
+  const code = (await request("/api/v1/shops/a/platform-binding", {}, "other-session")).data.code;
+  expect((await request("/api/v1/shops/a/staff/platform-binding/confirm", { code, ...identity }, "manager-session")).status).toBe(200);
+  expect(await env.DB.prepare("SELECT player_id FROM shop_player_accounts WHERE shop_id='a' AND user_id='other'").first("player_id")).toBe(id);
+  // This path never saved web-account in the legacy identity table.
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM player_identities WHERE shop_id='a' AND player_id=? AND provider='web-account'").bind(id).first("n")).toBe(0);
+  const repos = createD1Repositories({ db: env.DB, shopId: "a", id: crypto.randomUUID, now: () => new Date() });
+  expect((await repos.playerIdentities.findPlayerByIdentity("onebot", "114514"))?.paymentMode).toBe("cashier");
+  const auth = createPrismWorkerDependencies({ DB: env.DB }, { shopId: "a" });
+  const login = await auth.playerAuthCommands!.loginByIdentity({ identity });
+  expect(login.player.paymentMode).toBe("cashier");
+  expect((await request(`${base}/profiles/${id}/entry`, { operationId: op() })).status).toBe(200);
+  for (const view of ["players", "live-players"]) {
+    const players = (await request(`/api/v1/shops/a/staff/${view}`)).data.players;
+    const player = players.find((p: any) => (p.id ?? p.playerId) === id);
+    expect(player.paymentMode).toBe("cashier");
+    expect(player.identities).toEqual(expect.arrayContaining([
+      expect.objectContaining(identity),
+      expect.objectContaining({ provider: "telegram", subject: "114514" }),
+      { provider: "web-account", subject: "other", displayName: "other" },
+    ]));
+    expect(player.identities.filter((i: any) => i.provider === "web-account")).toHaveLength(1);
+  }
+  // Deduplicate older accounts that also have a legacy identity record.
+  await repos.playerIdentities.save({ playerId: id, provider: "web-account", subject: "other", createdAt: new Date() });
+  const listed = (await request("/api/v1/shops/a/staff/players")).data.players.find((p: any) => p.id === id);
+  expect(listed.identities.filter((i: any) => i.provider === "web-account")).toHaveLength(1);
+  expect((await request(`${identities}/web-account/other`, undefined, "manager-session", "DELETE")).error?.code).toBe("ACCOUNT_IDENTITY_READ_ONLY");
+  expect((await request(`/api/v1/shops/a/staff/players/${id}/assets/grants`, { grants: [{ assetType: "currency", assetCode: "paid", amount: 100 }], operationId: op() })).status).toBe(409);
+  await expect(auth.staffCheckoutCommands!.checkout!({ playerId: id })).rejects.toMatchObject({ code: "CASHIER_PAYMENT_REQUIRED" });
+  const preview = (await request(`${base}/profiles/${id}/checkout/preview`, {})).data.settlementPreview;
+  expect((await request(`${base}/profiles/${id}/checkout/confirm`, { operationId: op(), method: "cash", collected: true,
+    expectedTotal: preview.total, previewedAt: preview.previewedAt, sessionIds: preview.sessionIds })).status).toBe(200);
+  expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM asset_holdings WHERE shop_id='a' AND player_id=?").bind(id).first("n")).toBe(0);
+  expect((await request("/api/v1/shops/b/staff/players")).data.players.flatMap((p: any) => p.identities).some((i: any) => i.subject === "other")).toBe(false);
 });

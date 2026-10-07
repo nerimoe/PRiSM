@@ -1496,3 +1496,14 @@ describe("createSqliteRepositories", () => {
     await expect(repositories.machineConnections.listAll()).resolves.toHaveLength(1);
   });
 });
+
+it("resolves cashier external identities with the original payment mode", async () => {
+  const db = createDb();
+  try {
+    db.run("INSERT INTO cashier_profiles(player_id,card_kind,card_uid,created_at) VALUES ('player-1','type-a','AABBCCDD','2026-01-01')");
+    const repos = createSqliteRepositories({ db, id: () => "unused", now: () => new Date() });
+    await repos.playerIdentities.save({ playerId: "player-1", provider: "onebot", subject: "114514", createdAt: new Date() });
+    expect(await repos.playerIdentities.findPlayerByIdentity("onebot", "114514"))
+      .toMatchObject({ id: "player-1", paymentMode: "cashier" });
+  } finally { db.close(); }
+});

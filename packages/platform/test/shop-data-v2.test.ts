@@ -240,6 +240,44 @@ test("pure cashier players and paid bills are exported without platform identiti
     expect(targetBackup.tables[table]).toEqual(backup.tables[table]);
 }, 30000);
 
+test("cashier identities and verified accounts survive backup and cross-database restore without gaining assets", async () => {
+  const shop = await store(sourceEnv, true), target = await store(targetEnv);
+  const settings = (await request(sourceEnv, `/api/v1/shops/${shop.publicId}/settings`)).data;
+  expect((await request(sourceEnv, `/api/v1/shops/${shop.publicId}/settings`, { ...settings, cashierEnabled: true }, "owner-session", "PUT")).status).toBe(200);
+  const cashier = `/api/v1/shops/${shop.publicId}/cashier`;
+  const registration = await request(sourceEnv, cashier + "/register", {
+    card: { kind: "type-a", uid: "CCDDEEFF" }, displayName: "绑定身份的前台玩家", operationId: op(),
+  });
+  expect(registration.status).toBe(201);
+  const id = registration.data.profile.id, identity = { provider: "onebot", subject: "114514" };
+  expect((await request(sourceEnv, `/api/v1/shops/${shop.publicId}/staff/players/${id}/identities`, identity)).status).toBe(200);
+  const code = (await request(sourceEnv, `/api/v1/shops/${shop.publicId}/platform-binding`, {}, "player-session")).data.code;
+  expect((await request(sourceEnv, `/api/v1/shops/${shop.publicId}/staff/platform-binding/confirm`, { code, ...identity })).status).toBe(200);
+  expect((await request(sourceEnv, `${cashier}/profiles/${id}/entry`, { operationId: op() })).status).toBe(200);
+  const backup = await download(sourceEnv, shop);
+  expect(backup.tables.cashier_profiles).toHaveLength(1);
+  expect(backup.tables.player_identities).toEqual([expect.objectContaining(identity)]);
+  expect(backup.tables.account_links.find((r: any) => r.source_user_id === "player").player_id).toBe(id);
+  expect(backup.tables.asset_holdings).toHaveLength(0);
+  const staged = await upload(targetEnv, target, backup), check = await preview(targetEnv, target, staged);
+  expect(check.data.errors).toEqual([]);
+  expect((await apply(targetEnv, target, staged.jobId, check.data.fingerprint)).status).toBe(200);
+  expect((await request(targetEnv, `/api/v1/shops/${target.publicId}/player/me`, undefined, "player-session")).status).toBe(200);
+  const player = (await request(targetEnv, `/api/v1/shops/${target.publicId}/staff/live-players`)).data.players.find((p: any) => p.playerId === id);
+  expect(player.paymentMode).toBe("cashier");
+  expect(player.identities).toEqual(expect.arrayContaining([
+    expect.objectContaining(identity), { provider: "web-account", subject: "restore-player", displayName: "player" },
+  ]));
+  expect((await rows(targetEnv, "cashier_profiles", target.id))[0]!.player_id).toBe(id);
+  expect((await rows(targetEnv, "asset_holdings", target.id))).toHaveLength(0);
+  // The in-memory validation path must also continue to reject cashier balances.
+  const { validateBackup, businessTables } = await import("../src/shop-data-format");
+  const legacy = { ...backup, version: 1, tables: Object.fromEntries(businessTables.map(table => [table, backup.tables[table]])) };
+  expect(validateBackup(legacy)).toEqual([]);
+  legacy.tables.asset_holdings.push({ id: "forbidden", player_id: id, asset_type: "currency", asset_code: "paid", quantity: 1, active_at: null, expires_at: null });
+  expect(validateBackup(legacy)).toContain("前台玩家不可拥有余额资产");
+}, 30000);
+
 async function deviceSource() {
   const shop = await store(sourceEnv, true),
     now = "2026-10-02T02:08:00.000Z",

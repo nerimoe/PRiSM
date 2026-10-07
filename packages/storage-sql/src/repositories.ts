@@ -598,7 +598,8 @@ function createPlayerIdentityRepository(
 
     async findPlayerByIdentity(provider, subject) {
       const row = await executor.first<PlayerRow>(
-        `SELECT p.id, p.display_name, p.status, p.created_at
+        `SELECT p.id, p.display_name, p.status, p.created_at,
+           EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = p.id) AS cashier
          FROM (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(executor)}) i
          INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) p ON p.id = i.player_id
          WHERE i.provider = ? AND i.subject = ?

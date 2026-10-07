@@ -1,3 +1,4 @@
+import { withPrismAccountIdentities } from "./shop-player-identities";
 import { reconnectImportedAccount } from "./shop-data-accounts";
 import { registerIdentityConversionRoutes } from "./identity-conversion";
 import { mahjongRoster } from "./mahjong";
@@ -363,8 +364,13 @@ async function forward(
       try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     }
   }
+  let data: unknown = payload.data !== undefined ? payload.data : payload;
+  if (response.ok && activity && c.req.method === "GET" &&
+      (path === "staff/players" || path === "staff/live-players")) {
+    data = await withPrismAccountIdentities(c.env.DB, activity.shopId, data);
+  }
   return c.json(
-    response.ok ? (payload.data !== undefined ? payload.data : payload) : payload,
+    response.ok ? data : payload,
     response.status as 200,
   );
 }
@@ -880,10 +886,10 @@ export function registerBillingRoutes(app: Hono<AppBindings>) {
     }
     const restrictedPlayerId = path.match(/^players\/([^/]+)\//)?.[1];
     if (restrictedPlayerId && c.req.method !== "GET" &&
-        !/\/(checkout\/preview|sessions\/[^/]+\/stop|status)$/.test(path)) {
+        !/\/(checkout\/preview|sessions\/[^/]+\/stop|status|identities(?:\/[^/]+\/[^/]+)?)$/.test(path)) {
       const cashier = await c.env.DB.prepare("SELECT 1 FROM cashier_profiles WHERE shop_id=? AND player_id=?")
         .bind(shop.id, decodeURIComponent(restrictedPlayerId)).first();
-      if (cashier) jsonError(409, "前台卡片档案请使用前台收银，不支持资产或账号绑定", "CASHIER_PROFILE_RESTRICTED");
+      if (cashier) jsonError(409, "前台卡片档案请使用前台收银，不支持余额资产或余额结账", "CASHIER_PROFILE_RESTRICTED");
     }
     const execute = () =>
       forward(

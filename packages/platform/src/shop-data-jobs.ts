@@ -294,13 +294,13 @@ async function previewJob(
     if (
       await c.env.DB.prepare(
         `SELECT 1 FROM shop_data_rows c JOIN shop_data_rows r ON r.job_id=c.job_id
-      AND r.table_name IN ('player_identities','asset_holdings','account_links') AND json_extract(r.payload_json,'$.player_id')=json_extract(c.payload_json,'$.player_id')
+      AND r.table_name='asset_holdings' AND json_extract(r.payload_json,'$.player_id')=json_extract(c.payload_json,'$.player_id')
       WHERE c.job_id=? AND c.table_name='cashier_profiles' LIMIT 1`,
       )
         .bind(job.id)
         .first()
     )
-      errors.push("前台玩家不可同时拥有平台身份或余额资产");
+      errors.push("前台玩家不可拥有余额资产");
   }
   if (header.version === 2) {
     const billing = await c.env.DB.prepare(

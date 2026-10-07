@@ -26,26 +26,14 @@ BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
 BEFORE UPDATE ON asset_holdings
 WHEN EXISTS (SELECT 1 FROM cashier_profiles WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
 BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
-  `CREATE TRIGGER IF NOT EXISTS cashier_no_player_identities_insert
-BEFORE INSERT ON player_identities
-WHEN EXISTS (SELECT 1 FROM cashier_profiles WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
-BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
-  `CREATE TRIGGER IF NOT EXISTS cashier_no_player_identities_update
-BEFORE UPDATE ON player_identities
-WHEN EXISTS (SELECT 1 FROM cashier_profiles WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
-BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
-  `CREATE TRIGGER IF NOT EXISTS cashier_no_player_sessions_insert
-BEFORE INSERT ON player_sessions
-WHEN EXISTS (SELECT 1 FROM cashier_profiles WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
-BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
-  `CREATE TRIGGER IF NOT EXISTS cashier_no_player_sessions_update
-BEFORE UPDATE ON player_sessions
-WHEN EXISTS (SELECT 1 FROM cashier_profiles WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
-BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`,
+  // Upgrade previously initialized SQLite databases as well as fresh schemas.
+  `DROP TRIGGER IF EXISTS cashier_no_player_identities_insert`,
+  `DROP TRIGGER IF EXISTS cashier_no_player_identities_update`,
+  `DROP TRIGGER IF EXISTS cashier_no_player_sessions_insert`,
+  `DROP TRIGGER IF EXISTS cashier_no_player_sessions_update`,
+  `DROP TRIGGER IF EXISTS cashier_profile_must_be_empty`,
   `CREATE TRIGGER IF NOT EXISTS cashier_profile_must_be_empty
 BEFORE INSERT ON cashier_profiles
 WHEN EXISTS (SELECT 1 FROM asset_holdings WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
- OR EXISTS (SELECT 1 FROM player_identities WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
- OR EXISTS (SELECT 1 FROM player_sessions WHERE shop_id=NEW.shop_id AND player_id=NEW.player_id)
 BEGIN SELECT RAISE(ABORT, 'CASHIER_PROFILE_RESTRICTED'); END`
 ] as const;

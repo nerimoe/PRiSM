@@ -54,6 +54,10 @@ type History = {
 export function Players({ live = false }: { live?: boolean }) {
   const { t } = useI18n();
   const { canWrite, shopCode, cashierEnabled } = useMerchant();
+  const identityText = (identity: NonNullable<Player["identities"]>[number]) =>
+    identity.provider === "web-account"
+      ? `${t("PRiSM 账号")}: ${identity.displayName ? `${identity.displayName} · ` : ""}${identity.subject}`
+      : `${identity.provider}:${identity.subject}`;
   const request = useStaffApi();
   const list = useResource<{ players: Player[] }>(live ? null : "players");
   const onSite = useResource<{ players: LivePlayer[] }>(live ? "live-players" : null);
@@ -74,7 +78,7 @@ export function Players({ live = false }: { live?: boolean }) {
   };
   const rows = players?.filter(
     (player) =>
-      `${player.displayName} ${player.identities?.map((i) => i.subject).join(" ")}`
+      `${player.displayName} ${player.identities?.map(identityText).join(" ")}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -139,7 +143,7 @@ export function Players({ live = false }: { live?: boolean }) {
                   </span>
                   <span className="text-xs text-ink/50">
                     {
-                      player.identities?.map((i) => `${i.provider}:${i.subject}`).join(" · ")
+                      player.identities?.map(identityText).join(" · ")
                     }
                   </span>
                   <span className="text-right text-xs text-ink/50">
@@ -170,7 +174,7 @@ export function Players({ live = false }: { live?: boolean }) {
                       </button>
                       <p className="mt-1 text-xs text-ink/50">
                         {
-                          player.identities?.map((i) => `${i.provider}:${i.subject}`).join(" · ")
+                          player.identities?.map(identityText).join(" · ")
                         }
                       </p>
                     </td>
@@ -552,11 +556,13 @@ function PlayerDetail({
           </summary>
           {player.identities?.map((i) => (
             <p className="my-2 text-sm" key={`${i.provider}:${i.subject}`}>
-              {i.provider}:{i.subject}
+              {i.provider === "web-account" ? t("PRiSM 账号") : i.provider}:
+              {i.displayName && <span> {i.displayName} · </span>}{i.subject}
             </p>
           ))}
-          {canWrite && player.paymentMode !== "cashier" && (
+          {canWrite && (
             <div className="mt-4 grid gap-5">
+              <p className="text-sm text-ink/50">{t("PRiSM 账号通过绑定码关联")}</p>
               <ActionForm
                 done={done}
                 label="绑定平台身份"
