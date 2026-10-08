@@ -49,7 +49,7 @@ const eventAt = currentTail ? end : endedAt;
 
 - `packages/core/src/pricing-config.ts`：启用方案只要求至少一个有效规则，不要求覆盖全天。
 - `packages/core/src/pricing-time.ts`：`createPriorityTimePricingProvider` 未命中规则时调用 `findNextAnyRuleActivationAfter`；`canStartPriorityTimePricingSession` 检查当前是否有有效规则。
-- `packages/runtime/src/index.ts`：实际入场检查调用上述规则匹配；只有一个方案时，非营业时间被拒绝。
+- `packages/server/src/middleware/tenant.ts`：实际入场检查调用上述规则匹配；只有一个方案时，非营业时间被拒绝。
 - `packages/application/src/player-commands.ts`：入场检查失败抛出上述业务错误，不创建会话。
 
 ## 当前计费规则摘要

@@ -128,7 +128,7 @@ Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不�
 
 ```bash
 bun run build:web
-bun run check:platform
+bun run check:server # (亦可使用兼容别名 check:platform)
 bun run deploy:beta
 ```
 
@@ -336,7 +336,7 @@ bun test            # 运行所有的单元测试和集成测试
 
 发布此版前应用 `migrations/0030_platform_identity_bindings.sql`，新版 React 与 Koishi 插件使用 `platform-binding` API。迁移保留原标识及玩家绑定，店主决定是否批量转换，例如 `qq → onebot`；转换不会调整余额或账单。强制绑定开关位于 React「设置 → 玩家与身份」，默认开启。新 API 与适配器来源的具体约定见 [API 文档](api.md#店铺绑定要求与身份转换)。
 
-限流由 `wrangler.platform.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
+限流由 `wrangler.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
 
 ### Workers Builds 上传占位 D1 配置的排查
 

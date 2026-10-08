@@ -18,6 +18,6 @@
 
 触发器的入场校验使用 `SELECT RAISE(ABORT,'PRICING_CONFIG_NOT_IN_RELEASE') WHERE <条件>` 形式，而不是 `SELECT CASE WHEN <条件> THEN RAISE(...) END`。远程应用迁移走 D1 `/query` 接口，其服务端拆分器按 `BEGIN`/`END` 配对划分触发器体，但不识别 `CASE` 结尾的 `END`，会把触发器从中间切断并报 `incomplete input: SQLITE_ERROR [code: 7500]`。本地 sqlite3、客户端拆分器和 `d1 execute --file`（走 `/import`）都不会暴露该问题，因此只能在部署时发现。新增迁移中的触发器需继续避免 `CASE`，并保持 `BEGIN` 大写。
 
-验证：`bun test packages/runtime/test/pricing-versions.test.ts` 覆盖编辑与归档期间入场锁定、时区锁定、直接 SQL 入场、新方案拒绝、账单版本引用、隔离、不可篡改、旧数据迁移、累计封顶衔接和失败回滚。`bun test packages/storage-sql/test/d1-migration-splitter.test.ts` 按 D1 服务端拆分方式回放全部迁移，并禁止触发器体内出现 `CASE`。全库测试另覆盖 SQLite / D1 schema 与现有收费路径。
+验证：`bun test packages/server/test/shop-billing-routes.test.ts` 与 `packages/storage-sql/test/pricing-version-schema.test.ts` 覆盖编辑与归档期间入场锁定、时区锁定、直接 SQL 入场、新方案拒绝、账单版本引用、隔离、不可篡改、旧数据迁移、累计封顶衔接和失败回滚。`bun test packages/storage-sql/test/d1-migration-splitter.test.ts` 按 D1 服务端拆分方式回放全部迁移，并禁止触发器体内出现 `CASE`。全库测试另覆盖 SQLite / D1 schema 与现有收费路径。
 
 UTC 历史转换使用 `historyProviderId` 保留历史及当前迁移版本别名的收费／封顶身份，`historyRuleId` 保留按日期偏移拆分后的原规则累计身份；绝对历史窗口的 `anchorAt` 保留原 UTC 封顶锚点。这些信息用于迁移后衔接累计，不改变金额；日常编辑保存会清除迁移身份，生成正常的新版本。

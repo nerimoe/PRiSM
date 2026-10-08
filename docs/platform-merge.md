@@ -183,3 +183,30 @@ Mahjong player controls group the title/status and occupancy count in one header
 Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update both `player_identities` and `shop_platform_bindings`. See [API](api.md#店铺绑定要求与身份转换).
 
 当前扫码/请求放大修复以 [扫码性能与请求预算](scan-performance.md) 为准：新 ticket 为 AEAD 密文且不写 D1；历史 ticket claim 描述不适用于新流程。
+
+## 后端服务深度融合与统一包重构（2026-10-08）
+
+在 2026-10-08 的后端深度重构中，彻底消除了历史遗留的虚拟 HTTP 请求转发与多包碎片化结构，将 `packages/server-hono`、`packages/runtime` 和 `packages/platform` 完全统一整合为单一的 **`packages/server`**（`@prism/server`）：
+
+1. **废除虚拟 HTTP 转发，全面采用原生依赖注入 (Direct DI)**：
+   - 彻底废除 `createPrismApp().fetch(new Request(...))` 的虚拟请求派发模式。
+   - 店铺级路由统一挂载于 `/api/v1/shops/:shopCode/*`，通过 `tenantMiddleware` 从 D1/SQLite 解析当前店铺信息，直接组装并缓存 `PrismAppDependencies`，注入 `c.set("shop", shop)` 和 `c.set("deps", deps)`。
+   - 店铺子路由（`player`, `staff`, `integration`, `devices`, `pricing`, `assets`, `cashier`, `redeem`）直接调用 `deps.*` 业务方法，消除二次 JSON 编解码和堆栈割裂。
+
+2. **单店遗留 API 集中隔离与弃用管理 (`packages/server/src/legacy/`)**：
+   - 将旧版未带 `:shopCode` 的单店 API（`/api/v1/player/*`, `/api/v1/staff/*`, `/api/v1/integration/*`, `/api/v1/setup/*`）集中收拢于 `packages/server/src/legacy/`。
+   - 所有遗留路由自动附加 `X-API-Deprecated: true`、`X-API-Replacement`、`Link` 与 `Warning` 弃用标头，并提供详细的迁移文档 `packages/server/src/legacy/README.md`。
+   - 遗留路由支持多级租户解析：优先检查 `X-PRiSM-Shop-Code` 标头，其次检查 `?shopCode=` 查询参数，最后回退至单店默认店铺。
+
+3. **硬件驱动与通信协议收拢 (`packages/server/src/hardware/`)**：
+   - 统一 Hinata E2EE 卡片与投币驱动（`hinata.ts`，PBKDF2/AES-GCM 加密与重试）、TTLock 云开锁执行器（`ttlock.ts`）、Home Assistant 实体动作执行器（`home-assistant.ts`）以及街机机台物理 WebSocket 协议处理器（`machine-ws.ts`）。
+
+4. **双运行环境入口与部署配置统一**：
+   - Cloudflare Worker 统一入口：`packages/server/src/worker.ts`，导出 `fetch`、`scheduled` 定时任务与 `LiveBilling` Durable Object。
+   - 本地 Bun 原生入口：`packages/server/src/local-server.ts` 与 `serve.ts`，提供 `createD1DatabaseFromSqlite` 适配器与机台 WebSocket 协议升级。
+   - 统一 Wrangler 配置：删除 `wrangler.platform.jsonc`，根目录唯一的 `wrangler.jsonc` 统一指向 `packages/server/src/worker.ts`。
+
+5. **彻底删除废弃包**：
+   - 物理删除 `packages/server-hono`、`packages/runtime`、`packages/platform`（清理 50,600+ 行重复/碎片代码）。
+   - 全仓库 574 项单元与集成测试全部通过，TypeScript 项目引用检查 0 错误。
+

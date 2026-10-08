@@ -99,6 +99,7 @@ bun run typecheck
 bun test
 bun run dev:all
 bun run build:web
+bun run check:server
 bun run check:platform
 bun run deploy:beta
 bun run version:bump patch

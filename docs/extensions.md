@@ -46,10 +46,10 @@ export const roomFeeProvider: PricingProvider = {
 
 ## 3. 运行时插件容器注册 (Runtime Plugins)
 
-`packages/runtime` 包公开了一个轻量级的插件容器。你可以在容器中定义前端后台的配置卡片信息、固定的计费处理器、根据业务数据动态生成的计费处理器，以及资产打折效果处理器。
+`packages/application` 与 `packages/server` 公开了一个轻量级的插件容器。你可以在容器中定义前端后台的配置卡片信息、固定的计费处理器、根据业务数据动态生成的计费处理器，以及资产打折效果处理器。
 
 ```ts
-import type { PrismRuntimePlugin } from "@prism/runtime";
+import type { PrismRuntimePlugin } from "@prism/application";
 
 export const storePlugin: PrismRuntimePlugin = {
   id: "plugin.my-store",
@@ -118,14 +118,14 @@ const app = createPrismLocalApp({
 
 **Cloudflare Worker 部署**：在 Worker 入口文件的第二个参数中注入：
 ```ts
-import { createPrismWorkerApp, type PrismWorkerEnv } from "@prism/runtime";
+import { createApp, type Env } from "@prism/server";
 import { storePlugin } from "./store-plugin";
 
+const app = createApp();
+
 export default {
-  fetch(request: Request, env: PrismWorkerEnv) {
-    return createPrismWorkerApp(env, {
-      plugins: [storePlugin],
-    }).fetch(request);
+  fetch(request: Request, env: Env) {
+    return app.fetch(request, env);
   },
 };
 ```

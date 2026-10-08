@@ -20,11 +20,11 @@
 
 ## 默认值为什么不一致
 
-- `packages/platform/src/billing.ts` 的 `getBillingShop` 在店铺配置缺少时区时对页面使用 `Asia/Shanghai`，计费规则日预览也继承该值。
+- `packages/server/src/middleware/tenant.ts` 中的店铺解析在店铺配置缺少时区时对页面使用 `Asia/Shanghai`，计费规则日预览也继承该值。
 - `packages/application/src/settings.ts` 的设置读取同样显示 `Asia/Shanghai` 默认值；读取不等于写入 `app_settings`。
-- `packages/runtime/src/index.ts` 的入场检查直接读取 `store.profile.timeZone`。新玩家没有旧会话且配置缺失时传入 `undefined`，计费核心最终使用 UTC。方案自身的 `provider.timeZone` 优先级更高。
+- `packages/server/src/middleware/tenant.ts` 的入场检查直接读取 `store.profile.timeZone`。新玩家没有旧会话且配置缺失时传入 `undefined`，计费核心最终使用 UTC。方案自身的 `provider.timeZone` 优先级更高。
 - `packages/storage-sql/src/pricing-version-schema.ts` 生成发布版本时按 `venue.operations.timeZone → store.profile.timeZone → UTC` 选择时区，并在入场时锁定此版本。旧的 `venue.operations` 中若仍有时区字段，也可能与当前店铺设置不一致。
-- `packages/platform/src/billing-setup.ts` 建立方案和基础资产，但未写入 `store.profile`。平台新建计费店铺和旧店铺转换路径调用它，因此默认时区缺失可以由正常初始化路径产生。
+- `packages/server/src/routes/platform/shops.ts` 的店铺初始化建立方案和基础资产，但未写入 `store.profile`。平台新建计费店铺和旧店铺转换路径调用它，因此默认时区缺失可以由正常初始化路径产生。
 - `packages/application/src/bill-timeline.ts` 根据收费明细中的 `pricingExplanation.timeZone` 生成时间标签，前端 `BillTimeline` 直接显示后端提供的时间；列表则按页面的店铺时区格式化同一个 ISO 时间。
 
 因此，这不是简单的操作系统时钟偏差：同一个绝对时刻被不同入口按不同业务时区解释。
