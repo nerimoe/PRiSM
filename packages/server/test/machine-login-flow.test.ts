@@ -73,6 +73,34 @@ describe("pre-fork authenticated Aime machine login",()=>{
       expect(event).toEqual({result:"sent",card_id:"card-one"});
     }finally{responseFetch.mockRestore(); sqlite.close();}
   });
+  it("preserves failed delivery outcomes and audit events rather than claiming a successful swipe",async()=>{
+    const {sqlite,app,env,ticket,token}=await fixture();
+    const responseFetch=spyOn(globalThis,"fetch");
+    try{
+      responseFetch.mockResolvedValue(new Response("unavailable",{status:503}));
+      const res=await app.fetch(new Request("https://prism.test/api/v1/machines/login",{
+        method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},
+        body:JSON.stringify({ticket,cardId:"card-one"}),
+      }),env);
+      expect(res.status).toBe(502);
+      const body=(await res.json()) as {error:{code:string;details:{operationId:string;status:string}}};
+      expect(body.error.code).toBe("DEVICE_UNAVAILABLE");
+      expect(body.error.details.status).toBe("failed");
+      const operationId=body.error.details.operationId;
+      const command=sqlite.query(
+        "SELECT status FROM device_commands WHERE id=?",
+      ).get(operationId) as {status:string}|null;
+      expect(command?.status).toBe("expired");
+      const operation=sqlite.query(
+        "SELECT status FROM player_operations WHERE id=?",
+      ).get(operationId) as {status:string}|null;
+      expect(operation?.status).toBe("failed");
+      const audit=sqlite.query(
+        "SELECT result,response_code FROM machine_login_events WHERE machine_id='machine-id'",
+      ).get() as {result:string;response_code:number}|null;
+      expect(audit).toEqual({result:"failed",response_code:503});
+    }finally{responseFetch.mockRestore();sqlite.close();}
+  });
   it("rejects cards owned by other users before sending hardware commands",async()=>{
     const {sqlite,app,env,ticket,token}=await fixture();
     const responseFetch=spyOn(globalThis,"fetch");
