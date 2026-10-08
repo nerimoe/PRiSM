@@ -309,18 +309,22 @@ describe("Platform & System Routes", () => {
     it("does not expose username-only platform login or registration", async () => {
       // Even an existing username must not create an authenticated session.
       await authenticatedTestUser(env, "admin");
-      for (const route of ["login", "register"]) {
-        const res = await app.request(
-          `https://prism.test/api/v1/auth/${route}`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ username: "admin" }),
-          },
-          env,
-        );
-        expect(res.status).toBe(404);
-        expect(res.headers.get("set-cookie")).toBeNull();
+      // Check both the isolated router fixture and the actual deployed app,
+      // including its legacy fallback routes.
+      for (const targetApp of [app, createApp()]) {
+        for (const route of ["login", "register"]) {
+          const res = await targetApp.request(
+            `https://prism.test/api/v1/auth/${route}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ username: "admin" }),
+            },
+            env,
+          );
+          expect(res.status).toBe(404);
+          expect(res.headers.get("set-cookie")).toBeNull();
+        }
       }
     });
 
