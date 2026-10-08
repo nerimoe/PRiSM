@@ -86,6 +86,21 @@ export async function staffPrincipal(
   shop: TenantShop,
   readOnly = false,
 ): Promise<StaffPrincipal> {
+  // The standalone runtime issues per-shop admin-session bearer tokens.
+  // Resolve those before platform cookies, always against the selected tenant.
+  if (!c.get("user")) {
+    const token = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+    const deps = c.get("deps");
+    if (token && deps) {
+      const session = await deps.repositories.system.findAdminSessionByTokenHash(await sha256(token));
+      if (session && session.expiresAt.getTime() > Date.now()) {
+        const staff = await deps.repositories.system.findStaffUserById(session.staffUserId);
+        if (staff?.status === "active") {
+          return { role: "staff", staffId: staff.id, staffRole: staff.role };
+        }
+      }
+    }
+  }
   const user = requireUser(c);
 
   const mapping = await c.env.DB.prepare(

@@ -96,7 +96,7 @@ export const legacyTenantMiddleware: MiddlewareHandler<AppBindings> = async (
   next,
 ) => {
   const isLegacyPath =
-    /^\/(?:api\/v1\/)?(?:player|staff|integration|setup)\b/.test(c.req.path) ||
+    /^\/(?:api\/v1\/)?(?:player|staff|integration|setup|admin|player-auth)\b/.test(c.req.path) ||
     c.req.path.startsWith("/rpc");
   if (!isLegacyPath) {
     await next();
