@@ -380,7 +380,7 @@ staffRouter.post("/reports/checkouts/:checkoutId/archive", async (c) => {
   if (!deps.staffReportCommands) {
     jsonError(503, "Report commands are not configured.", "STAFF_REPORT_COMMANDS_NOT_CONFIGURED");
   }
-  const body = await c.req.json<{ archived?: unknown }>().catch(() => ({}));
+  const body = (await c.req.json<{ archived?: unknown }>().catch(() => ({}))) as { archived?: unknown };
   if (typeof body.archived !== "boolean") {
     jsonError(400, "无效的归档状态", "INVALID_REQUEST");
   }

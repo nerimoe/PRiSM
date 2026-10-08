@@ -156,7 +156,7 @@ userRouter.post("/me/live-activity/start-token", async (c) => {
 
 userRouter.delete("/me/live-activity/start-token/:clientId?", async (c) => {
   const user = requireUser(c);
-  const body = await c.req.json<{ clientId?: string }>().catch(() => ({}));
+  const body = (await c.req.json<{ clientId?: string }>().catch(() => ({}))) as { clientId?: string };
   const clientId = (c.req.param("clientId") ?? body.clientId ?? c.req.query("clientId"))?.trim();
   if (clientId) {
     await c.env.DB.prepare(
