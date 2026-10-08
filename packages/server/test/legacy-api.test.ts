@@ -9,6 +9,7 @@ import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
 import { shopRouter } from "../src/routes/shops/index.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
+import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
 import { legacyRouter } from "../src/legacy/index.js";
 
 class InMemoryD1Database implements D1DatabaseLike {
@@ -53,6 +54,19 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
   for (const statement of sqliteSchema) {
     sqlite.run(statement);
   }
+
+  // These platform tables live in D1 migrations rather than the embedded SQL
+  // repository schema; command contract fixtures need both.
+  sqlite.run(`CREATE TABLE IF NOT EXISTS player_operations (
+    shop_id TEXT NOT NULL, user_id TEXT NOT NULL, id TEXT NOT NULL,
+    kind TEXT NOT NULL, status TEXT NOT NULL, request_hash TEXT NOT NULL,
+    result_json TEXT, created_at TEXT NOT NULL,
+    PRIMARY KEY(shop_id,user_id,id))`);
+
+  sqlite.run(`CREATE TABLE IF NOT EXISTS machines (
+    shop_id TEXT NOT NULL, id TEXT NOT NULL, public_id TEXT NOT NULL,
+    name TEXT NOT NULL, kind TEXT NOT NULL, enabled INTEGER NOT NULL,
+    PRIMARY KEY(shop_id,id))`);
 
   sqlite.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -337,15 +351,20 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
     expect(assetsData.holdings[0].assetCode).toBe("paid");
     expect(assetsData.holdings[0].quantity).toBe(500);
 
+    // Preserve the legacy path alias, but require the same QR session
+    // ticket and entry acknowledgement as the canonical tenant route.
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?, 'entry-machine', 'entry-machine', 'Entry Machine', 'machine', 1)", [shopId]);
+    const ticket = (await mintMachineTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
     // 2. POST /api/v1/player/session/start (start session without shopCode)
     const startRes = await app.fetch(
       new Request("https://prism.test/api/v1/player/session/start", {
         method: "POST",
         headers: bobHeaders,
-        body: JSON.stringify({ label: "legacy-play" }),
+        body: JSON.stringify({ ticket, consent: true, operationId: crypto.randomUUID() }),
       }),
       env,
     );
+    if (!startRes.ok) console.error("QR-confirmed start failed", startRes.status, await startRes.clone().text());
     expect(startRes.status).toBe(200);
     expect(startRes.headers.get("X-API-Deprecated")).toBe("true");
     expect(startRes.headers.get("X-API-Replacement")).toBe(

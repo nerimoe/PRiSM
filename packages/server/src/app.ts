@@ -5,7 +5,7 @@ import { PrismDomainError } from "@prism/core";
 import type { AppBindings } from "./bindings.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { attachUser } from "./middleware/auth.js";
-import { responseTimeMiddleware } from "./middleware/response-time.js";
+import { responseTimeMiddleware, unwrapLegacyResponse } from "./middleware/response-time.js";
 import { serveWebAssets } from "./routes/web-assets.js";
 
 // Platform and system routers
@@ -115,6 +115,26 @@ export function createApp(): Hono<AppBindings> {
   });
   app.use("*", attachUser);
   app.use("*", serveWebAssets());
+
+  // Before consolidation, /api/* aliases rewrote to /api/v1/* and returned
+  // unwrapped legacy JSON. Preserve that behaviour without shadowing v1 routes.
+  app.all("/api/*", async (c, next) => {
+    if (c.req.path.startsWith("/api/v1/")) return next();
+    const url = new URL(c.req.url);
+    url.pathname = url.pathname.replace(/^\/api\//, "/api/v1/");
+    const response = await app.fetch(new Request(url, c.req.raw), c.env, (() => {
+      try { return c.executionCtx; } catch { return undefined; }
+    })());
+    const legacy = await unwrapLegacyResponse(response);
+    // The pre-merge /api/* shim returned string errors for non-v1 callers.
+    if (!legacy.ok && legacy.headers.get("content-type")?.includes("application/json")) {
+      const error = await legacy.json() as { error?: { message?: string } | string };
+      const message = typeof error.error === "string"
+        ? error.error : error.error?.message ?? "请求失败";
+      return c.json({ error: message }, legacy.status as 400);
+    }
+    return legacy;
+  });
 
   // System routes
   app.route("/health", healthRouter);

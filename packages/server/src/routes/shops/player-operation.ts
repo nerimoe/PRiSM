@@ -41,7 +41,11 @@ export async function runPlayerOperation(
         status: number;
         body: unknown;
       };
-      return Response.json(result.body, { status: result.status });
+      // Replays return the saved result but must not trigger a second APNs event.
+      return Response.json(result.body, {
+        status: result.status,
+        headers: { "x-prism-operation-replayed": "true" },
+      });
     }
     jsonError(
       409,

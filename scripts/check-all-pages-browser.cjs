@@ -91,10 +91,16 @@ function mock(request, role, unknown, mutations) {
     const action = p.slice(base.length);
     if (action === "me") return { staff: { canWrite: owner, role: owner ? "owner" : "viewer" } };
     if (action === "live-players") return { players: [live], billingSnapshot: snapshot };
-    if (action === "players") return { players: [{
-      id: "p", displayName: live.displayName, status: "active", walletTotal: 100,
-      identities: [], activeSessionId: "s1",
-    }] };
+    if (action === "players") return { players: [
+      {
+        id: "p", displayName: live.displayName, status: "active", walletTotal: 125.95,
+        identities: [], activeSessionId: "s1",
+      },
+      {
+        id: "p-zero", displayName: "零余额玩家", status: "active", walletTotal: 0,
+        identities: [], activeSessionId: null,
+      },
+    ] };
     if (action === "pricing-configs") return { pricingConfigs: [] };
     if (action === "asset-definitions") return { assetDefinitions: [] };
     if (action === "pricing-effects") return { pricingEffects: [] };
@@ -187,6 +193,13 @@ const cases = [
               // DTO or fails to render real identity/passkey rows.
               await page.getByText("CI 绑定账号", { exact: true }).waitFor();
               await page.getByText("CI Passkey", { exact: true }).waitFor();
+            }
+            if (url === "/merchant/demo/players") {
+              // Keep both the funded and zero balance visible; undefined renders
+              // an em dash, the regression caused by the server's lossy DTO.
+              await page.getByText("125.95", { exact: true }).filter({ visible: true }).first().waitFor();
+              await page.getByText("0.00", { exact: true }).filter({ visible: true }).first().waitFor();
+              await page.getByText("零余额玩家", { exact: true }).filter({ visible: true }).first().waitFor();
             }
             if (url === "/merchant/demo/live") {
               await page.getByText(live.displayName, { exact: true }).first().waitFor();

@@ -33,6 +33,12 @@ import { redeemRouter, staffRedeemCompatRouter } from "./redeem.js";
 import { billingCompatRouter } from "./billing-compat.js";
 import { identityConversionRouter } from "./identity-conversion.js";
 import { shopDataRouter } from "./data/index.js";
+import { legacyStaffRouter } from "../../legacy/handlers/staff.js";
+import { legacyIntegrationRouter } from "../../legacy/handlers/integration.js";
+import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import {
+  extractSessionIds, playerIdsFromPayload, pushSessionEvent, sessionEventForPath,
+} from "./live-activity-events.js";
 
 export * from "./player.js";
 export * from "./staff.js";
@@ -117,6 +123,54 @@ export const shopRouter = new Hono<AppBindings>();
 // Tenant resolution & dependency container injection
 shopRouter.use("*", tenantMiddleware);
 
+// Restore the pre-consolidation event bridge at the tenant boundary. All player,
+// staff and integration mutations pass here, so new commands cannot silently
+// forget to wake the Live Activity. Send APNs after the response is committed.
+shopRouter.use("*", async (c, next) => {
+  await next();
+  if (!c.res.ok || c.res.headers.get("x-prism-operation-replayed") === "true" ||
+      c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
+  const match = c.req.path.match(/^\/api\/v1\/shops\/[^/]+\/(player|staff|integration)\/(.+)$/);
+  if (!match) return;
+  const [, channel, path] = match;
+  if (!channel || !path || path.startsWith("live-activity/")) return;
+
+  const responseBody = await c.res.clone().json().catch(() => null) as Record<string, unknown> | null;
+  if (!responseBody) return;
+  const payload = (responseBody.data && typeof responseBody.data === "object"
+    ? responseBody.data : responseBody) as Record<string, unknown>;
+  const event = sessionEventForPath(path);
+  const playerIds = new Set(playerIdsFromPayload(payload));
+  const explicitId = path.match(/^players\/([^/]+)\//)?.[1];
+  if (explicitId && explicitId !== "by-identity") playerIds.add(decodeURIComponent(explicitId));
+
+  const shop = getShop(c);
+  if (channel === "player" && !playerIds.size) {
+    const user = c.get("user");
+    if (user) {
+      const membership = await c.env.DB.prepare(
+        "SELECT player_id AS playerId FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
+      ).bind(shop.id, user.id).first<{ playerId: string }>();
+      if (membership) playerIds.add(membership.playerId);
+    }
+  }
+  if (!playerIds.size) return;
+  const sessionIds = event ? extractSessionIds(payload, event) : [];
+  const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
+  const work = Promise.all([...playerIds].map(async (playerId) => {
+    if (event && sessionIds.length) {
+      await pushSessionEvent(c, { shopId: shop.id, playerId, sessionIds, event, initiatorClientId });
+    } else {
+      await refreshActivityBill(c.env, shop.id, playerId);
+    }
+  })).then(() => undefined).catch((error) => {
+    console.error("Live Activity event dispatch failed", error);
+  });
+  try { c.executionCtx.waitUntil(work); }
+  catch { void work; }
+});
+
+
 // Centralized error mapping for direct domain errors
 shopRouter.onError((err, c) => {
   if (err instanceof HTTPException) {
@@ -173,6 +227,11 @@ shopRouter.route("/staff", staffRedeemCompatRouter);
 shopRouter.route("/", billingCompatRouter);
 shopRouter.route("/identity-conversion", identityConversionRouter);
 shopRouter.route("/data", shopDataRouter);
+// Keep the historical tenant-scoped staff administration and Bot commands.
+// Root-level /api/v1/staff and /integration alone cannot replace these: their
+// tenant selection is different and the shopCode is part of the public contract.
+shopRouter.route("/staff", legacyStaffRouter);
+shopRouter.route("/integration", legacyIntegrationRouter);
 
 // Shop Overview, Entry Pricing and Today's Schedule
 shopRouter.get("/", async (c) => {

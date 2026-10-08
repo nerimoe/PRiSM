@@ -4,6 +4,7 @@ import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import { runPlayerOperation } from "./player-operation.js";
 import { toStaffPricingExtensionView, toPlayerCheckoutResultView, toDeviceCommandView, toStaffDeviceCommandView, toDeviceStateView, toMachineConnectionView } from "./views.js";
 
 /** Historical standalone route names that were not covered by /pricing-configs. */
@@ -43,25 +44,31 @@ staffPricingCompatRouter.post("/pricing-timeline/preview", async (c) => {
 staffPricingCompatRouter.post("/sessions/active/checkout",async c=>{
   const principal=await staffPrincipal(c,getShop(c));
   if(principal.staffRole==="viewer")jsonError(403,"只读员工不能执行结账","FORBIDDEN");
-  const settled=await getShopDeps(c).staffOperations.checkoutAllActivePlayers();
-  return c.json({settlements:settled.map(toPlayerCheckoutResultView)});
+  const body=await c.req.json<Record<string,unknown>>().catch(()=>({}));
+  return runPlayerOperation(c,getShop(c).id,"staff/sessions/active/checkout",body,async()=>{
+    const settled=await getShopDeps(c).staffOperations.checkoutAllActivePlayers();
+    return c.json({settlements:settled.map(toPlayerCheckoutResultView)});
+  });
 });
 
 staffPricingCompatRouter.post("/device-actions",async c=>{
   const principal=await staffPrincipal(c,getShop(c));
   if(principal.staffRole==="viewer")jsonError(403,"只读员工不能操作设备","FORBIDDEN");
   const body=z.object({
+    operationId:z.string().uuid(),
     type:z.string().min(1),
     target:z.record(z.string(),z.unknown()),
     payload:z.record(z.string(),z.unknown()).optional(),
   }).parse(await c.req.json());
-  const command=await getShopDeps(c).deviceActions.requestDeviceAction({
-    actor:{type:"staff",staffId:principal.staffId},
-    type:body.type as any,
-    target:body.target as any,
-    payload:body.payload,
+  return runPlayerOperation(c,getShop(c).id,"staff/device-actions",body,async()=>{
+    const command=await getShopDeps(c).deviceActions.requestDeviceAction({
+      actor:{type:"staff",staffId:principal.staffId},
+      type:body.type as any,
+      target:body.target as any,
+      payload:body.payload,
+    });
+    return c.json({action:toDeviceCommandView(command)});
   });
-  return c.json({action:toDeviceCommandView(command)});
 });
 
 staffPricingCompatRouter.get("/device-commands",async c=>{

@@ -4,6 +4,8 @@ import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import { runPlayerOperation } from "./player-operation.js";
+import { withPrismAccountIdentities } from "./shop-player-identities.js";
 import {
   toGrantAssetsView,
   toPlayerAssetsView,
@@ -11,6 +13,7 @@ import {
   toPlayerCheckoutResultView,
   toPlayerIdentityView,
   toPlayerManagementView,
+  toStaffPlayerListView,
   toPlayerRedeemRecordsView,
   toSessionHistoryDetailView,
   toSessionHistoryView,
@@ -37,7 +40,10 @@ staffRouter.get("/players", async (c) => {
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
   const players = await deps.staffQueries.listPlayers();
-  return c.json({ players: players.map(toPlayerManagementView) });
+  const data = await withPrismAccountIdentities(c.env.DB, shop.id, {
+    players: players.map(toStaffPlayerListView),
+  }) as { players: unknown[] };
+  return c.json(data);
 });
 
 // Standalone and tenant-scoped staff browser billing preview inputs.
@@ -97,16 +103,18 @@ staffRouter.post("/players/:playerId/assets/grants", async (c) => {
   const staff = await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
   const body = await c.req.json<{ grants: any[]; reason?: string }>();
-  const result = await deps.staffAssetCommands.grantAssets({
-    staffId: staff.staffId,
-    playerId: c.req.param("playerId"),
-    grants: (body.grants ?? []).map((g) => ({
-      ...g,
-      activeAt: g.activeAt ? new Date(g.activeAt) : undefined,
-      expiresAt: g.expiresAt ? new Date(g.expiresAt) : undefined,
-    })),
+  return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/assets/grants`, body, async () => {
+    const result = await deps.staffAssetCommands.grantAssets({
+      staffId: staff.staffId,
+      playerId: c.req.param("playerId"),
+      grants: (body.grants ?? []).map((g) => ({
+        ...g,
+        activeAt: g.activeAt ? new Date(g.activeAt) : undefined,
+        expiresAt: g.expiresAt ? new Date(g.expiresAt) : undefined,
+      })),
+    });
+    return c.json(toGrantAssetsView(result));
   });
-  return c.json(toGrantAssetsView(result));
 });
 
 // Adjust Assets
@@ -136,13 +144,15 @@ staffRouter.post("/players/:playerId/wallet/adjustment", async (c) => {
   if (!deps.staffAssetCommands.adjustWallet) {
     jsonError(503, "Staff asset commands are not configured.", "STAFF_ASSET_COMMANDS_NOT_CONFIGURED");
   }
-  const result = await deps.staffAssetCommands.adjustWallet({
-    staffId: staff.staffId,
-    playerId: c.req.param("playerId"),
-    amount: body.amount,
-    reason: body.reason ?? "wallet adjustment",
+  return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/wallet/adjustment`, body, async () => {
+    const result = await deps.staffAssetCommands.adjustWallet({
+      staffId: staff.staffId,
+      playerId: c.req.param("playerId"),
+      amount: body.amount,
+      reason: body.reason ?? "wallet adjustment",
+    });
+    return c.json(result);
   });
-  return c.json(result);
 });
 
 // Add Player Identity
@@ -217,10 +227,13 @@ staffRouter.post("/players/:playerId/checkout/confirm", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
-  const result = await deps.staffCheckoutCommands.checkout({
-    playerId: c.req.param("playerId"),
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+  return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/checkout/confirm`, body, async () => {
+    const result = await deps.staffCheckoutCommands.checkout({
+      playerId: c.req.param("playerId"),
+    });
+    return c.json(toPlayerCheckoutResultView(result));
   });
-  return c.json(toPlayerCheckoutResultView(result));
 });
 
 // Override Checkout
@@ -236,13 +249,15 @@ staffRouter.post("/players/:playerId/checkout/override", async (c) => {
     expectedSubtotal: number;
     expectedTotal: number;
   }>();
-  const result = await deps.staffCheckoutCommands.checkoutWithOverride({
-    staffId: staff.staffId,
-    playerId: c.req.param("playerId"),
-    total: body.finalTotal,
-    reason: body.reason,
+  return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/checkout/override`, body, async () => {
+    const result = await deps.staffCheckoutCommands.checkoutWithOverride({
+      staffId: staff.staffId,
+      playerId: c.req.param("playerId"),
+      total: body.finalTotal,
+      reason: body.reason,
+    });
+    return c.json(toPlayerCheckoutResultView(result));
   });
-  return c.json(toPlayerCheckoutResultView(result));
 });
 
 // Player Session History
@@ -298,7 +313,10 @@ staffRouter.get("/live-players", async (c) => {
   const billingSnapshot = players.length && deps.staffLiveBillingSnapshot
     ? await deps.staffLiveBillingSnapshot(players.map((player) => player.playerId))
     : undefined;
-  return c.json({ players, ...(billingSnapshot ? { billingSnapshot } : {}) });
+  const data = await withPrismAccountIdentities(c.env.DB, shop.id, {
+    players, ...(billingSnapshot ? { billingSnapshot } : {}),
+  });
+  return c.json(data);
 });
 
 // Active Sessions

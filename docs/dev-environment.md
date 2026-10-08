@@ -89,3 +89,18 @@ Web 构建和 Worker dry-run。
 与具体条目渲染成功；禁止把未知 API 请求或 JS 错误当作成功。
 失败截图及扫描结果作为 `scan-first-paint` artifact 保存 7 天。
 WebKit 是对 iOS Safari 渲染行为的近似检查，不能替代真实 iPhone Safari 验收。
+
+## 玩家列表余额回归
+
+店铺管理的 `GET /api/v1/shops/:shopCode/staff/players` 返回
+`data.players[]`，每项必须包含 `walletTotal`（人民币元值，保留两位小数）、
+`activeSessionId`、`hasUnpaidSession` 与 `identities`；前台档案可带
+`paymentMode: "cashier"`。余额从 SQL 查询中的货币资产持有数据计算，
+后端在序列化边界把整数分值转换为元值。没有可用余额时返回数字 `0`，
+不能省略字段或返回 `null`（前端会将缺失值显示成 `—`）。
+玩家创建与状态更新使用较小的管理 DTO，不可复用它来缩减列表响应。
+
+`packages/server/test/shop-billing-routes.test.ts` 通过生产 `createApp()`
+检验有余额与零余额玩家、身份、当前会话和响应 `data` 包装。
+`scripts/check-all-pages-browser.cjs` 则验证桌面和移动端列表实际显示
+`125.95` 及 `0.00`；现有 CI 在 Chromium 与 WebKit 中运行该检查。

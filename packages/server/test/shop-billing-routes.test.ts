@@ -7,8 +7,10 @@ import type { AppBindings, Env } from "../src/bindings.js";
 import { attachUser } from "../src/middleware/auth.js";
 import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
 import { shopRouter } from "../src/routes/shops/index.js";
+import { createApp } from "../src/app.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
+import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
 
 class InMemoryD1Database implements D1DatabaseLike {
   constructor(private readonly db: Database) {}
@@ -49,6 +51,14 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
   for (const statement of sqliteSchema) {
     sqlite.run(statement);
   }
+
+  // These platform tables live in D1 migrations rather than the embedded SQL
+  // repository schema; command contract fixtures need both.
+  sqlite.run(`CREATE TABLE IF NOT EXISTS player_operations (
+    shop_id TEXT NOT NULL, user_id TEXT NOT NULL, id TEXT NOT NULL,
+    kind TEXT NOT NULL, status TEXT NOT NULL, request_hash TEXT NOT NULL,
+    result_json TEXT, created_at TEXT NOT NULL,
+    PRIMARY KEY(shop_id,user_id,id))`);
 
   sqlite.run(`
     CREATE TABLE IF NOT EXISTS users (
@@ -254,6 +264,143 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+
+    sqlite.run(
+      "INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, 'funded', '有余额玩家', 'active', CURRENT_TIMESTAMP), (?, 'empty', '零余额玩家', 'active', CURRENT_TIMESTAMP)",
+      [shopId, shopId],
+    );
+    sqlite.run(
+      "INSERT INTO asset_holdings (shop_id, id, player_id, asset_type, asset_code, quantity) VALUES (?, 'paid-1', 'funded', 'currency', 'paid', 12345), (?, 'free-1', 'funded', 'currency', 'free', 250)",
+      [shopId, shopId],
+    );
+    sqlite.run(
+      "INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at) VALUES (?, 'funded', 'aime', 'card-1', '2026-10-01T00:00:00Z')",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO sessions (shop_id, id, player_id, started_at, status, payment_status, pricing_config_ids_json) VALUES (?, 'active-funded', 'funded', '2026-10-02T02:08:00Z', 'active', 'unpaid', '[]')",
+      [shopId],
+    );
+
+    const response = await app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players`,
+      { headers: { authorization: `Bearer ${staffSessionToken}` } },
+    ), env);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      data: { players: Array<{
+        id: string; walletTotal: number; activeSessionId: string | null;
+        hasUnpaidSession: boolean; identities: Array<{ provider: string; subject: string; createdAt: string }>;
+      }> };
+    };
+    const byId = new Map(body.data.players.map((player) => [player.id, player]));
+    expect(byId.get("funded")).toMatchObject({
+      walletTotal: 125.95,
+      activeSessionId: "active-funded",
+      hasUnpaidSession: true,
+      identities: [{ provider: "aime", subject: "card-1", createdAt: expect.any(String) }],
+    });
+    expect(byId.get("empty")).toMatchObject({
+      walletTotal: 0,
+      activeSessionId: null,
+      hasUnpaidSession: false,
+      identities: [],
+    });
+    sqlite.close();
+  });
+
+  it("registers and retires an ActivityKit token on the real tenant endpoint", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken, shopId } = await setupShopFixture(db, sqlite);
+    // The lightweight SQL fixture predates the platform's APNs migrations.
+    sqlite.run(`CREATE TABLE IF NOT EXISTS live_activity_tokens (
+      id TEXT PRIMARY KEY, shop_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL,
+      bundle_id TEXT NOT NULL, session_id TEXT, attributes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE (shop_id, user_id, activity_id))`);
+    const app = createApp();
+    const url = `https://prism.test/api/v1/shops/${publicId}/player/live-activity`;
+    const headers = { authorization: `Bearer ${staffSessionToken}`, "content-type": "application/json" };
+    const registered = await app.fetch(new Request(url + "/register", {
+      method: "POST", headers, body: JSON.stringify({
+        activityId: "test-live-activity", token: "A".repeat(64),
+        environment: "sandbox", bundleId: "moe.neri.hinatago",
+      }),
+    }), env);
+    expect(registered.status).toBe(200);
+    const token = sqlite.query("SELECT token, bundle_id FROM live_activity_tokens WHERE shop_id=?")
+      .get(shopId) as { token: string; bundle_id: string } | null;
+    expect(token).toEqual({ token: "a".repeat(64), bundle_id: "moe.neri.hinatago" });
+
+    const retired = await app.fetch(new Request(url + "/unregister", {
+      method: "POST", headers, body: JSON.stringify({ activityId: "test-live-activity" }),
+    }), env);
+    expect(retired.status).toBe(200);
+    const remain = sqlite.query("SELECT COUNT(*) AS count FROM live_activity_tokens WHERE shop_id=?")
+      .get(shopId) as { count: number };
+    expect(remain.count).toBe(0);
+    const denied = await app.fetch(new Request(url + "/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ activityId: "no-user", token: "a".repeat(64), environment: "sandbox", bundleId: "moe.neri.hinatago" }),
+    }), env);
+    expect(denied.status).toBe(401);
+    sqlite.close();
+  });
+
+  it("keeps pre-merge API routes and requires a QR ticket to start a player visit", async () => {
+    const app = createApp();
+    const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
+    const scoped = "/api/v1/shops/:shopCode";
+    for (const route of [
+      "GET /player/live-activity/bill",
+      "POST /player/live-activity/register",
+      "POST /player/live-activity/unregister",
+      "GET /staff/settings",
+      "PUT /staff/settings",
+      "GET /staff/api-tokens",
+      "POST /staff/api-tokens",
+      "POST /staff/api-tokens/:tokenId/revoke",
+      "GET /staff/users",
+      "POST /staff/users",
+      "PATCH /staff/users/:staffUserId",
+      "POST /staff/users/:staffUserId/password",
+      "POST /integration/players/by-identity/checkout/override",
+      "POST /integration/players/by-identity/device-actions",
+    ]) {
+      const [method, endpoint] = route.split(" ");
+      expect(registered.has(`${method} ${scoped}${endpoint}`)).toBe(true);
+    }
+    expect(registered.has("ALL /api/*")).toBe(true);
+
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const uri = `https://prism.test/api/v1/shops/${publicId}/player/session/start`;
+    const start = await app.fetch(new Request(uri, {
+      method: "POST",
+      headers: { authorization: `Bearer ${staffSessionToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ consent: true }),
+    }), env);
+    expect(start.status).toBe(410);
+    const result = await start.json() as { error: { code: string } };
+    expect(result.error.code).toBe("TICKET_EXPIRED");
+    const createdSessions = sqlite.query("SELECT COUNT(*) AS count FROM sessions WHERE shop_id=?").get(shopId) as { count: number };
+    expect(createdSessions.count).toBe(0);
+
+    const alias = await app.fetch(new Request("https://prism.test/api/me", {
+      headers: { authorization: `Bearer ${staffSessionToken}` },
+    }), env);
+    expect(alias.status).toBe(200);
+    const plain = await alias.json() as Record<string, unknown>;
+    expect(plain.user).toBeDefined();
+    expect(plain.data).toBeUndefined();
+    sqlite.close();
+  });
+
   it("returns a grouped on-site player and real billing inputs for the browser; unauthenticated users are denied", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
@@ -369,15 +516,20 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       "Content-Type": "application/json",
     };
 
+    // The real player entry requires a QR-derived, shop-scoped machine ticket
+    // and affirmative acknowledgement of the billing terms.
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?, 'entry-machine', 'entry-machine', 'Entry Machine', 'machine', 1)", [shopId]);
+    const ticket = (await mintMachineTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
     // 1. Player session start
     const startRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/session/start`, {
         method: "POST",
         headers: aliceHeaders,
-        body: JSON.stringify({ label: "play" }),
+        body: JSON.stringify({ ticket, consent: true, operationId: crypto.randomUUID() }),
       }),
       env,
     );
+    if (!startRes.ok) console.error("QR-confirmed start failed", startRes.status, await startRes.clone().text());
     expect(startRes.status).toBe(200);
     const startData = (await startRes.json()) as any;
     expect(startData.session).toBeDefined();
@@ -416,6 +568,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/checkout/confirm`, {
         method: "POST",
         headers: aliceHeaders,
+        body: JSON.stringify({ operationId: crypto.randomUUID() }),
       }),
       env,
     );
@@ -636,7 +789,9 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(assetsData.holdings).toBeDefined();
     expect(assetsData.ledgerEntries).toBeDefined();
 
-    // 3. Staff wallet adjustment
+    // 3. Staff wallet adjustment; a replay must return the persisted result
+    // without applying the financial mutation twice.
+    const walletOperationId = crypto.randomUUID();
     const adjustRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/staff/players/p_staff_test/wallet/adjustment`, {
         method: "POST",
@@ -647,11 +802,23 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
         body: JSON.stringify({
           amount: 5000,
           reason: "staff bonus",
+          operationId: walletOperationId,
         }),
       }),
       env,
     );
     expect(adjustRes.status).toBe(200);
+    const totalSql = "SELECT COALESCE(SUM(quantity),0) AS total FROM asset_holdings WHERE shop_id=? AND player_id='p_staff_test' AND asset_type='currency'";
+    const walletBeforeReplay = sqlite.query(totalSql).get(shopId) as { total: number };
+    const repeatRes = await app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players/p_staff_test/wallet/adjustment`,
+      { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: 5000, reason: "staff bonus", operationId: walletOperationId }) },
+    ), env);
+    expect(repeatRes.status).toBe(200);
+    expect(await repeatRes.json()).toEqual(await adjustRes.json());
+    const walletAfterReplay = sqlite.query(totalSql).get(shopId) as { total: number };
+    expect(walletAfterReplay.total).toBe(walletBeforeReplay.total);
 
     // 4. Staff reports summary
     const reportsRes = await app.fetch(

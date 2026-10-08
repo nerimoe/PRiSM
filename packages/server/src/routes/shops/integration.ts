@@ -24,8 +24,7 @@ export async function requireIntegrationAuth(
   const auth = c.req.header("authorization");
   const token = auth?.match(/^Bearer (.+)$/i)?.[1];
   if (!token) {
-    const user = c.get("user");
-    if (user?.role === "admin") return;
+    // Bot credentials are independent of platform admin sessions.
     jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
   }
 
@@ -37,8 +36,7 @@ export async function requireIntegrationAuth(
     .first<{ id: string; role: string; status: string }>();
 
   if (!row || row.role !== "integration") {
-    const user = c.get("user");
-    if (user?.role === "admin") return;
+    // Bot credentials are independent of platform admin sessions.
     jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
   }
 }
@@ -71,7 +69,7 @@ integrationRouter.post("/players/by-identity/register", async (c) => {
   const player = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity({
     identity: { provider: body.provider, subject: body.subject },
     displayName: body.displayName,
-    autoRegister: true,
+    autoRegister: !!getShop(c).auto_register,
   });
   return c.json({ player: toPlayerManagementView(player) });
 });
