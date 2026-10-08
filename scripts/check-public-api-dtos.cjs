@@ -56,7 +56,23 @@ function analyze(source, file = "sample.ts") {
     if (ts.isObjectLiteralExpression(expr)) {
       for (const p of expr.properties) {
         if (ts.isSpreadAssignment(p)) inspectValue(p.expression);
-        else if (ts.isPropertyAssignment(p)) inspectValue(p.initializer);
+        else if (ts.isPropertyAssignment(p)) {
+          const key = p.name.getText(sf).replace(/^["']|["']$/g, "");
+          if (key === "staff" && ts.isObjectLiteralExpression(p.initializer)) {
+            for (const property of p.initializer.properties) {
+              if (!ts.isPropertyAssignment(property)) continue;
+              const name = property.name.getText(sf).replace(/^["']|["']$/g, "");
+              if (["staffRole", "principalRole", "staffId"].includes(name)) {
+                violation(property, `internal ${name} must not appear inside public staff DTO`);
+              }
+              if (name === "role" && ts.isStringLiteral(property.initializer) &&
+                  property.initializer.text === "staff") {
+                violation(property, 'public staff.role must be a shop role, never "staff"');
+              }
+            }
+          }
+          inspectValue(p.initializer);
+        }
         else if (ts.isShorthandPropertyAssignment(p) && principals.has(p.name.text)) {
           violation(p, "internal principal serialized using shorthand property");
         }
@@ -104,6 +120,8 @@ for (const [snippet, mustFail] of [
   ['return c.json({...principal});', true],
   ['return c.json(principal);', true],
   ['return c.json({staff: {role: principal.role}});', true],
+  ['return c.json({staff: {role: "staff", staffRole: principal.staffRole}});', true],
+  ['return c.json({staff: {id: "i", displayName: "n", role: "owner", canWrite: true}});', false],
   ['return c.json({ staff: await staffMeView(c, shop, principal) });', false],
   ['return c.json({staff: {id: principal.staffId, role: principal.staffRole}});', false],
 ]) {
