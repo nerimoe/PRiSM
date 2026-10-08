@@ -8,6 +8,9 @@ import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser, staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import { checkShopLocation } from "../../middleware/geo.js";
+import { resolveMachineSession } from "../platform/machine-session.js";
+import { startEntrySession } from "./entry.js";
 import {
   toPlayerAssetsView,
   toPlayerCheckoutPreviewView,
@@ -243,27 +246,21 @@ playerRouter.get("/sessions/:sessionId/history", async (c) => {
   return c.json(toSessionHistoryDetailView(detail));
 });
 
-// Start Session
+// Start Session — original contract requires a valid machine ticket,
+// consent and shop check-in location before any billing operation.
 playerRouter.post("/session/start", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop, false, true);
-  const deps = getShopDeps(c);
-  let pricingConfigIds: string[] | undefined = undefined;
-  let label: string | undefined = undefined;
-  try {
-    const body = (await c.req.json<{ pricingConfigIds?: string[]; label?: string }>().catch(() => ({}))) as {
-      pricingConfigIds?: string[];
-      label?: string;
-    };
-    pricingConfigIds = body?.pricingConfigIds;
-    label = body?.label;
-  } catch {}
-
-  const session = await deps.playerCommands.startSession({
-    playerId: player.id,
-    pricingConfigIds,
-    label,
-  });
+  const body = await c.req.json<{ ticket?: string; consent?: boolean; location?: unknown }>().catch(() => ({}));
+  const machine = await resolveMachineSession(c, body.ticket ?? "");
+  if (machine.shop_id !== shop.id) {
+    jsonError(403, "请扫描设备二维码", "DEVICE_QR_REQUIRED");
+  }
+  if (body.consent !== true) {
+    jsonError(409, "请确认入场计费规则", "CHECKIN_CONSENT_REQUIRED");
+  }
+  checkShopLocation(shop, "checkin", body.location);
+  const session = await startEntrySession(shop, getShopDeps(c), player.id);
   return c.json({ session: toSessionView(session) });
 });
 
@@ -295,10 +292,13 @@ playerRouter.post("/checkout/preview", async (c) => {
 playerRouter.post("/checkout/confirm", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop);
+  const body = await c.req.json<{ location?: unknown }>().catch(() => ({}));
+  checkShopLocation(shop, "checkout", body.location);
   const deps = getShopDeps(c);
 
   const result = await deps.playerCheckoutCommands.checkout({
     playerId: player.id,
+    closeSessionsBeforeBalanceCheck: false,
   });
   return c.json(toPlayerCheckoutResultView(result));
 });
@@ -321,17 +321,10 @@ playerRouter.post("/redeem", async (c) => {
 
 // Device Commands
 playerRouter.post("/device-commands", async (c) => {
-  const shop = getShop(c);
-  const player = await requireShopPlayer(c, shop, true, true);
-  const deps = getShopDeps(c);
-  const body = await c.req.json<{ type: any; target: any; payload?: any }>();
-  const command = await deps.playerCommands.requestDeviceCommand({
-    playerId: player.id,
-    type: body.type,
-    target: body.target,
-    payload: body.payload,
-  });
-  return c.json({ command: toDeviceCommandView(command) });
+  // As before the consolidation, authenticated players must operate devices
+  // through the short-lived QR machine-session endpoint, not a tenant command
+  // accepting arbitrary target identifiers.
+  jsonError(409, "请通过设备二维码操作", "DEVICE_QR_REQUIRED");
 });
 
 // Purchase Business Item
