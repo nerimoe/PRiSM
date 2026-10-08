@@ -1,4 +1,4 @@
-const { chromium } = require(process.env.PRISM_PLAYWRIGHT_MODULE || "playwright");
+const { chromium, webkit } = require(process.env.PRISM_PLAYWRIGHT_MODULE || "playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -10,6 +10,8 @@ const path = require("node:path");
  */
 const origin = process.env.PRISM_BROWSER_ORIGIN || "http://127.0.0.1:4173";
 const output = process.env.PRISM_SCAN_OUTPUT || ".scan-check";
+const browserEngine = process.env.PRISM_BROWSER_ENGINE || "chromium";
+assert.ok(["chromium", "webkit"].includes(browserEngine), `Unsupported browser: ${browserEngine}`);
 const shop = {
   id: "shop", publicId: "demo", name: "CI 测试店铺", timeZone: "Asia/Shanghai",
   latitude: 31.23, longitude: 121.47, radiusMeters: 80, billingEnabled: true,
@@ -59,7 +61,10 @@ function mock(request, role, unknown, mutations) {
     id: role, username: role, displayName: role, role: role === "admin" ? "admin" : "user", hasShops: role !== "player",
   }};
   if (p === "/api/v1/cards") return { cards: [], authorizationRequired: false, syncError: null };
-  if (p === "/api/v1/account") return { identities: [], passkeys: [] };
+  if (p === "/api/v1/account") return {
+    identities: [{ id: "ci-identity", provider: "munet", username: "ci-account", displayName: "CI 绑定账号", createdAt: "2026-10-02T02:08:00Z" }],
+    passkeys: [{ id: "ci-passkey", name: "CI Passkey", deviceType: "singleDevice", backedUp: 0, createdAt: "2026-10-02T02:08:00Z" }],
+  };
   if (p === "/api/v1/merchant/shops") return { shops: [shop] };
   if (p === "/api/v1/merchant/machines") return { machines: [] };
   if (p === "/api/v1/merchant/device-bindings") return { bindings: [] };
@@ -142,10 +147,10 @@ const cases = [
 ];
 
 (async () => {
-  const browser = await chromium.launch({
+  const browser = await (browserEngine === "webkit" ? webkit : chromium).launch({
     headless: true,
-    args: ["--no-sandbox"],
-    ...(process.env.PRISM_CHROMIUM_PATH ? { executablePath: process.env.PRISM_CHROMIUM_PATH } : {}),
+    ...(browserEngine === "chromium" ? { args: ["--no-sandbox"] } : {}),
+    ...(browserEngine === "chromium" && process.env.PRISM_CHROMIUM_PATH ? { executablePath: process.env.PRISM_CHROMIUM_PATH } : {}),
   });
   fs.mkdirSync(output, { recursive: true });
   const failures = [], coverage = [], allUnknown = [];
@@ -177,12 +182,18 @@ const cases = [
             assert.equal(await page.locator("main").isVisible(), true);
             assert.equal(await page.locator("main").innerText().then(s => s.trim().length > 10), true);
             assert.equal(await page.getByText("页面暂时无法显示").count(), 0);
+            if (url === "/settings") {
+              // Empty mocks cannot detect when the account page receives a profile
+              // DTO or fails to render real identity/passkey rows.
+              await page.getByText("CI 绑定账号", { exact: true }).waitFor();
+              await page.getByText("CI Passkey", { exact: true }).waitFor();
+            }
             if (url === "/merchant/demo/live") {
               await page.getByText(live.displayName, { exact: true }).first().waitFor();
               await page.getByRole("combobox", { name: "玩家分组" }).selectOption("status");
               await page.getByRole("combobox", { name: "玩家分组" }).selectOption("none");
               if (testCase.role === "owner" && viewport.width === 390) {
-                await page.screenshot({ path: path.join(output, "on-site-mobile.png"), fullPage: true });
+                await page.screenshot({ path: path.join(output, `on-site-mobile-${browserEngine}.png`), fullPage: true });
               }
             }
             if (url.endsWith("/devices")) {
@@ -215,7 +226,7 @@ const cases = [
             coverage.push(label);
           } catch (error) {
             failures.push(`${label}: ${error.message}`);
-            await page.screenshot({ path: path.join(output, `failed-${testCase.role}-${viewport.width}-${failures.length}.png`), fullPage: true }).catch(() => {});
+            await page.screenshot({ path: path.join(output, `failed-${browserEngine}-${testCase.role}-${viewport.width}-${failures.length}.png`), fullPage: true }).catch(() => {});
           }
         }
         for (const value of new Set(unknown)) {
@@ -227,7 +238,7 @@ const cases = [
         await context.close();
       }
     }
-    console.log(`Route matrix: ${coverage.length} passed, ${failures.length} failures; ${cases.reduce((n,c) => n+c.pages.length,0)*2} routes tested`);
+    console.log(`${browserEngine} route matrix: ${coverage.length} passed, ${failures.length} failures; ${cases.reduce((n,c) => n+c.pages.length,0)*2} routes tested`);
     if (failures.length) throw new Error(failures.join("\n"));
     console.log("PASS role-based desktop/mobile navigation, on-site real player rendering and UI actions without external writes");
   } finally {
