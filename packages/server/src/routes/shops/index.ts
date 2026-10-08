@@ -32,6 +32,7 @@ import { staffPricingCompatRouter } from "./staff-compat.js";
 import { redeemRouter, staffRedeemCompatRouter } from "./redeem.js";
 import { billingCompatRouter } from "./billing-compat.js";
 import { identityConversionRouter } from "./identity-conversion.js";
+import { shopDataRouter } from "./data/index.js";
 
 export * from "./player.js";
 export * from "./staff.js";
@@ -171,6 +172,7 @@ shopRouter.route("/redeem", redeemRouter);
 shopRouter.route("/staff", staffRedeemCompatRouter);
 shopRouter.route("/", billingCompatRouter);
 shopRouter.route("/identity-conversion", identityConversionRouter);
+shopRouter.route("/data", shopDataRouter);
 
 // Shop Overview, Entry Pricing and Today's Schedule
 shopRouter.get("/", async (c) => {

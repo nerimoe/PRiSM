@@ -25,6 +25,7 @@ import { versionRouter } from "./routes/system/version.js";
 
 // Multi-tenant shop router
 import { shopRouter } from "./routes/shops/index.js";
+import { shopDataAdminRouter } from "./routes/shops/data/index.js";
 
 // Legacy fallback router
 import { legacyRouter } from "./legacy/router.js";
@@ -132,6 +133,7 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/merchant", merchantMembersRouter);
   app.route("/api/v1/merchant", merchantMachineRouter);
   app.route("/api/v1/admin", adminManagementRouter);
+  app.route("/api/v1/admin", shopDataAdminRouter);
   app.route("/api/v1/cards", cardsRouter);
   app.route("/api/v1/machines", machineSessionRouter);
   app.route("/t", machineTicketRouter);
