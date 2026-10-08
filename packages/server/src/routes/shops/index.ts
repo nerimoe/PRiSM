@@ -33,6 +33,8 @@ import { redeemRouter, staffRedeemCompatRouter } from "./redeem.js";
 import { billingCompatRouter } from "./billing-compat.js";
 import { identityConversionRouter } from "./identity-conversion.js";
 import { shopDataRouter } from "./data/index.js";
+import { legacyStaffRouter } from "../../legacy/handlers/staff.js";
+import { legacyIntegrationRouter } from "../../legacy/handlers/integration.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import {
   extractSessionIds, playerIdsFromPayload, pushSessionEvent, sessionEventForPath,
@@ -224,6 +226,11 @@ shopRouter.route("/staff", staffRedeemCompatRouter);
 shopRouter.route("/", billingCompatRouter);
 shopRouter.route("/identity-conversion", identityConversionRouter);
 shopRouter.route("/data", shopDataRouter);
+// Keep the historical tenant-scoped staff administration and Bot commands.
+// Root-level /api/v1/staff and /integration alone cannot replace these: their
+// tenant selection is different and the shopCode is part of the public contract.
+shopRouter.route("/staff", legacyStaffRouter);
+shopRouter.route("/integration", legacyIntegrationRouter);
 
 // Shop Overview, Entry Pricing and Today's Schedule
 shopRouter.get("/", async (c) => {
