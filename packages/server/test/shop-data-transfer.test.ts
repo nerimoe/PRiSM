@@ -247,4 +247,73 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect((sqlite.query("SELECT name FROM shops WHERE id='destination'").get() as {name:string}).name).toBe("source");
     sqlite.close();
   });
+}
+  it("requires explicit confirmation to overwrite live business records while preserving platform credentials",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    const now=new Date().toISOString();
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('source','replacement-player','Restored Player','active',?)",
+      [now],
+    );
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('destination','old-player','Previous Player','active',?)",
+      [now],
+    );
+    const beforeSessions=sqlite.query("SELECT COUNT(*) AS count FROM auth_sessions").get() as {count:number};
+    const request=async(url:string,payload:unknown)=>app.fetch(new Request(url,{
+      method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload),
+    }),env);
+    const source="https://prism.test/api/v1/shops/source/data";
+    const target="https://prism.test/api/v1/shops/destination/data";
+    const exportResult=await app.fetch(new Request(source+"/export?scope=business",{headers}),env);
+    expect(exportResult.status).toBe(200);
+    const backup=await exportResult.json() as {
+      tables:Record<string,Array<Record<string,string|number|null>>>;
+      [key:string]:unknown;
+    };
+    const {tables,...manifest}=backup;
+    const created=await request(target+"/imports",manifest);
+    expect(created.status).toBe(200);
+    const jobId=((await created.json()) as {data:{jobId:string}}).data.jobId;
+    let part=0;
+    for(const [table,rows] of Object.entries(tables)){
+      if(!rows.length)continue;
+      const uploaded=await request(target+`/imports/${jobId}/parts`,{table,part,rows});
+      expect(uploaded.status).toBe(200);
+      part++;
+    }
+    const counts=Object.fromEntries(Object.entries(tables).map(([name,rows])=>[name,rows.length]));
+    const previewed=await request(target+`/imports/${jobId}/preview`,{counts,parts:part});
+    expect(previewed.status).toBe(200);
+    const preview=((await previewed.json()) as {data:{
+      canImport:boolean;fingerprint:string;target:{records:number;mode:string}
+    }}).data;
+    expect(preview.canImport).toBe(true);
+    expect(preview.target.mode).toBe("replace");
+    expect(preview.target.records).toBeGreaterThan(0);
+    const operationId=crypto.randomUUID();
+    const denied=await request(target+`/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId,
+    });
+    expect(denied.status).toBe(409);
+    expect(((await denied.json()) as {error:{code:string}}).error.code).toBe("IMPORT_OVERWRITE_REQUIRED");
+    expect((sqlite.query("SELECT display_name FROM players WHERE shop_id='destination' AND id='old-player'").get()
+      as {display_name:string}).display_name).toBe("Previous Player");
+    const applied=await request(target+`/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId,overwrite:true,
+    });
+    expect(applied.status).toBe(200);
+    const records=sqlite.query(
+      "SELECT id FROM players WHERE shop_id='destination' ORDER BY id",
+    ).all() as Array<{id:string}>;
+    expect(records).toEqual([{id:"replacement-player"}]);
+    const afterSessions=sqlite.query("SELECT COUNT(*) AS count FROM auth_sessions").get() as {count:number};
+    expect(afterSessions).toEqual(beforeSessions);
+    const repeated=await request(target+`/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId,overwrite:true,
+    });
+    expect(repeated.status).toBe(200);
+    expect(sqlite.query("SELECT id FROM players WHERE shop_id='destination' ORDER BY id").all()).toEqual(records);
+    sqlite.close();
+  });
 });
