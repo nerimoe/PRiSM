@@ -44,6 +44,12 @@ function data(unitPrice, broken) {
       else if (pathname === '/api/v1/shops/demo') body = { shop };
       else if (pathname.endsWith('/staff/me')) body = { staff: { canWrite: true, role: 'manager' } };
       else if (pathname.endsWith('/staff/live-players')) { loads++; body = data(unitPrice, broken); }
+      else if (pathname.endsWith('/billing-inputs')) {
+        const playerId = pathname.split('/players/')[1].split('/')[0];
+        const inputs = data(unitPrice, broken).billingSnapshot;
+        inputs.players = inputs.players.filter(player => player.playerId === playerId);
+        body = { playerId, billingSnapshot: inputs };
+      }
       else if (pathname.endsWith('/checkout/preview')) body = { settlementPreview: { total: 777 }, chargeItems: [], adjustments: [], wallet: { balanceBefore: 9999, balanceAfter: 9222 } };
       else body = {};
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: body }) });
@@ -73,7 +79,9 @@ function data(unitPrice, broken) {
     await panel.getByRole('heading', { name: 'Player 3 · 账单' }).waitFor();
     await panel.getByRole('button', { name: '结账', exact: true }).click();
     const checkout = page.getByRole('dialog', { name: '结账', exact: true });
-    await checkout.getByText('777.00', { exact: true }).waitFor();
+    await checkout.locator('.bill-total > strong').filter({ hasText: /^0\.00$/ }).waitFor();
+    assert.equal(requests.filter(req => req.path.endsWith('/checkout/preview')).length, 0);
+    assert.equal(requests.filter(req => req.path.endsWith('/billing-inputs')).length, 1);
     await checkout.getByRole('button', { name: '确认结账', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('[role="dialog"]'));
     const confirmation = requests.find(req => req.path.endsWith('/checkout/confirm'));

@@ -177,6 +177,10 @@ iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup
 
 营业报表归档采用独立的 `checkout_report_states` 表，按完整 checkout 归档并从报表营业额排除；不改金融结算、余额、玩家历史或收费/封顶历史。员工账单详情复用玩家历史 receipt 查询及 Web 时间轴组件。迁移、权限和备份兼容见 [营业记录归档](./merchant-report-archive.md)。
 
+### Web 预览计算
+
+在店列表、玩家账单、员工结账前与前台收款前的预估共用只读计费输入，由 Web Worker 复用 application 引擎生成；24 小时规则预览和当天规则筛选复用 core 日历函数。已结账账单读取持久化结果，报表汇总由 SQL 聚合。最终扣款和所有写操作的业务校验仍在后端。Swift、Bot 和自定义运行时插件保留兼容预估 API，详见[Web 计费计算与只读输入](browser-billing-previews.md)。
+
 ## 统一服务端路由体系 (`@prism/server`)
 
 在 `@prism/server` 合并架构中，路由层通过清晰的子路由分层，直接依托应用层用例与纯粹的依赖注入：

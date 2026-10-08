@@ -490,3 +490,7 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 `GET /api/v1/shops/:shopCode/data/export-status` 返回 `{ month, timeZone, allowance, used, remaining, locked, importAllowance, importUsed, importRemaining }`。平台管理员可 `GET/PUT /api/v1/admin/shops/:shopCode/transfer-allowance`；PUT 以 `{ extra, importExtra }` 设置当月额外次数，范围均为整数 0–100，幂等设置。超额返回 429 `EXPORT_MONTHLY_LIMIT` / `IMPORT_MONTHLY_LIMIT`，锁店业务返回 423 `SHOP_EXPORT_LOCKED`。导出游标仅接受当前进度，无法反复读取已完成页面或跳页。完整策略见 [shop-data-transfer.md](shop-data-transfer.md)。
 
 营业记录完整账单、归档元数据及恢复规则见 [营业记录归档与账单详情](./merchant-report-archive.md)。旧 `reports/settlements` 隐藏已归档账单，`reports/players` 营业额排除归档金额，其他活动统计不变。
+
+## Web 只读计费输入
+
+统一平台为玩家、员工与前台档案提供 `GET .../billing-inputs`，返回 `{ playerId, billingSnapshot }`。Web 用同一计费引擎在浏览器 Worker 内生成账单预览，最终确认仍由后端核算。玩家只能读取自己的输入；员工读取按店铺隔离；前台入口要求可写员工和前台模式。公共店铺元数据的 `?pricing=raw` 返回完整规则及 `pricingSchedule.clientCalculation: true`，供浏览器计算当天规则。旧预估 API 保持兼容；详情见[Web 计费计算与只读输入](browser-billing-previews.md)。

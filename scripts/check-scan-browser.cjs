@@ -2,7 +2,8 @@ const {chromium}=require(process.env.PRISM_PLAYWRIGHT_MODULE || 'playwright');
 const output = process.env.PRISM_SCAN_OUTPUT || '.scan-check';
 const fs=require('node:fs');const assert=require('node:assert/strict');
 (async()=>{
- const browser=await chromium.launch({headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
+ const executablePath=process.env.PRISM_CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined);
+ const browser=await chromium.launch({headless:true,...(executablePath ? {executablePath} : {}),args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
  const counts={};let releaseMe,releasePower,meDone=false,powerDone=false;const meHeld=new Promise(r=>releaseMe=r),powerHeld=new Promise(r=>releasePower=r);
  const machine={publicId:'demo',name:'测试机台',kind:'machine',coinAfterSwipe:false,capabilities:{card:true,power:true,coin:false,door:false,mahjong:true},shop:{publicId:'demo',name:'测试店铺',billingEnabled:false,locationEnabled:false,heroUrl:null}};
  await page.route('**/api/**',async route=>{const url=new URL(route.request().url());counts[url.pathname]=(counts[url.pathname]||0)+1;let data;
@@ -25,6 +26,7 @@ const fs=require('node:fs');const assert=require('node:assert/strict');
    if(path==='/api/v1/me')data={user:{id:'u',username:'test',displayName:'测试玩家',role:'user',hasShops:false}};
    else if(path==='/api/v1/shops/demo')data={shop:{publicId:'demo',name:'测试店铺',billingEnabled:true,locationEnabled:false,identityBindingRequired:false},membership:{playerId:'p',identityBound:true},entryPricing:[]};
    else if(path.endsWith('/player/me'))data={wallet:[],activeSession:{id:'visit',startedAt:'2026-10-05T06:00:00Z'}};
+   else if(path.endsWith('/player/billing-inputs'))data={playerId:'player',billingSnapshot:{version:1,capturedAt:'2026-10-05T07:00:00Z',assetDefinitions:[],currentPricingConfigs:[{id:'fixed',kind:'charge.fixed',name:'入场',enabled:true,status:'active',createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',provider:{id:'fixed',amount:12}}],pricingReleases:[],players:[{playerId:'player',sessions:[{id:'visit',playerId:'player',startedAt:'2026-10-05T06:00:00Z',status:'active',paymentStatus:'unpaid',pricingConfigIds:['fixed'],metadata:{}}],holdings:[],pastAppliedAdjustments:[],pricingPaidHistory:{},capPaidHistory:{}}]}};
    else if(path.endsWith('/checkout/preview'))data={settlementPreview:{total:12},chargeItems:[],adjustments:[]};
    else if(path.endsWith('/checkout/confirm')){confirmations++;await route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:{code:'INSUFFICIENT_BALANCE',message:'Insufficient currency holdings for this operation.'}})});return;}
    else data={};

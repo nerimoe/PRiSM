@@ -20,7 +20,7 @@ const receipt = { playerSettlement: { total: 19, settledAt: record.settledAt }, 
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}), args: ['--no-sandbox'] });
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN', timezoneId: 'America/New_York' });
-    let canWrite = true;
+    let canWrite = true, detailReads = 0, failArchive = true;
     const errors = [], mutations = [], ranges = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
@@ -36,10 +36,14 @@ const receipt = { playerSettlement: { total: 19, settledAt: record.settledAt }, 
         const filter = url.searchParams.get('archive');
         data = { records: filter === 'all' || (filter === 'archived') === record.archived ? [record] : [], page: { hasMore: false } };
       } else if (pathname.endsWith('/archive')) {
+        if (failArchive) {
+          failArchive = false;
+          await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ARCHIVE_FAILED', message: '归档失败，请重试' } }) }); return;
+        }
         const body = req.postDataJSON(); mutations.push(body);
         record.archived = body.archived; record.updatedAt = '2026-10-07T04:00:00Z'; record.updatedBy = 'manager';
         data = { archived: record.archived };
-      } else if (pathname.includes('/reports/checkouts/')) data = { record, receipt };
+      } else if (pathname.includes('/reports/checkouts/')) { detailReads++; data = { record, receipt }; }
       else data = {};
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data }) });
     });
@@ -59,23 +63,31 @@ const receipt = { playerSettlement: { total: 19, settledAt: record.settledAt }, 
     await dialog.getByText('计时与收费明细', { exact: true }).click();
     assert.ok(await dialog.getByText('计时 ID · table-id', { exact: true }).isVisible());
     await dialog.screenshot({ path: path.join(output, 'merchant-bill-timeline.png') });
-    await dialog.getByRole('button', { name: '归档账单', exact: true }).click();
-    await dialog.getByText('归档此账单后，营业额将减少 19.00。', { exact: true }).waitFor();
-    await dialog.getByRole('button', { name: '确认归档', exact: true }).click();
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    assert.equal(await page.getByRole('columnheader', { name: '归档状态', exact: true }).count(), 0);
+    await page.screenshot({ path: path.join(output, 'merchant-report-quick-archive.png'), fullPage: true });
+    const readsBeforeArchive = detailReads;
+    await page.getByRole('button', { name: '归档账单', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('alert').filter({ hasText: '操作失败，请稍后重试' }).filter({ visible: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: '归档账单', exact: true }).filter({ visible: true }).isEnabled(), true);
+    await page.getByRole('button', { name: '归档账单', exact: true }).filter({ visible: true }).click();
     await page.getByText('暂无记录', { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('dl dd')?.textContent === '0.00');
     assert.equal(await page.locator('dl').first().locator('dd').nth(1).textContent(), '2');
     await page.getByLabel('归档筛选').selectOption('archived');
-    await page.getByRole('button', { name: '账单详情', exact: true }).filter({ visible: true }).click();
-    await dialog.getByText('manager', { exact: true }).waitFor();
-    await dialog.getByRole('button', { name: '恢复账单', exact: true }).click();
-    await dialog.getByRole('button', { name: '确认恢复', exact: true }).click();
+    await page.getByRole('button', { name: '恢复账单', exact: true }).filter({ visible: true }).click();
+    assert.equal(detailReads, readsBeforeArchive);
     await page.getByText('暂无记录', { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('dl dd')?.textContent === '19.00');
     assert.deepEqual(mutations.map(m => m.archived), [true, false]);
     assert.ok(ranges.some(r => r.from === '2026-10-06T16:00:00.000Z' && r.to === '2026-10-07T16:00:00.000Z'));
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByLabel('归档筛选').selectOption('all');
+    await page.getByRole('button', { name: '归档账单', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: '恢复账单', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: '归档账单', exact: true }).filter({ visible: true }).waitFor();
+    assert.equal(detailReads, readsBeforeArchive);
+    await page.screenshot({ path: path.join(output, 'merchant-report-quick-archive-mobile.png'), fullPage: true });
     await page.getByRole('button', { name: '账单详情', exact: true }).filter({ visible: true }).click();
     await dialog.getByRole('heading', { name: '完整时间轴' }).waitFor();
     await dialog.screenshot({ path: path.join(output, 'merchant-bill-timeline-mobile.png') });
@@ -83,7 +95,7 @@ const receipt = { playerSettlement: { total: 19, settledAt: record.settledAt }, 
     await page.goto(origin + '/merchant/demo/reports');
     await page.getByRole('button', { name: '账单详情', exact: true }).filter({ visible: true }).click();
     await dialog.getByRole('heading', { name: '完整时间轴' }).waitFor();
-    assert.equal(await dialog.getByRole('button', { name: '归档账单', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '归档账单', exact: true }).count(), 0);
     assert.deepEqual(errors, []);
     console.log('Reports browser checks passed: grouped receipts, full shop-time timeline, archive/restore revenue, unchanged counts, mobile and viewer access.');
   } finally { await browser.close(); }
