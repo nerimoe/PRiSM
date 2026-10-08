@@ -278,13 +278,12 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
 
     const owner = await access(staffSessionToken);
     expect(owner.status).toBe(200);
-    expect(owner.body.data.staff).toMatchObject({
+    expect(owner.body.data.staff).toEqual({
       id: `account:${staffUserId}`,
+      displayName: "Staff Alice",
       role: "owner",
-      staffRole: "owner",
       canWrite: true,
     });
-    expect(owner.body.data.staff.role).not.toBe("staff");
 
     // The authenticated account can also be a mapped shop staff user: only
     // the shop-scoped role, not the internal principal discriminator, controls UI.
@@ -297,15 +296,15 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       [shopId, staffUserId],
     );
     const manager = await access(staffSessionToken);
-    expect(manager.body.data.staff).toMatchObject({
-      id: "managed", role: "manager", staffRole: "manager", canWrite: true,
+    expect(manager.body.data.staff).toEqual({
+      id: "managed", displayName: "Managed", role: "manager", canWrite: true,
     });
 
     sqlite.run("UPDATE staff_users SET role='viewer' WHERE shop_id=? AND id='managed'", [shopId]);
     const viewer = await access(staffSessionToken);
     expect(viewer.status).toBe(200);
-    expect(viewer.body.data.staff).toMatchObject({
-      id: "managed", role: "viewer", staffRole: "viewer", canWrite: false,
+    expect(viewer.body.data.staff).toEqual({
+      id: "managed", displayName: "Managed", role: "viewer", canWrite: false,
     });
 
     const anonymous = await access();
