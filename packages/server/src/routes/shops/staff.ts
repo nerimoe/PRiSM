@@ -40,6 +40,18 @@ staffRouter.get("/players", async (c) => {
   return c.json({ players: players.map(toPlayerManagementView) });
 });
 
+// Standalone and tenant-scoped staff browser billing preview inputs.
+staffRouter.get("/players/:playerId/billing-inputs", async (c) => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  const playerId = c.req.param("playerId");
+  const deps = getShopDeps(c);
+  const found = await deps.staffQueries.listPlayers({ playerIds: [playerId] });
+  if (!found.length) jsonError(404, "Player not found.", "PLAYER_NOT_FOUND");
+  if (!deps.staffLiveBillingSnapshot) jsonError(503, "Client billing is unavailable for this runtime.", "CLIENT_BILLING_UNAVAILABLE");
+  return c.json({ playerId, billingSnapshot: await deps.staffLiveBillingSnapshot([playerId]) });
+});
+
 // Create Player
 staffRouter.post("/players", async (c) => {
   const shop = getShop(c);

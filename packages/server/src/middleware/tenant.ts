@@ -506,6 +506,9 @@ export function createShopDependencies(input: {
     integrationCommands,
     staffCheckoutCommands: playerCheckoutCommands,
     staffOperations,
+    staffLiveBillingSnapshot: repos.readLiveBillingSnapshot
+      ? (playerIds) => repos.readLiveBillingSnapshot!(playerIds, now())
+      : undefined,
     staffReportCommands: repos.reportArchives
       ? createStaffReportService({ archives: repos.reportArchives, now })
       : undefined,

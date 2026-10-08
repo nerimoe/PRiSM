@@ -97,6 +97,16 @@ cashierRouter.get("/profiles/:playerId", async (c) => {
   return c.json({ profile: await getCashierProfile(c, shop, playerId) });
 });
 
+// Browser-side preview input for a cashier-associated player.
+cashierRouter.get("/profiles/:playerId/billing-inputs", async (c) => {
+  const shop = getShop(c);
+  const playerId = c.req.param("playerId");
+  await getCashierProfile(c, shop, playerId);
+  const billingInputs = getShopDeps(c).staffLiveBillingSnapshot;
+  if (!billingInputs) jsonError(503, "Client billing is unavailable for this runtime.", "CLIENT_BILLING_UNAVAILABLE");
+  return c.json({ playerId, billingSnapshot: await billingInputs([playerId]) });
+});
+
 // Register Card Profile
 cashierRouter.post("/register", async (c) => {
   const shop = getShop(c);

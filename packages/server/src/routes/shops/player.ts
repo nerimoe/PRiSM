@@ -131,6 +131,20 @@ playerRouter.get("/me", async (c) => {
   return c.json(toPlayerSummaryView(summary));
 });
 
+// Client billing inputs are restricted to the authenticated player's holdings.
+playerRouter.get("/billing-inputs", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.staffLiveBillingSnapshot) jsonError(503, "Client billing is unavailable for this runtime.", "CLIENT_BILLING_UNAVAILABLE");
+  const snapshot = await deps.staffLiveBillingSnapshot([player.id]);
+  const held = new Set(snapshot.players.flatMap(row => row.holdings.map(h => `${h.assetType}:${h.assetCode}`)));
+  return c.json({ playerId: player.id, billingSnapshot: {
+    ...snapshot,
+    assetDefinitions: snapshot.assetDefinitions.filter(d => held.has(`${d.type}:${d.code}`)),
+  } });
+});
+
 // Player Assets
 playerRouter.get("/assets", async (c) => {
   const shop = getShop(c);
