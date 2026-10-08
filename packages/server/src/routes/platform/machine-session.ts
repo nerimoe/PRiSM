@@ -14,6 +14,7 @@ const navigationKey = (secret: string) => `prism:machine-navigation:v1:${secret}
 
 export type Machine = {
   id: string;
+  shop_id: string;
   public_id: string;
   shop_public_id: string;
   shop_name: string;
