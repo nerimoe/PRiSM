@@ -5,6 +5,23 @@ import { androidAssetLinks, appleAppSiteAssociation } from "../src/routes/platfo
 describe("pre-fork main compatibility registrations", () => {
   const registered = new Set(createApp().routes.map((route) => `${route.method} ${route.path}`));
   for (const [method, path] of [
+    ["GET", "/api/v1/shops/:shopCode/data/export"],
+    ["POST", "/api/v1/shops/:shopCode/data/import/preview"],
+    ["POST", "/api/v1/shops/:shopCode/data/import/apply"],
+    ["GET", "/api/v1/shops/:shopCode/data/export-status"],
+    ["POST", "/api/v1/shops/:shopCode/data/exports"],
+    ["GET", "/api/v1/shops/:shopCode/data/exports/:jobId/page"],
+    ["POST", "/api/v1/shops/:shopCode/data/imports"],
+    ["POST", "/api/v1/shops/:shopCode/data/imports/:jobId/parts"],
+    ["POST", "/api/v1/shops/:shopCode/data/imports/:jobId/preview"],
+    ["POST", "/api/v1/shops/:shopCode/data/imports/:jobId/apply"],
+    ["GET", "/api/v1/admin/shops/:shopCode/transfer-allowance"],
+    ["PUT", "/api/v1/admin/shops/:shopCode/transfer-allowance"],
+    ["POST", "/api/v1/machines/login"],
+    ["POST", "/api/v1/machines/:publicId/login"],
+    ["POST", "/api/v1/merchant/machines"],
+    ["PATCH", "/api/v1/merchant/machines/:id"],
+    ["DELETE", "/api/v1/merchant/machines/:id"],
     ["DELETE", "/api/v1/admin/users/:id"],
     ["POST", "/api/v1/shops/:shopCode/identity-conversion/preview"],
     ["POST", "/api/v1/shops/:shopCode/identity-conversion/apply"],
