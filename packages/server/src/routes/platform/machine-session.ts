@@ -12,7 +12,7 @@ const validId = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const navigationKey = (secret: string) => `prism:machine-navigation:v1:${secret}`;
 
-type Machine = {
+export type Machine = {
   id: string;
   public_id: string;
   shop_public_id: string;
