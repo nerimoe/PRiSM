@@ -197,9 +197,9 @@ const cases = [
             if (url === "/merchant/demo/players") {
               // Keep both the funded and zero balance visible; undefined renders
               // an em dash, the regression caused by the server's lossy DTO.
-              await page.getByText("125.95", { exact: true }).first().waitFor();
-              await page.getByText("0.00", { exact: true }).first().waitFor();
-              await page.getByText("零余额玩家", { exact: true }).first().waitFor();
+              await page.getByText("125.95", { exact: true }).filter({ visible: true }).first().waitFor();
+              await page.getByText("0.00", { exact: true }).filter({ visible: true }).first().waitFor();
+              await page.getByText("零余额玩家", { exact: true }).filter({ visible: true }).first().waitFor();
             }
             if (url === "/merchant/demo/live") {
               await page.getByText(live.displayName, { exact: true }).first().waitFor();
