@@ -195,4 +195,50 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect(job?.status).toBe("completed");
     sqlite.close();
   });
+
+  it("round-trips a v2 configuration backup with the original settings and shop profile",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    const source="https://prism.test/api/v1/shops/source/data";
+    const dest="https://prism.test/api/v1/shops/destination/data";
+    const call=async(url:string,body:unknown)=>app.fetch(new Request(url,{
+      method:"POST",headers:{...headers,"content-type":"application/json"},
+      body:JSON.stringify(body),
+    }),env);
+    const exp=await app.fetch(new Request(`${source}/export?scope=configuration`,{headers}),env);
+    expect(exp.status).toBe(200);
+    const backup=await exp.json() as {
+      format:string; version:number;scope:string;
+      tables:Record<string,Array<Record<string,string|number|null>>>;
+      [key:string]:unknown;
+    };
+    expect(backup.version).toBe(2);
+    expect(backup.scope).toBe("configuration");
+    const {tables,...header}=backup;
+    const created=await call(`${dest}/imports`,header);
+    expect(created.status).toBe(200);
+    const {jobId}=((await created.json()) as {data:{jobId:string}}).data;
+    let part=0;
+    for(const [table,rows] of Object.entries(tables)){
+      if(!rows.length)continue;
+      const uploaded=await call(`${dest}/imports/${jobId}/parts`,{table,part,rows});
+      expect(uploaded.status).toBe(200);
+      part++;
+    }
+    const counts=Object.fromEntries(Object.entries(tables).map(([name,rows])=>[name,rows.length]));
+    const checked=await call(`${dest}/imports/${jobId}/preview`,{counts,parts:part});
+    expect(checked.status).toBe(200);
+    const preview=((await checked.json()) as {data:{canImport:boolean;errors:string[];fingerprint:string}}).data;
+    expect(preview.canImport).toBe(true);
+    expect(preview.errors).toEqual([]);
+    const applied=await call(`${dest}/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+    });
+    expect(applied.status).toBe(200);
+    const settings=sqlite.query(
+      "SELECT value_json FROM app_settings WHERE shop_id='destination' AND key='venue.operations'",
+    ).get() as {value_json:string}|null;
+    expect(JSON.parse(settings?.value_json??"{}").coinCooldownMs).toBe(42_000);
+    expect((sqlite.query("SELECT name FROM shops WHERE id='destination'").get() as {name:string}).name).toBe("source");
+    sqlite.close();
+  });
 });
