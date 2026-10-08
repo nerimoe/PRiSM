@@ -141,7 +141,10 @@ async function stage(
   if (table === "machines")
     for (const row of input.rows)
       for (const key of ["hinata_url", "hinata_password", "ha_binding_json"])
-        if (row[key]) row[key] = await encryptSecret(String(row[key]), c.env.URL_ENCRYPTION_KEY);
+        if (row[key]) {
+          if (!c.env.URL_ENCRYPTION_KEY) jsonError(503, "设备密钥未配置", "DEVICE_ENCRYPTION_UNAVAILABLE");
+          row[key] = await encryptSecret(String(row[key]), c.env.URL_ENCRYPTION_KEY);
+        }
   const json = JSON.stringify(input.rows),
     schema = schemas[table],
     seq = input.part * 100000;
