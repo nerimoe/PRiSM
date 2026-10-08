@@ -52,6 +52,14 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
     sqlite.run(statement);
   }
 
+  // These platform tables live in D1 migrations rather than the embedded SQL
+  // repository schema; command contract fixtures need both.
+  sqlite.run(`CREATE TABLE IF NOT EXISTS player_operations (
+    shop_id TEXT NOT NULL, user_id TEXT NOT NULL, id TEXT NOT NULL,
+    kind TEXT NOT NULL, status TEXT NOT NULL, request_hash TEXT NOT NULL,
+    result_json TEXT, created_at TEXT NOT NULL,
+    PRIMARY KEY(shop_id,user_id,id))`);
+
   sqlite.run(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
