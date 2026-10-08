@@ -44,10 +44,12 @@ import type { AppBindings, PrismAppDependencies, TenantShop } from "../bindings.
 import { jsonError } from "../http.js";
 import { sha256Hex, toBase64Url } from "../crypto.js";
 
-const depsCache = new Map<string, PrismAppDependencies>();
+type CachedShopDependencies = { settings: string; deps: PrismAppDependencies };
+// A D1 client is request/deployment scoped. Never reuse tenant repositories across databases.
+let depsCache = new WeakMap<D1DatabaseLike, Map<string, CachedShopDependencies>>();
 
 export function clearShopDependenciesCache(): void {
-  depsCache.clear();
+  depsCache = new WeakMap();
 }
 
 export function isEntry(session: Session, shop: TenantShop): boolean {
@@ -530,11 +532,18 @@ export function getOrCreateShopDependencies(
   db: D1DatabaseLike,
   shop: TenantShop,
 ): PrismAppDependencies {
-  let deps = depsCache.get(shop.id);
-  if (!deps) {
-    deps = createShopDependencies({ db, shop });
-    depsCache.set(shop.id, deps);
+  // Service closures capture shop configuration (pricing, auto-registration, timezone).
+  // Rebuild them whenever tenant settings change rather than serving stale closures.
+  let byShop = depsCache.get(db);
+  if (!byShop) {
+    byShop = new Map();
+    depsCache.set(db, byShop);
   }
+  const settings = JSON.stringify(shop);
+  const cached = byShop.get(shop.id);
+  if (cached?.settings === settings) return cached.deps;
+  const deps = createShopDependencies({ db, shop });
+  byShop.set(shop.id, { settings, deps });
   return deps;
 }
 

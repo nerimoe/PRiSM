@@ -20,7 +20,7 @@
     "dev:all": "bun run scripts/dev-all.ts",
     "wrangler:config": "bun run scripts/generate-wrangler-config.ts",
     "dev:worker": "bun run build:web && wrangler dev --config wrangler.jsonc",
-    "deploy:worker": "bun run build:web && wrangler deploy --config wrangler.jsonc",
+    "deploy:worker": "bun run deploy:beta",
     "version:bump": "bun run scripts/release.ts bump",
     "db:create:d1": "wrangler d1 create prism",
     "db:migrate:local": "bun run scripts/generate-wrangler-config.ts --local && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --local",

@@ -5,6 +5,7 @@ import { PrismDomainError } from "@prism/core";
 import type { AppBindings } from "./bindings.js";
 import { corsMiddleware } from "./middleware/cors.js";
 import { attachUser } from "./middleware/auth.js";
+import { responseTimeMiddleware } from "./middleware/response-time.js";
 import { serveWebAssets } from "./routes/web-assets.js";
 
 // Platform and system routers
@@ -87,6 +88,8 @@ export function createApp(): Hono<AppBindings> {
 
   // Global middleware
   app.use("*", corsMiddleware);
+  // Preserve the public /api/v1 contract: { data } envelopes and shop-local event timestamps.
+  app.use("/api/v1/*", responseTimeMiddleware);
   app.use("*", async (c, next) => {
     const start = performance.now();
     await next();

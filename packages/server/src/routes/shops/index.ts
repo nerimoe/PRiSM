@@ -356,12 +356,23 @@ shopRouter.put("/settings", async (c) => {
     },
     async () => {
       const body = settingsSchema.parse(await c.req.json());
-      const enabled = body.locationEnabled ?? !!(body.checkinGeo || body.checkoutGeo || body.machineGeo);
+      // Location switches are independent. The legacy aggregate flag is only a fallback.
+      const checkinGeo = body.checkinGeo ?? body.locationEnabled ?? !!initialShop.checkin_geo;
+      const checkoutGeo = body.checkoutGeo ?? body.locationEnabled ?? !!initialShop.checkout_geo;
+      const machineGeo = body.machineGeo ?? body.locationEnabled ?? !!initialShop.machine_geo;
       const cashierEnabled = body.cashierEnabled ?? !!initialShop.cashier_enabled;
       const identityBindingRequired = body.identityBindingRequired ?? !!initialShop.identity_binding_required;
 
       if (cashierEnabled && !body.billingEnabled) {
         jsonError(409, "请先启用入场计费", "BILLING_DISABLED");
+      }
+
+      if (initialShop.cashier_enabled && !cashierEnabled) {
+        const unpaid = await c.env.DB.prepare(`SELECT 1 FROM sessions s JOIN cashier_profiles cp
+          ON cp.shop_id=s.shop_id AND cp.player_id=s.player_id
+          WHERE s.shop_id=? AND s.payment_status='unpaid' LIMIT 1`)
+          .bind(initialShop.id).first();
+        if (unpaid) jsonError(409, "存在未结清的前台账单，请先收款结账", "CASHIER_UNSETTLED_SESSIONS");
       }
 
       const configuration = await billingConfiguration(c.env.DB, initialShop.id, body.entryPricingIds);
@@ -378,6 +389,13 @@ shopRouter.put("/settings", async (c) => {
         );
       }
 
+      if (initialShop.billing_enabled && !body.billingEnabled) {
+        const unpaid = await c.env.DB.prepare(
+          "SELECT 1 FROM sessions WHERE shop_id=? AND payment_status='unpaid' LIMIT 1",
+        ).bind(initialShop.id).first();
+        if (unpaid) jsonError(409, "存在未结消费，不能停用计费", "UNSETTLED_SESSIONS");
+      }
+
       await c.env.DB.batch([
         c.env.DB.prepare(
           `INSERT INTO shop_billing_settings (shop_id, billing_enabled, auto_register, checkin_geo, checkout_geo, machine_geo, entry_pricing_ids_json, bot_contact, identity_binding_required)
@@ -391,9 +409,9 @@ shopRouter.put("/settings", async (c) => {
           initialShop.id,
           +body.billingEnabled,
           +body.autoRegister,
-          +enabled,
-          +enabled,
-          +enabled,
+          +checkinGeo,
+          +checkoutGeo,
+          +machineGeo,
           JSON.stringify(body.entryPricingIds),
           body.botContact,
           +identityBindingRequired,

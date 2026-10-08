@@ -345,19 +345,51 @@ staffRouter.get("/reports/players", async (c) => {
   return c.json({ players: players.map(toStaffReportPlayerView) });
 });
 
-// Checkout Reports
+// Checkout Reports: retain the paginated, archivable contract of server-hono.
 staffRouter.get("/reports/checkouts", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
-  const from = c.req.query("from") ? new Date(c.req.query("from")!) : new Date(0);
-  const to = c.req.query("to") ? new Date(c.req.query("to")!) : new Date();
-  const offset = Number(c.req.query("offset") ?? 0);
-  const limit = Number(c.req.query("limit") ?? 50);
-  const reports = deps.staffQueries.listReportCheckouts
-    ? await deps.staffQueries.listReportCheckouts({ from, to, offset, limit })
-    : [];
-  return c.json(reports);
+  const from = c.req.query("from") ? new Date(c.req.query("from")!) : null;
+  const to = c.req.query("to") ? new Date(c.req.query("to")!) : null;
+  if (!from || !to || !Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from >= to) {
+    jsonError(400, "请选择有效日期", "INVALID_REPORT_RANGE");
+  }
+  const archive = c.req.query("archive") ?? "active";
+  if (archive !== "active" && archive !== "archived" && archive !== "all") {
+    jsonError(400, "无效的归档筛选", "INVALID_REPORT_FILTER");
+  }
+  if (!deps.staffQueries.listReportCheckouts) {
+    jsonError(503, "Report queries are not configured.", "STAFF_REPORT_QUERIES_NOT_CONFIGURED");
+  }
+  const rawOffset = Number(c.req.query("offset") ?? 0);
+  const rawLimit = Number(c.req.query("limit") ?? 50);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const limit = Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+  const records = await deps.staffQueries.listReportCheckouts({ from, to, archive, offset, limit: limit + 1 });
+  return c.json({
+    records: records.slice(0, limit),
+    page: { limit, offset, hasMore: records.length > limit },
+  });
+});
+
+staffRouter.post("/reports/checkouts/:checkoutId/archive", async (c) => {
+  const shop = getShop(c);
+  const principal = await staffPrincipal(c, shop);
+  const deps = getShopDeps(c);
+  if (!deps.staffReportCommands) {
+    jsonError(503, "Report commands are not configured.", "STAFF_REPORT_COMMANDS_NOT_CONFIGURED");
+  }
+  const body = await c.req.json<{ archived?: unknown }>().catch(() => ({}));
+  if (typeof body.archived !== "boolean") {
+    jsonError(400, "无效的归档状态", "INVALID_REQUEST");
+  }
+  await deps.staffReportCommands.setArchived({
+    checkoutId: c.req.param("checkoutId"),
+    archived: body.archived,
+    staffId: principal.staffId,
+  });
+  return c.json({ archived: body.archived });
 });
 
 // Checkout Report Detail
