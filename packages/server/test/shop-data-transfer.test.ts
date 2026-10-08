@@ -117,4 +117,57 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect(secondBody.error.code).toBe("EXPORT_MONTHLY_LIMIT");
     sqlite.close();
   });
+
+  it("restores a v2 business backup through staged parts and an atomic import",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('source','staged-player','Staged Player','active',?)",
+      [new Date().toISOString()],
+    );
+    const source="https://prism.test/api/v1/shops/source/data";
+    const destination="https://prism.test/api/v1/shops/destination/data";
+    const exported=await app.fetch(new Request(`${source}/export?scope=business`,{headers}),env);
+    expect(exported.status).toBe(200);
+    const backup=await exported.json() as {
+      version:number;
+      tables:Record<string,Array<Record<string,string|number|null>>>;
+      [key:string]:unknown;
+    };
+    expect(backup.version).toBe(2);
+    const {tables,...header}=backup;
+    const post=async(url:string,payload:unknown)=>{
+      return app.fetch(new Request(url,{
+        method:"POST",headers:{...headers,"content-type":"application/json"},
+        body:JSON.stringify(payload),
+      }),env);
+    };
+    const created=await post(`${destination}/imports`,header);
+    expect(created.status).toBe(200);
+    const {jobId}=((await created.json()) as {data:{jobId:string}}).data;
+    expect(jobId).toBeTruthy();
+    let part=0;
+    for(const [table,rows] of Object.entries(tables)){
+      if(!rows.length)continue;
+      const response=await post(`${destination}/imports/${jobId}/parts`,{table,part,rows});
+      expect(response.status).toBe(200);
+      part++;
+    }
+    const counts=Object.fromEntries(Object.entries(tables).map(([table,rows])=>[table,rows.length]));
+    const checked=await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part});
+    expect(checked.status).toBe(200);
+    const preview=((await checked.json()) as {data:{canImport:boolean;errors:string[];fingerprint:string}}).data;
+    expect(preview.errors).toEqual([]);
+    expect(preview.canImport).toBe(true);
+    const applied=await post(`${destination}/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+    });
+    expect(applied.status).toBe(200);
+    const migrated=sqlite.query(
+      "SELECT id,display_name FROM players WHERE shop_id='destination' AND id='staged-player'",
+    ).get() as {id:string;display_name:string}|null;
+    expect(migrated?.display_name).toBe("Staged Player");
+    const job=sqlite.query("SELECT status FROM shop_data_jobs WHERE id=?").get(jobId) as {status:string}|null;
+    expect(job?.status).toBe("completed");
+    sqlite.close();
+  });
 });
