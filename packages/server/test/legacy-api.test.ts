@@ -9,6 +9,7 @@ import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
 import { shopRouter } from "../src/routes/shops/index.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
+import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
 import { legacyRouter } from "../src/legacy/index.js";
 
 class InMemoryD1Database implements D1DatabaseLike {
@@ -337,12 +338,16 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
     expect(assetsData.holdings[0].assetCode).toBe("paid");
     expect(assetsData.holdings[0].quantity).toBe(500);
 
+    // Preserve the legacy path alias, but require the same QR session
+    // ticket and entry acknowledgement as the canonical tenant route.
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?, 'entry-machine', 'entry-machine', 'Entry Machine', 'machine', 1)", [shopId]);
+    const ticket = (await mintMachineTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
     // 2. POST /api/v1/player/session/start (start session without shopCode)
     const startRes = await app.fetch(
       new Request("https://prism.test/api/v1/player/session/start", {
         method: "POST",
         headers: bobHeaders,
-        body: JSON.stringify({ label: "legacy-play" }),
+        body: JSON.stringify({ ticket, consent: true }),
       }),
       env,
     );
