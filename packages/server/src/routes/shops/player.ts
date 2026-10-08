@@ -10,7 +10,6 @@ import { requireUser, staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { checkShopLocation } from "../../middleware/geo.js";
 import { resolveMachineSession } from "../platform/machine-session.js";
-import { startEntrySession } from "./entry.js";
 import { runPlayerOperation } from "./player-operation.js";
 import {
   toPlayerAssetsView,
@@ -262,7 +261,7 @@ playerRouter.post("/session/start", async (c) => {
   }
   checkShopLocation(shop, "checkin", body.location);
   return runPlayerOperation(c, shop.id, "session/start", body, async () => {
-    const session = await startEntrySession(shop, getShopDeps(c), player.id);
+    const session = await getShopDeps(c).playerCommands.startSession({ playerId: player.id });
     return c.json({ session: toSessionView(session) });
   });
 });
