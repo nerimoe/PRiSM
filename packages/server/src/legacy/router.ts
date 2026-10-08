@@ -10,6 +10,7 @@ import { legacyStaffRouter } from "./handlers/staff.js";
 import { legacyIntegrationRouter } from "./handlers/integration.js";
 import { legacySetupRouter } from "./handlers/setup.js";
 import { legacyAdminRouter, legacyPlayerAuthRouter } from "./handlers/admin.js";
+import { legacyBotRouter } from "./handlers/bot.js";
 import { createLegacyRpcRouter } from "./rpc-fallback.js";
 
 export const legacyRouter = new Hono<AppBindings>();
@@ -68,6 +69,7 @@ legacySubRouter.route("/integration", legacyIntegrationRouter);
 legacySubRouter.route("/setup", legacySetupRouter);
 legacySubRouter.route("/admin", legacyAdminRouter);
 legacySubRouter.route("/player-auth", legacyPlayerAuthRouter);
+legacySubRouter.route("/bot", legacyBotRouter);
 
 // Support both /api/v1/* path prefix and root-mounted /player, /staff, etc.
 legacyRouter.route("/api/v1", legacySubRouter);
