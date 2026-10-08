@@ -81,4 +81,40 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect(JSON.parse(settings?.value_json??"{}").coinCooldownMs).toBe(42_000);
     sqlite.close();
   });
+
+  it("streams a v2 business backup, records completion and enforces the export quota",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('source','player-v2','Example Player','active',?)",
+      [new Date().toISOString()],
+    );
+    const endpoint="https://prism.test/api/v1/shops/source/data";
+    const response=await app.fetch(new Request(`${endpoint}/export?scope=business`,{headers}),env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain("attachment;");
+    const backup=await response.json() as {
+      format:string;version:number;scope:string;tables:{players:Array<{id:string}>};
+    };
+    expect(backup.format).toBe("prism-shop-data");
+    expect(backup.version).toBe(2);
+    expect(backup.scope).toBe("business");
+    expect(backup.tables.players.some(player=>player.id==="player-v2")).toBe(true);
+
+    const exportJob=sqlite.query(
+      "SELECT status FROM shop_data_exports WHERE shop_id='source' ORDER BY created_at DESC LIMIT 1",
+    ).get() as {status:string}|null;
+    expect(exportJob?.status).toBe("completed");
+
+    const quota=await app.fetch(new Request(`${endpoint}/export-status`,{headers}),env);
+    expect(quota.status).toBe(200);
+    const quotaBody=await quota.json() as {data:{used:number;remaining:number}};
+    expect(quotaBody.data.used).toBe(1);
+    expect(quotaBody.data.remaining).toBe(0);
+
+    const second=await app.fetch(new Request(`${endpoint}/export?scope=business`,{headers}),env);
+    expect(second.status).toBe(429);
+    const secondBody=await second.json() as {error:{code:string}};
+    expect(secondBody.error.code).toBe("EXPORT_MONTHLY_LIMIT");
+    sqlite.close();
+  });
 });
