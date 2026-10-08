@@ -11,6 +11,7 @@ import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { checkShopLocation } from "../../middleware/geo.js";
 import { resolveMachineSession } from "../platform/machine-session.js";
 import { startEntrySession } from "./entry.js";
+import { runPlayerOperation } from "./player-operation.js";
 import {
   toPlayerAssetsView,
   toPlayerCheckoutPreviewView,
@@ -251,7 +252,7 @@ playerRouter.get("/sessions/:sessionId/history", async (c) => {
 playerRouter.post("/session/start", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop, false, true);
-  const body = await c.req.json<{ ticket?: string; consent?: boolean; location?: unknown }>().catch(() => ({}));
+  const body = await c.req.json<{ ticket?: string; consent?: boolean; location?: unknown; operationId?: string }>().catch(() => ({}));
   const machine = await resolveMachineSession(c, body.ticket ?? "");
   if (machine.shop_id !== shop.id) {
     jsonError(403, "请扫描设备二维码", "DEVICE_QR_REQUIRED");
@@ -260,8 +261,10 @@ playerRouter.post("/session/start", async (c) => {
     jsonError(409, "请确认入场计费规则", "CHECKIN_CONSENT_REQUIRED");
   }
   checkShopLocation(shop, "checkin", body.location);
-  const session = await startEntrySession(shop, getShopDeps(c), player.id);
-  return c.json({ session: toSessionView(session) });
+  return runPlayerOperation(c, shop.id, "session/start", body, async () => {
+    const session = await startEntrySession(shop, getShopDeps(c), player.id);
+    return c.json({ session: toSessionView(session) });
+  });
 });
 
 // Stop Session
@@ -292,15 +295,17 @@ playerRouter.post("/checkout/preview", async (c) => {
 playerRouter.post("/checkout/confirm", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop);
-  const body = await c.req.json<{ location?: unknown }>().catch(() => ({}));
+  const body = await c.req.json<{ location?: unknown; operationId?: string }>().catch(() => ({}));
   checkShopLocation(shop, "checkout", body.location);
   const deps = getShopDeps(c);
 
-  const result = await deps.playerCheckoutCommands.checkout({
-    playerId: player.id,
-    closeSessionsBeforeBalanceCheck: false,
+  return runPlayerOperation(c, shop.id, "checkout/confirm", body, async () => {
+    const result = await deps.playerCheckoutCommands.checkout({
+      playerId: player.id,
+      closeSessionsBeforeBalanceCheck: false,
+    });
+    return c.json(toPlayerCheckoutResultView(result));
   });
-  return c.json(toPlayerCheckoutResultView(result));
 });
 
 // Redeem
@@ -312,11 +317,13 @@ playerRouter.post("/redeem", async (c) => {
   if (!body?.code?.trim()) {
     jsonError(400, "请输入兑换码", "INVALID_CODE");
   }
-  const result = await deps.playerRedeemCommands.redeemCode({
-    playerId: player.id,
-    code: body.code.trim(),
+  return runPlayerOperation(c, shop.id, "redeem", body, async () => {
+    const result = await deps.playerRedeemCommands.redeemCode({
+      playerId: player.id,
+      code: body.code.trim(),
+    });
+    return c.json(toRedeemGiftView(result));
   });
-  return c.json(toRedeemGiftView(result));
 });
 
 // Device Commands
