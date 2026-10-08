@@ -15,6 +15,7 @@ import { userRouter } from "./routes/platform/user.js";
 import { shopsRouter } from "./routes/platform/shops.js";
 import { adminManagementRouter } from "./routes/platform/admin-management.js";
 import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
+import { merchantMachineRouter } from "./routes/platform/merchant-machines.js";
 import { cardsRouter } from "./routes/platform/cards.js";
 import { machineSessionRouter, machineTicketRouter } from "./routes/platform/machine-session.js";
 import { appleAppSiteAssociationResponse, androidAssetLinksResponse } from "./routes/platform/apple.js";
@@ -129,6 +130,7 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1", userRouter);
   app.route("/api/v1/merchant/shops", shopsRouter);
   app.route("/api/v1/merchant", merchantMembersRouter);
+  app.route("/api/v1/merchant", merchantMachineRouter);
   app.route("/api/v1/admin", adminManagementRouter);
   app.route("/api/v1/cards", cardsRouter);
   app.route("/api/v1/machines", machineSessionRouter);
