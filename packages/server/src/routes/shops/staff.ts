@@ -27,11 +27,24 @@ import {
 
 export const staffRouter = new Hono<AppBindings>();
 
-// Staff Info
+// Staff Info — preserve the pre-consolidation browser contract. The auth
+// principal's "role: staff" is an internal discriminator, not the shop staff
+// role that controls settings and report archive actions in the merchant UI.
 staffRouter.get("/me", async (c) => {
   const shop = getShop(c);
   const principal = await staffPrincipal(c, shop, true);
-  return c.json({ staff: principal });
+  return c.json({
+    staff: {
+      id: principal.staffId,
+      displayName: principal.staffId,
+      role: principal.staffRole,
+      canWrite: principal.staffRole !== "viewer",
+      // Preserve the explicit principal identifiers for new consumers.
+      staffId: principal.staffId,
+      staffRole: principal.staffRole,
+      principalRole: principal.role,
+    },
+  });
 });
 
 // List Players
