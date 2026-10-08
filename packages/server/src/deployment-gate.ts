@@ -348,8 +348,10 @@ export async function deploymentControl(
         + (SELECT COUNT(*) FROM pricing_config_versions WHERE kind IN ('time.priority','time.cap') AND json_extract(provider_json,'$.timeZone') IS NOT 'UTC')
         + (SELECT COUNT(*) FROM pricing_releases WHERE time_zone!='UTC') AS n`)
         .bind()
-        .first<number>();
-      if (invalid !== 0) throw new Error("UTC pricing verification failed");
+        .first<{ n: number }>();
+      // D1 .first() returns the first row object unless a column name is supplied.
+      // Comparing that object directly to 0 rejects every healthy database.
+      if (invalid?.n !== 0) throw new Error("UTC pricing verification failed");
       if (
         (await env.DB.prepare("PRAGMA foreign_key_check").bind().all()).results
           .length
