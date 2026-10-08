@@ -313,6 +313,43 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("keeps staff management DTOs public and never exposes password or API token hashes", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const prefix = `https://prism.test/api/v1/shops/${publicId}/staff`;
+    const headers = { authorization: `Bearer ${staffSessionToken}` };
+
+    const usersResponse = await app.fetch(new Request(prefix + "/users", { headers }), env);
+    expect(usersResponse.status).toBe(200);
+    const users = await usersResponse.json() as {
+      data: { staffUsers: Array<Record<string, unknown>> };
+    };
+    expect(users.data.staffUsers.length).toBeGreaterThan(0);
+    for (const user of users.data.staffUsers) {
+      expect(Object.keys(user).sort()).toEqual(
+        ["id", "username", "displayName", "role", "status", "createdAt", "updatedAt"].sort(),
+      );
+      expect(user).not.toHaveProperty("passwordHash");
+      expect(user).not.toHaveProperty("passwordSalt");
+    }
+
+    const tokensResponse = await app.fetch(new Request(prefix + "/api-tokens", { headers }), env);
+    expect(tokensResponse.status).toBe(200);
+    const tokens = await tokensResponse.json() as {
+      data: { apiTokens: Array<Record<string, unknown>> };
+    };
+    expect(tokens.data.apiTokens.length).toBeGreaterThan(0);
+    for (const token of tokens.data.apiTokens) {
+      expect(Object.keys(token).sort()).toEqual(
+        ["id", "label", "role", "tokenPrefix", "status", "createdAt", "lastUsedAt", "revokedAt"].sort(),
+      );
+      expect(token).not.toHaveProperty("tokenHash");
+      expect(token).not.toHaveProperty("token");
+    }
+    sqlite.close();
+  });
+
   it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
