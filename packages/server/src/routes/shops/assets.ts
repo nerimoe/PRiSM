@@ -7,10 +7,11 @@ import {
   toPricingEffectManagementView,
 } from "./views.js";
 
-export const assetsRouter = new Hono<AppBindings>();
+export function createAssetsRouter(definitionsBase = "", effectsBase = "/effects") {
+  const assetsRouter = new Hono<AppBindings>();
 
 // List Asset Definitions
-assetsRouter.get("/", async (c) => {
+assetsRouter.get(definitionsBase || "/", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
@@ -21,7 +22,7 @@ assetsRouter.get("/", async (c) => {
 });
 
 // Save Asset Definition
-assetsRouter.put("/:assetType/:assetCode", async (c) => {
+assetsRouter.put(`${definitionsBase}/:assetType/:assetCode`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -42,7 +43,7 @@ assetsRouter.put("/:assetType/:assetCode", async (c) => {
 });
 
 // Archive Asset Definition
-assetsRouter.post("/:assetType/:assetCode/archive", async (c) => {
+assetsRouter.post(`${definitionsBase}/:assetType/:assetCode/archive`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -56,7 +57,7 @@ assetsRouter.post("/:assetType/:assetCode/archive", async (c) => {
 });
 
 // Restore Asset Definition
-assetsRouter.post("/:assetType/:assetCode/restore", async (c) => {
+assetsRouter.post(`${definitionsBase}/:assetType/:assetCode/restore`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -70,7 +71,7 @@ assetsRouter.post("/:assetType/:assetCode/restore", async (c) => {
 });
 
 // List Pricing Effects
-assetsRouter.get("/effects", async (c) => {
+assetsRouter.get(`${effectsBase}`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
@@ -81,7 +82,7 @@ assetsRouter.get("/effects", async (c) => {
 });
 
 // Save Pricing Effect
-assetsRouter.put("/effects/:effectId", async (c) => {
+assetsRouter.put(`${effectsBase}/:effectId`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -105,7 +106,7 @@ assetsRouter.put("/effects/:effectId", async (c) => {
 });
 
 // Archive Pricing Effect
-assetsRouter.post("/effects/:effectId/archive", async (c) => {
+assetsRouter.post(`${effectsBase}/:effectId/archive`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -118,7 +119,7 @@ assetsRouter.post("/effects/:effectId/archive", async (c) => {
 });
 
 // Restore Pricing Effect
-assetsRouter.post("/effects/:effectId/restore", async (c) => {
+assetsRouter.post(`${effectsBase}/:effectId/restore`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -129,3 +130,9 @@ assetsRouter.post("/effects/:effectId/restore", async (c) => {
     pricingEffect: toPricingEffectManagementView(effect),
   });
 });
+
+  return assetsRouter;
+}
+
+export const assetsRouter = createAssetsRouter();
+export const staffAssetsCompatRouter = createAssetsRouter("/asset-definitions", "/pricing-effects");

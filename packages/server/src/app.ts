@@ -17,6 +17,7 @@ import { adminManagementRouter } from "./routes/platform/admin-management.js";
 import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
 import { cardsRouter } from "./routes/platform/cards.js";
 import { machineSessionRouter, machineTicketRouter } from "./routes/platform/machine-session.js";
+import { appleAppSiteAssociationResponse, androidAssetLinksResponse } from "./routes/platform/apple.js";
 import { munetAuthRouter, appclipAuthRouter, munetCallbackRouter } from "./routes/platform/munet-routes.js";
 import { healthRouter } from "./routes/system/health.js";
 import { versionRouter } from "./routes/system/version.js";
@@ -90,6 +91,13 @@ export function createApp(): Hono<AppBindings> {
       500,
     );
   });
+
+  // Preserve original universal-link and Android-app-link association endpoints.
+  app.get("/.well-known/apple-app-site-association", (c) => {
+    if (!c.env.APPLE_TEAM_ID) return new Response(null, { status: 404 });
+    return appleAppSiteAssociationResponse(c.env.APPLE_TEAM_ID);
+  });
+  app.get("/.well-known/assetlinks.json", (c) => androidAssetLinksResponse(c.env.ANDROID_CERT_FINGERPRINTS));
 
   // Global middleware
   app.use("*", corsMiddleware);

@@ -7,7 +7,8 @@ import {
   toRedeemCodeManagementView,
 } from "./views.js";
 
-export const redeemRouter = new Hono<AppBindings>();
+export function createRedeemRouter(redeemCodesBase = "/codes") {
+  const redeemRouter = new Hono<AppBindings>();
 
 // List Presents
 redeemRouter.get("/presents", async (c) => {
@@ -61,7 +62,7 @@ redeemRouter.post("/presents/:presentId/restore", async (c) => {
 });
 
 // List Redeem Codes
-redeemRouter.get("/codes", async (c) => {
+redeemRouter.get(`${redeemCodesBase}`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
@@ -82,7 +83,7 @@ redeemRouter.get("/codes", async (c) => {
 });
 
 // Create Redeem Code
-redeemRouter.post("/codes", async (c) => {
+redeemRouter.post(`${redeemCodesBase}`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -98,7 +99,7 @@ redeemRouter.post("/codes", async (c) => {
 });
 
 // Create Batch Redeem Codes
-redeemRouter.post("/codes/batch", async (c) => {
+redeemRouter.post(`${redeemCodesBase}/batch`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
@@ -117,10 +118,16 @@ redeemRouter.post("/codes/batch", async (c) => {
 });
 
 // Revoke Redeem Code
-redeemRouter.post("/codes/:codeId/revoke", async (c) => {
+redeemRouter.post(`${redeemCodesBase}/:codeId/revoke`, async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
   const code = await deps.staffRedeemCommands.revokeRedeemCode({ codeId: c.req.param("codeId") });
   return c.json({ redeemCode: toRedeemCodeManagementView(code) });
 });
+
+  return redeemRouter;
+}
+
+export const redeemRouter = createRedeemRouter();
+export const staffRedeemCompatRouter = createRedeemRouter("/redeem-codes");

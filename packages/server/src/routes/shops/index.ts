@@ -25,11 +25,11 @@ import { staffRouter } from "./staff.js";
 import { integrationRouter } from "./integration.js";
 import { devicesRouter } from "./devices.js";
 import { pricingRouter } from "./pricing.js";
-import { assetsRouter } from "./assets.js";
+import { assetsRouter, staffAssetsCompatRouter } from "./assets.js";
 import { cashierRouter } from "./cashier.js";
 import { staffBusinessRouter } from "./business.js";
 import { staffPricingCompatRouter } from "./staff-compat.js";
-import { redeemRouter } from "./redeem.js";
+import { redeemRouter, staffRedeemCompatRouter } from "./redeem.js";
 import { billingCompatRouter } from "./billing-compat.js";
 import { identityConversionRouter } from "./identity-conversion.js";
 
@@ -166,9 +166,9 @@ shopRouter.route("/cashier", cashierRouter);
 shopRouter.route("/pricing", pricingRouter);
 shopRouter.route("/staff/pricing-configs", pricingRouter);
 shopRouter.route("/assets", assetsRouter);
-shopRouter.route("/staff/asset-definitions", assetsRouter);
+shopRouter.route("/staff", staffAssetsCompatRouter);
 shopRouter.route("/redeem", redeemRouter);
-shopRouter.route("/staff/redeem-codes", redeemRouter);
+shopRouter.route("/staff", staffRedeemCompatRouter);
 shopRouter.route("/", billingCompatRouter);
 shopRouter.route("/identity-conversion", identityConversionRouter);
 
