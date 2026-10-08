@@ -307,9 +307,9 @@ async function changeMachine(c:C, machineId?:string) {
     await c.env.DB.prepare(
       `INSERT INTO machines(name,hinata_url_encrypted,hinata_password_encrypted,enabled,kind,
       ha_binding_encrypted,ttlock_lock_id,coin_key,coin_after_swipe,mahjong_config_json,aliases_json,
-      id,public_id,shop_id,shop_public_id)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(...values,id,publicId,shopId,shop.public_id).run();
+      id,public_id,shop_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(...values,id,publicId,shopId).run();
   }
   const updated=await c.env.DB.prepare(
     "SELECT machines.*,shops.public_id AS shop_public_id FROM machines JOIN shops ON shops.id=machines.shop_id WHERE machines.id=?",
