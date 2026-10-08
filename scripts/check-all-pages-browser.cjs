@@ -49,10 +49,11 @@ function mock(request, role, unknown, mutations) {
   const url = new URL(request.url()), p = url.pathname, method = request.method();
   const owner = role === "owner" || role === "admin";
   if (method !== "GET") {
-    // Every write in this suite is simulated and stays in memory.
+    // Explicitly whitelist mutations as tests add actions; never hide a changed API.
     mutations.push(method + " " + p);
     if (p === "/api/v1/cards/sync") return { cards: [], authorizationRequired: false, syncError: null };
-    return { ok: true };
+    unknown.push(method + " " + p + url.search);
+    return null;
   }
   if (p === "/api/v1/me") return { user: role === "guest" ? null : {
     id: role, username: role, displayName: role, role: role === "admin" ? "admin" : "user", hasShops: role !== "player",
@@ -61,6 +62,7 @@ function mock(request, role, unknown, mutations) {
   if (p === "/api/v1/account") return { identities: [], passkeys: [] };
   if (p === "/api/v1/merchant/shops") return { shops: [shop] };
   if (p === "/api/v1/merchant/machines") return { machines: [] };
+  if (p === "/api/v1/merchant/device-bindings") return { bindings: [] };
   if (p === "/api/v1/merchant/shop-members") return { members: [] };
   if (p === "/api/v1/admin/users") return { users: [] };
   if (p === "/api/v1/admin/bans") return { bans: [] };
@@ -153,7 +155,7 @@ const cases = [
         const context = await browser.newContext({ viewport, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
         await context.addInitScript(() => sessionStorage.setItem("prism.active-shop", "demo"));
         const page = await context.newPage();
-        const unknown = [], mutations = [], exceptions = [], failedRequests = [];
+        const unknown = [], mutations = [], exceptions = [];
         page.on("pageerror", error => exceptions.push(error.message));
         page.on("console", message => { if (message.type() === "error") exceptions.push(message.text()); });
         await page.route("**/api/**", async route => {
@@ -193,15 +195,34 @@ const cases = [
               await nav.getByRole("button", { name: "礼物" }).click();
               await nav.getByRole("button", { name: "兑换码" }).click();
             }
+            if (testCase.role === "viewer" && url === "/merchant/demo/live") {
+              assert.equal(await page.getByRole("button", { name: "添加玩家" }).count(), 0);
+              assert.equal(await page.getByRole("button", { name: "结账", exact: true }).count(), 0);
+            }
+            if (testCase.role === "owner") {
+              let open;
+              if (url.endsWith("/devices")) open = "添加设备";
+              if (url.endsWith("/players")) open = "添加玩家";
+              if (url.endsWith("/pricing")) open = "添加规则";
+              if (url.endsWith("/live")) open = "玩家资料";
+              if (open) {
+                await page.getByRole("button", { name: open, exact: true }).first().click();
+                await page.getByRole("dialog").first().waitFor();
+                await page.getByRole("dialog").first().getByRole("button", { name: "关闭" }).click();
+                await page.getByRole("dialog").first().waitFor({ state: "hidden" });
+              }
+            }
             coverage.push(label);
           } catch (error) {
             failures.push(`${label}: ${error.message}`);
             await page.screenshot({ path: path.join(output, `failed-${testCase.role}-${viewport.width}-${failures.length}.png`), fullPage: true }).catch(() => {});
           }
         }
-        if (unknown.length) allUnknown.push(...new Set(unknown).values()).forEach(value => failures.push(`${testCase.role} ${viewport.width}px: unmocked ${value}`));
+        for (const value of new Set(unknown)) {
+          allUnknown.push(value);
+          failures.push(`${testCase.role} ${viewport.width}px: unmocked ${value}`);
+        }
         if (exceptions.length) failures.push(`${testCase.role} ${viewport.width}px: ${exceptions.join(" | ")}`);
-        if (failedRequests.length) failures.push(...failedRequests);
         console.log(`CHECK ${testCase.role} ${viewport.width}px: ${testCase.pages.length} routes; ${mutations.length} mocked writes`);
         await context.close();
       }
