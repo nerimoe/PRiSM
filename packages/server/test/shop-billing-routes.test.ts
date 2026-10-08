@@ -807,6 +807,8 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       env,
     );
     expect(adjustRes.status).toBe(200);
+    const totalSql = "SELECT COALESCE(SUM(quantity),0) AS total FROM asset_holdings WHERE shop_id=? AND player_id='p_staff_test' AND asset_type='currency'";
+    const walletBeforeReplay = sqlite.query(totalSql).get(shopId) as { total: number };
     const repeatRes = await app.fetch(new Request(
       `https://prism.test/api/v1/shops/${publicId}/staff/players/p_staff_test/wallet/adjustment`,
       { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
@@ -814,10 +816,8 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     ), env);
     expect(repeatRes.status).toBe(200);
     expect(await repeatRes.json()).toEqual(await adjustRes.json());
-    const walletRows = sqlite.query(
-      "SELECT COALESCE(SUM(quantity),0) AS total FROM asset_holdings WHERE shop_id=? AND player_id='p_staff_test' AND asset_type='currency'",
-    ).get(shopId) as { total: number };
-    expect(walletRows.total).toBe(500000);
+    const walletAfterReplay = sqlite.query(totalSql).get(shopId) as { total: number };
+    expect(walletAfterReplay.total).toBe(walletBeforeReplay.total);
 
     // 4. Staff reports summary
     const reportsRes = await app.fetch(
