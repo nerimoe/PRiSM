@@ -1,6 +1,6 @@
 # 开发环境
 
-管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/platform` 的统一 Worker 提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
+管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/server` 的统一服务提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
 
 当前工作区位于 `/workspace/PRiSM`，已安装 Bun 1.4.2。Koishi 和 AstrBot 子模块是可选机器人集成，不影响 React 后台开发。
 

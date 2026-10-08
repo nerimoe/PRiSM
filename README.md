@@ -29,9 +29,7 @@ packages/application     Use-case services and adapter-neutral query contracts.
 packages/storage-sql     SQLite/D1 schema, write repositories, and SQL read models.
 packages/adapter-sqlite  Bun SQLite adapter.
 packages/adapter-d1      Cloudflare D1 adapter.
-packages/server-hono     Thin Hono API, auth guards, response views, and Staff Web handoff.
-packages/runtime         Local and Worker composition entrypoints and external adapters.
-packages/platform        Unified multi-store Worker, authentication and device routes.
+packages/server          Unified server API, multi-tenant & legacy routes, hardware drivers, Worker & Bun entrypoints.
 packages/prism-web       React admin and player UI, built with Vite.
 packages/koishi-plugin   Koishi plugin (git submodule, standalone repo koishi-plugin-prism)
 packages/migration       prism-neo conversion plan and importer.

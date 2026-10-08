@@ -9,11 +9,8 @@
     "packages/application",
     "packages/core",
     "packages/migration",
-    "packages/runtime",
     "packages/server",
-    "packages/server-hono",
     "packages/storage-sql",
-    "packages/platform",
     "packages/prism-web"
   ],
   "scripts": {

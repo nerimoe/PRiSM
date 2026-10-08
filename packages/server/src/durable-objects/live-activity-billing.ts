@@ -11,8 +11,9 @@ import {
   type Cents,
   type PricingConfig,
 } from "@prism/core";
-import { createPrismWorkerDependencies, ensureD1UtcPricing } from "@prism/runtime";
-import type { Env } from "../bindings.js";
+import { ensureD1UtcPricing } from "../utc-pricing.js";
+import { createShopDependencies } from "../middleware/tenant.js";
+import type { Env, TenantShop } from "../bindings.js";
 import { liveActivityConfig } from "./live-activity-push.js";
 
 export type ActivityNextEvent = {
@@ -57,10 +58,52 @@ export async function activityBill(
     ...(await repos.sessions.findUnpaidClosedByPlayerId(playerId)),
   ];
   if (!unpaid.length) return null;
-  const preview = await createPrismWorkerDependencies(env, {
-    shopId,
+
+  const rawShop = await env.DB.prepare(
+    `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
+      COALESCE(b.billing_enabled, 0) AS billing_enabled,
+      COALESCE(b.auto_register, 0) AS auto_register,
+      COALESCE(b.identity_binding_required, 1) AS identity_binding_required,
+      COALESCE((SELECT json_extract(value_json, '$.enabled') FROM app_settings WHERE shop_id = s.id AND key = 'cashier.settings'), 0) AS cashier_enabled,
+      COALESCE(b.checkin_geo, 0) AS checkin_geo,
+      COALESCE(b.checkout_geo, 0) AS checkout_geo,
+      COALESCE(b.machine_geo, 0) AS machine_geo,
+      COALESCE(b.entry_pricing_ids_json, '[]') AS entry_pricing_ids_json,
+      COALESCE(b.bot_contact, '') AS bot_contact,
+      CASE WHEN s.hero_data IS NULL OR s.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || s.public_id || '/hero?v=' || COALESCE(s.hero_hash, 'original') END AS hero_url,
+      COALESCE((SELECT json_extract(value_json, '$.timeZone') FROM app_settings WHERE shop_id = s.id AND key = 'store.profile'), 'Asia/Shanghai') AS time_zone
+    FROM shops s
+    LEFT JOIN shop_billing_settings b ON b.shop_id = s.id
+    WHERE s.public_id = ? OR s.id = ?`,
+  )
+    .bind(shopId, shopId)
+    .first<TenantShop>();
+
+  const shop: TenantShop = rawShop ?? {
+    id: shopId,
+    public_id: shopId,
+    name: shopId,
+    latitude: 0,
+    longitude: 0,
+    radius_meters: 0,
+    billing_enabled: 1,
+    cashier_enabled: 0,
+    auto_register: 0,
+    identity_binding_required: 1,
+    checkin_geo: 0,
+    checkout_geo: 0,
+    machine_geo: 0,
+    entry_pricing_ids_json: "[]",
+    bot_contact: "",
+    time_zone: "Asia/Shanghai",
+    hero_url: null,
+  };
+
+  const preview = await createShopDependencies({
+    db: env.DB,
+    shop,
     now: () => now,
-  }).playerCheckoutCommands!.previewCheckout({ playerId });
+  }).playerCheckoutCommands.previewCheckout({ playerId });
   const releases = new Map<
     string,
     { configs: PricingConfig[]; timeZone: string }

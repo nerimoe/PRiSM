@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { decryptSecret } from "../packages/platform/src/crypto.ts";
+import { decryptSecret } from "../packages/server/src/crypto.ts";
 import { importLegacyDevices } from "./import-legacy-devices";
 
 describe("importLegacyDevices", () => {

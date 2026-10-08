@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-This is a Bun/TypeScript monorepo for PRiSM Next. Core business rules live in `packages/core`, use-case services in `packages/application`, SQL schema and repositories in `packages/storage-sql`, and database adapters in `packages/adapter-sqlite` and `packages/adapter-d1`. API and composition layers are in `packages/server-hono` and `packages/runtime`.
+This is a Bun/TypeScript monorepo for PRiSM Next. Core business rules live in `packages/core`, use-case services in `packages/application`, SQL schema and repositories in `packages/storage-sql`, and database adapters in `packages/adapter-sqlite` and `packages/adapter-d1`. The unified API, multi-tenant routes, hardware drivers, and Worker & Bun entrypoints are in `packages/server`.
 
-The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`, with the unified Worker in `packages/platform`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
+The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
 
 ## Build, Test, and Development Commands
 

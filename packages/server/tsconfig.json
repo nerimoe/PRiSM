@@ -21,7 +21,6 @@
     { "path": "../application" },
     { "path": "../storage-sql" },
     { "path": "../adapter-d1" },
-    { "path": "../adapter-sqlite" },
-    { "path": "../runtime" }
+    { "path": "../adapter-sqlite" }
   ]
 }
