@@ -5,7 +5,6 @@ import { sha256Hex } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
-import { startEntrySession } from "./entry.js";
 import {
   toPlayerAssetsView,
   toPlayerCheckoutPreviewView,
@@ -37,7 +36,6 @@ export async function requireIntegrationAuth(
     .first<{ id: string; role: string; status: string }>();
 
   if (!row || row.role !== "integration") {
-    const user = c.get("user");
     // Bot credentials are independent of platform admin sessions.
     jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
   }
@@ -80,23 +78,10 @@ integrationRouter.post("/players/by-identity/register", async (c) => {
 integrationRouter.post("/players/by-identity/session/start", async (c) => {
   const deps = getShopDeps(c);
   const body = await c.req.json<any>();
-  const shop = getShop(c);
-  const identity = body.identity ?? (body.provider && body.subject
-    ? { provider: body.provider, subject: body.subject } : undefined);
-  const entryRules = JSON.parse(shop.entry_pricing_ids_json || "[]") as string[];
-  // Specialist sessions (e.g. Mahjong) intentionally retain the integration
-  // service, but an ordinary entry must use the shop's entry pricing and lock.
-  const requestedRules = Array.isArray(body.pricingConfigIds) ? body.pricingConfigIds : [];
-  if (requestedRules.some((id: string) => !entryRules.includes(id))) {
-    const session = await deps.integrationCommands.startSessionByIdentity({
-      ...body, identity, autoRegister: !!shop.auto_register,
-    });
-    return c.json({ session: toSessionView(session) });
-  }
-  const player = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity({
-    ...body, identity, autoRegister: !!shop.auto_register,
+  const session = await deps.integrationCommands.startSessionByIdentity({
+    ...body,
+    identity: body.identity ?? (body.provider && body.subject ? { provider: body.provider, subject: body.subject } : undefined),
   });
-  const session = await startEntrySession(shop, deps, player.id, { createdBy: "integration" });
   return c.json({ session: toSessionView(session) });
 });
 
