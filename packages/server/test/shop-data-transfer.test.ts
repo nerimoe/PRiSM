@@ -158,10 +158,21 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     const preview=((await checked.json()) as {data:{canImport:boolean;errors:string[];fingerprint:string}}).data;
     expect(preview.errors).toEqual([]);
     expect(preview.canImport).toBe(true);
+    const operationId=crypto.randomUUID();
     const applied=await post(`${destination}/imports/${jobId}/apply`,{
-      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+      fingerprint:preview.fingerprint,operationId,
     });
     expect(applied.status).toBe(200);
+    const repeated=await post(`${destination}/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId,
+    });
+    expect(repeated.status).toBe(200);
+    expect(await repeated.json()).toEqual(await applied.json());
+    const conflicting=await post(`${destination}/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+    });
+    expect(conflicting.status).toBe(409);
+    expect(((await conflicting.json()) as {error:{code:string}}).error.code).toBe("OPERATION_CONFLICT");
     const migrated=sqlite.query(
       "SELECT id,display_name FROM players WHERE shop_id='destination' AND id='staged-player'",
     ).get() as {id:string;display_name:string}|null;
