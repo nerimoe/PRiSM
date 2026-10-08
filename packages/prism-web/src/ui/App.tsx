@@ -1,6 +1,6 @@
 import { PlayerAccountMenu } from "./PlayerAccountMenu";
 import { useI18n } from "../i18n";
-import { lazy, Suspense, type ReactNode } from "react";
+import { Component, lazy, Suspense, type ReactNode } from "react";
 import {
   Link,
   Navigate,
@@ -104,6 +104,7 @@ function Shell() {
         </div>
       )}
       <main className={machineSession ? "session-main" : "site-main"}>
+        <PageErrorBoundary key={pathname}>
         <Suspense
           fallback={
             <div className="rounded border border-ink/10 bg-panel p-6">
@@ -137,6 +138,7 @@ function Shell() {
             <Route path="/m/:ticket" element={<MachineLoginPage />} />
           </Routes>
         </Suspense>
+        </PageErrorBoundary>
       </main>
     </div>
   );
@@ -162,4 +164,34 @@ function NavItem({
       <span className="nav-label">{label}</span>
     </NavLink>
   );
+}
+
+/** A route crash should never leave mobile users staring at a blank page. */
+class PageErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error) {
+    // Stack traces remain in browser diagnostics, not in the public UI.
+    console.error("PRiSM page render failed", error);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <section role="alert" className="mx-auto max-w-lg space-y-4 rounded-xl border border-ink/10 bg-panel p-6">
+        <h1 className="text-xl font-semibold">页面暂时无法显示</h1>
+        <p className="text-sm text-ink/70">页面发生错误，请刷新重试。若问题持续，请联系管理员。</p>
+        <button className="focus-ring rounded-xl bg-mint px-4 py-3 text-sm font-medium text-white" onClick={() => window.location.reload()}>
+          刷新页面
+        </button>
+      </section>
+    );
+  }
 }

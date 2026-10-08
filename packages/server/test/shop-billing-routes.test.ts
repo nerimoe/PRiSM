@@ -254,6 +254,46 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("returns a grouped on-site player and real billing inputs for the browser; unauthenticated users are denied", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?, 'on-site-player', '在店玩家示例', 'active', CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES (?, 'active-visit', 'on-site-player', '2026-10-02T02:08:00Z', 'active', 'unpaid', '[]')",
+      [shopId],
+    );
+    const url = `https://prism.test/api/v1/shops/${publicId}/staff/live-players`;
+    const anonymous = await app.fetch(new Request(url), env);
+    expect([401, 403]).toContain(anonymous.status);
+    const response = await app.fetch(new Request(url, {
+      headers: { authorization: `Bearer ${staffSessionToken}` },
+    }), env);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      players: Array<{
+        playerId: string; displayName: string; sessions: Array<{
+          id: string; status: string; pricingCharges: unknown[]; pricingSegments: unknown[];
+        }>; estimatedTotal: number | null;
+      }>;
+      billingSnapshot: { version: number; players: Array<{ playerId: string }> };
+    };
+    expect(body.players).toHaveLength(1);
+    expect(body.players[0]).toMatchObject({
+      playerId: "on-site-player", displayName: "在店玩家示例",
+      estimatedTotal: null,
+    });
+    expect(body.players[0]?.sessions).toEqual([expect.objectContaining({
+      id: "active-visit", status: "active", pricingCharges: [], pricingSegments: [],
+    })]);
+    expect(body.billingSnapshot.version).toBe(1);
+    expect(body.billingSnapshot.players.map((player) => player.playerId)).toContain("on-site-player");
+    sqlite.close();
+  });
+
   it("keeps pre-fork shop data transfer owner-only and fails closed without rate limiting", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);

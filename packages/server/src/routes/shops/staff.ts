@@ -291,10 +291,14 @@ staffRouter.get("/live-players", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
-  const players = deps.staffQueries.listLiveSessions
-    ? await deps.staffQueries.listLiveSessions()
-    : await deps.staffQueries.listActiveSessions();
-  return c.json({ players });
+  // The browser expects grouped LivePlayerView objects (including sessions[]),
+  // not the flat StaffActiveSessionListItem rows returned by listLiveSessions().
+  // Flat rows caused a render-time TypeError and an entirely white /live page.
+  const players = await deps.staffOperations.listLivePlayers({ summary: true });
+  const billingSnapshot = players.length && deps.staffLiveBillingSnapshot
+    ? await deps.staffLiveBillingSnapshot(players.map((player) => player.playerId))
+    : undefined;
+  return c.json({ players, ...(billingSnapshot ? { billingSnapshot } : {}) });
 });
 
 // Active Sessions
