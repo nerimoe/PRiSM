@@ -9,6 +9,7 @@ describe("pre-fork main compatibility registrations", () => {
     ["POST", "/api/v1/shops/:shopCode/identity-conversion/preview"],
     ["POST", "/api/v1/shops/:shopCode/identity-conversion/apply"],
     ["POST", "/api/v1/bot/identities/resolve"],
+    ["GET", "/api/v1/merchant/device-bindings"],
     ["GET", "/api/v1/merchant/machines"],
     ["GET", "/api/v1/merchant/machines/:id/events"],
     ["GET", "/api/v1/merchant/login-events"],

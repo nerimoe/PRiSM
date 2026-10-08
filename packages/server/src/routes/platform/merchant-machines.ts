@@ -3,6 +3,8 @@ import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
+import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
+import { findLegacyShopByCode } from "../../legacy/tenant-resolver.js";
 
 /** Restore pre-fork merchant machine discovery and audit-history contracts. */
 export const merchantMachineRouter = new Hono<AppBindings>();
@@ -138,4 +140,24 @@ merchantMachineRouter.get("/login-events", async (c) => {
     ORDER BY e.created_at DESC LIMIT ?`;
   const result = await c.env.DB.prepare(sql).bind(...bindings,limit).all();
   return c.json({ events: result.results });
+});
+
+/** Historical binding picker, restricted to staff able to configure machines. */
+merchantMachineRouter.get("/device-bindings", async (c) => {
+  const user = requireUser(c);
+  const shopId = c.req.query("shopId");
+  if (!shopId) jsonError(400, "请选择店铺", "SHOP_REQUIRED");
+  await assertMachineShop(c, user, shopId);
+  if (!(await canConfigureMachine(c, user, shopId))) {
+    jsonError(403, "只读账号不能配置设备", "FORBIDDEN");
+  }
+  const shop = await findLegacyShopByCode(c.env.DB, shopId);
+  if (!shop) jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
+  const settings = await getOrCreateShopDependencies(c.env.DB, shop).staffSettingsCommands.getSettings();
+  const bindings = [
+    ...settings.homeAssistantDevices.map(device => ({ id: device.id, name: device.name, kind: "home_assistant" })),
+    ...settings.hinataIoDevices.map(device => ({ id: device.id, name: device.name, kind: "hinata_io" })),
+    ...(settings.ttLockDevices ?? []).map(device => ({ id: device.id, name: device.name, kind: "ttlock" })),
+  ];
+  return c.json({ bindings });
 });

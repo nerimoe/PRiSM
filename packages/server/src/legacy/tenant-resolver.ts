@@ -39,6 +39,12 @@ async function queryShop(db: D1DatabaseLike, code: string): Promise<TenantShop |
     .first<TenantShop>();
 }
 
+/** Resolve an explicit shop for authenticated cross-shop management endpoints. */
+export async function findLegacyShopByCode(db: D1DatabaseLike, code: string): Promise<TenantShop | null> {
+  const shop = await queryShop(db, code);
+  return shop ? normalizeShop(shop) : null;
+}
+
 /**
  * Resolves the target tenant shop for legacy single-store requests:
  * 1. Checks explicit client headers (`X-PRiSM-Shop-Code`, `X-PRiSM-Shop`, `X-Shop-Id`) or `?shopCode=...` query
