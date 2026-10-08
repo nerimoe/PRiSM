@@ -51,7 +51,7 @@ describe("Local Server Entrypoint & Runtime", () => {
       const sqlite = new Database(":memory:");
       sqlite.run("CREATE TABLE entries (id TEXT PRIMARY KEY, amount INTEGER NOT NULL)");
       const d1 = createD1DatabaseFromSqlite(sqlite);
-      const inserted = await d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("one", 12).run()
+      const inserted = (await d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("one", 12).run())
         as { meta: { changes: number } };
       expect(inserted.meta.changes).toBe(1);
       const results = await d1.batch([
