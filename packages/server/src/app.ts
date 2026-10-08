@@ -13,6 +13,9 @@ import { authRouter } from "./routes/platform/auth.js";
 import { passkeysRouter } from "./routes/platform/passkeys.js";
 import { userRouter } from "./routes/platform/user.js";
 import { shopsRouter } from "./routes/platform/shops.js";
+import { adminManagementRouter } from "./routes/platform/admin-management.js";
+import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
+import { cardsRouter } from "./routes/platform/cards.js";
 import { healthRouter } from "./routes/system/health.js";
 import { versionRouter } from "./routes/system/version.js";
 
@@ -112,6 +115,9 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/user", userRouter);
   app.route("/api/v1", userRouter);
   app.route("/api/v1/merchant/shops", shopsRouter);
+  app.route("/api/v1/merchant", merchantMembersRouter);
+  app.route("/api/v1/admin", adminManagementRouter);
+  app.route("/api/v1/cards", cardsRouter);
 
   // Multi-tenant shop routes (/api/v1/shops/:shopCode)
   app.route("/api/v1/shops/:shopCode", shopRouter);
