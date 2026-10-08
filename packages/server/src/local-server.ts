@@ -268,11 +268,11 @@ export function createD1DatabaseFromSqlite(db: Database): SqliteD1Database {
         async executeBatch() {
           // Cloudflare D1 returns rows for SELECT/RETURNING statements inside a batch;
           // a plain .run() silently discards those rows and breaks shop-data exports.
-          const returnsRows = /^(?:SELECT|WITH|PRAGMA|EXPLAIN)\\b/i.test(sql.trim())
-            || /\\bRETURNING\\b/i.test(sql);
+          const returnsRows = /^(?:SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(sql.trim())
+            || /\bRETURNING\b/i.test(sql);
           if (returnsRows) {
             const results = db.query(sql).all(...values) as unknown[];
-            const changed = /\\bRETURNING\\b/i.test(sql)
+            const changed = /\bRETURNING\b/i.test(sql)
               ? (db.query("SELECT changes() AS changes").get() as { changes: number } | null)?.changes ?? 0
               : 0;
             return { results, success: true as const, meta: { changes: changed } };
