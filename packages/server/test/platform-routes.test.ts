@@ -9,6 +9,7 @@ import { attachUser } from "../src/middleware/auth.js";
 import { authRouter } from "../src/routes/platform/auth.js";
 import { passkeysRouter } from "../src/routes/platform/passkeys.js";
 import { userRouter } from "../src/routes/platform/user.js";
+import { createApp } from "../src/app.js";
 import { shopsRouter } from "../src/routes/platform/shops.js";
 import { healthRouter } from "../src/routes/system/health.js";
 import { versionRouter } from "../src/routes/system/version.js";
@@ -482,6 +483,56 @@ describe("Platform & System Routes", () => {
       expect(data.identities[0]!.username).toBe("eve");
       expect(data.identities[0]!.displayName).toBe("Eve Tester");
       expect(data.passkeys).toHaveLength(0);
+    });
+  });
+
+  describe("Production app route contract", () => {
+    it("serves the account overview instead of the user profile at /api/v1/account", async () => {
+      // Unlike the lightweight router fixture, this uses the actual deployed
+      // route ordering and { data } envelope, which previously hid the regression.
+      const reg = await app.request(
+        "https://prism.test/api/v1/auth/register",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: "route-account", displayName: "Account Route" }),
+        },
+        env,
+      );
+      expect(reg.status).toBe(201);
+      const cookie = reg.headers.get("set-cookie")!;
+      const productionApp = createApp();
+
+      const accountResponse = await productionApp.request(
+        "https://prism.test/api/v1/account",
+        { headers: { cookie } },
+        env,
+      );
+      expect(accountResponse.status).toBe(200);
+      const account = await accountResponse.json() as {
+        data?: { identities?: Array<{ username: string; displayName: string }>; passkeys?: unknown[]; user?: unknown };
+      };
+      expect(account.data?.identities).toHaveLength(1);
+      expect(account.data?.identities?.[0]?.username).toBe("route-account");
+      expect(account.data?.identities?.[0]?.displayName).toBe("Account Route");
+      expect(account.data?.passkeys).toEqual([]);
+      expect(account.data?.user).toBeUndefined();
+
+      const meResponse = await productionApp.request(
+        "https://prism.test/api/v1/me",
+        { headers: { cookie } },
+        env,
+      );
+      expect(meResponse.status).toBe(200);
+      const me = await meResponse.json() as { data?: { user?: { username: string } } };
+      expect(me.data?.user?.username).toBe("route-account");
+
+      const unauthenticated = await productionApp.request(
+        "https://prism.test/api/v1/account", {}, env,
+      );
+      expect(unauthenticated.status).toBe(401);
+      const error = await unauthenticated.json() as { error?: { code: string } };
+      expect(error.error?.code).toBe("AUTHENTICATION_REQUIRED");
     });
   });
 
