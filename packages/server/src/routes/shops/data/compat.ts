@@ -5,6 +5,7 @@ import { enforceRateLimits as sharedEnforceRateLimits } from "../../../middlewar
 import { jsonError } from "../../../http.js";
 
 export type BillingShop = TenantShop;
+export { staffPrincipal } from "../../../middleware/auth.js";
 
 export async function getBillingShop(c: Context<AppBindings>, shopCode: string): Promise<BillingShop> {
   const shop = getShop(c);
