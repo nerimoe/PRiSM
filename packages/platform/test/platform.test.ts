@@ -1,3 +1,11 @@
+import { getMachineByPublicId } from "../src/db";
+import { requirePoweredMachine } from "../src/devices";
+import { mintMachineTicket } from "../src/machine-session";
+import { beforeEach } from "bun:test";
+import { createTestRateLimits } from "./rate-limit-fixture";
+const rateLimits = createTestRateLimits();
+beforeEach(rateLimits.reset);
+import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
 import { createHash } from "node:crypto";
@@ -14,7 +22,6 @@ const mf = new Miniflare({
   modules: true,
   script: "export default { fetch() { return new Response('test'); } }",
   d1Databases: ["DB"],
-  kvNamespaces: ["RATE_LIMIT"],
   compatibilityDate: "2026-06-01",
 });
 let env: Env;
@@ -54,11 +61,10 @@ async function entryBody() {
 
 beforeAll(async () => {
   const db = await mf.getD1Database("DB");
-  const kv = await mf.getKVNamespace("RATE_LIMIT");
-  // Miniflare exposes the same D1/KV wire methods as the Worker bindings.
+  // Miniflare exposes the same D1 wire methods as the Worker bindings.
   env = {
     DB: db,
-    RATE_LIMIT: kv,
+    ...rateLimits.bindings,
     APP_ORIGIN: origin,
     SESSION_SECRET: "test-only",
     URL_ENCRYPTION_KEY: "test-only",
@@ -99,6 +105,7 @@ beforeAll(async () => {
   for (const sql of readFileSync(new URL("../../../migrations/0021_machine_aliases.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
   for (const sql of readFileSync(new URL("../../../migrations/0023_remote_entry.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
   for (const sql of readFileSync(new URL("../../../migrations/0024_drop_remote_entry.sql", import.meta.url), "utf8").split(";").filter(s=>s.trim())) await db.prepare(sql).run();
+  for (const sql of splitD1MigrationStatements(readFileSync(new URL("../../../migrations/0030_platform_identity_bindings.sql",import.meta.url),"utf8"))) await db.prepare(sql).run();
   await db.prepare("INSERT INTO users(id,role) VALUES ('u','user')").run();
   await db
     .prepare(
@@ -174,7 +181,7 @@ test("global v1 auth and public shop responses use the shared envelope", async (
       shop: {
         billingEnabled: false,
         machineGeo: false,
-        timeZone: "Asia/Shanghai",
+        timeZone: "Asia/Tokyo",
       },
     },
   });
@@ -202,27 +209,27 @@ test("the shop page exposes the cover art a shop link needs to match a device ca
   ).run();
 });
 
-test("QQ codes are shop-bound, single-use and grant no membership in another shop", async () => {
+test("Platform codes are shop-bound, single-use and grant no membership in another shop", async () => {
   const generated = (await (
-    await request("/api/v1/shops/a/qq-binding", {})
+    await request("/api/v1/shops/a/platform-binding", {})
   ).json()) as { data: { code: string } };
   const wrong = await request(
-    "/api/v1/shops/a/integration/qq-binding/confirm",
-    { code: generated.data.code, qq: "123456" },
+    "/api/v1/shops/a/integration/platform-binding/confirm",
+    { code: generated.data.code, provider: "qq", subject: "123456" },
     "b-bot",
   );
   expect(wrong.status).toBe(403);
   const confirmed = await request(
-    "/api/v1/shops/a/integration/qq-binding/confirm",
-    { code: generated.data.code, qq: "123456" },
+    "/api/v1/shops/a/integration/platform-binding/confirm",
+    { code: generated.data.code, provider: "qq", subject: "123456" },
     "a-bot",
   );
   expect(confirmed.status).toBe(200);
   expect(
     (
       await request(
-        "/api/v1/shops/a/integration/qq-binding/confirm",
-        { code: generated.data.code, qq: "123456" },
+        "/api/v1/shops/a/integration/platform-binding/confirm",
+        { code: generated.data.code, provider: "qq", subject: "123456" },
         "a-bot",
       )
     ).status,
@@ -317,6 +324,15 @@ test("Web and Bot entry share one session; insufficient balance keeps timing; op
       "SELECT COUNT(*) AS n FROM sessions WHERE shop_id='a' AND player_id='p'",
     ).first("n"),
   ).toBe(1);
+  const inputsResponse = await request("/api/v1/shops/a/player/billing-inputs?playerId=foreign");
+  expect(inputsResponse.status).toBe(200);
+  const inputs = (await inputsResponse.json() as any).data;
+  expect(inputs.playerId).toBe("p");
+  expect(inputs.billingSnapshot.players.map((player: any) => player.playerId)).toEqual(["p"]);
+  const { createLiveBillingCalculator, hydrateLiveBillingSnapshot } = await import("@prism/application");
+  const quote = await createLiveBillingCalculator(hydrateLiveBillingSnapshot(inputs.billingSnapshot)).previewCheckout("p");
+  expect(quote.settlementPreview.total).toBe(1200);
+  expect(quote.settlementPreview.sessionIds).toHaveLength(1);
   const operationId = crypto.randomUUID();
   const denied = await request("/api/v1/shops/a/player/checkout/confirm", {
     operationId,
@@ -719,6 +735,7 @@ test("new billed stores create base assets and pricing atomically; door QR requi
       graceMinutes: 5,
       dailyCap: 60,
       autoRegister: true,
+      createBotToken: true,
     },
   });
   expect(created.status).toBe(201);
@@ -767,16 +784,16 @@ test("new billed stores create base assets and pricing atomically; door QR requi
     consent: true,
   };
   expect(await (await request(path, open)).json()).toMatchObject({
-    error: { code: "QQ_BINDING_REQUIRED" },
+    error: { code: "PLATFORM_BINDING_REQUIRED" },
   });
   const {
     data: { code },
   } = (await (
-    await request(`/api/v1/shops/${shop.publicId}/qq-binding`, {})
+    await request(`/api/v1/shops/${shop.publicId}/platform-binding`, {})
   ).json()) as any;
   const binding = await request(
-    `/api/v1/shops/${shop.publicId}/integration/qq-binding/confirm`,
-    { code, qq: "987654" },
+    `/api/v1/shops/${shop.publicId}/integration/platform-binding/confirm`,
+    { code, provider: "qq", subject: "987654" },
     botToken,
   );
   expect(binding.status).toBe(200);
@@ -970,9 +987,7 @@ test("nonbilling card and automatic coin flows need no QQ or entry, dispatch onc
     expect(machine.coinAfterSwipe).toBe(false);
     const start = async () => {
       // Each scenario isolates delivery semantics from the separate login throttle.
-      await env.RATE_LIMIT.delete(
-        `login:user:u:${Math.floor(Date.now() / 60000)}`,
-      );
+      rateLimits.reset();
       const response = await request("/api/v1/machines/session/start", {
         shopCode: "card",
         publicId: machine.publicId,
@@ -1153,7 +1168,7 @@ test("nonbilling card and automatic coin flows need no QQ or entry, dispatch onc
   }
 });
 
-test("a nonbilling door verifies QQ and opens without creating admission or charging assets", async () => {
+test("a nonbilling door verifies platform identity and opens without creating admission or charging assets", async () => {
   const created = await request("/api/v1/merchant/machines", {
     shopId: "card",
     name: "Entrance",
@@ -1173,7 +1188,7 @@ test("a nonbilling door verifies QQ and opens without creating admission or char
   ).json()) as any;
   const state = `/api/v1/devices/session/state?ticket=${ticket}`;
   expect(await (await request(state)).json()).toMatchObject({
-    data: { gate: "qq" },
+    data: { gate: "binding" },
   });
   const action = {
     ticket,
@@ -1185,8 +1200,10 @@ test("a nonbilling door verifies QQ and opens without creating admission or char
   ).toBe(403);
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('card','u','p','123456',?)",
+      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('card','u','p',?)",
     ).bind(new Date().toISOString()),
+    env.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('card','p','onebot','123456',?)").bind(new Date().toISOString()),
+    env.DB.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('card','u','onebot','123456',?)").bind(new Date().toISOString()),
     env.DB.prepare(
       "INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES ('card','devices.ttlock_connection',?,?)",
     ).bind(
@@ -1334,7 +1351,7 @@ test("player rate schedule resolves production-style priorities, dated overnight
   expect(holiday.timeRange).toEqual({start: "22:30", end: "01:30"});
   const spring = await entryRules("2026-02-18");
   expect(spring.map((r: any) => r.id)).toEqual(["spring"]);
-  expect(spring[0].displayDateTimeRange).toEqual({ start: "2026-02-17 08:00:21", end: "2026-03-04 04:00:21" });
+  expect(spring[0].displayDateTimeRange).toEqual({ start: "2026-02-17 09:00:21", end: "2026-03-04 05:00:21" });
   const schedule = async (date: string) =>
     (
       (await (await request(`/api/v1/shops/a?date=${date}`)).json()) as any
@@ -1343,7 +1360,7 @@ test("player rate schedule resolves production-style priorities, dated overnight
   expect((await schedule("2026-01-01"))[0]).toMatchObject({
     label: "跨年活动",
     startLabel: "00:00",
-    endLabel: "01:30",
+    endLabel: "02:30",
     pricing: { unitPrice: 0 },
   });
   expect(
@@ -1382,6 +1399,22 @@ test("player rate schedule resolves production-style priorities, dated overnight
       .find((g: any) => g.kind === "time.cap")
       .segments.some((s: any) => s.priceCap === 30),
   ).toBe(true);
+  const { pricingPreview } = await import("../../prism-web/src/ui/merchant/pricing-preview");
+  for (const date of ["2026-01-01", "2026-02-18", "2026-09-11", "2026-09-12"]) {
+    const raw = (await (await request(`/api/v1/shops/a?date=${date}&pricing=raw`)).json() as any).data;
+    const legacy = (await (await request(`/api/v1/shops/a?date=${date}`)).json() as any).data;
+    expect(raw.pricingSchedule.clientCalculation).toBe(true);
+    expect(raw.pricingSchedule.groups).toEqual([]);
+    expect(raw.entryPricing.find((p: any) => p.id === "schedule").provider.rules).toHaveLength(5);
+    for (const plan of raw.entryPricing) {
+      const calculated = pricingPreview(plan, date, raw.shop.timeZone);
+      if (calculated) expect(JSON.parse(JSON.stringify(calculated.segments))).toEqual(
+        legacy.pricingSchedule.groups.find((g: any) => g.id === plan.id).segments.map((segment: any) => ({
+          ...segment, startedAt: new Date(segment.startedAt).toISOString(), endedAt: new Date(segment.endedAt).toISOString(),
+        })),
+      );
+    }
+  }
 });
 
 test("merchant location toggle synchronizes legacy flags and native session policy without billing", async () => {
@@ -1403,7 +1436,7 @@ test("merchant location toggle synchronizes legacy flags and native session poli
 
 test("mahjong seats persist, start together, allow replacements and settle independently", async () => {
   const created = await request("/api/v1/merchant/shops", {
-    name:"Mahjong", latitude:35,longitude:139,billingSetup:{paidName:"余额",freeName:"赠送",hourlyPrice:12,graceMinutes:0,dailyCap:0,autoRegister:true},
+    name:"Mahjong", latitude:35,longitude:139,billingSetup:{paidName:"余额",freeName:"赠送",hourlyPrice:12,graceMinutes:0,dailyCap:0,autoRegister:true,createBotToken:true},
   });
   const {data:{shop,botToken}} = await created.json() as any;
   const {data:settings} = await (await request(`/api/v1/shops/${shop.publicId}/settings`)).json() as any;
@@ -1424,7 +1457,9 @@ test("mahjong seats persist, start together, allow replacements and settle indep
       env.DB.prepare("INSERT INTO auth_identities(id,user_id,provider,provider_subject,username,display_name) VALUES (?,?,'munet',?,?,?)").bind(id,id,id,id,id),
       env.DB.prepare("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES (?,?,?,'2999-01-01')").bind(id,id,await sha256(token)),
       env.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active','2026-01-01')").bind(shop.id,id,id),
-      env.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES (?,?,?,?,?)").bind(shop.id,id,id,`90000000${n}`,new Date().toISOString()),
+      env.DB.prepare("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?)").bind(shop.id,id,id,new Date().toISOString()),
+      env.DB.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES (?,?,'onebot',?,?)").bind(shop.id,id,`90000000${n}`,new Date().toISOString()),
+      env.DB.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES (?,?,'onebot',?,?)").bind(shop.id,id,`90000000${n}`,new Date().toISOString()),
     ]);
     const {data:session}=await (await call(n,"/api/v1/machines/session/start",{shopCode:shop.publicId,publicId:machine.publicId})).json() as any;
     tickets.push(session.ticket);
@@ -1471,7 +1506,7 @@ test("mahjong seats persist, start together, allow replacements and settle indep
   expect(checkout.status).toBe(200);
   expect(await count()).toBe(4);
   // An expired QR cannot join or leave; another shop's ticket cannot target this table.
-  await env.DB.prepare("UPDATE machine_tickets SET expires_at='2000-01-01' WHERE token_hash=?").bind(await sha256(tickets[0]!)).run();
+  tickets[0] = (await mintMachineTicket(env.SESSION_SECRET, shop.publicId, machine.publicId, Date.now() - 301_000)).ticket;
   expect((await action(0,"mahjong.join")).status).toBe(410);
 },30000);
 
@@ -1479,9 +1514,9 @@ test("staff can bind a player code without Bot credentials, scoped by shop and r
   const shop = 'manual-binding';
   await env.DB.prepare("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES (?,?,?,35,139,80,'u')").bind(shop, shop, shop).run();
   await env.DB.prepare("INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register) VALUES (?,1,0)").bind(shop).run();
-  const { data: { code } } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
-  const confirm = { code, qq: '987654321' };
-  const endpoint = `/api/v1/shops/${shop}/staff/qq-binding/confirm`;
+  const { data: { code } } = await (await request(`/api/v1/shops/${shop}/platform-binding`, {})).json() as { data: { code: string } };
+  const confirm = { code, provider: 'qq', subject: '987654321' };
+  const endpoint = `/api/v1/shops/${shop}/staff/platform-binding/confirm`;
   expect((await request(endpoint, confirm)).status).toBe(403);
   await env.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('manual-owner',?,'u','owner')").bind(shop).run();
   await request(`/api/v1/shops/${shop}/staff/me`);
@@ -1489,13 +1524,13 @@ test("staff can bind a player code without Bot credentials, scoped by shop and r
   expect((await request(endpoint, confirm)).status).toBe(403);
   await env.DB.prepare("UPDATE staff_users SET role='manager' WHERE shop_id=? AND id='account:u'").bind(shop).run();
   expect((await request(endpoint, confirm)).status).toBe(200);
-  const binding = await env.DB.prepare("SELECT player_id,qq FROM shop_player_accounts WHERE shop_id=? AND user_id='u'").bind(shop).first<{ player_id: string; qq: string }>();
-  expect(binding?.qq).toBe(confirm.qq);
+  const binding = await env.DB.prepare("SELECT a.player_id,b.subject FROM shop_player_accounts a JOIN shop_platform_bindings b ON b.shop_id=a.shop_id AND b.user_id=a.user_id WHERE a.shop_id=? AND a.user_id='u'").bind(shop).first<{ player_id: string; subject: string }>();
+  expect(binding?.subject).toBe(confirm.subject);
   expect((await request(endpoint, confirm)).status).toBe(410);
-  const { data: second } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
-  expect((await request(endpoint, { code: second.code, qq: '987654322' })).status).toBe(409);
-  const { data: third } = await (await request(`/api/v1/shops/${shop}/qq-binding`, {})).json() as { data: { code: string } };
-  expect((await request(endpoint, { code: third.code, qq: confirm.qq })).status).toBe(200);
+  const { data: second } = await (await request(`/api/v1/shops/${shop}/platform-binding`, {})).json() as { data: { code: string } };
+  expect((await request(endpoint, { code: second.code, provider: 'qq', subject: '987654322' })).status).toBe(409);
+  const { data: third } = await (await request(`/api/v1/shops/${shop}/platform-binding`, {})).json() as { data: { code: string } };
+  expect((await request(endpoint, { code: third.code, provider: confirm.provider, subject: confirm.subject })).status).toBe(200);
   expect(await env.DB.prepare("SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id='u'").bind(shop).first()).toEqual({ player_id: binding!.player_id });
 });
 
@@ -1600,4 +1635,31 @@ test("a Bot checkout override without funds keeps the session running instead of
     "SELECT status, payment_status FROM sessions WHERE shop_id=? AND id=?",
   ).bind(shop, sessionId).first<{ status: string; payment_status: string }>();
   expect(session).toEqual({ status: "active", payment_status: "unpaid" });
+});
+
+test("fast Web device state never contacts HA; observations coalesce but action preconditions stay fresh", async () => {
+  const binding = await encryptSecret(JSON.stringify({ url: "https://slow-ha.test", token: "test", entityId: "switch.fast" }), env.URL_ENCRYPTION_KEY);
+  await env.DB.prepare("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,ha_binding_encrypted,enabled) VALUES ('fast-state','fast-state','card','Fast','','',1)").run();
+  await env.DB.prepare("UPDATE machines SET ha_binding_encrypted=? WHERE id='fast-state'").bind(binding).run();
+  const { ticket } = await mintMachineTicket(env.SESSION_SECRET, "card", "fast-state");
+  const original = globalThis.fetch;
+  let reads = 0, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = (async () => { reads++; await held; return Response.json({ state: "on" }); }) as typeof fetch;
+  try {
+    const state = await request(`/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}&includePower=0`);
+    expect(state.status).toBe(200);
+    expect((await state.json() as any).data.gate).toBe("ready");
+    expect(reads).toBe(0);
+    const first = request(`/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`);
+    const second = request(`/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`);
+    release();
+    const results = await Promise.all([first, second]);
+    expect(results.map(r => r.status)).toEqual([200, 200]);
+    expect(reads).toBe(1);
+    const machine = (await getMachineByPublicId(env.DB, "fast-state"))!;
+    globalThis.fetch = (async () => { reads++; return Response.json({ state: "off" }); }) as typeof fetch;
+    await expect(requirePoweredMachine({ env } as any, { ...machine, hinata_url_encrypted: "configured" })).rejects.toMatchObject({ status: 409 });
+    expect(reads).toBe(2);
+  } finally { release(); globalThis.fetch = original; }
 });

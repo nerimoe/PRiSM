@@ -99,6 +99,7 @@ export type CheckoutHistoryRecord = {
   id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
 };
 export type PlayerCheckoutReceipt = {
+  externalPayment?: { method: string; staffId: string; collectedAt: string };
   settlements?: Array<{ settlement: { sessionId: string; startedAt: string; endedAt: string | null } }>;
   playerSettlement: { total: number; settledAt: string };
   timeline: BillTimeline;
@@ -117,6 +118,7 @@ export type PlayerQueries = {
 };
 
 export type StaffPlayerListItem = {
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   status: "active" | "disabled" | "banned";
@@ -173,6 +175,7 @@ export type StaffReportsSummary = StaffReportsSummaryInput & {
 };
 
 export type StaffReportSettlementListItem = {
+  externalPayment?: { method: string; staffId: string };
   settlementId: string;
   sessionId: string;
   playerId: string;
@@ -183,6 +186,28 @@ export type StaffReportSettlementListItem = {
   durationMinutes: number | null;
   subtotal: Cents;
   total: Cents;
+};
+
+export type ReportArchiveFilter = "active" | "archived" | "all";
+export type StaffReportCheckout = {
+  checkoutId: string;
+  playerId: string;
+  playerDisplayName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  settledAt: string;
+  durationMinutes: number;
+  sessionCount: number;
+  subtotal: number;
+  total: number;
+  archived: boolean;
+  updatedAt: string | null;
+  updatedBy: string | null;
+  externalPayment?: { method: string; staffId: string; collectedAt: string };
+};
+export type StaffReportCheckoutDetail = {
+  record: StaffReportCheckout;
+  receipt: PlayerCheckoutReceipt;
 };
 
 export type StaffReportPlayerListItem = {
@@ -197,7 +222,7 @@ export type StaffReportPlayerListItem = {
 export type StaffQueries = {
   listPlayers(input?: { playerIds?: readonly string[] }): Promise<StaffPlayerListItem[]>;
   listActiveSessions(): Promise<StaffActiveSessionListItem[]>;
-  listLiveSessions?(): Promise<StaffActiveSessionListItem[]>;
+  listLiveSessions?(input?: { playerIds?: readonly string[] }): Promise<StaffActiveSessionListItem[]>;
   getPlayerAssets?(playerId: string): Promise<PlayerAssets>;
   getPlayerSessionHistory?(playerId: string): Promise<SessionHistoryListItem[]>;
   getPlayerSessionHistoryDetail?(playerId: string, sessionId: string): Promise<SessionHistoryDetail | null>;
@@ -206,6 +231,8 @@ export type StaffQueries = {
   listDeviceStates?(): Promise<DeviceState[]>;
   listMachineConnections?(): Promise<MachineConnection[]>;
   getReportsSummary?(input: StaffReportsSummaryInput): Promise<StaffReportsSummary>;
+  listReportCheckouts?(input: StaffReportsSummaryInput & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
+  getReportCheckout?(checkoutId: string): Promise<StaffReportCheckoutDetail | null>;
   listReportSettlements?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportSettlementListItem[]>;
   listReportPlayers?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportPlayerListItem[]>;
 };

@@ -31,7 +31,7 @@ export const billingSetupSchema = z.object({
   autoRegister: z.boolean(),
 });
 export const createShopSchema = z.object({
-  billingSetup: billingSetupSchema.optional(),
+  billingSetup: billingSetupSchema.extend({ createBotToken: z.boolean().default(false) }).optional(),
   name: z
     .string()
     .trim()
@@ -145,5 +145,5 @@ export const createBanSchema = z.object({
   subjectType: z.enum(["user", "ip", "card", "machine"]),
   subjectValue: z.string().trim().min(1).max(160),
   reason: z.string().trim().min(1).max(200),
-  expiresAt: z.string().datetime().optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
 });

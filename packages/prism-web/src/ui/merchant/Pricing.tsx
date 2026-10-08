@@ -1,4 +1,6 @@
 import { PricingRing } from "./PricingRing";
+import { pricingInZone } from "./pricing-clock";
+import { billTime } from "../bill-time";
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
@@ -210,7 +212,14 @@ function PricingEditor({
 }) {
   const { t } = useI18n();
   const request = useStaffApi();
-  const [draft, setDraft] = useState(value);
+  const { timeZone } = useMerchant();
+  const displayTimeZone = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const [day, setDay] = useState(() => billTime(new Date().toISOString(), displayTimeZone).date);
+  const [draft, setDraft] = useState(() => pricingInZone(value, value.id ? value.provider.timeZone ?? "UTC" : displayTimeZone, displayTimeZone, day));
+  const changeDay = (nextDay: string) => {
+    setDraft(pricingInZone(pricingInZone(draft, displayTimeZone, "UTC", day), "UTC", displayTimeZone, nextDay));
+    setDay(nextDay);
+  };
   const update = (patch: Partial<Pricing>) => setDraft({ ...draft, ...patch });
   const provider = (patch: Partial<Pricing["provider"]>) =>
     update({ provider: { ...draft.provider, ...patch } });
@@ -231,7 +240,7 @@ function PricingEditor({
             kind: draft.kind,
             name: draft.name,
             enabled: draft.enabled,
-            provider: draft.provider,
+            provider: pricingInZone(draft, displayTimeZone, "UTC", day).provider,
           },
         )
       }
@@ -349,6 +358,8 @@ function PricingEditor({
           )}
           <PricingRing
             value={draft}
+            localDate={day}
+            onDateChange={changeDay}
             onSelect={(id) =>
               document
                 .getElementById(`pricing-rule-${id}`)

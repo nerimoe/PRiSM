@@ -1,3 +1,4 @@
+import { displayDateTime } from "./bill-time";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2 } from "lucide-react";
@@ -8,14 +9,14 @@ import { BillTimeline, BillTotal, type BillPreview } from "./BillTimeline";
 
 export type Receipt = Omit<BillPreview, "settlementPreview"> & { playerSettlement: { total: number; settledAt: string }; wallet?: { balanceAfter: number } | null };
 
-export function SettledBill({ receipt }: { receipt: Receipt }) {
+export function SettledBill({ receipt, timeZone }: { receipt: Receipt; timeZone?: string }) {
   const { t } = useI18n();
   const bill = { ...receipt, settlementPreview: receipt.playerSettlement };
   return <div className="grid gap-5">
-    <div className="receipt-status"><span aria-hidden="true">✓</span><div><h2>{t("结账成功")}</h2><p>{new Date(receipt.playerSettlement.settledAt).toLocaleString()}</p></div></div>
+    <div className="receipt-status"><span aria-hidden="true">✓</span><div><h2>{t("结账成功")}</h2><p>{displayDateTime(receipt.playerSettlement.settledAt, timeZone)}</p></div></div>
     <BillTotal preview={bill} />
     {receipt.wallet && <div className="receipt-balance"><span>{t("结账后余额")}</span><strong>{receipt.wallet.balanceAfter.toFixed(2)}</strong></div>}
-    <BillTimeline preview={bill} />
+    <BillTimeline preview={bill} timeZone={timeZone} />
   </div>;
 }
 

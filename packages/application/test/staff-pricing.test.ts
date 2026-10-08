@@ -67,6 +67,7 @@ describe("createStaffPricingService", () => {
       status: "active",
       provider: {
         id: "time.default",
+        timeZone: "UTC",
         rules: [
           {
             id: "base",
@@ -165,6 +166,7 @@ describe("createStaffPricingService", () => {
       status: "active",
       provider: {
         id: "time.default",
+        timeZone: "UTC",
         rules: [
           {
             id: "base",
@@ -540,6 +542,7 @@ describe("createStaffPricingService", () => {
         localDate: "2026-06-07",
         provider: {
           id: "draft.time",
+          timeZone: "Asia/Tokyo",
           rules: [
             {
               id: "fallback",
@@ -593,6 +596,7 @@ describe("createStaffPricingService", () => {
         localDate: "2026-06-07",
         provider: {
           id: "draft.cap",
+          timeZone: "Asia/Shanghai",
           includedPricingConfigIds: ["pricing-base"],
           rules: [
             {

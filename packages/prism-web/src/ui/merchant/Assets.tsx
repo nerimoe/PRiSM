@@ -1,6 +1,18 @@
+import { parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
+import { displayDateTime } from "../bill-time";
+import {
+  AssetDetails,
+  EffectDetails,
+  PresentDetails,
+  RedeemCodeDetails,
+  assetTypeName,
+  availabilityLabel,
+  effectSummary,
+} from "./AssetDetails";
+import type { Effect, Grant, Present, RedeemCode } from "./asset-types";
 import {
   ActionForm,
   Field,
@@ -9,7 +21,6 @@ import {
   Table,
   button,
   cell,
-  date,
   input,
   primary,
   segment,
@@ -19,46 +30,9 @@ import {
   type Asset,
 } from "./shared";
 
-type Effect = {
-  id: string;
-  name: string;
-  type: string;
-  scope: string;
-  value: number | null;
-  consumable: boolean;
-  limitPerDay: number | null;
-  activeAt?: string | null;
-  expiresAt?: string | null;
-  status: string;
-  config: Record<string, unknown> | null;
-};
-type Grant = {
-  assetType: string;
-  assetCode: string;
-  amount: number;
-  mergeStrategy: string;
-  activeAt: string | null;
-  expiresAt: string | null;
-};
-type Present = {
-  id: string;
-  name: string;
-  status: string;
-  oncePerPlayer: boolean;
-  grants: Grant[];
-};
-type RedeemCode = {
-  id: string;
-  code: string;
-  presentId: string;
-  usageCount: number;
-  maxUseCount: number;
-  expiresAt: string | null;
-  redemptions?: { playerDisplayName: string; redeemedAt: string }[];
-};
 export function AssetsPage() {
   const { t } = useI18n();
-  const { canWrite } = useMerchant();
+  const { canWrite, timeZone } = useMerchant();
   const request = useStaffApi();
   const assets = useResource<{ assetDefinitions: Asset[] }>(
     "asset-definitions",
@@ -73,6 +47,15 @@ export function AssetsPage() {
   const [gift, setGift] = useState(false);
   const [code, setCode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [detail, setDetail] = useState<
+    | { kind: "asset"; item: Asset }
+    | { kind: "effect"; item: Effect }
+    | { kind: "present"; item: Present }
+    | { kind: "code"; item: RedeemCode }
+    | null
+  >(null);
+  const date = (value: string | null | undefined) =>
+    value ? displayDateTime(value, timeZone) : "—";
   const [confirmation, setConfirmation] = useState<{
     name: string;
     path: string;
@@ -157,43 +140,75 @@ export function AssetsPage() {
         (!assets.data ? (
           <State error={assets.error} />
         ) : (
-          <Table headers={["名称", "类型", "状态", "操作"]}>
+          <Table
+            headers={["名称", "类型", "关联优惠", "有效期", "状态", "操作"]}
+          >
             {assets.data.assetDefinitions
               .filter((a) => showArchived || a.status !== "archived")
               .map((a) => (
                 <tr key={`${a.type}:${a.code}`}>
-                  <td className={`${cell} font-medium`}>{a.name}</td>
                   <td className={cell}>
-                    {t(a.type === "currency" ? "余额" : "权益")}
-                  </td>
-                  <td className={cell}>
-                    {t(a.status === "archived" ? "已归档" : "正常")}
-                  </td>
-                  <td className={cell}>
-                    {canWrite && (
-                      <div className="flex gap-2">
-                        <button
-                          className={button}
-                          onClick={() => {
-                            setCreatingAsset(false);
-                            setEditing(a);
-                          }}
-                        >
-                          {t("编辑")}
-                        </button>
-                        <button
-                          className={button}
-                          onClick={() =>
-                            setConfirmation({
-                              name: a.name,
-                              path: `asset-definitions/${segment(a.type)}/${segment(a.code)}/${a.status === "archived" ? "restore" : "archive"}`,
-                            })
-                          }
-                        >
-                          {t(a.status === "archived" ? "恢复" : "归档")}
-                        </button>
-                      </div>
+                    <p className="font-medium">{a.name}</p>
+                    <p className="mt-1 text-xs text-ink/60">
+                      {t(a.stackable ? "数量可叠加" : "数量不可叠加")}
+                    </p>
+                    {a.metadata?.hiddenFromPlayer === true && (
+                      <p className="mt-1 text-xs text-ink/60">
+                        {t("对玩家隐藏")}
+                      </p>
                     )}
+                  </td>
+                  <td className={cell}>{assetTypeName(a.type, t)}</td>
+                  <td className={cell}>
+                    {effects.data?.pricingEffects.find(
+                      (e) => e.id === a.pricingEffectId,
+                    )?.name ??
+                      a.pricingEffect?.name ??
+                      a.pricingEffectId ??
+                      t("无")}
+                  </td>
+                  <td className={`${cell} whitespace-nowrap`}>
+                    <p>{a.activeAt ? date(a.activeAt) : t("立即生效")}</p>
+                    <p className="mt-1 text-xs text-ink/60">
+                      {a.expiresAt ? date(a.expiresAt) : t("永久有效")}
+                    </p>
+                  </td>
+                  <td className={cell}>{availabilityLabel(a, t)}</td>
+                  <td className={cell}>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className={button}
+                        onClick={() => setDetail({ kind: "asset", item: a })}
+                      >
+                        {t("详情")}
+                      </button>
+                      {canWrite && (
+                        <>
+                          {a.status !== "archived" && (
+                            <button
+                              className={button}
+                              onClick={() => {
+                                setCreatingAsset(false);
+                                setEditing(a);
+                              }}
+                            >
+                              {t("编辑")}
+                            </button>
+                          )}
+                          <button
+                            className={button}
+                            onClick={() =>
+                              setConfirmation({
+                                name: a.name,
+                                path: `asset-definitions/${segment(a.type)}/${segment(a.code)}/${a.status === "archived" ? "restore" : "archive"}`,
+                              })
+                            }
+                          >
+                            {t(a.status === "archived" ? "恢复" : "归档")}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -203,34 +218,59 @@ export function AssetsPage() {
         (!effects.data ? (
           <State error={effects.error} />
         ) : (
-          <Table headers={["名称", "状态", "操作"]}>
+          <Table headers={["名称", "优惠方式", "使用限制", "状态", "操作"]}>
             {effects.data.pricingEffects
               .filter((e) => showArchived || e.status !== "archived")
               .map((e) => (
                 <tr key={e.id}>
                   <td className={`${cell} font-medium`}>{e.name}</td>
                   <td className={cell}>
-                    {t(e.status === "archived" ? "已归档" : "正常")}
+                    <p>{effectSummary(e, t)}</p>
+                    <p className="mt-1 text-xs text-ink/60">
+                      {t(e.scope === "session" ? "单项消费" : "整笔账单")}
+                    </p>
                   </td>
                   <td className={cell}>
-                    {canWrite && (
-                      <div className="flex gap-2">
-                        <button className={button} onClick={() => setEffect(e)}>
-                          {t("编辑")}
-                        </button>
-                        <button
-                          className={button}
-                          onClick={() =>
-                            setConfirmation({
-                              name: e.name,
-                              path: `pricing-effects/${segment(e.id)}/${e.status === "archived" ? "restore" : "archive"}`,
-                            })
-                          }
-                        >
-                          {t(e.status === "archived" ? "恢复" : "归档")}
-                        </button>
-                      </div>
-                    )}
+                    <p>{t(e.consumable ? "使用后扣除" : "使用后保留")}</p>
+                    <p className="mt-1 text-xs text-ink/60">
+                      {e.limitPerDay == null
+                        ? t("每日不限次数")
+                        : t("每日最多 {count} 次", { count: e.limitPerDay })}
+                    </p>
+                  </td>
+                  <td className={cell}>{availabilityLabel(e, t)}</td>
+                  <td className={cell}>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className={button}
+                        onClick={() => setDetail({ kind: "effect", item: e })}
+                      >
+                        {t("详情")}
+                      </button>
+                      {canWrite && (
+                        <>
+                          {e.status !== "archived" && (
+                            <button
+                              className={button}
+                              onClick={() => setEffect(e)}
+                            >
+                              {t("编辑")}
+                            </button>
+                          )}
+                          <button
+                            className={button}
+                            onClick={() =>
+                              setConfirmation({
+                                name: e.name,
+                                path: `pricing-effects/${segment(e.id)}/${e.status === "archived" ? "restore" : "archive"}`,
+                              })
+                            }
+                          >
+                            {t(e.status === "archived" ? "恢复" : "归档")}
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -240,7 +280,7 @@ export function AssetsPage() {
         (!presents.data ? (
           <State error={presents.error} />
         ) : (
-          <Table headers={["礼物", "内容", "操作"]}>
+          <Table headers={["礼物", "内容", "领取限制", "状态", "操作"]}>
             {presents.data.presents
               .filter((p) => showArchived || p.status !== "archived")
               .map((p) => (
@@ -258,19 +298,31 @@ export function AssetsPage() {
                     ))}
                   </td>
                   <td className={cell}>
-                    {canWrite && (
+                    {t(p.oncePerPlayer ? "每位玩家仅限一次" : "可重复领取")}
+                  </td>
+                  <td className={cell}>{availabilityLabel(p, t)}</td>
+                  <td className={cell}>
+                    <div className="flex flex-wrap gap-2">
                       <button
                         className={button}
-                        onClick={() =>
-                          setConfirmation({
-                            name: p.name,
-                            path: `presents/${segment(p.id)}/${p.status === "archived" ? "restore" : "archive"}`,
-                          })
-                        }
+                        onClick={() => setDetail({ kind: "present", item: p })}
                       >
-                        {t(p.status === "archived" ? "恢复" : "归档")}
+                        {t("详情")}
                       </button>
-                    )}
+                      {canWrite && (
+                        <button
+                          className={button}
+                          onClick={() =>
+                            setConfirmation({
+                              name: p.name,
+                              path: `presents/${segment(p.id)}/${p.status === "archived" ? "restore" : "archive"}`,
+                            })
+                          }
+                        >
+                          {t(p.status === "archived" ? "恢复" : "归档")}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -309,24 +361,66 @@ export function AssetsPage() {
                   {date(c.expiresAt)}
                 </td>
                 <td className={cell}>
-                  {canWrite && (
+                  <div className="flex flex-wrap gap-2">
                     <button
                       className={button}
-                      onClick={() =>
-                        setConfirmation({
-                          name: c.code,
-                          path: `redeem-codes/${segment(c.id)}/revoke`,
-                        })
-                      }
+                      onClick={() => setDetail({ kind: "code", item: c })}
                     >
-                      {t("撤销")}
+                      {t("详情")}
                     </button>
-                  )}
+                    {canWrite && (
+                      <button
+                        className={button}
+                        onClick={() =>
+                          setConfirmation({
+                            name: c.code,
+                            path: `redeem-codes/${segment(c.id)}/revoke`,
+                          })
+                        }
+                      >
+                        {t("撤销")}
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}
           </Table>
         ))}
+      {detail && (
+        <Modal
+          title={
+            {
+              asset: "资产详情",
+              effect: "优惠详情",
+              present: "礼物详情",
+              code: "兑换码详情",
+            }[detail.kind]
+          }
+          close={() => setDetail(null)}
+        >
+          {detail.kind === "asset" && (
+            <AssetDetails
+              asset={detail.item}
+              effects={effects.data?.pricingEffects ?? []}
+            />
+          )}
+          {detail.kind === "effect" && <EffectDetails effect={detail.item} />}
+          {detail.kind === "present" && (
+            <PresentDetails
+              present={detail.item}
+              assets={assets.data?.assetDefinitions ?? []}
+            />
+          )}
+          {detail.kind === "code" && (
+            <RedeemCodeDetails
+              code={detail.item}
+              presents={presents.data?.presents ?? []}
+              assets={assets.data?.assetDefinitions ?? []}
+            />
+          )}
+        </Modal>
+      )}
       {editing && (
         <Modal title="资产" close={() => setEditing(null)}>
           <ActionForm
@@ -403,10 +497,15 @@ export function AssetsPage() {
               >
                 <option value="">{t("无")}</option>
                 {effects.data?.pricingEffects
-                  .filter((e) => e.status !== "archived")
+                  .filter(
+                    (e) =>
+                      e.status !== "archived" ||
+                      e.id === editing.pricingEffectId,
+                  )
                   .map((e) => (
                     <option key={e.id} value={e.id}>
                       {e.name}
+                      {e.status === "archived" ? ` · ${t("已归档")}` : ""}
                     </option>
                   ))}
               </select>
@@ -468,7 +567,7 @@ export function AssetsPage() {
                 ))}
               </select>
             </Field>
-            <Field label="数值（折扣使用 0～1）">
+            <Field label="数值（比例减免使用 0～100）">
               <input
                 className={input}
                 type="number"
@@ -536,7 +635,11 @@ export function AssetsPage() {
                 maxUseCount: Number(f.get("uses")),
                 activeAt: null,
                 expiresAt: f.get("expires")
-                  ? new Date(String(f.get("expires"))).toISOString()
+                  ? parseLocalDateTime(
+                      String(f.get("expires")).slice(0, 10),
+                      String(f.get("expires")).slice(11, 16),
+                      timeZone,
+                    ).toISOString()
                   : null,
               })
             }

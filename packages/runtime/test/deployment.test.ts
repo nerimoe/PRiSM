@@ -24,7 +24,6 @@ describe("deployment artifacts", () => {
         D1_DATABASE_NAME: "test-db",
         D1_DATABASE_ID: "11111111-1111-1111-1111-111111111111",
         CLOUDFLARE_ACCOUNT_ID: "1".repeat(32),
-        RATE_LIMIT_KV_ID: "2".repeat(32),
         APP_ORIGIN: "https://test.example.com",
         CUSTOM_DOMAIN: "test.example.com",
         MUNET_CLIENT_ID: "test-client",
@@ -41,10 +40,12 @@ describe("deployment artifacts", () => {
         main: "packages/platform/src/worker.ts", workers_dev: false,
         routes: [{ pattern: "test.example.com", custom_domain: true }],
         d1_databases: [{ binding: "DB", database_id: env.D1_DATABASE_ID, database_name: "test-db", migrations_dir: "migrations" }],
-        kv_namespaces: [{ binding: "RATE_LIMIT", id: env.RATE_LIMIT_KV_ID }],
         vars: { APP_ORIGIN: env.APP_ORIGIN, MUNET_CLIENT_ID: "test-client" },
       });
-      expect(run({ ...env, RATE_LIMIT_KV_ID: "" }).exitCode).not.toBe(0);
+      expect(config.kv_namespaces).toBeUndefined();
+      expect(config.assets.run_worker_first).toContain("/t/*/*");
+      expect(config.assets.run_worker_first).not.toContain("/t/*");
+      expect(config.ratelimits).toContainEqual({ name: "RATE_LIMIT_60", namespace_id: "73060", simple: { limit: 60, period: 60 } });
       expect(run({ ...env, APP_ORIGIN: "https://test.example.com/path" }).exitCode).not.toBe(0);
       expect(run(env, []).exitCode).toBe(0);
       expect((await Bun.file(join(root, "wrangler.generated.jsonc")).json()).main).toBe("packages/runtime/src/worker.ts");
@@ -120,13 +121,34 @@ describe("deployment artifacts", () => {
       "wrangler:config": "bun run scripts/generate-wrangler-config.ts",
       "dev:worker": "bun run scripts/generate-wrangler-config.ts --local && wrangler dev --config wrangler.generated.jsonc",
       "deploy:worker": "bun run scripts/generate-wrangler-config.ts && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote && bun run scripts/release.ts deploy-worker",
-      "prism-dashboard:build": "bun run scripts/release.ts build-dashboard",
+      "build:web": "bun run scripts/build-web.ts",
       "version:bump": "bun run scripts/release.ts bump",
       "db:create:d1": "wrangler d1 create prism",
       "db:migrate:local": "bun run scripts/generate-wrangler-config.ts --local && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --local",
       "db:migrate:remote": "bun run scripts/generate-wrangler-config.ts && wrangler d1 migrations apply DB --config wrangler.generated.jsonc --remote",
       "migration:import-json": "bun run packages/migration/src/cli.ts import-json",
     });
+  });
+
+  it("bumps release versions without a separate UI repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "prism-release-"));
+    try {
+      mkdirSync(join(root, "scripts"));
+      copyFileSync(new URL("scripts/release.ts", projectRoot), join(root, "scripts/release.ts"));
+      const path = join(root, "package.json");
+      for (const [kind, version] of [["patch", "1.2.4"], ["minor", "1.3.0"], ["major", "2.0.0"]]) {
+        await Bun.write(path, JSON.stringify({ name: "test", version: "1.2.3" }));
+        const result = Bun.spawnSync([process.execPath, "scripts/release.ts", "bump", kind!], { cwd: root });
+        expect(result.exitCode).toBe(0);
+        expect((await Bun.file(path).json()).version).toBe(version);
+      }
+      const before = await Bun.file(path).text();
+      const rejected = Bun.spawnSync([process.execPath, "scripts/release.ts", "bump", "invalid"], { cwd: root });
+      expect(rejected.exitCode).not.toBe(0);
+      expect(await Bun.file(path).text()).toBe(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps public deployment files free of account-specific Cloudflare identifiers", async () => {
@@ -157,7 +179,8 @@ describe("deployment artifacts", () => {
     // `/t/:shopCode` (the ticket-free shop surface) must NOT be worker-first: Cloudflare's
     // single-page-application fallback has to serve index.html for React Router. Adding it
     // here would make the deep link 404 instead of rendering the bill page.
-    for (const file of ["wrangler.platform.jsonc", "wrangler.generated.jsonc"]) {
+    // Generated output is tested in the isolated generator fixture above.
+    for (const file of ["wrangler.platform.jsonc"]) {
       const source = await readProjectFile(file);
       const match = source.match(/"run_worker_first":\s*\[([^\]]*)\]/);
       if (!match) throw new Error(`${file} must declare run_worker_first`);

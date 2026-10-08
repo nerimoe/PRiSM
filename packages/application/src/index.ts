@@ -24,7 +24,11 @@ export * from "./staff-pricing-effects";
 export * from "./staff-redeem";
 export * from "./staff-users";
 export * from "./staff-operations";
+export * from "./staff-reports";
 
 export * from "./operation-lock";
 
 export * from "./bill-timeline";
+
+export * from "./versioned-pricing";
+export * from "./live-billing-snapshot";

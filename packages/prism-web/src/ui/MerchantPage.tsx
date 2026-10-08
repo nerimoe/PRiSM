@@ -26,6 +26,7 @@ import { PricingPage } from "./merchant/Pricing";
 import { AssetsPage } from "./merchant/Assets";
 import { ReportsPage } from "./merchant/Reports";
 import { SettingsPage } from "./merchant/Settings";
+import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup";
 import { DevicesPage } from "./merchant/Devices";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
 
@@ -49,7 +50,10 @@ function MerchantContent() {
     [],
   );
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    const refresh = () => { void load().catch((e) => setError(e.message)); };
+    refresh();
+    window.addEventListener("prism-shop-settings", refresh);
+    return () => window.removeEventListener("prism-shop-settings", refresh);
   }, [load]);
   if (!shops) return <State error={error} />;
   const shop = shops.find((s) => s.publicId === shopCode);
@@ -115,6 +119,7 @@ function Workspace({
   const navigate = useNavigate();
   const [state, setState] = useState<{
     billingEnabled: boolean;
+    cashierEnabled: boolean;
     timeZone: string;
     canWrite: boolean;
     owner: boolean;
@@ -122,7 +127,7 @@ function Workspace({
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     const [info, me] = await Promise.all([
-      api<{ shop: { billingEnabled: boolean; timeZone: string } }>(
+      api<{ shop: { billingEnabled: boolean; cashierEnabled: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
       api<{ staff: { canWrite: boolean; role: string } }>(
@@ -174,6 +179,7 @@ function Workspace({
         owner: state.owner,
         timeZone: state.timeZone,
         billingEnabled: state.billingEnabled,
+        cashierEnabled: state.cashierEnabled,
       }}
     >
       <header className="flex flex-wrap items-center justify-between gap-4">
@@ -221,6 +227,8 @@ function Workspace({
       <div key={section}>
         {section === "devices" ? (
           <DevicesPage />
+        ) : state.billingEnabled && section === "cashier" ? (
+          <CashierRedirect shopCode={shop.publicId} />
         ) : state.billingEnabled && section === "live" ? (
           <Players live />
         ) : state.billingEnabled && section === "players" ? (
@@ -232,22 +240,13 @@ function Workspace({
         ) : state.billingEnabled && section === "reports" ? (
           <ReportsPage />
         ) : section === "settings" && state.owner ? (
-          <div className="mx-auto grid w-full max-w-3xl gap-5">
-            <SettingsPage />
-            <details className="rounded-xl border border-ink/10 bg-panel p-5">
-              <summary className="cursor-pointer font-medium">
-                {t("店铺信息与位置")}
-              </summary>
-              <div className="mt-4">
-                <ShopForm
-                  shop={shop}
-                  onSaved={async () => {
-                    await reload();
-                  }}
-                />
-              </div>
-            </details>
-            <StaffMembers shopId={shop.id} />
+          <div className="mx-auto w-full max-w-5xl">
+            <SettingsPage
+              shopDetails={<section className="rounded-xl border border-ink/10 bg-panel p-5">
+                <ShopForm shop={shop} onSaved={async () => { await reload(); }} />
+              </section>}
+              members={<StaffMembers shopId={shop.id} />}
+            />
           </div>
         ) : (
           <Navigate to={`/merchant/${shop.publicId}`} replace />
@@ -255,6 +254,13 @@ function Workspace({
       </div>
     </MerchantContext.Provider>
   );
+}
+function CashierRedirect({ shopCode }: { shopCode: string }) {
+  const [params] = useSearchParams();
+  const next = new URLSearchParams(params);
+  const player = next.get("player");
+  if (player) { next.set("cashierPlayer", player); next.delete("player"); }
+  return <Navigate replace to={`/merchant/${encodeURIComponent(shopCode)}/live?${next}`} />;
 }
 function StaffMembers({ shopId }: { shopId: string }) {
   const [members, setMembers] = useState<
@@ -281,11 +287,8 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
   const [step, setStep] = useState(0);
   const [billing, setBilling] = useState(false);
   const [setup, setSetup] = useState({
-    paidName: "余额",
-    freeName: "赠送余额",
-    hourlyPrice: 12,
-    graceMinutes: 5,
-    dailyCap: 60,
+    ...defaultBillingSetup,
+    createBotToken: false,
     botContact: "",
     autoRegister: false,
   });
@@ -295,10 +298,10 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
   if (created)
     return (
       <div className="grid gap-5">
-        <h3 className="font-semibold">{t("连接 QQ Bot")}</h3>
+        <h3 className="font-semibold">{t("连接 Bot")}</h3>
         <p className="text-sm text-ink/60">
           {t(
-            "基础资产与入场规则已创建。将以下凭据填入店铺 Bot 后，玩家即可绑定 QQ。凭据仅显示一次。",
+            "基础资产与入场规则已创建。将以下凭据填入店铺 Bot 后，玩家即可绑定平台身份。凭据仅显示一次。",
           )}
         </p>
         <code className="select-all break-all rounded bg-ink/5 p-3 text-sm">
@@ -392,51 +395,12 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
           }}
         >
           <h3 className="font-semibold">{t("基础资产与计费")}</h3>
-          <div className="grid grid-cols-2 gap-3">
-            {(
-              [
-                ["paidName", "充值余额名称"],
-                ["freeName", "赠送余额名称"],
-              ] as const
-            ).map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input
-                  className={input}
-                  required
-                  maxLength={40}
-                  value={setup[key]}
-                  onChange={(e) =>
-                    setSetup({ ...setup, [key]: e.target.value })
-                  }
-                />
-              </Field>
-            ))}
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {(
-              [
-                ["hourlyPrice", "每小时"],
-                ["graceMinutes", "宽限分钟"],
-                ["dailyCap", "全天封顶"],
-              ] as const
-            ).map(([key, label]) => (
-              <Field key={key} label={label}>
-                <input
-                  className={input}
-                  type="number"
-                  required
-                  min={key === "hourlyPrice" ? ".01" : "0"}
-                  max={key === "graceMinutes" ? 59 : 100000}
-                  step={key === "graceMinutes" ? "1" : ".01"}
-                  value={setup[key]}
-                  onChange={(e) =>
-                    setSetup({ ...setup, [key]: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            ))}
-          </div>
-
+          <BillingSetupFields value={setup} change={value => setSetup({ ...setup, ...value })} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={setup.createBotToken} onChange={event => setSetup({ ...setup, createBotToken: event.target.checked })} />
+            {t("创建 Bot 接入凭据（可选）")}
+          </label>
+          <p className="text-sm text-ink/60">{t("无需创建 Bot 凭据；需要连接 Bot 时，可在「接入凭据」单独配置。")}</p>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -445,7 +409,7 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
                 setSetup({ ...setup, autoRegister: e.target.checked })
               }
             />
-            {t("QQ 验证后允许新玩家注册")}
+            {t("平台身份验证后允许新玩家注册")}
           </label>
           <div className="flex justify-between gap-3">
             <button type="button" className={button} onClick={() => setStep(0)}>

@@ -1,7 +1,7 @@
 import type { BillTimeline, BillTimelineEntry, ChargeItem, SettlementAdjustment, TimeCapPricingWindow } from "@prism/core";
-import { type Cents, addCents, isZeroCents, yuanOf, ZERO_CENTS } from "@prism/core";
+import { type Cents, addCents, isZeroCents, yuanOf, ZERO_CENTS, formatOffsetTimestamp, timestampDisplayParts } from "@prism/core";
 
-/** Presentation only: amounts come from the engine, never recalculated by clients. */
+/** Presentation only: amounts come from the shared billing engine. */
 export function buildBillTimeline(input: {
   at: Date;
   timeZone?: string;
@@ -11,11 +11,9 @@ export function buildBillTimeline(input: {
   globalCapWindows: TimeCapPricingWindow[];
 }): BillTimeline {
   const timeZone = input.sessions.flatMap(s => s.chargeItems).find(i => i.pricingExplanation?.timeZone)?.pricingExplanation?.timeZone ?? input.timeZone ?? "UTC";
-  const formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const local = (at: string) => {
-    const parts = formatter.formatToParts(new Date(at));
-    const get = (key: string) => parts.find(p => p.type === key)!.value;
-    return { time: `${get("hour")}:${get("minute")}`, date: `${get("year")}-${get("month")}-${get("day")}` };
+    const parts = timestampDisplayParts(formatOffsetTimestamp(at, timeZone))!;
+    return { time: parts.time, date: parts.date };
   };
   const tracks: BillTimeline["tracks"] = [];
   const events = new Map<string, BillTimelineEntry[]>();
@@ -53,20 +51,21 @@ export function buildBillTimeline(input: {
         const endedAt = new Date(Math.min(periodEnd, end.getTime()));
         const next = sorted[index + 1];
         // Active quotes can end at the last whole minute while the preview clock still has seconds.
-        const currentTail = !session.endedAt && !next && endedAt.getTime() < end.getTime();
+        const tailMilliseconds = end.getTime() - endedAt.getTime();
+        const currentTail = !session.endedAt && !next && tailMilliseconds > 0 && tailMilliseconds < 60_000;
         const isBoundary = !currentTail && endedAt.getTime() < end.getTime() && !!next;
         const eventAt = currentTail ? end : endedAt;
         add(eventAt, {
-          trackId: id, name, kind: isBoundary ? "switch" : session.endedAt ? "end" : "current",
+          trackId: id, name, kind: isBoundary ? "switch" : session.endedAt || endedAt.getTime() < end.getTime() && !currentTail ? "end" : "current",
           rule: item.label, nextRule: isBoundary ? next?.label ?? null : null, amount: item.amount,
-          startedAt: period?.startedAt.toISOString() ?? null, endedAt: period ? eventAt.toISOString() : null,
+          startedAt: period?.startedAt.toISOString() ?? null, endedAt: period ? endedAt.toISOString() : null,
           unitMinutes: explanation?.pricing?.unitMinutes ?? null, unitPrice: explanation?.pricing?.unitPrice ?? null,
           units: explanation?.units ?? null, cap: explanation?.intervalCapReached ? explanation.intervalCap : null,
           paidBefore: explanation?.paidBefore ?? null,
         });
       });
-      if (session.endedAt && !sorted.some(item => Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) === end.getTime())) {
-        add(end, { trackId: id, name, rule: sorted.at(-1)?.label ?? null, kind: session.endedAt ? "end" : "current" });
+      if (!sorted.some(item => end.getTime() - Math.min(item.period?.endedAt.getTime() ?? end.getTime(), end.getTime()) < (session.endedAt ? 1 : 60_000))) {
+        add(end, { trackId: id, name, rule: session.endedAt ? sorted.at(-1)?.label ?? null : null, kind: session.endedAt ? "end" : "current" });
       }
     }
   }

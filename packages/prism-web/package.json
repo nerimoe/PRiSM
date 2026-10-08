@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "preview": "vite preview",
     "dev": "vite --host 127.0.0.1"
   },
   "dependencies": {
@@ -15,7 +16,8 @@
     "react-dom": "^19.1.0",
     "react-leaflet": "^5.0.0",
     "react-router-dom": "^7.6.1",
-    "@prism/core": "workspace:*"
+    "@prism/core": "workspace:*",
+    "@prism/application": "workspace:*"
   },
   "devDependencies": {
     "@types/leaflet": "^1.9.21",

@@ -233,6 +233,7 @@ describe("createD1Repositories", () => {
         enabled: true,
         provider: {
           id: "time.d1",
+          timeZone: "UTC",
           rules: [
             {
               id: "base",

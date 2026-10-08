@@ -1,13 +1,15 @@
-import { QQBinding } from "./SessionContent";
+import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
+import { billTime } from "./bill-time";
+import { PlatformBinding } from "./SessionContent";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
-import { useNavigate } from "react-router-dom";
 import { Power, DoorOpen, Coins, Loader2, Check } from "lucide-react";
-import { ApiError, api, playerOperation, type PublicMachine } from "../api";
+import { api, invalidatePlayerReads, playerOperation, type PublicMachine } from "../api";
 import { useI18n } from "../i18n";
 import {
   operationLocation,
@@ -20,7 +22,7 @@ import { useAuth } from "./AuthContext";
 import { PlayerDialog } from "./PlayerAccountMenu";
 
 type DeviceState = {
-  gate: "ready" | "qq" | "entry";
+  gate: "ready" | "binding" | "entry";
   power: "on" | "off" | "unknown" | "unmanaged";
   coinUsed: boolean;
   mahjong?: {capacity:number;seats:{name:string;mine:boolean;playing:boolean}[]} | null;
@@ -29,18 +31,19 @@ export function DeviceControls({
   machine,
   ticket,
   children,
-  cardBusy,
+  cardBusy, onExpired,
 }: {
   machine: PublicMachine;
   ticket: string;
   children: ReactNode;
   cardBusy: boolean;
+  onExpired: () => void;
 }) {
   const { t, errorText } = useI18n();
-  const navigate = useNavigate();
   const code = machine.shop.publicId!;
   const { setBillingActive } = useAuth();
   const [state, setState] = useState<DeviceState | null>(null);
+  const [power, setPower] = useState<DeviceState["power"]>("unknown");
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [password, setPassword] = useState<{
     temporaryPassword: string;
@@ -50,6 +53,7 @@ export function DeviceControls({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [waitingPower, setWaitingPower] = useState(false);
+  const refreshError = useRef("");
   const failed = useCallback(
     (e: unknown) => {
       const code =
@@ -59,25 +63,52 @@ export function DeviceControls({
           "TICKET_EXPIRED",
         ].includes(code)
       )
-        navigate("/m/expired", { replace: true });
+        onExpired();
       else setError(errorText(e instanceof Error ? e.message : "操作失败"));
     },
-    [navigate, errorText],
+    [onExpired, errorText],
   );
-  const refresh = useCallback(async () => {
-    const [current, shop] = await Promise.all([
-      api<DeviceState>(
-        `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}`,
-      ),
-      api<ShopInfo>(shopApi(code)),
-    ]);
+  const refresh = useCallback(async (signal?: AbortSignal) => {
+    const current = await api<DeviceState>(
+      `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}&includePower=0`, { signal });
+    if (signal?.aborted) return;
     setState(current);
-    setInfo(shop);
-    if (current.power !== "off") setWaitingPower(false);
-  }, [ticket, code]);
+    const previousRefreshError = refreshError.current;
+    setError(previous => previous === previousRefreshError ? "" : previous);
+    refreshError.current = "";
+  }, [ticket]);
+  usePagePolling(async signal => {
+    try { await refresh(signal); }
+    catch (e) {
+      if (!signal.aborted && (!isTransientReadFailure(e) || !state)) {
+        refreshError.current = errorText(e instanceof Error ? e.message : "操作失败");
+        failed(e);
+      }
+      throw e;
+    }
+  }, !busy && !cardBusy, ticket, !state || state.gate === "binding" || !!machine.capabilities.mahjong);
+  const previousGate = useRef<DeviceState["gate"] | undefined>(undefined);
   useEffect(() => {
-    void refresh().catch(failed);
-  }, [refresh, failed]);
+    let cancelled = false;
+    if (previousGate.current !== undefined && previousGate.current !== state?.gate) invalidatePlayerReads();
+    previousGate.current = state?.gate;
+    api<ShopInfo>(shopApi(code)).then(shop => { if (!cancelled) setInfo(shop); }).catch(failed);
+    return () => { cancelled = true; };
+  }, [code, state?.gate, failed]);
+  usePagePolling(async signal => {
+    try {
+      const current = await api<{ power: DeviceState["power"] }>(
+        `/api/v1/devices/session/power?ticket=${encodeURIComponent(ticket)}`, { signal });
+      if (signal.aborted) return;
+      setPower(current.power);
+      if (current.power === "on") setWaitingPower(false);
+      if (current.power === "unknown") throw new TypeError("Power state unavailable");
+    } catch (error) {
+      if (!signal.aborted && !isTransientReadFailure(error)) failed(error);
+      throw error;
+    }
+  }, !!machine.capabilities.power && state?.gate === "ready" && !busy && !cardBusy, ticket,
+    waitingPower || power === "unknown");
   useEffect(() => {
     let cancelled = false;
     if (info?.shop.billingEnabled && info.membership) {
@@ -87,28 +118,12 @@ export function DeviceControls({
     }
     return () => { cancelled = true; };
   }, [code, state?.gate, info?.shop.billingEnabled, info?.membership?.playerId, setBillingActive]);
-  useEffect(() => {
-    if (busy || cardBusy || (state?.gate !== "qq" && !waitingPower && !machine.capabilities.mahjong)) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    async function poll() {
-      try {
-        if (!document.hidden) await refresh();
-      } catch (e) {
-        if (!stopped && e instanceof ApiError) failed(e);
-      } finally {
-        if (!stopped) timer = setTimeout(poll, 3000);
-      }
-    }
-    timer = setTimeout(poll, 3000);
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [state?.gate, waitingPower, cardBusy, busy, refresh, failed, machine.capabilities.mahjong]);
   async function act(action: string, fn: () => Promise<void>) {
     if (busy || cardBusy) return;
     setBusy(action);
     try {
       await fn();
-      await refresh();
+      await Promise.all([refresh(), api<ShopInfo>(shopApi(code)).then(setInfo)]);
     } catch (e) {
       if (
         e &&
@@ -151,7 +166,12 @@ export function DeviceControls({
     });
   }
   const cap = machine.capabilities;
-  if (!Object.values(cap).some(Boolean)) return null;
+  if (!Object.values(cap).some(Boolean)) return <p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p>;
+  const powerBlocked = cap.power && power === "off";
+  const hasReadyAction = cap.door || powerBlocked
+    || (!powerBlocked && (cap.card || (cap.coin && !machine.coinAfterSwipe)
+      || (cap.mahjong && state?.mahjong && (state.mahjong.seats.some(seat => seat.mine)
+        || state.mahjong.seats.length < state.mahjong.capacity))));
   const spinner = <Loader2 size={22} className="animate-spin" />;
   return (
     <div className="device-controls">
@@ -160,13 +180,13 @@ export function DeviceControls({
           <p className="text-sm leading-relaxed">{error}</p>
         </PlayerDialog>
       )}
-      {!state || !info ? (
-        error ? <button className="session-action" onClick={() => act("load", refresh)}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
-      ) : state.gate === "qq" ? (
-        <QQBinding code={code} />
+      {!state || state.gate === "entry" && !info ? (
+        error ? <button className="session-action" onClick={() => act("load", async () => { invalidatePlayerReads(); })}>{t("重试")}</button> : <div className="flex justify-center" role="status" aria-label={t("正在加载")}>{spinner}</div>
+      ) : state.gate === "binding" ? (
+        <PlatformBinding code={code} />
       ) : (
         <>
-          {state.gate === "entry" && (
+          {state.gate === "entry" && info && (
             <div className="grid gap-6">
               <h2>{t("确认入场")}</h2>
               <EntryPricing info={info} />
@@ -216,7 +236,7 @@ export function DeviceControls({
                   </output>
                   <small>
                     {t("有效期至")}{" "}
-                    {new Date(password.expiresAt).toLocaleTimeString()}
+                    {billTime(password.expiresAt).time}
                   </small>
                   <p>{t("在门锁上输入密码后按 #")}</p>
                 </div>
@@ -240,7 +260,7 @@ export function DeviceControls({
             </div>
           )}
           {state.gate === "ready" &&
-            (cap.power && state.power === "off" ? (
+            (cap.power && power === "off" ? (
               <div className="grid gap-7 text-center">
                 <h2>{t("设备尚未开机")}</h2>
                 <button
@@ -305,6 +325,7 @@ export function DeviceControls({
                 )}
               </>
             ))}
+          {state.gate === "ready" && !hasReadyAction && <p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p>}
         </>
       )}
     </div>

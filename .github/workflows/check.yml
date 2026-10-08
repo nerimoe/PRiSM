@@ -1,0 +1,65 @@
+name: checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Run all test files in isolated Bun processes
+        shell: bash
+        run: |
+          failed=0
+          while IFS= read -r -d '' test_file; do
+            case "$test_file" in
+              packages/platform/test/deployment-control.test.ts|packages/platform/test/maintenance-worker.test.ts)
+                node scripts/check-workerd-tests.cjs "$test_file" || failed=1 ;;
+              *) bun test --timeout 30000 "./$test_file" || failed=1 ;;
+            esac
+          done < <(git ls-files -z '*.test.ts' '*.test.tsx' '*.spec.ts' '*.spec.tsx')
+          exit "$failed"
+      - run: bun run typecheck
+      - run: bun run check:platform
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun run build:web
+      - run: npm install --prefix "$RUNNER_TEMP/prism-browser" playwright@1.62.1
+      - run: node "$RUNNER_TEMP/prism-browser/node_modules/playwright/cli.js" install --with-deps chromium --only-shell
+      - name: Check scan flows, shop data transfer, identities, billing previews and reports
+        env:
+          PRISM_PLAYWRIGHT_MODULE: ${{ runner.temp }}/prism-browser/node_modules/playwright
+          PRISM_SCAN_OUTPUT: .scan-check
+        run: |
+          bun run --cwd packages/prism-web preview --host 127.0.0.1 --port 4173 &
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:4173/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/check-scan-browser.cjs
+          node scripts/check-shop-data-browser.cjs
+          node scripts/check-player-identities-browser.cjs
+          node scripts/check-live-billing-browser.cjs
+          node scripts/check-billing-previews-browser.cjs
+          node scripts/check-reports-browser.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scan-first-paint
+          path: .scan-check/*.png
+          include-hidden-files: true

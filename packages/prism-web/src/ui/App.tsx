@@ -24,11 +24,7 @@ const AdminPage = lazy(() =>
 const CardsPage = lazy(() =>
   import("./CardsPage").then((module) => ({ default: module.CardsPage })),
 );
-const MachineLoginPage = lazy(() =>
-  import("./MachineLoginPage").then((module) => ({
-    default: module.MachineLoginPage,
-  })),
-);
+import { MachineLoginPage } from "./MachineLoginPage";
 const MerchantPage = lazy(() =>
   import("./MerchantPage").then((module) => ({ default: module.MerchantPage })),
 );

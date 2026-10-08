@@ -17,6 +17,7 @@ import type {
   PreviewSessionSettlementResult,
   PricingProvider,
   PlayerCheckout,
+  PlayerRepository,
   SettlementAdjustment,
   SettlementRecord,
   SettlementRepository,
@@ -66,6 +67,7 @@ import {
 } from "./asset-definition-effects";
 
 export type SettlementServiceDependencies = {
+  players?: PlayerRepository;
   commitCheckout?: (input: CheckoutCommit) => Promise<void>;
   sessions: SessionRepository;
   operationLocks?: OperationLockRepository;
@@ -170,7 +172,13 @@ export type SettlePlayerCheckoutResult = {
   globalCapWindows: TimeCapPricingWindow[];
 };
 
+export type ExternalCheckoutInput = {
+  playerId: string; staffId: string; method: "wechat" | "alipay" | "cash" | "other";
+  previewedAt: Date; expectedTotal: number; sessionIds: string[];
+};
+
 export type SettlementService = {
+  checkoutExternal(input: ExternalCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   previewCheckout(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   stopSession(input: { playerId: string; sessionId: string }): Promise<Session & { status: "closed"; endedAt: Date }>;
@@ -218,6 +226,7 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
 
     async checkout(input) {
       return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        await assertWalletPlayer(dependencies, input.playerId);
         const now = dependencies.now();
         const [activeSessions, unpaidClosedSessions, assetHoldings] = await Promise.all([
           dependencies.sessions.findActiveByPlayerId(input.playerId),
@@ -242,8 +251,36 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
       });
     },
 
+    async checkoutExternal(input) {
+      return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        const player = await dependencies.players?.findById(input.playerId);
+        if (player?.paymentMode !== "cashier" || player.status !== "active")
+          throw new PrismDomainError("仅前台卡片档案可现场收款", "CASHIER_PROFILE_REQUIRED");
+        const now = dependencies.now();
+        const at = input.previewedAt;
+        if (!Number.isFinite(at.getTime()) || at > now || now.getTime() - at.getTime() > 600_000)
+          throw new PrismDomainError("账单已过期，请重新预览", "CASHIER_PREVIEW_EXPIRED");
+        const [active, unpaid, holdings] = await Promise.all([
+          dependencies.sessions.findActiveByPlayerId(input.playerId),
+          dependencies.sessions.findUnpaidClosedByPlayerId(input.playerId),
+          dependencies.assets.listAssetHoldings(input.playerId),
+        ]);
+        if (holdings.length) throw new PrismDomainError("前台卡片档案不能保存资产", "CASHIER_PROFILE_RESTRICTED");
+        const sessions = uniqueSessionsById([...unpaid, ...active.map(session => closeSession({ session, now: at }))]);
+        const ids = sessions.map(session => session.id).sort();
+        if (sessions.some(session => session.startedAt > at || (session.endedAt && session.endedAt > at)) ||
+            JSON.stringify(ids) !== JSON.stringify([...input.sessionIds].sort()))
+          throw new PrismDomainError("计时已变化，请重新预览账单", "CASHIER_PREVIEW_CHANGED");
+        const details = await calculateUnifiedCheckoutDetails(dependencies, input.playerId, sessions, [], at);
+        if (details.total !== centsOf(input.expectedTotal))
+          throw new PrismDomainError("金额已变化，请重新预览账单", "CASHIER_PREVIEW_CHANGED");
+        return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now, undefined,
+          { staffId: input.staffId, method: input.method, collectedAt: now });
+      });
+    },
+
     async stopSession(input) {
-      return acquireLock(input.playerId, async () => {
+      return acquireCheckoutLock(dependencies, input.playerId, async () => {
         const now = dependencies.now();
         const session = await findSessionOrThrow(dependencies.sessions, input.playerId, input.sessionId);
         const closedSession = closeSession({ session, now });
@@ -255,6 +292,7 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
 
     async checkoutWithOverride(input) {
       return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        await assertWalletPlayer(dependencies, input.playerId);
         const now = dependencies.now();
         const [activeSessions, unpaidClosedSessions, assetHoldings] = await Promise.all([
           dependencies.sessions.findActiveByPlayerId(input.playerId),
@@ -286,6 +324,11 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
   };
 }
 
+async function assertWalletPlayer(dependencies: SettlementServiceDependencies, playerId: string): Promise<void> {
+  if ((await dependencies.players?.findById(playerId))?.paymentMode === "cashier")
+    throw new PrismDomainError("请在前台确认现场收款", "CASHIER_PAYMENT_REQUIRED");
+}
+
 function assertCheckoutBalance(holdings: readonly AssetHolding[], amount: Cents, now: Date): void {
   deductCurrency(holdings.map((holding) => ({ ...holding })), {
     amount,
@@ -306,16 +349,7 @@ async function calculateUnifiedCheckoutDetails(
     throw new PrismDomainError("Player has no sessions to settle.", "PLAYER_HAS_NO_UNSETTLED_SESSIONS");
   }
 
-  const [operations, storeProfile] = dependencies.system
-    ? await Promise.all([
-        dependencies.system.getAppSetting<{ timeZone?: unknown }>("venue.operations"),
-        dependencies.system.getAppSetting<{ timeZone?: unknown }>("store.profile"),
-      ])
-    : [null, null];
-  const timeZone =
-    (typeof operations?.timeZone === "string" && operations.timeZone.trim() ? operations.timeZone.trim() : null) ??
-    (typeof storeProfile?.timeZone === "string" && storeProfile.timeZone.trim() ? storeProfile.timeZone.trim() : null) ??
-    "Asia/Shanghai";
+  const timeZone = "UTC";
 
   const pastAppliedAdjustments = dependencies.settlements.listPastAppliedAdjustmentsByPlayerId
     ? await dependencies.settlements.listPastAppliedAdjustmentsByPlayerId(playerId)
@@ -679,6 +713,7 @@ async function persistUnifiedPlayerCheckout(
     source: string;
     label: string;
   },
+  externalPayment?: PlayerCheckout["externalPayment"],
 ): Promise<SettlePlayerCheckoutResult> {
   const anchorSession = details.anchorSession;
   const sessionIds = details.sessionResults.map((result) => result.session.id);
@@ -701,13 +736,13 @@ async function persistUnifiedPlayerCheckout(
     };
   }
 
-  const currencyLedgerEntries = deductCurrency(details.availableHoldings, {
+  const currencyLedgerEntries = externalPayment ? [] : deductCurrency(details.availableHoldings, {
     amount: finalTotal,
     reason: "session.settlement",
     refId: anchorSession.id,
     now,
   });
-  const assetLedgerEntries = [
+  const assetLedgerEntries = externalPayment ? [] : [
     ...currencyLedgerEntries,
     ...extraLedgerEntries,
   ];
@@ -735,6 +770,7 @@ async function persistUnifiedPlayerCheckout(
 
   const settlements: SettlementRecord[] = [];
   const checkout: PlayerCheckout = {
+    ...(externalPayment ? { externalPayment } : {}),
     id: `player-checkout:${anchorSession.id}`,
     playerId,
     subtotal: details.subtotal,
@@ -786,9 +822,9 @@ async function persistUnifiedPlayerCheckout(
   });
   checkout.timeline.pricingReleaseIds = [...new Set(sessions.flatMap(session => session.pricingReleaseId ? [session.pricingReleaseId] : []))];
   if (dependencies.commitCheckout) {
-    await dependencies.commitCheckout({ assets: assetCommit, checkout, settlements, sessions, pricingHistory: pricingHistoryEntries, pricingCapHistory });
+    await dependencies.commitCheckout({ assets: externalPayment ? null : assetCommit, checkout, settlements, sessions, pricingHistory: pricingHistoryEntries, pricingCapHistory });
   } else {
-    await dependencies.assets.commitAssetTransaction(assetCommit);
+    if (!externalPayment) await dependencies.assets.commitAssetTransaction(assetCommit);
     await savePlayerCheckout(dependencies.settlements, checkout, settlements);
     await saveSessions(dependencies.sessions, sessions);
     await dependencies.pricingHistory?.appendEntries(pricingHistoryEntries);

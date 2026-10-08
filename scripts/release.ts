@@ -2,8 +2,6 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
-const dashboardPath = fileURLToPath(new URL("../packages/prism-dashboard", import.meta.url));
-const dashboardPubspecPath = fileURLToPath(new URL("../packages/prism-dashboard/pubspec.yaml", import.meta.url));
 const wranglerConfigPath = fileURLToPath(new URL("../wrangler.generated.jsonc", import.meta.url));
 const [command, argument] = Bun.argv.slice(2);
 
@@ -12,14 +10,9 @@ const version = requireSemver(packageJson.version);
 
 if (command === "bump") {
   const nextVersion = bumpSemver(version, argument);
-  const pubspec = await Bun.file(dashboardPubspecPath).text();
-  const match = pubspec.match(/^version:\s*([0-9]+\.[0-9]+\.[0-9]+)(?:\+([0-9]+))?\s*$/m);
-  if (!match) throw new Error("packages/prism-dashboard/pubspec.yaml has no valid version field");
-  const nextBuild = Number(match[2] ?? "0") + 1;
   packageJson.version = nextVersion;
   await Bun.write(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
-  await Bun.write(dashboardPubspecPath, pubspec.replace(match[0], `version: ${nextVersion}+${nextBuild}`));
-  console.log(`Release version bumped to ${nextVersion} (Dashboard build ${nextBuild}).`);
+  console.log(`Release version bumped to ${nextVersion}.`);
 } else if (command === "deploy-worker") {
   await run([
     "wrangler",
@@ -31,24 +24,8 @@ if (command === "bump") {
     "--define",
     `PRISM_BACKEND_REVISION:${JSON.stringify(await revision(root))}`,
   ], root);
-} else if (command === "build-dashboard") {
-  await run([
-    "dart",
-    "run",
-    "build_runner",
-    "build",
-    "--delete-conflicting-outputs",
-  ], dashboardPath);
-  await run([
-    "flutter",
-    "build",
-    "web",
-    "--no-pub",
-    `--dart-define=PRISM_DASHBOARD_VERSION=${version}`,
-    `--dart-define=PRISM_DASHBOARD_REVISION=${await revision(dashboardPath)}`,
-  ], dashboardPath);
 } else {
-  throw new Error("Usage: bun run scripts/release.ts <bump patch|minor|major|deploy-worker|build-dashboard>");
+  throw new Error("Usage: bun run scripts/release.ts <bump patch|minor|major|deploy-worker>");
 }
 
 function requireSemver(value: unknown): string {

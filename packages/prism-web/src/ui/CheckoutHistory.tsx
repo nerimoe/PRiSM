@@ -1,3 +1,4 @@
+import { displayDateTime } from "./bill-time";
 import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronRight, Loader2, ReceiptText } from "lucide-react";
 import { api } from "../api";
@@ -8,7 +9,7 @@ import { SettledBill, type Receipt } from "./Checkout";
 type Record = { id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number };
 type History = { records: Record[]; nextOffset: number | null };
 
-export function CheckoutHistory({ code }: { code: string }) {
+export function CheckoutHistory({ code, timeZone }: { code: string; timeZone?: string }) {
   const { t, errorText } = useI18n();
   const [records, setRecords] = useState<Record[]>([]);
   const [offset, setOffset] = useState(0);
@@ -42,11 +43,11 @@ export function CheckoutHistory({ code }: { code: string }) {
     {selected ? <>
       <button className="history-back focus-ring" onClick={() => { setSelected(null); setReceipt(null); }}><ArrowLeft size={18} />{t("全部记录")}</button>
       {receipt && <>
-        <SettledBill receipt={receipt} />
+        <SettledBill receipt={receipt} timeZone={timeZone} />
       </>}
     </> : <>
       {records.map(row => <button className="history-record focus-ring" key={row.id} onClick={() => { setReceipt(null); setBusy(true); setSelected(row); }}>
-        <span className="history-label"><strong>{new Date(row.startedAt ?? row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong>{row.startedAt && <small>→ {new Date(row.endedAt ?? row.settledAt).toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>}</span>
+        <span className="history-label"><strong>{displayDateTime(row.startedAt ?? row.settledAt, timeZone)}</strong>{row.startedAt && <small>→ {displayDateTime(row.endedAt ?? row.settledAt, timeZone)}</small>}</span>
         <span className="history-amount"><strong>{row.total.toFixed(2)}</strong></span><ChevronRight size={16} />
       </button>)}
       {!busy && !error && !records.length && <div className="history-empty"><ReceiptText size={36} /><p>{t("暂无结账记录")}</p></div>}

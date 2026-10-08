@@ -22,8 +22,9 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作、设备状态同步和统一资产效果；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。
 - `packages/runtime`：部署装配中心。为 Cloudflare D1/Worker 和 SQLite/本地 Bun 部署组装仓储、SQL 读模型、应用服务、数据库鉴权适配器、外部设备适配器、运行时插件和默认计费规则；不直接包含 SQL 或重复领域规则。生产鉴权只接受数据库中的管理员会话、玩家会话和 API Token，不提供静态令牌回退。
-- `packages/prism-dashboard`：新的 Flutter Web 后台，Dart 包名为 `prism_dashboard`。它以玩家现场运营为中心，直接调用员工 HTTP API 与读模型，不在旧 `admin-flutter` 上继续叠加 UI。设备连接和映射只在设备看板维护；员工与系统页负责店铺、注册、员工和接入密钥设置。
-- Staff Web 时间显示统一通过 `packages/prism-dashboard/lib/src/shared/time_format.dart` 处理，并由 `admin_time_zone.dart` 使用 `store.timeZone` 做 UTC/店铺时间转换。带日期的业务时间统一显示为 `YYYY-MM-DD HH:mm`，日期范围使用 `YYYY-MM-DD`，只有纯时钟控件、计费时间轴刻度和营业时段才使用 `HH:mm`。报表日期边界也按店铺时区生成，不依赖浏览器所在机器时区。
+- `packages/platform`：统一平台 Worker，处理全局登录、店铺成员、设备入口及店铺范围内的业务 API，并托管 React 构建产物。
+- `packages/prism-web`：唯一的 React 管理与玩家客户端。管理入口为 `/merchant/:shopCode`，负责现场运营、计费、资产、报表、设备、成员和设置；玩家入口负责设备扫码与店铺账单。
+- React 时间显示使用店铺位置识别出的 IANA 时区，通过 `Intl`、`ui/bill-time.ts` 和计费时钟转换处理 UTC 时间戳及规则。报表查询把店铺日期范围转换为 UTC，不依赖浏览器自身时区。
 - Staff Web 的权限门控与后端角色一致：viewer 保留查询、筛选、刷新、复制和审计详情能力，但现场结账、玩家修改、资产/计费配置和设备命令等写入口不可用；manager/owner 可以执行普通业务写入，员工账号与接入密钥管理仅 owner 可用，其他角色不会请求对应 owner-only 接口。退出登录会撤销持久化管理员会话，不只清理浏览器本地 Token。
 - `packages/koishi-plugin`（git 子模块，独立仓库 `koishi-plugin-prism`）：直接调用 Integration HTTP API 的 Koishi 机器人插件。
 
@@ -31,12 +32,12 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 
 当前持久化 API Token 只分为两类：
 
-- `integration`：机器人、Koishi/AstrBot 或店内自有入口服务使用。它代表受信任的店内入口，后续通过结构化外部身份（如 `provider=qq, subject=123456`）发起玩家相关动作。
+- `integration`：机器人、Koishi/AstrBot 或店内自有入口服务使用。它代表受信任的店内入口，后续通过结构化外部身份（如 `provider=onebot, subject=123456`）发起玩家相关动作。
 - `machine`：游戏机软件或可控制游戏机的小主机使用。它代表机器软件接入，只通过 `/rpc/machine/ws` 接收实时命令、确认执行结果并发送心跳。
 
 员工后台不再创建 `player`、`bot` 或 `agent` API Token。玩家 Web 入口使用绑定到单个玩家的 player session；机器侧也使用 `machine` 语言，避免把 Home Assistant 设施控制和游戏机软件能力混在一个「Agent」概念里。
 
-玩家 Web 入口使用 `POST /rpc/player-auth/login/by-identity` 创建 `player_sessions`。会话记录只保存 token hash、玩家 ID、过期时间、最后使用时间和撤销时间；浏览器随后调用 `/rpc/player/*` 时只发送玩家会话 Token。后端从 token hash 查出唯一玩家，不接受浏览器提供的 `X-PRiSM-Player-Id` 来切换身份。机器人、自助入口和店内外部服务如果需要按 QQ 或 Aime 身份操作玩家，仍应使用 `integration` API 和结构化外部身份，而不是借用玩家会话。
+玩家 Web 入口使用 `POST /rpc/player-auth/login/by-identity` 创建 `player_sessions`。会话记录只保存 token hash、玩家 ID、过期时间、最后使用时间和撤销时间；浏览器随后调用 `/rpc/player/*` 时只发送玩家会话 Token。后端从 token hash 查出唯一玩家，不接受浏览器提供的 `X-PRiSM-Player-Id` 来切换身份。机器人、自助入口和店内外部服务如果需要按 平台身份或 Aime 身份操作玩家，仍应使用 `integration` API 和结构化外部身份，而不是借用玩家会话。
 
 ## 核心原则
 
@@ -64,7 +65,7 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 
 玩家可见或可消费的当前资产统一使用 `evaluateAssetHoldingAvailability` 解析。只有数量为正、持有记录已生效且未过期、关联资产定义存在且未归档、资产定义已生效且未过期的记录才属于可用资产（「数量为正」按 `money.ts` 的 `isPositiveQuantity` 判定，浮点残渣不算余额）；面向玩家的读取还会排除资产定义元数据中 `hiddenFromPlayer: true` 的项目。应用层的 `AvailableAssetReader` 用于结算、兑换和购买等已取得持有快照的流程；玩家摘要、员工玩家列表的钱包余额与资产列表由 `storage-sql` 用单条关联 SQL 同时读取持有和定义，再调用同一 evaluator。玩家钱包、资产接口和兑换回执默认只返回玩家可见资产；结算、人工扣款和服务项目购买会显式请求内部可用资产，以便隐藏的后台计费资产仍能按定义参与结算。结账响应不再让客户端从资产列表推导余额，而是直接返回 `wallet.balanceBefore` 和 `wallet.balanceAfter`；两个值都是经过相同可用性规则后的结算余额，余额为 `0` 也会返回。员工资产审计和历史流水保留原始记录，以免归档或过期后丢失历史；当前 holdings 会附加可用状态和不可用原因，dashboard 默认显示可用记录并允许切换到无效或全部。所有读取均无副作用，不会顺便清理持有记录。
 - `AssetLedgerEntry`：追加式资产变更明细记录，包含增量（`delta`）、变更原因、引用 ID 以及可选的 `transactionId`。
-- `PlayerIdentity`：玩家的外部身份绑定。以 provider（如 QQ、Aime 卡）加 subject 唯一键标识，用于第三方登录与遗留数据映射。
+- `PlayerIdentity`：玩家的外部身份绑定。以 provider（如 聊天平台、Aime 卡）加 subject 唯一键标识，用于第三方登录与遗留数据映射。
 - `PlayerSession`：玩家 Web 或自助前台登录后的短期会话。它绑定单个 `playerId`，只存储 token hash，不作为店内机器人或机器软件的长期接入凭证。
 - `BusinessItem`：店铺管理的服务项目（如赛事报名、预约占位、包间套餐、服务费）。包含类别、显示名称、价格、可选关联资产、激活/过期时间以及归档状态。
 - `BusinessItemOrder`：玩家购买 `BusinessItem` 的履约记录。记录订单价格、状态（已支付/已履约/已取消）、关联的会话及生成 `kind=business-item.purchase` 的资产交易。
@@ -124,8 +125,8 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 - 机器软件状态定时上报并于 Staff Web 展示；Home Assistant 状态读取由 runtime 外部适配器实现，application 的同步服务负责并发读取、容错和批量持久化，Hono 只触发服务并返回缓存结果。
 - 员工前台覆盖结算（Checkout Override）：手动改单，溢出部分自动以 `staff.override` 存入调整记录。
 - 财务报表读模型：聚合收入、场次数量、正向资产流水笔数和出币次数；结账明细与玩家排行使用 `limit`/`offset` 分页并返回 `hasMore`，避免 Dashboard 把首屏结果误作完整数据。
-- 基于 Hono 的员工 API，以及新的 Flutter Web 后台 `prism_dashboard`。`/admin` 只保留部署提示页，正式管理端从 `packages/prism-dashboard` 构建。
-- 现场运营读模型：`/rpc/staff/live-players` 将玩家、钱包、在场时间、预计应付和未结 sessions 聚合为玩家优先的视图。未结 sessions 包含 active sessions，以及已经停止但仍是 unpaid 的 closed sessions；停止后的计时项仍留在玩家账单中，直到玩家级统一结账。每条 session 会带出当前结算预览中的 `pricingCharges`，展示该计时实际命中的计费方案、时段规则和金额；方案名称来自员工计费配置，取不到时才退回方案 ID。单条 `stop` 只停止某个 session 计时，不扣款；玩家级 `preview`/`confirm` 负责统一预览与结算。管理员加开计时时可指定这条计时使用哪些计费方案，后续资产计费效果也可以继续精确到这些方案和规则。
+- 基于 Hono 的员工 API，以及 `packages/prism-web` React 后台。独立 API 的 `/admin` 保留部署提示页；统一平台的店铺后台使用 `/merchant`。
+- 现场运营读模型：`/rpc/staff/live-players` 将玩家、钱包、在场时间和未结 sessions 聚合为玩家优先的视图，同时批量读取只读 UTC 计费快照。统一平台的预估和时间轴由浏览器 Web Worker 复用应用层计费引擎生成，服务器保留结账核算；详见[在店计费预估](live-billing-performance.md)。未结 sessions 包含 active sessions，以及已经停止但仍是 unpaid 的 closed sessions；停止后的计时项仍留在玩家账单中，直到玩家级统一结账。每条 session 会带出当前结算预览中的 `pricingCharges`，展示该计时实际命中的计费方案、时段规则和金额；方案名称来自员工计费配置，取不到时才退回方案 ID。单条 `stop` 只停止某个 session 计时，不扣款；玩家级 `preview`/`confirm` 负责统一预览与结算。管理员加开计时时可指定这条计时使用哪些计费方案，后续资产计费效果也可以继续精确到这些方案和规则。
 
 ## 暂缓实现（Deferred）
 
@@ -134,3 +135,29 @@ APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操�
 - 编译期的 Hono 路由与响应体强类型客户端生成。
 - 更复杂的报表图表与批量操作。
 - 计费配置的多版本灰度回滚管理。
+
+计费规则、入场判定、封顶日期边界和优惠日历统一使用 UTC；店铺时区用于 UI 输入与展示。规则编辑器在 HTTP 边界转换时钟、开始日星期和指定日期，后端预览将 UTC 收费窗口投影到 UI 的当地日。详情及历史版本兼容约定见 [UTC 时间约定](utc-time-contract.md)。
+
+UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务计划，在 SQLite 启动、D1 首次请求和活动账单后台读取之前执行。完成标记与转换一起提交，版本和发布防篡改触发器仅在事务内临时开放，随后恢复。统一平台在此之后以 `shop-location-time-zone-v1` 补齐已有店铺的展示时区，并在位置保存时原子更新 `store.profile.timeZone`；前后端共用 `core/location-time-zone.ts` 的离线 WGS84 → IANA 地理查询。位置变化只更新展示时区，不影响 UTC 规则与历史金额。独立旧版 runtime 没有店铺位置表，保留手动展示设置。
+
+平台的 `shop_player_accounts` 只关联网页账号与店内玩家，`shop_platform_bindings` 独立保存已验证的 provider/subject。任意平台绑定都可满足店铺的 `identityBindingRequired`，同值不同平台不合并。店主主动转换平台标识，迁移不自动重命名；两张身份表在同一事务内更新。D1 本地夹具和预览脚本通过 `splitD1MigrationStatements` 解析触发器，避免按分号截断 SQL。
+
+### 扫码注册与可选 Passkey
+
+新玩家从机台二维码/NFC（`/t/:shop/:device` 或 `/m#ticket=...`）进入时，MuNET OAuth 完成后返回原机台页面，保留 ticket、查询参数和锚点。新账号附带 `setup=passkey` 提示；Web 在原页面显示“建议添加 Passkey”，提供添加和跳过按钮。仅点击添加时才唤起系统验证器；成功或跳过后移除提示参数，继续平台身份绑定、入场及机台操作，不经过账号设置页。取消、绑定失败、网络错误或不支持 Passkey 均可跳过，已添加 Passkey 的账号不重复提示。OAuth 取消/失败同样返回原扫码页；授权取消不显示错误。绑定过程中 ticket 到期时，原页面内提示重新扫码，不跳转到其他页面或自动续期。普通非到店登录仍可进入账号设置完成可选设置。
+
+iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup=passkey` 为新账号附带同样的可选提示，原有客户端可以忽略新增参数。Swift 保留机台 ticket 和上下文，使用 AuthenticationServices 原生注册弹窗调用现有 `/api/v1/auth/passkey/register/options` 和 `/api/v1/auth/passkey/register`；跳过、取消及失败均不跳转至 Web 设置页，也不触发入场或计费操作。Passkey 仍是可选登录方式，与店家的平台身份强制绑定策略独立。
+
+![新玩家在原机台页面选择添加或跳过 Passkey](images/passkey-onboarding-mobile.png)
+
+设备页面按当前能力和状态判断可执行操作。未配置任何能力，或仅有电源功能且已开机（包括未知/未托管状态），或只配置隐藏的自动投币功能时，显示“当前设备没有可操作项”。仍在加载、等待身份绑定或入场、正在执行操作时不会误显示该提示；刷卡、开门、手动投币及可上/下桌的麻将操作存在时正常显示。仅有满员麻将桌且玩家未入座时，在保留满桌信息的同时提示无可操作项。Web 与 Swift 使用一致文案。
+
+![电源设备通电后显示无可操作项提示](images/device-no-actions-mobile.png)
+
+扫码入口、客户端刷新预算、HA 观察缓存、APNs 重试与临时状态清理的现行约定见 [扫码性能与请求预算](scan-performance.md)。
+
+营业报表归档采用独立的 `checkout_report_states` 表，按完整 checkout 归档并从报表营业额排除；不改金融结算、余额、玩家历史或收费/封顶历史。员工账单详情复用玩家历史 receipt 查询及 Web 时间轴组件。迁移、权限和备份兼容见 [营业记录归档](./merchant-report-archive.md)。
+
+### Web 预览计算
+
+在店列表、玩家账单、员工结账前与前台收款前的预估共用只读计费输入，由 Web Worker 复用 application 引擎生成；24 小时规则预览和当天规则筛选复用 core 日历函数。已结账账单读取持久化结果，报表汇总由 SQL 聚合。最终扣款和所有写操作的业务校验仍在后端。Swift、Bot 和自定义运行时插件保留兼容预估 API，详见[Web 计费计算与只读输入](browser-billing-previews.md)。

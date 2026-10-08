@@ -1,5 +1,6 @@
 import { useI18n } from "../../i18n";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { resolveLocationTimeZone } from "@prism/core";
 import { Plus, Save, Store, Trash2, X } from "lucide-react";
 import { api, Api, type Shop, type ShopMember } from "../../api";
 import { input, button, useMerchant, segment } from "./shared";
@@ -30,6 +31,11 @@ export function ShopForm({
   const [longitude, setLongitude] = useState<number | null>(
     shop?.longitude ?? null,
   );
+  const timeZone = useMemo(() => {
+    if (latitude === null || longitude === null) return null;
+    try { return resolveLocationTimeZone(latitude, longitude); }
+    catch { return null; }
+  }, [latitude, longitude]);
   const [radiusMeters, setRadiusMeters] = useState(
     String(shop?.radiusMeters ?? shop?.radius_meters ?? 80),
   );
@@ -49,7 +55,7 @@ export function ShopForm({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (latitude === null || longitude === null) {
+    if (latitude === null || longitude === null || !timeZone) {
       setError("请在地图上选择或填写店铺位置");
       return;
     }
@@ -73,9 +79,10 @@ export function ShopForm({
           longitude,
           radiusMeters: radius,
         });
+        window.dispatchEvent(new Event("prism-shop-settings"));
         await onSaved(result.shop);
       } else {
-        const result = await api<{ shop: Shop; botToken?: string }>(
+        const result = await api<{ shop: Shop; botToken: string | null }>(
           "/api/v1/merchant/shops",
           {
             method: "POST",
@@ -94,7 +101,7 @@ export function ShopForm({
         setLatitude(null);
         setLongitude(null);
         setRadiusMeters("80");
-        await onSaved(result.shop, result.botToken);
+        await onSaved(result.shop, result.botToken ?? undefined);
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存店铺失败");
@@ -189,6 +196,15 @@ export function ShopForm({
                 required
               />
             </label>
+          </div>
+          <div className="mt-3 grid gap-1.5 text-sm">
+            <p role="status" className="font-medium">
+              {t("店铺时区（随位置自动设置）")}：{" "}
+              <span className="font-mono font-normal">{timeZone ?? t("选择位置后自动识别")}</span>
+            </p>
+            <p className="text-xs text-ink/50">
+              {t("时区根据店铺位置自动识别，用于时间展示和规则编辑；计费统一使用 UTC。")}
+            </p>
           </div>
         </div>
 

@@ -31,6 +31,17 @@ describe("localization", () => {
     expect(translateError("toString", "en")).toBe(english["操作失败，请稍后重试"]);
   });
 
+  it("localizes insufficient balance by code instead of the internal diagnostic", () => {
+    for (const diagnostic of ["Insufficient currency holdings for this operation.", "changed internal diagnostic"]) {
+      const error = new ApiError(diagnostic, 409, "INSUFFICIENT_BALANCE");
+      expect(translateError(error.message, "zh")).toBe("余额不足，请充值后重试");
+      expect(translateError(error.message, "en")).toBe("Insufficient balance. Please top up and try again.");
+      expect(error.status).toBe(409);
+      expect(error.code).toBe("INSUFFICIENT_BALANCE");
+      expect(error.sessionExpired).toBe(false);
+    }
+  });
+
   it("has English text for every literal translation key in the web UI", () => {
     const missing = new Set<string>();
     for (const name of readdirSync(new URL("./ui/", import.meta.url), { recursive: true })) {

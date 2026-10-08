@@ -1,3 +1,4 @@
+import { formatApiDateTime } from "@prism/core";
 import {
   createContext,
   useCallback,
@@ -17,6 +18,7 @@ export const MerchantContext = createContext({
   shopCode: "",
   shopId: "",
   billingEnabled: false,
+  cashierEnabled: false,
   canWrite: false,
   owner: false,
   timeZone: "",
@@ -35,7 +37,7 @@ export const money = (value: number | null | undefined) =>
         maximumFractionDigits: 2,
       });
 export const date = (value: string | null | undefined) =>
-  value ? new Date(value).toLocaleString() : "—";
+  value ? formatApiDateTime(value) : "—";
 export const segment = (value: string) => encodeURIComponent(value);
 export function useStaffApi() {
   const { shopCode } = useMerchant();
@@ -112,10 +114,12 @@ export function Modal({
   title,
   children,
   close,
+  dismissDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
+  dismissDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
@@ -127,7 +131,7 @@ export function Modal({
   return (
     <dialog
       ref={ref}
-      onCancel={close}
+      onCancel={event => { if (dismissDisabled) event.preventDefault(); else close(); }}
       className="m-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35"
       aria-label={t(title)}
     >
@@ -137,6 +141,7 @@ export function Modal({
           type="button"
           className={button}
           onClick={close}
+          disabled={dismissDisabled}
           aria-label={t("关闭")}
         >
           <X size={18} />
@@ -216,18 +221,22 @@ export function Table({
 }
 export const cell = "px-4 py-4";
 export type Player = {
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   walletTotal: number;
   status: string;
   activeSessionId: string | null;
   hasUnpaidSession?: boolean;
-  identities?: { provider: string; subject: string }[];
+  identities?: { provider: string; subject: string; displayName?: string }[];
 };
 export type LivePlayer = {
+  quoteState?: "loading" | "ready" | "error";
+  quoteError?: string;
+  paymentMode?: "cashier";
   timeline?: import("@prism/core").BillTimeline;
   status: string;
-  identities?: { provider: string; subject: string }[];
+  identities?: { provider: string; subject: string; displayName?: string }[];
   playerId: string;
   displayName: string;
   walletTotal: number;
@@ -256,6 +265,7 @@ export type Asset = {
   status: string;
   stackable: boolean;
   pricingEffectId: string | null;
+  pricingEffect?: import("./asset-types").Effect | null;
   activeAt?: string | null;
   expiresAt?: string | null;
   metadata?: Record<string, unknown> | null;

@@ -5,6 +5,7 @@ import { BillTotal, BillTimeline } from "./BillTimeline";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
 import { api, playerOperation } from "../api";
+import { browserCheckoutPreview } from "../browser-billing";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 import {
@@ -86,6 +87,7 @@ export function AccountContent({
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     async function load() {
       setBusy(true);
       setError("");
@@ -93,9 +95,8 @@ export function AccountContent({
         if (section === "账单") {
           const current = await api<Summary>(shopApi(code, "player/me"));
           const bill = current.activeSession
-            ? await api<Preview>(
-                shopApi(code, "player/checkout/preview"),
-                post(),
+            ? await browserCheckoutPreview(
+                shopApi(code, "player/billing-inputs"), shopApi(code, "player/checkout/preview"), controller.signal,
               )
             : null;
           const latest = current.activeSession ? null : await api<{ receipt: Receipt | null }>(shopApi(code, "player/checkout/latest"));
@@ -118,7 +119,7 @@ export function AccountContent({
     }
     void load();
     return () => {
-      cancelled = true;
+      cancelled = true; controller.abort();
     };
   }, [code, section, attempt, errorText, setBillingActive]);
   if (section === "记录") return <CheckoutHistory code={code} />;

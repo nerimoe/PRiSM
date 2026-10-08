@@ -1,7 +1,8 @@
+import { SessionPasskeySetup } from "./SessionPasskeySetup";
 import { DeviceControls } from "./DeviceControls";
 import { useI18n } from "../i18n";
-import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { ChevronRight, Loader2 } from "lucide-react";
 import { ShopHero, SessionSignIn } from "./SessionContent";
 import { Api, ApiError, type Card, type PublicMachine } from "../api";
@@ -10,9 +11,11 @@ import { useAuth } from "./AuthContext";
 export function MachineLoginPage() {
   const { ticket: paramTicket = "", publicId = "" } = useParams();
   const [searchParams] = useSearchParams();
-  const ticket = searchParams.get("ticket") || paramTicket || publicId;
-  const queryError = searchParams.get("error");
-  const expired =
+  const { hash } = useLocation();
+  const ticket = new URLSearchParams(hash.slice(1)).get("ticket") || searchParams.get("ticket") || paramTicket || publicId;
+  const [expiredTicket, setExpiredTicket] = useState<string | null>(null);
+  const onExpired = useCallback(() => setExpiredTicket(ticket), [ticket]);
+  const expired = expiredTicket === ticket ||
     window.location.pathname === "/m/expired" ||
     searchParams.get("expired") === "1";
   return expired || !ticket ? (
@@ -21,19 +24,18 @@ export function MachineLoginPage() {
     <MachineSessionLoader
       key={ticket}
       ticket={ticket}
-      queryError={queryError}
+      onExpired={onExpired}
     />
   );
 }
 
 function MachineSessionLoader({
-  ticket,
-  queryError,
+  ticket, onExpired,
 }: {
   ticket: string;
-  queryError: string | null;
+  onExpired: () => void;
 }) {
-  const { loading, setActiveShop } = useAuth();
+  const { setActiveShop } = useAuth();
   const [page, setPage] = useState<
     | { kind: "loading" }
     | { kind: "failed"; message: string }
@@ -54,7 +56,7 @@ function MachineSessionLoader({
       .catch((caught) => {
         if (cancelled) return;
         if (caught instanceof ApiError && caught.sessionExpired) {
-          window.location.replace("/m/expired");
+          onExpired();
           return;
         }
         setPage({
@@ -68,7 +70,7 @@ function MachineSessionLoader({
     return () => {
       cancelled = true;
     };
-  }, [ticket, machineAttempt]);
+  }, [ticket, machineAttempt, onExpired]);
 
   switch (page.kind) {
     case "loading":
@@ -84,13 +86,11 @@ function MachineSessionLoader({
         />
       );
     case "session":
-      return loading ? (
-        <MachineLoadingPage />
-      ) : (
+      return (
         <MachineSessionPage
           machine={page.machine}
           ticket={ticket}
-          queryError={queryError}
+          onExpired={onExpired}
         />
       );
   }
@@ -98,34 +98,20 @@ function MachineSessionLoader({
 
 function MachineSessionPage({
   machine,
-  ticket,
-  queryError,
+  ticket, onExpired,
 }: {
   machine: PublicMachine;
   ticket: string;
-  queryError: string | null;
+  onExpired: () => void;
 }) {
   const { t, errorText } = useI18n();
-  const { user } = useAuth();
-  const navigate = useNavigate();
+  const { user, loading } = useAuth();
   const [cards, setCards] = useState<Card[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
   const [cardsError, setCardsError] = useState<string | null>(null);
   const [status, setStatus] = useState<"idle" | "locating" | "sending" | "success">("idle");
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
-  const shownQueryError = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (
-      !queryError ||
-      queryError === "MuNET 授权已取消" ||
-      shownQueryError.current === queryError
-    )
-      return;
-    shownQueryError.current = queryError;
-    window.alert(errorText(queryError));
-  }, [queryError, errorText]);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,12 +159,12 @@ function MachineSessionPage({
       if (["failed", "unknown"].includes(result.coin?.status ?? "")) window.alert(errorText("刷卡已完成，投币请求失败，请联系店员。"));
     } catch (caught) {
       if (caught instanceof ApiError && caught.sessionExpired) {
-        navigate("/m/expired", { replace: true });
+        onExpired();
         return;
       }
       if (
         caught instanceof ApiError &&
-        ["QQ_BINDING_REQUIRED", "CHECKIN_REQUIRED"].includes(caught.code ?? "")
+        ["PLATFORM_BINDING_REQUIRED", "CHECKIN_REQUIRED"].includes(caught.code ?? "")
       ) {
         setStatus("idle");
         setReload((value) => value + 1);
@@ -191,19 +177,23 @@ function MachineSessionPage({
     }
   };
 
-  const munetNext = ticket ? `/m?ticket=${encodeURIComponent(ticket)}` : "/m";
   const busy = status !== "idle";
   return (
     <section className="machine-session">
       <ShopHero name={machine.shop.name} heroUrl={machine.shop.heroUrl} subtitle={machine.name} />
 
-      {!Object.values(machine.capabilities).some(Boolean) ? null : !user ? (
-        <SessionSignIn next={munetNext} />
+      {!Object.values(machine.capabilities).some(Boolean) ? (
+        <div className="device-controls"><p className="session-subtitle text-center">{t("当前设备没有可操作项")}</p></div>
+      ) : loading ? (
+        <div className="device-controls" role="status"><Loader2 className="mx-auto animate-spin" aria-label={t("正在加载")} /></div>
+      ) : !user ? (
+        <SessionSignIn />
       ) : (
-        <DeviceControls
+        <SessionPasskeySetup><DeviceControls
           key={reload}
           machine={machine}
           ticket={ticket}
+          onExpired={onExpired}
           cardBusy={status === "locating" || status === "sending"}
         >
           {cardsLoading ? (
@@ -287,7 +277,7 @@ function MachineSessionPage({
               </button>
             </div>
           )}
-        </DeviceControls>
+        </DeviceControls></SessionPasskeySetup>
       )}
     </section>
   );

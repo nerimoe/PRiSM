@@ -1,3 +1,5 @@
+import { migrateLegacyPricingToUtc, serializePricingProviderConfig } from "@prism/storage-sql";
+import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { sqliteSchema } from "@prism/storage-sql";
@@ -32,7 +34,7 @@ test("visits pin immutable plan versions, cap relationships and timezone across 
   expect((await repositories.pricingConfigs.findById("rate"))?.versionId).toBe(firstVersion.versionId);
   const old = await deps.playerCommands.startSession({ playerId: "old", pricingConfigIds: ["rate"], label: "entry" });
   const release = await repositories.pricingConfigs.findRelease!(old.pricingReleaseId!);
-  expect(release?.timeZone).toBe("Asia/Tokyo");
+  expect(release?.timeZone).toBe("UTC");
   expect(release?.configs.map(config => config.versionId)).toContain(firstVersion.versionId!);
 
   rate.name = "New rate"; rate.provider.rules[0]!.pricing.unitPrice = 30;
@@ -82,7 +84,7 @@ test("visits pin immutable plan versions, cap relationships and timezone across 
 test("migration pins only unpaid visits, preserves cumulative caps and rolls publication back atomically", async () => {
   const db = new Database(":memory:");
   db.run("PRAGMA foreign_keys=ON");
-  for (const sql of sqliteSchema.slice(0, -pricingVersionSchema.length)) db.run(sql);
+  for (const sql of sqliteSchema.slice(0, sqliteSchema.indexOf(pricingVersionSchema[0]!))) db.run(sql);
   const at = "2026-09-22T09:00:00.000Z";
   db.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES('shop','player','Player','active',?)", [at]);
   // SQL stores money in cents, unlike the management provider representation.
@@ -117,5 +119,50 @@ test("migration pins only unpaid visits, preserves cumulative caps and rolls pub
   })()).toThrow("rollback");
   expect(db.query("SELECT * FROM pricing_release_heads").all()).toEqual(head);
   expect((await repositories.pricingConfigs.findById("rate"))?.version).toBe(1);
+  db.close();
+});
+
+test("UTC migration keeps legacy visit meanings and UI timezone changes do not publish", async () => {
+  const { utcPricingSchema } = await import("../../storage-sql/src/utc-pricing-schema");
+  const db = new Database(":memory:");
+  db.run("PRAGMA foreign_keys=ON");
+  for (const sql of sqliteSchema.filter(sql => !(utcPricingSchema as readonly string[]).includes(sql))) db.run(sql);
+  let clock = new Date("2026-10-02T10:08:00+08:00");
+  const now = () => clock, id = () => crypto.randomUUID(), shopId = "legacy";
+  const repositories = RuntimeRepositories.fromBunSqlite({ db, shopId, now, id });
+  await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Shanghai" });
+  db.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES(?, 'old', 'Old', 'active', ?)", [shopId, clock.toISOString()]);
+  const plan: PricingConfig = { id: "rate", name: "Legacy", kind: "time.priority", enabled: true, status: "active", createdAt: clock, updatedAt: clock,
+    provider: { id: "provider", rules: [{ id: "base", label: "Base", priority: 1, timeRange: { start: "10:00", end: "03:00" }, pricing: { unitMinutes: 60, unitPrice: 18, roundGraceMinutes: 10, priceCap: 90 } }] } };
+  // An unconverted stable database has implicit local clocks without the new UTC tag.
+  db.run(`INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at)
+    VALUES(?,?,?, ?,1,'active',json_remove(?,'$.timeZone'),?,?)`,
+    [shopId, plan.id, plan.kind, plan.name, JSON.stringify(serializePricingProviderConfig(plan.provider)),
+      plan.createdAt.toISOString(), plan.updatedAt.toISOString()]);
+  const deps = createPrismRuntimeDependencies({ repositories, queries: RuntimeRepositories.queriesFromBunSqlite({ db, shopId, now }), now, id, pricingProviders: [], assetEffectProviders: [], coinCooldownMs: 0 });
+  // SQL admission exercises the old trigger and binding without the new UTC default.
+  db.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES(?,'session','old',?,'active','unpaid','[\"rate\"]')", [shopId, clock.toISOString()]);
+  const old = (await repositories.sessions.findById("session"))!;
+  expect((await repositories.pricingConfigs.findRelease!(old.pricingReleaseId!))?.timeZone).toBe("Asia/Shanghai");
+  clock = new Date("2026-10-02T11:54:00+08:00");
+  expect((await deps.playerCheckoutCommands!.previewCheckout({ playerId: "old" })).settlementPreview.total).toBe(centsOf(36));
+  const migration = readFileSync(new URL("../../../migrations/0029_utc_pricing.sql", import.meta.url), "utf8");
+  expect(migration.trim()).toBe((utcPricingSchema.join(";\n\n") + ";").trim());
+  db.exec(migration);
+  await migrateLegacyPricingToUtc({ executor: createBunSqliteExecutor(db), now: clock, id });
+  expect((await repositories.sessions.findById("session"))?.pricingReleaseId).toBe(old.pricingReleaseId);
+  expect((await repositories.pricingConfigs.findRelease!(old.pricingReleaseId!))?.timeZone).toBe("UTC");
+  expect((await deps.playerCheckoutCommands!.previewCheckout({ playerId: "old" })).settlementPreview.total).toBe(centsOf(36));
+  const head = db.query("SELECT release_id FROM pricing_release_heads WHERE shop_id=?").get(shopId) as { release_id: string };
+  expect(head.release_id).not.toBe(old.pricingReleaseId!);
+  expect((await repositories.pricingConfigs.findRelease!(head.release_id))?.timeZone).toBe("UTC");
+  const count = db.query("SELECT COUNT(*) AS n FROM pricing_releases").get();
+  await repositories.system.setAppSetting("store.profile", { timeZone: "America/New_York" });
+  for (const sql of sqliteSchema) db.run(sql);
+  expect(db.query("SELECT release_id FROM pricing_release_heads WHERE shop_id=?").get(shopId)).toEqual(head);
+  expect(db.query("SELECT COUNT(*) AS n FROM pricing_releases").get()).toEqual(count);
+  await repositories.pricingConfigs.save({ ...plan, name: "Edited" });
+  const edited = db.query("SELECT r.time_zone FROM pricing_release_heads h JOIN pricing_releases r ON h.release_id=r.id WHERE h.shop_id=?").get(shopId) as { time_zone: string };
+  expect(edited.time_zone).toBe("UTC");
   db.close();
 });

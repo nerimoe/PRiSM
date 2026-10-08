@@ -1,3 +1,4 @@
+import { ensureD1UtcPricing } from "./utc-pricing";
 import type { Database } from "bun:sqlite";
 import { createD1Executor, createD1Repositories, type D1DatabaseLike } from "@prism/adapter-d1";
 import { createBunSqliteExecutor, createSqliteRepositories } from "@prism/adapter-sqlite";
@@ -25,6 +26,8 @@ import {
   createStaffPricingEffectService,
   createStaffRedeemService,
   createStaffOperationsService,
+  createStaffReportService,
+  createVersionedPricingResolvers,
   createStaffUserService,
   type ApplicationQueries,
   type DeviceActionExecutor,
@@ -37,7 +40,7 @@ import {
   type StaffPricingExtension,
   type StaffPricingExtensionRequiredAsset,
 } from "@prism/application";
-import { canStartPriorityTimePricingSession, collectPriorityTimePricingHistoryLookupKeys, createPricingProviderFromConfig, isActiveInWindow, PrismDomainError } from "@prism/core";
+import { canStartPriorityTimePricingSession, isActiveInWindow, PrismDomainError } from "@prism/core";
 import type { AssetDefinition, AssetEffectProvider, BusinessItem, DeviceCommandType, DeviceTarget, PricingConfig, PricingProvider } from "@prism/core";
 import type { AssetDefinitionRepository } from "@prism/core";
 import { createPrismApp } from "@prism/server-hono";
@@ -46,7 +49,7 @@ import { createHomeAssistantStateSource } from "./home-assistant-state-source";
 import type { PrismAppDependencies } from "@prism/server-hono";
 import type { CreateSqlReadModelsInput, SqlRepositories } from "@prism/storage-sql";
 import { createSqlReadModels, sqliteSchema } from "@prism/storage-sql";
-import type { Hono } from "hono";
+import { Hono } from "hono";
 import { backendVersionInfo } from "./release-version";
 import {
   createHinataIoExecutor,
@@ -191,8 +194,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
       const configs = pinned.configs;
       const timeConfigs = configs.filter((config): config is Extract<PricingConfig, { kind: "time.priority" }> => config.kind === "time.priority");
       if (timeConfigs.length === 0) return true;
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
+      const storeTimeZone = pinned.timeZone ?? "UTC";
       return timeConfigs.some((config) =>
         canStartPriorityTimePricingSession({
           config: {
@@ -207,22 +209,18 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     now: input.now,
   });
   const sessionPricing = async (session: import("@prism/core").Session) => {
-    if (!session.pricingReleaseId) return { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+    if (!session.pricingReleaseId) return { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: "UTC" };
     const release = await input.repositories.pricingConfigs.findRelease?.(session.pricingReleaseId);
     if (!release) throw new PrismDomainError("Pinned pricing release not found.", "PRICING_RELEASE_NOT_FOUND");
     return { configs: release.configs.filter(config => config.enabled && config.status !== "archived"), timeZone: release.timeZone };
   };
-  const versioned = (config: PricingConfig): PricingConfig => {
-    // Version 1 keeps the pre-migration history key so an upgrade cannot reset caps.
-    if (!config.versionId || config.version === 1) return config;
-    return { ...config, provider: { ...config.provider, id: config.versionId } } as PricingConfig;
-  };
   const playerPricing = async (playerId: string) => {
     const sessions = [...await input.repositories.sessions.findActiveByPlayerId(playerId), ...await input.repositories.sessions.findUnpaidClosedByPlayerId!(playerId)];
     const first = sessions.sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime() || a.id.localeCompare(b.id))[0];
-    return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: undefined };
+    return first ? sessionPricing(first) : { configs: await input.repositories.pricingConfigs.listEnabled(), timeZone: "UTC" };
   };
   const playerCheckoutCommands = createSettlementService({
+    players: input.repositories.players,
     commitCheckout: input.repositories.commitCheckout,
     sessions: input.repositories.sessions,
     operationLocks: input.repositories.operationLocks,
@@ -235,48 +233,7 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     pricingCapHistory: input.repositories.pricingCapHistory,
     deviceCommands: input.repositories.deviceCommands,
     pricingProviders: [...fallbackPricingProviders, ...pluginPricingProviders],
-    async pricingProviderResolver(context) {
-      const pinned = await sessionPricing(context.session);
-      const allConfigs = pinned.configs;
-      const sessionConfigIds = context.session.pricingConfigIds ?? [];
-      const configs = (sessionConfigIds.length > 0
-        ? allConfigs.filter((config) => sessionConfigIds.includes(config.id))
-        : allConfigs).filter((config) => config.kind !== "time.cap").map(versioned);
-
-      if (configs.length === 0) return [...fallbackPricingProviders, ...pluginPricingProviders];
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = pinned.timeZone ?? (typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined);
-      const resolvedConfigs = await withRuntimePricingHistory(configs, {
-        playerId: context.playerId,
-        startedAt: context.session.startedAt,
-        endedAt: context.session.endedAt ?? context.now,
-        storeTimeZone,
-        pricingHistory: input.repositories.pricingHistory,
-      });
-      return [
-        ...pluginPricingProviders,
-        ...resolvedConfigs.map((config) => createPricingProviderFromConfig(config)),
-      ];
-    },
-    async globalCapResolver(context) {
-      const storeProfile = await input.repositories.system.getAppSetting<{ timeZone?: unknown }>("store.profile");
-      const storeTimeZone = typeof storeProfile?.timeZone === "string" ? storeProfile.timeZone : undefined;
-      const releases = new Map(context.sessions.map(session => [session.pricingReleaseId ?? "legacy", session]));
-      if (releases.size > 1) throw new PrismDomainError("Unsettled sessions use different pricing releases.", "PRICING_RELEASE_MISMATCH");
-      const result: import("@prism/core").TimeCapPricingProviderConfig[] = [];
-      for (const session of releases.values()) {
-        const pinned = await sessionPricing(session);
-        for (const config of pinned.configs) {
-          if (config.kind !== "time.cap") continue;
-          result.push({ ...config.provider, name: config.name,
-            // A publication pins both the cap and its included plan versions.
-            pricingConfigId: config.version === 1 ? config.id : (config.versionId ?? config.id),
-            includedPricingConfigIds: config.provider.includedPricingConfigIds,
-            timeZone: config.provider.timeZone ?? pinned.timeZone ?? context.timeZone ?? storeTimeZone });
-        }
-      }
-      return result;
-    },
+    ...createVersionedPricingResolvers({ sessionPricing, pricingHistory: input.repositories.pricingHistory, fallbackPricingProviders, pluginPricingProviders }),
     assetEffectProviders,
     id: input.id,
     now: input.now,
@@ -459,6 +416,11 @@ export function createPrismRuntimeDependencies(input: CreatePrismRuntimeDependen
     },
     staffCheckoutCommands: playerCheckoutCommands,
     staffOperations,
+    staffReportCommands: input.repositories.reportArchives ? createStaffReportService({ archives: input.repositories.reportArchives, now: input.now }) : undefined,
+    billingInputs: input.repositories.readLiveBillingSnapshot && !fallbackPricingProviders.length && !pluginPricingProviders.length && !input.assetEffectProviders.length && !pluginRuntime.assetEffectProviders.length
+      ? (playerIds) => input.repositories.readLiveBillingSnapshot!(playerIds, input.now()) : undefined,
+    staffLiveBillingSnapshot: input.repositories.readLiveBillingSnapshot && !fallbackPricingProviders.length && !pluginPricingProviders.length && !input.assetEffectProviders.length && !pluginRuntime.assetEffectProviders.length
+      ? (playerIds) => input.repositories.readLiveBillingSnapshot!(playerIds, input.now()) : undefined,
     playerRedeemCommands,
     staffPlayerCommands,
     staffAssetDefinitionCommands,
@@ -552,44 +514,6 @@ function cloneBusinessItem(item: BusinessItem): BusinessItem {
   };
 }
 
-async function withRuntimePricingHistory(
-  configs: readonly PricingConfig[],
-  input: {
-    playerId: string;
-    startedAt: Date;
-    endedAt: Date;
-    storeTimeZone?: string;
-    pricingHistory: RuntimeRepositoryInput["pricingHistory"];
-  },
-): Promise<PricingConfig[]> {
-  const providersByConfigId = new Map<string, Extract<PricingConfig, { kind: "time.priority" }>["provider"]>();
-  const keys = configs.flatMap((config) => {
-    if (config.kind !== "time.priority") return [];
-    const provider = {
-      ...config.provider,
-      timeZone: config.provider.timeZone ?? input.storeTimeZone,
-      pricingConfigId: config.id,
-    };
-    providersByConfigId.set(config.id, provider);
-    return collectPriorityTimePricingHistoryLookupKeys({
-      config: provider,
-      startedAt: input.startedAt,
-      endedAt: input.endedAt,
-    });
-  });
-  const paidHistory = await input.pricingHistory.sumByPlayerAndKeys(input.playerId, keys);
-
-  return configs.map((config) => {
-    if (config.kind !== "time.priority") return config;
-    return {
-      ...config,
-      provider: {
-        ...providersByConfigId.get(config.id)!,
-        paidHistory,
-      },
-    };
-  });
-}
 
 function assetDefinitionKey(assetType: string, assetCode: string): string {
   return `${assetType}\u0000${assetCode}`;
@@ -661,7 +585,13 @@ export type CreatePrismWorkerAppOptions = {
 };
 
 export function createPrismWorkerApp(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): Hono {
-  return createPrismApp(createPrismWorkerDependencies(env, options));
+  const app = new Hono();
+  app.use("*", async (_context, next) => {
+    await ensureD1UtcPricing(env.DB, options.now?.() ?? new Date());
+    await next();
+  });
+  app.route("/", createPrismApp(createPrismWorkerDependencies(env, options)));
+  return app;
 }
 
 export function createPrismWorkerDependencies(env: PrismWorkerEnv, options: CreatePrismWorkerAppOptions = {}): PrismAppDependencies {
@@ -1062,3 +992,5 @@ function createDynamicHinataIoTargetResolver(input: {
 }
 
 export const createRuntimeQueries = createSqlReadModels;
+
+export { ensureD1UtcPricing } from "./utc-pricing";

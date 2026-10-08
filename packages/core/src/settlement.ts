@@ -71,6 +71,7 @@ export type Settlement = {
 };
 
 export type PlayerCheckout = {
+  externalPayment?: { staffId: string; method: "wechat" | "alipay" | "cash" | "other"; collectedAt: Date };
   timeline?: BillTimeline;
   id: string;
   playerId: string;

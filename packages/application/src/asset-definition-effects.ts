@@ -9,6 +9,7 @@ import {
   subCents,
   sumCents,
   ZERO_CENTS,
+  formatLocalDate,
   type Cents,
   type AssetDefinition,
   type AssetDefinitionRepository,
@@ -44,7 +45,7 @@ export function createAssetDefinitionEffectProvider(
 
       const adjustments: SettlementAdjustment[] = [];
       let remainingSubtotal = context.subtotal;
-      const timeZone = context.timeZone ?? "Asia/Shanghai";
+      const timeZone = "UTC";
       const definitions = new Map(
         (await assetDefinitions.listAll()).map((definition) => [
           assetDefinitionKey(definition.type, definition.code),
@@ -202,16 +203,7 @@ export function isChargeItemEligibleForAssetEffect(
 }
 
 export function calendarDayAt(date: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const year = parts.find((part) => part.type === "year")!.value;
-  const month = parts.find((part) => part.type === "month")!.value;
-  const day = parts.find((part) => part.type === "day")!.value;
-  return `${year}-${month}-${day}`;
+  return formatLocalDate(date, timeZone);
 }
 
 export function assetDefinitionEffectSource(assetType: string, assetCode: string): string {
@@ -219,8 +211,7 @@ export function assetDefinitionEffectSource(assetType: string, assetCode: string
 }
 
 function weekdayAt(date: Date, timeZone: string): number | null {
-  const weekday = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(date);
-  return ({ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 } as Record<string, number>)[weekday] ?? null;
+  return new Date(`${formatLocalDate(date, timeZone)}T00:00:00Z`).getUTCDay() || 7;
 }
 
 function assetDefinitionKey(assetType: string, assetCode: string): string {

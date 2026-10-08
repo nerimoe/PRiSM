@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { Pricing } from "./Pricing";
-import { input, money, useMerchant, useStaffApi } from "./shared";
+import { pricingPreview } from "./pricing-preview";
+import { pricingInZone } from "./pricing-clock";
+import { input, money, useMerchant } from "./shared";
 
 type Segment = {
   ruleId: string;
@@ -36,16 +38,16 @@ function arc(start: number, end: number) {
 export function PricingRing({
   value,
   onSelect,
+  localDate: day,
+  onDateChange: setDay,
 }: {
   value: Pricing;
   onSelect: (id: string) => void;
+  localDate: string;
+  onDateChange: (date: string) => void;
 }) {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
-  const request = useStaffApi();
-  const [day, setDay] = useState(() =>
-    new Intl.DateTimeFormat("sv-SE", { timeZone }).format(new Date()),
-  );
   const [segments, setSegments] = useState<Segment[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -55,14 +57,25 @@ export function PricingRing({
     let current = true;
     setLoading(true);
     const timer = setTimeout(() => {
-      request<{ timeline: { segments: Segment[] } }>(
-        "pricing-timeline/preview",
-        "POST",
-        { localDate: day, provider: JSON.parse(provider) },
-      )
-        .then((r) => {
+      void Promise.resolve()
+        .then(() => {
+          const zone =
+            timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+          return pricingPreview(
+            pricingInZone(
+              { ...value, provider: JSON.parse(provider) },
+              zone,
+              "UTC",
+              day,
+            ),
+            day,
+            zone,
+            true,
+          );
+        })
+        .then((timeline) => {
           if (current) {
-            setSegments(r.timeline.segments);
+            setSegments(timeline?.segments ?? []);
             setError("");
           }
         })
@@ -77,7 +90,7 @@ export function PricingRing({
       current = false;
       clearTimeout(timer);
     };
-  }, [provider, day, request]);
+  }, [provider, day, timeZone, value.kind]);
   const color = (s: Segment) =>
     s.isClosed
       ? "#d5d9d7"

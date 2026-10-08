@@ -361,3 +361,21 @@ describe("createStaffPlayerService", () => {
     ).resolves.toBeNull();
   });
 });
+
+it("allows cashier external identities without changing payment mode and reserves PRiSM account links", async () => {
+  const player: Player = { id: "cashier", displayName: "前台玩家", status: "active", paymentMode: "cashier", createdAt: new Date() };
+  const players = new MemoryPlayerRepository([player]);
+  const playerIdentities = new MemoryPlayerIdentityRepository(players);
+  const service = createStaffPlayerService({ players, playerIdentities, id: () => "unused", now: () => new Date() });
+  expect(await service.bindPlayerIdentity({ playerId: player.id, provider: " OneBot ", subject: " 114514 " }))
+    .toMatchObject({ playerId: player.id, provider: "onebot", subject: "114514" });
+  expect(await service.resolvePlayerIdentity({ provider: "onebot", subject: "114514" })).toEqual(player);
+  expect(await players.findById(player.id)).toEqual(player);
+  await expect(service.bindPlayerIdentity({ playerId: player.id, provider: " WEB-ACCOUNT ", subject: "account-id" }))
+    .rejects.toMatchObject({ code: "ACCOUNT_IDENTITY_READ_ONLY" });
+  await expect(service.deletePlayerIdentity({ playerId: player.id, provider: "web-account", subject: "account-id" }))
+    .rejects.toMatchObject({ code: "ACCOUNT_IDENTITY_READ_ONLY" });
+  expect(playerIdentities.saved).toHaveLength(1);
+  await service.deletePlayerIdentity({ playerId: player.id, provider: " ONEBOT ", subject: " 114514 " });
+  expect(playerIdentities.saved).toHaveLength(0);
+});

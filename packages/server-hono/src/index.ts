@@ -95,7 +95,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   const app = new Hono();
   app.use("/api/v1/*", async (context, next) => {
     await next();
-    context.res = await wrapApiResponse(context.res);
+    context.res = await wrapApiResponse(context.res, async () => (await dependencies.staffSettingsCommands?.getSettings())?.store.timeZone ?? "UTC");
   });
   app.all("/rpc/*", async (context) => {
     const url = new URL(context.req.url);
@@ -210,6 +210,8 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
   };
 
   app.onError((error, context) => {
+    if (String(error).includes("SHOP_EXPORT_LOCKED"))
+      return context.json({ error: { code: "SHOP_EXPORT_LOCKED", message: "店铺正在导出数据，暂时不能进行业务操作，请稍后重试" } }, 423);
     if (error instanceof PrismDomainError) {
       return context.json(
         {
@@ -218,7 +220,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
             message: error.message,
           },
         },
-        error.code === "INSUFFICIENT_BALANCE" ? 409 : 400,
+        error.code === "CHECKOUT_NOT_FOUND" ? 404 : error.code === "INSUFFICIENT_BALANCE" ? 409 : 400,
       );
     }
     console.error("[prism] unhandled route error:", error);
@@ -265,7 +267,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
         <body>
           <h1>PRiSM API is running</h1>
           <p>The management interface is now fully decoupled from this backend API server.</p>
-          <p>Please build and deploy the <code>packages/prism-dashboard</code> package (e.g. via Cloudflare Pages or a local static host) and configure it to connect to this API endpoint: <code>${context.req.url.replace(/\/admin$/, "")}</code>.</p>
+          <p>The React management interface lives in <code>packages/prism-web</code>. Run <code>bun run dev:all</code> locally or <code>bun run deploy:beta</code> to deploy the unified platform, then open its <code>/merchant</code> page.</p>
         </body>
       </html>
     `)
@@ -642,6 +644,20 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json({
       command: toDeviceCommandView(command),
     });
+  });
+
+  app.get("/api/v1/player/billing-inputs", async (context) => {
+    const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
+    if (!principal || principal.role !== "player_session") return forbidden(context, "Player principal required.");
+    if (!dependencies.billingInputs) return context.json({ error: {
+      code: "CLIENT_BILLING_UNAVAILABLE", message: "Client billing is unavailable for this runtime.",
+    } }, 503);
+    const billingSnapshot = await dependencies.billingInputs([principal.playerId]);
+    // Only definitions held by this player are needed for their asset effects.
+    const held = new Set(billingSnapshot.players.flatMap(player => player.holdings.map(holding => `${holding.assetType}:${holding.assetCode}`)));
+    return context.json({ playerId: principal.playerId, billingSnapshot: {
+      ...billingSnapshot, assetDefinitions: billingSnapshot.assetDefinitions.filter(definition => held.has(`${definition.type}:${definition.code}`)),
+    } });
   });
 
   app.post("/api/v1/player/checkout/preview", async (context) => {
@@ -1421,6 +1437,18 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     });
   });
 
+  app.get("/api/v1/staff/players/:playerId/billing-inputs", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    const playerId = context.req.param("playerId");
+    const [player] = await dependencies.staffQueries.listPlayers({ playerIds: [playerId] });
+    if (!player) return context.json({ error: { code: "PLAYER_NOT_FOUND", message: "Player not found." } }, 404);
+    if (!dependencies.billingInputs) return context.json({ error: {
+      code: "CLIENT_BILLING_UNAVAILABLE", message: "Client billing is unavailable for this runtime.",
+    } }, 503);
+    return context.json({ playerId, billingSnapshot: await dependencies.billingInputs([playerId]) });
+  });
+
   app.post("/api/v1/staff/players/:playerId/checkout/preview", async (context) => {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
@@ -1554,9 +1582,17 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     const principal = await staffPrincipal(context);
     if (principal instanceof Response) return principal;
 
-    const rows = await staffOperations.listLivePlayers();
+    const playerId = context.req.query("playerId");
+    if (playerId !== undefined && (!playerId.trim() || playerId.length > 256)) {
+      return context.json({ error: { code: "INVALID_REQUEST", message: "无效的玩家编号" } }, 400);
+    }
+    const clientCalculation = !playerId && !!dependencies.staffLiveBillingSnapshot;
+    const rows = await staffOperations.listLivePlayers({ playerId, summary: clientCalculation });
+    const billingSnapshot = clientCalculation
+      ? await dependencies.staffLiveBillingSnapshot!(rows.map(row => row.playerId)) : undefined;
     return context.json({
       players: rows,
+      ...(billingSnapshot ? { billingSnapshot } : {}),
     });
   });
 
@@ -1671,6 +1707,101 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
       machineConnections: connections.map(toMachineConnectionView),
     });
   });
+
+  app.get("/api/v1/staff/reports/checkouts", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    const from = parseRequiredDate(context.req.query("from")),
+      to = parseRequiredDate(context.req.query("to"));
+    const archive = context.req.query("archive") ?? "active";
+    if (!from || !to || from >= to)
+      return context.json(
+        { error: { code: "INVALID_REPORT_RANGE", message: "请选择有效日期" } },
+        400,
+      );
+    if (archive !== "active" && archive !== "archived" && archive !== "all")
+      return context.json(
+        { error: { code: "INVALID_REPORT_FILTER", message: "无效的归档筛选" } },
+        400,
+      );
+    if (!dependencies.staffQueries.listReportCheckouts)
+      return context.json(
+        {
+          error: {
+            code: "STAFF_REPORT_QUERIES_NOT_CONFIGURED",
+            message: "Report queries are not configured.",
+          },
+        },
+        503,
+      );
+    const limit = normalizeLimit(context.req.query("limit"), 50, 200),
+      offset = normalizeOffset(context.req.query("offset"));
+    const records = await dependencies.staffQueries.listReportCheckouts({
+      from,
+      to,
+      archive,
+      limit: limit + 1,
+      offset,
+    });
+    return context.json({
+      records: records.slice(0, limit),
+      page: { limit, offset, hasMore: records.length > limit },
+    });
+  });
+  app.get("/api/v1/staff/reports/checkouts/:checkoutId", async (context) => {
+    const principal = await staffPrincipal(context);
+    if (principal instanceof Response) return principal;
+    if (!dependencies.staffQueries.getReportCheckout)
+      return context.json(
+        {
+          error: {
+            code: "STAFF_REPORT_QUERIES_NOT_CONFIGURED",
+            message: "Report queries are not configured.",
+          },
+        },
+        503,
+      );
+    const detail = await dependencies.staffQueries.getReportCheckout(
+      context.req.param("checkoutId"),
+    );
+    return detail
+      ? context.json(detail)
+      : context.json(
+          {
+            error: { code: "CHECKOUT_NOT_FOUND", message: "Checkout not found." },
+          },
+          404,
+        );
+  });
+  app.post(
+    "/api/v1/staff/reports/checkouts/:checkoutId/archive",
+    async (context) => {
+      const principal = await staffWritePrincipal(context);
+      if (principal instanceof Response) return principal;
+      if (!dependencies.staffReportCommands)
+        return context.json(
+          {
+            error: {
+              code: "STAFF_REPORT_COMMANDS_NOT_CONFIGURED",
+              message: "Report commands are not configured.",
+            },
+          },
+          503,
+        );
+      const body = await context.req.json<{ archived?: unknown }>();
+      if (typeof body?.archived !== "boolean")
+        return context.json(
+          { error: { code: "INVALID_REQUEST", message: "无效的归档状态" } },
+          400,
+        );
+      await dependencies.staffReportCommands.setArchived({
+        checkoutId: context.req.param("checkoutId"),
+        archived: body.archived,
+        staffId: principal.staffId,
+      });
+      return context.json({ archived: body.archived });
+    },
+  );
 
   app.get("/api/v1/staff/reports/summary", async (context) => {
     const principal = await authenticate(context.req.header("Authorization"), context.req.header("X-PRiSM-Player-Id"), dependencies);
@@ -1893,6 +2024,7 @@ export function createPrismApp(dependencies: PrismAppDependencies): Hono {
     return context.json({
       timeline: await dependencies.staffPricingCommands.previewPricingTimeline({
         localDate: body.localDate,
+        displayTimeZone: body.displayTimeZone,
         provider: parseRulesProviderBody(body.provider),
       }),
     });

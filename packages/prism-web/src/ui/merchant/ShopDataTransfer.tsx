@@ -1,0 +1,516 @@
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { api, ApiError } from "../../api";
+import {
+  downloadShopBackup,
+  cancelShopExport,
+  recoverInterruptedShopExport,
+  uploadShopBackup,
+  type ExportInfo,
+} from "../../shop-data-transfer";
+import { useI18n } from "../../i18n";
+import { button, primary, input, Field, Modal, useMerchant } from "./shared";
+
+type Preview = {
+  canImport: boolean;
+  fingerprint: string;
+  scope: "business" | "configuration";
+  source: { name: string; publicId: string; origin?: string };
+  counts: Record<string, number>;
+  warnings: string[];
+  errors: string[];
+};
+const labels: Record<string, string> = {
+  pricing_effects: "计费效果",
+  asset_definitions: "资产定义",
+  pricing_configs: "计费方案",
+  presents: "礼物",
+  business_items: "商品",
+  pricing_config_versions: "历史规则版本",
+  pricing_releases: "计费发布版本",
+  pricing_release_heads: "当前计费发布版本",
+  players: "玩家",
+  player_identities: "平台身份",
+  cashier_profiles: "前台玩家",
+  sessions: "计费会话",
+  session_pricing_releases: "会话计费版本",
+  asset_holdings: "资产余额",
+  asset_transactions: "资产交易",
+  asset_ledger_entries: "资产流水",
+  redeem_codes: "兑换码",
+  redeem_records: "兑换记录",
+  player_checkouts: "结账记录",
+  checkout_timelines: "账单时间轴",
+  checkout_report_states: "账单归档状态",
+  settlements: "会话账单",
+  settlement_charge_items: "收费明细",
+  settlement_adjustments: "费用调整",
+  pricing_history_entries: "收费历史",
+  pricing_cap_history_entries: "封顶历史",
+  business_item_orders: "商品订单",
+  cashier_payments: "前台收款",
+  staff_users: "员工资料",
+  app_settings: "店铺设置",
+  shop_billing_settings: "计费设置",
+  api_tokens: "接入凭据",
+  machines: "设备",
+  mahjong_seats: "麻将座位",
+  device_commands: "设备操作记录",
+  device_states: "设备状态记录",
+  machine_connections: "设备连接记录",
+  account_links: "账号关联",
+};
+export function ShopDataTransfer() {
+  const { shopCode } = useMerchant();
+  const { t, errorText } = useI18n();
+  const [scope, setScope] = useState<"business" | "configuration">("business");
+  const [file, setFile] = useState<File>();
+  const [jobId, setJobId] = useState("");
+  const [progress, setProgress] = useState<number>();
+  const [exported, setExported] = useState<ExportInfo>();
+  const [exporting, setExporting] = useState(false);
+  const exportController = useRef<AbortController | null>(null);
+  const [filename, setFilename] = useState("");
+  const [preview, setPreview] = useState<Preview>();
+  const [operationId, setOperationId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState(false);
+  const [allowance, setAllowance] = useState<{
+    remaining: number;
+    used: number;
+    locked: boolean;
+    importRemaining: number;
+    activeExport?: { jobId: string; expiresAt: string } | null;
+  }>();
+  const path = `/api/v1/shops/${encodeURIComponent(shopCode)}/data`;
+  async function loadAllowance() {
+    setAllowance(await api(`${path}/export-status`));
+  }
+  useEffect(() => {
+    let disposed = false;
+    setAllowance(undefined);
+    async function refresh() {
+      const value = await api<NonNullable<typeof allowance>>(
+        `${path}/export-status`,
+      );
+      if (!disposed) setAllowance(value);
+    }
+    const wake = () => {
+      void refresh().catch(failed);
+    };
+    const visible = () => {
+      if (document.visibilityState === "visible") wake();
+    };
+    void recoverInterruptedShopExport(path)
+      .catch(failed)
+      .then(() => {
+        if (!disposed) wake();
+      });
+    window.addEventListener("focus", wake);
+    window.addEventListener("pageshow", wake);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      disposed = true;
+      exportController.current?.abort();
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("pageshow", wake);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [shopCode]);
+  useEffect(() => {
+    if (!allowance?.locked) return;
+    // Recheck the actual lease, rather than keeping the initial locked response forever.
+    let disposed = false;
+    let timer: number;
+    async function poll() {
+      try {
+        await loadAllowance();
+      } catch (value) {
+        if (!disposed) failed(value);
+      } finally {
+        if (!disposed) timer = window.setTimeout(poll, 5000);
+      }
+    }
+    timer = window.setTimeout(poll, 5000);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [allowance?.locked, shopCode]);
+  function failed(value: unknown) {
+    setError(
+      errorText(
+        value instanceof Error ? value.message : "操作失败，请稍后重试",
+      ),
+    );
+  }
+  async function download() {
+    const controller = new AbortController();
+    exportController.current = controller;
+    setExporting(true);
+    setBusy(true);
+    setError("");
+    try {
+      setProgress(0);
+      setExported(undefined);
+      const { info, blob } = await downloadShopBackup(
+        path,
+        scope,
+        setProgress,
+        {
+          signal: controller.signal,
+          onStart: setExported,
+        },
+      );
+      controller.signal.throwIfAborted();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = info.filename;
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (value) {
+      if (!controller.signal.aborted) failed(value);
+    } finally {
+      await loadAllowance().catch(failed);
+      setBusy(false);
+      setExporting(false);
+      if (exportController.current === controller)
+        exportController.current = null;
+      setProgress(undefined);
+    }
+  }
+  async function cancelExport() {
+    if (exportController.current) {
+      exportController.current.abort();
+      return;
+    }
+    if (!allowance?.activeExport) return;
+    setBusy(true);
+    setError("");
+    try {
+      await cancelShopExport(path, allowance.activeExport.jobId);
+    } catch (value) {
+      failed(value);
+    } finally {
+      await loadAllowance().catch(failed);
+      setBusy(false);
+    }
+  }
+  function selectFile(event: ChangeEvent<HTMLInputElement>) {
+    const selected = event.target.files?.[0];
+    setFile(selected);
+    setJobId("");
+    setPreview(undefined);
+    setFilename(selected?.name ?? "");
+    setError("");
+    setSuccess(false);
+    setOperationId(crypto.randomUUID());
+  }
+  async function preflight() {
+    setBusy(true);
+    setError("");
+    setPreview(undefined);
+    try {
+      if (!file) return;
+      setProgress(0);
+      const upload = await uploadShopBackup(path, file, setProgress);
+      setJobId(upload.jobId);
+      setPreview(
+        await api<Preview>(`${path}/imports/${upload.jobId}/preview`, {
+          method: "POST",
+          body: JSON.stringify({ counts: upload.counts, parts: upload.parts }),
+        }),
+      );
+    } catch (value) {
+      failed(value);
+    } finally {
+      setBusy(false);
+      setProgress(undefined);
+      await loadAllowance().catch(failed);
+    }
+  }
+  async function apply() {
+    if (!preview?.canImport) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`${path}/imports/${jobId}/apply`, {
+        method: "POST",
+        body: JSON.stringify({ fingerprint: preview.fingerprint, operationId }),
+      });
+      setConfirm(false);
+      setSuccess(true);
+      setFile(undefined);
+      setPreview(undefined);
+      window.dispatchEvent(new Event("prism-shop-settings"));
+    } catch (value) {
+      setConfirm(false);
+      if (
+        value instanceof ApiError &&
+        ["IMPORT_TARGET_CHANGED", "IMPORT_NOT_READY"].includes(value.code ?? "")
+      )
+        setPreview(undefined);
+      failed(value);
+    } finally {
+      setBusy(false);
+      setProgress(undefined);
+    }
+  }
+  return (
+    <div className="grid gap-5">
+      <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">
+        <h4 className="font-semibold">{t("导出 JSON 备份")}</h4>
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "用于数据备份，以及 beta 与正式版之间的店铺业务数据迁移。金额和时间保留原值。",
+          )}
+        </p>
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "跨环境迁移时，请先停止旧环境营业，核对导入结果后再在新环境营业，避免两边同时计费。",
+          )}
+        </p>
+        <Field label="导出范围">
+          <select
+            className={input}
+            value={scope}
+            disabled={busy}
+            onChange={(event) => setScope(event.target.value as typeof scope)}
+          >
+            <option value="business">
+              {t("业务备份（玩家、余额、账单和配置）")}
+            </option>
+            <option value="configuration">
+              {t("仅店铺配置（不含玩家和账单）")}
+            </option>
+          </select>
+        </Field>
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "每店每月可导出一次，需要更多次数请联系平台管理员。开始导出即使用次数；导出期间暂停本店业务操作，完成或取消后恢复，断线后最多 5 分钟自动解锁。",
+          )}
+        </p>
+        {allowance && (
+          <p className="text-sm">
+            {t("本月剩余导出次数")}: {allowance.remaining}
+          </p>
+        )}
+        {allowance?.locked && (
+          <p className="text-sm text-amber-600">
+            {t("店铺正在导出数据，暂时不能进行业务操作，请稍后重试")}
+          </p>
+        )}
+        <button
+          className={`${button} justify-self-start`}
+          disabled={
+            busy || !allowance || allowance.remaining === 0 || allowance.locked
+          }
+          onClick={download}
+        >
+          {t("下载 JSON 文件")}
+        </button>
+        {exporting && (
+          <div className="grid gap-2 text-sm" role="status">
+            {exported ? (
+              <>
+                <p>
+                  {t("已导出记录")}: {progress ?? 0} /{" "}
+                  {Object.values(exported.counts).reduce(
+                    (sum, n) => sum + n,
+                    0,
+                  )}
+                </p>
+                <progress
+                  className="h-2 w-full"
+                  aria-label={t("导出进度")}
+                  value={progress ?? 0}
+                  max={Math.max(
+                    1,
+                    Object.values(exported.counts).reduce(
+                      (sum, n) => sum + n,
+                      0,
+                    ),
+                  )}
+                />
+              </>
+            ) : (
+              <p>{t("正在统计备份数据…")}</p>
+            )}
+          </div>
+        )}
+        {(exporting || allowance?.activeExport) && (
+          <button
+            className={`${button} justify-self-start`}
+            disabled={busy && !exporting}
+            onClick={cancelExport}
+          >
+            {t("取消导出，恢复营业")}
+          </button>
+        )}
+        {exported && (
+          <div className="grid gap-2 text-sm" role="status">
+            <p>
+              {t("来源环境")}:{" "}
+              {String(JSON.parse(exported.headerJson).source.origin)}
+            </p>
+            <p>
+              {t("来源店铺")}:{" "}
+              {String(JSON.parse(exported.headerJson).source.name)} · {shopCode}
+            </p>
+            <p>
+              {t("玩家")}: {exported.counts.players ?? 0} · {t("前台玩家")}:{" "}
+              {exported.counts.cashier_profiles ?? 0} · {t("结账记录")}:{" "}
+              {exported.counts.player_checkouts ?? 0} · {t("设备")}:{" "}
+              {exported.counts.machines ?? 0}
+            </p>
+            {JSON.parse(exported.headerJson).scope === "business" &&
+              !exported.counts.players && (
+                <p className="text-amber-600">
+                  {t("导出文件没有玩家，请核对来源环境和店铺。")}
+                </p>
+              )}
+          </div>
+        )}
+      </section>
+      <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5">
+        <h4 className="font-semibold">{t("从 JSON 导入")}</h4>
+        <p className="text-sm text-ink/60">
+          {t(
+            "每店每月可导入一次，需要更多次数请联系平台管理员。开始上传即使用次数，同一任务内重试不重复计数。",
+          )}
+        </p>
+        {allowance && (
+          <p className="text-sm">
+            {t("本月剩余导入次数")}: {allowance.importRemaining}
+          </p>
+        )}
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "导入到空店铺，先预检再确认。恢复来源店铺的资料、设置和业务数据，保留目标店铺编号和当前管理员。",
+          )}
+        </p>
+        <p className="text-sm leading-relaxed text-ink/60">
+          {t(
+            "备份包含设备连接密钥、玩家身份和财务数据，请妥善保管。跨环境账号通过已验证的登录身份恢复关联，不复制 Passkey、OAuth 密钥或登录会话。",
+          )}
+        </p>
+        <Field label="JSON 备份文件">
+          <input
+            className={input}
+            type="file"
+            accept=".json,application/json"
+            disabled={busy}
+            onChange={selectFile}
+          />
+        </Field>
+        <p className="text-xs text-ink/60">
+          {t("支持 PRiSM v1／v2 JSON 备份，分片传输，无 10 MiB 文件大小限制。")}
+        </p>
+        <button
+          className={`${button} justify-self-start`}
+          disabled={
+            busy ||
+            !file ||
+            success ||
+            !allowance ||
+            allowance.importRemaining === 0 ||
+            allowance.locked
+          }
+          onClick={preflight}
+        >
+          {t(busy ? "处理中…" : "预检导入")}
+        </button>
+        {preview && (
+          <div className="grid gap-3 rounded-lg border border-ink/10 p-4">
+            <p className="font-medium">
+              {t("来源店铺")}: {preview.source.name} · {preview.source.publicId}
+            </p>
+            {preview.source.origin && (
+              <p className="break-all text-xs text-ink/60">
+                {t("来源环境")}: {preview.source.origin}
+              </p>
+            )}
+            <p className="break-all text-xs text-ink/60">{filename}</p>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+              {Object.entries(preview.counts)
+                .filter(([, count]) => count > 0)
+                .map(([table, count]) => (
+                  <div key={table} className="flex justify-between gap-2">
+                    <dt>{t(labels[table] ?? table)}</dt>
+                    <dd className="tabular-nums">{count}</dd>
+                  </div>
+                ))}
+            </dl>
+            {preview.errors.length > 0 && (
+              <ul
+                role="alert"
+                className="list-disc space-y-1 pl-5 text-sm text-rose-600"
+              >
+                {preview.errors.map((message, index) => (
+                  <li key={index}>{t(message)}</li>
+                ))}
+              </ul>
+            )}
+            <p role="status" className="text-sm">
+              {t(
+                preview.canImport
+                  ? "预检通过，可以确认导入。"
+                  : "预检未通过，请处理上述问题后重试。",
+              )}
+            </p>
+            {preview.canImport && (
+              <button
+                className={`${primary} justify-self-start`}
+                disabled={busy}
+                onClick={() => setConfirm(true)}
+              >
+                {t("确认导入")}
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+      {!exporting && progress !== undefined && (
+        <p role="status" className="text-sm text-ink/60">
+          {t("已传输记录")}: {progress}
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-rose-600">
+          {error}
+        </p>
+      )}
+      {success && (
+        <p role="status" className="text-sm text-mint">
+          {t("导入完成，请核对玩家、余额、账单及设备设置后再营业。")}
+        </p>
+      )}
+      {confirm && preview && (
+        <Modal
+          title="确认导入店铺数据"
+          close={() => setConfirm(false)}
+          dismissDisabled={busy}
+        >
+          <div className="grid gap-4 p-5">
+            <p>{t("将来源店铺的业务数据导入当前空店铺。")}</p>
+            <p className="font-medium">
+              {preview.source.name} · {preview.source.publicId}
+            </p>
+            <ul className="list-disc space-y-2 pl-5 text-sm text-ink/60">
+              {preview.warnings.map((message) => (
+                <li key={message}>{t(message)}</li>
+              ))}
+            </ul>
+            <button className={primary} disabled={busy} onClick={apply}>
+              {t(busy ? "处理中…" : "开始导入")}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}

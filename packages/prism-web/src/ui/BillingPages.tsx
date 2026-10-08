@@ -1,22 +1,38 @@
+import { pricingPreview } from "./merchant/pricing-preview";
+import { billTime } from "./bill-time";
+import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useI18n } from "../i18n";
+import { BillingConversionWizard } from "./merchant/BillingSetup";
 
-type Settings = {
+export type Settings = {
   billingEnabled: boolean;
+  cashierEnabled: boolean;
   autoRegister: boolean;
+  identityBindingRequired: boolean;
   locationEnabled: boolean;
   checkinGeo: boolean;
   checkoutGeo: boolean;
   machineGeo: boolean;
   entryPricingIds: string[];
   botContact: string;
+  billingConfiguration?: {
+    ready: boolean;
+    balanceAssetsReady: boolean;
+    entryPricingReady: boolean;
+    invalidEntryPricingIds: string[];
+  };
 };
+type EntryRule = Pick<Pricing, "id" | "name" | "kind" | "enabled" | "status">;
+const availableEntryRule = (rule: EntryRule) =>
+  rule.enabled && rule.status !== "archived" && rule.kind !== "time.cap";
 export type ShopInfo = {
   entryPricing: Pricing[];
   pricingSchedule: {
+    clientCalculation?: boolean;
     localDate: string;
     timeZone: string;
     groups: {
@@ -40,8 +56,13 @@ export type ShopInfo = {
       }[];
     }[];
   };
-  shop: Settings & { publicId: string; name: string; timeZone: string; heroUrl?: string | null };
-  membership: { playerId: string } | null;
+  shop: Settings & {
+    publicId: string;
+    name: string;
+    timeZone: string;
+    heroUrl?: string | null;
+  };
+  membership: { playerId: string; identityBound: boolean } | null;
 };
 export type Summary = {
   player: { displayName: string };
@@ -77,7 +98,7 @@ export const control =
   "focus-ring rounded border border-ink/15 bg-panel px-4 py-3 disabled:opacity-50";
 export const panel = "rounded border border-ink/10 bg-panel p-5";
 export const shopApi = (code: string, path = "") =>
-  `/api/v1/shops/${encodeURIComponent(code)}${path ? `/${path}` : ""}`;
+  `/api/v1/shops/${encodeURIComponent(code)}${path ? `/${path}` : "?pricing=raw"}`;
 export const post = (body: unknown = {}) => ({
   method: "POST",
   body: JSON.stringify(body),
@@ -104,115 +125,318 @@ export async function operationLocation(required: boolean) {
 export function BillingSettings({
   shopCode,
   embedded = false,
+  section = "billing",
 }: {
   shopCode: string;
   embedded?: boolean;
+  section?: "billing" | "players" | "devices" | null;
 }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [rules, setRules] = useState<
-    { id: string; name: string; enabled: boolean }[]
-  >([]);
+  const [rules, setRules] = useState<EntryRule[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
-  useEffect(() => {
-    Promise.all([
+  const [savedSection, setSavedSection] = useState<typeof section>(null);
+  const [errorSection, setErrorSection] = useState<typeof section>(null);
+  const [billingActive, setBillingActive] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const load = useCallback(async () => {
+    const [s, r] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
-      api<{ pricingConfigs: typeof rules }>(
+      api<{ pricingConfigs: EntryRule[] }>(
         shopApi(shopCode, "staff/pricing-configs"),
       ),
-    ])
-      .then(([s, r]) => {
-        setSettings(s);
-        setRules(r.pricingConfigs);
-      })
-      .catch((e) => setError(e.message));
+    ]);
+    setSettings({
+      ...s,
+      cashierEnabled: s.cashierEnabled ?? false,
+      identityBindingRequired: s.identityBindingRequired ?? true,
+    });
+    setBillingActive(s.billingEnabled);
+    setRules(r.pricingConfigs);
   }, [shopCode]);
-  if (!settings) return <p role="status">{error || t("加载中...")}</p>;
+  useEffect(() => {
+    void load().catch((e) => setError(e.message));
+  }, [load]);
+  if (!settings)
+    return section ? <p role="status">{error || t("加载中...")}</p> : null;
   const flags = {
     billingEnabled: "启用入场计费",
     autoRegister: "允许自动创建玩家档案",
     locationEnabled: "启用位置校验",
   } as const;
   return (
-    <form
-      className={`${embedded ? "rounded-xl border border-ink/10 bg-panel p-5" : panel} grid gap-4`}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setError("");
-        setSaved(false);
-        try {
-          await api(shopApi(shopCode, "settings"), {
-            method: "PUT",
-            body: JSON.stringify(settings),
-          });
-          setSaved(true);
-          window.dispatchEvent(new Event("prism-shop-settings"));
-        } catch (e) {
-          setError(e instanceof Error ? e.message : t("保存失败"));
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <h3 className="font-semibold">{t("入场与位置校验")}</h3>
-      {!settings.billingEnabled && (
-        <div className="flex flex-wrap gap-3 text-sm">
-          <Link className="underline" to={`/merchant/${shopCode}/assets`}>
-            {t("配置基础资产")}
-          </Link>
-          <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-            {t("配置入场规则")}
-          </Link>
-        </div>
-      )}
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.billingEnabled} onChange={(e) => setSettings({ ...settings, billingEnabled: e.target.checked })} />{t(flags.billingEnabled)}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.autoRegister} onChange={(e) => setSettings({ ...settings, autoRegister: e.target.checked })} />{t(flags.autoRegister)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("开启后，验证 QQ 可创建新玩家档案；关闭后，仅可认领已有 QQ 档案。")}</span>
-      </label>
-      <label className="grid gap-2">
-        <span className="flex items-center gap-3"><input type="checkbox" checked={settings.locationEnabled} onChange={(e) => setSettings({ ...settings, locationEnabled: e.target.checked })} />{t(flags.locationEnabled)}</span>
-        <span className="pl-7 text-sm leading-relaxed text-ink/60">{t("位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。范围使用店铺地图设置。")}</span>
-      </label>
-
-      <fieldset>
-        <legend>{t("普通入场计费规则")}</legend>
-        {rules
-          .filter((r) => r.enabled)
-          .map((rule) => (
-            <label className="mt-2 flex gap-3" key={rule.id}>
-              <input
-                type="checkbox"
-                checked={settings.entryPricingIds.includes(rule.id)}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    entryPricingIds: e.target.checked
-                      ? [...settings.entryPricingIds, rule.id]
-                      : settings.entryPricingIds.filter((id) => id !== rule.id),
-                  })
-                }
-              />
-              {rule.name}
+    <>
+      <form
+        style={section ? undefined : { display: "none" }}
+        className={`${embedded ? "rounded-xl border border-ink/10 bg-panel p-5" : panel} grid gap-4`}
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (busy || !section) return;
+          const savingSection = section;
+          setBusy(true);
+          setError("");
+          setSavedSection(null);
+          setErrorSection(savingSection);
+          try {
+            const current = await api<Settings>(shopApi(shopCode, "settings"));
+            const patch =
+              savingSection === "billing"
+                ? {
+                    billingEnabled: settings.billingEnabled,
+                    cashierEnabled: settings.cashierEnabled,
+                    entryPricingIds: settings.entryPricingIds,
+                  }
+                : savingSection === "players"
+                  ? {
+                      identityBindingRequired: settings.identityBindingRequired,
+                      autoRegister: settings.autoRegister,
+                    }
+                  : { locationEnabled: settings.locationEnabled };
+            const result = await api<Settings>(shopApi(shopCode, "settings"), {
+              method: "PUT",
+              body: JSON.stringify({ ...current, ...patch }),
+            });
+            setBillingActive(result.billingEnabled);
+            setSettings(previous => previous && { ...previous, billingConfiguration: result.billingConfiguration });
+            setSavedSection(savingSection);
+            window.dispatchEvent(new Event("prism-shop-settings"));
+          } catch (e) {
+            setError(e instanceof Error ? e.message : t("保存失败"));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <fieldset disabled={busy} className="grid gap-4">
+          <h4 className="font-semibold">
+            {t(
+              section === "players"
+                ? "注册与身份绑定"
+                : section === "devices"
+                  ? "位置校验"
+                  : "入场与收银",
+            )}
+          </h4>
+          {section === "billing" && !billingActive && !settings.billingConfiguration?.ready && (
+            <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
+              <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
+              <button
+                type="button"
+                className={`${control} justify-self-start`}
+                onClick={() => setConverting(true)}
+              >
+                {t("转换为计费店铺")}
+              </button>
+              <div className="flex flex-wrap gap-3">
+                <Link className="underline" to={`/merchant/${shopCode}/assets`}>
+                  {t("配置基础资产")}
+                </Link>
+                <Link
+                  className="underline"
+                  to={`/merchant/${shopCode}/pricing`}
+                >
+                  {t("配置入场规则")}
+                </Link>
+              </div>
+            </div>
+          )}
+          {section === "billing" && (
+            <>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.billingEnabled}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        billingEnabled: e.target.checked,
+                        cashierEnabled:
+                          e.target.checked && settings.cashierEnabled,
+                      })
+                    }
+                  />
+                  {t(flags.billingEnabled)}
+                </span>
+              </label>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.cashierEnabled}
+                    disabled={!settings.billingEnabled}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        cashierEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  {t("启用前台收银")}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。",
+                  )}
+                </span>
+              </label>
+            </>
+          )}
+          {section === "players" && (
+            <>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.identityBindingRequired}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        identityBindingRequired: e.target.checked,
+                      })
+                    }
+                  />
+                  {t("要求绑定平台身份")}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "开启后，绑定任意一个 Bot 平台身份即可入场和使用设备；关闭后，登录网页账号即可使用。",
+                  )}
+                </span>
+              </label>
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoRegister}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        autoRegister: e.target.checked,
+                      })
+                    }
+                  />
+                  {t(flags.autoRegister)}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "开启后，验证平台身份可创建新玩家档案；关闭后，仅可认领已有平台身份档案。",
+                  )}
+                </span>
+              </label>
+            </>
+          )}
+          {section === "devices" && (
+            <label className="grid gap-2">
+              <span className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={settings.locationEnabled}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      locationEnabled: e.target.checked,
+                    })
+                  }
+                />
+                {t(flags.locationEnabled)}
+              </span>
+              <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                {t(
+                  "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。范围使用店铺地图设置。",
+                )}
+              </span>
             </label>
-          ))}
-      </fieldset>
-      {error && <p role="alert">{error}</p>}
-      {saved && <p role="status">{t("已保存")}</p>}
-      <button className={`${control} justify-self-start`} disabled={busy}>
-        {t("保存设置")}
-      </button>
-      {!embedded && (
-        <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-          {t("打开计费管理")}
-        </Link>
+          )}
+
+          {section === "billing" && (
+            <fieldset>
+              <legend>{t("普通入场计费规则")}</legend>
+              <p className="mt-2 text-sm text-ink/60">
+                {t("创建规则后，还需在这里选中入场时使用的方案。消费封顶不能单独作为入场规则。")}
+              </p>
+              {!rules.some(availableEntryRule) && (
+                <p className="mt-2 text-sm text-ink/60">
+                  {t("暂无启用的入场规则，请先在计费管理中配置。")}
+                </p>
+              )}
+              {rules
+                .filter((r) => availableEntryRule(r) || settings.entryPricingIds.includes(r.id))
+                .map((rule) => (
+                  <label className="mt-2 flex gap-3" key={rule.id}>
+                    <input
+                      type="checkbox"
+                      checked={settings.entryPricingIds.includes(rule.id)}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          entryPricingIds: e.target.checked
+                            ? [...settings.entryPricingIds, rule.id]
+                            : settings.entryPricingIds.filter(
+                                (id) => id !== rule.id,
+                              ),
+                        })
+                      }
+                    />
+                    {rule.name}
+                    {!availableEntryRule(rule) && <span className="text-coral">{t("不可用，请取消选择")}</span>}
+                  </label>
+                ))}
+              {settings.entryPricingIds.filter(id => !rules.some(rule => rule.id === id)).map(id => (
+                <label className="mt-2 flex gap-3 text-coral" key={id}>
+                  <input type="checkbox" checked onChange={() => setSettings({ ...settings,
+                    entryPricingIds: settings.entryPricingIds.filter(selected => selected !== id) })} />
+                  {t("入场规则不存在，请取消选择")}
+                  <code>{id}</code>
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {error && errorSection === section && <p role="alert">{error}</p>}
+          {savedSection === section && <p role="status">{t("已保存")}</p>}
+          <button className={`${control} justify-self-start`} disabled={busy}>
+            {t(
+              section === "players"
+                ? "保存身份设置"
+                : section === "devices"
+                  ? "保存位置校验"
+                  : "保存计费设置",
+            )}
+          </button>
+        </fieldset>
+        {section === "billing" && (
+          <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
+            {t("打开计费管理")}
+          </Link>
+        )}
+      </form>
+      {converting && (
+        <BillingConversionWizard
+          shopCode={shopCode}
+          close={() => setConverting(false)}
+          done={async (value) => {
+            setSettings((previous) => ({
+              ...value,
+              autoRegister: previous?.autoRegister ?? value.autoRegister,
+              identityBindingRequired:
+                previous?.identityBindingRequired ??
+                value.identityBindingRequired,
+              locationEnabled:
+                previous?.locationEnabled ?? value.locationEnabled,
+            }));
+            setBillingActive(value.billingEnabled);
+            setConverting(false);
+            setSavedSection("billing");
+            setError("");
+            const result = await api<{
+              pricingConfigs: EntryRule[];
+            }>(shopApi(shopCode, "staff/pricing-configs"));
+            setRules(result.pricingConfigs);
+          }}
+        />
       )}
-    </form>
+    </>
   );
 }
 
@@ -222,9 +446,70 @@ export function EntryPricing({ info }: { info: ShopInfo }) {
     weekday: "short",
     timeZone: "UTC",
   });
-  const plans = info.entryPricing.filter(
-    (plan) => plan.enabled !== false && plan.status !== "archived",
-  );
+  const plans = useMemo(() => {
+    const zone = info.shop.timeZone ?? "UTC",
+      day = info.pricingSchedule.localDate;
+    const displayRuleTime = (instant: string) => {
+      const parts = billTime(instant, zone);
+      return `${parts.date} ${parts.seconds}`;
+    };
+    return info.entryPricing
+      .map((plan) => {
+        if (
+          !info.pricingSchedule.clientCalculation ||
+          plan.kind === "charge.fixed"
+        )
+          return plan;
+        const timeline = pricingPreview(plan, day, zone);
+        const active = new Set(
+          timeline?.segments
+            .filter((segment) => !segment.isClosed)
+            .map((segment) => segment.ruleId),
+        );
+        return {
+          ...plan,
+          provider: {
+            ...plan.provider,
+            rules: plan.provider.rules
+              ?.filter(
+                (rule) => rule.status !== "archived" && active.has(rule.id),
+              )
+              .sort((a, b) => b.priority - a.priority),
+          },
+        };
+      })
+      .filter(
+        (plan) => plan.kind === "charge.fixed" || plan.provider.rules?.length,
+      )
+      .map((plan) =>
+        pricingInZone(
+          plan,
+          plan.kind === "charge.fixed"
+            ? "UTC"
+            : (plan.provider.timeZone ?? "UTC"),
+          zone,
+          day,
+        ),
+      )
+      .map((plan) => ({
+        ...plan,
+        provider: {
+          ...plan.provider,
+          rules: plan.provider.rules?.map((rule) => ({
+            ...rule,
+            ...(rule.dateTimeRange
+              ? {
+                  displayDateTimeRange: {
+                    start: displayRuleTime(rule.dateTimeRange.start),
+                    end: displayRuleTime(rule.dateTimeRange.end),
+                  },
+                }
+              : {}),
+          })),
+        },
+      }))
+      .filter((plan) => plan.enabled !== false && plan.status !== "archived");
+  }, [info]);
   return (
     <div className="entry-pricing">
       {plans.map((plan) => (

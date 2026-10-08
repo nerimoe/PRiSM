@@ -44,3 +44,40 @@ test("reads retry once on a lost connection; mutations never auto-retry", async 
     expect(calls).toBe(expected);
   }
 });
+
+test("insufficient balance is actionable and clears the rejected checkout without auto-retry", async () => {
+  const storage = new Map<string, string>();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  } });
+  const ids: string[] = [];
+  globalThis.fetch = Object.assign(async (_url: unknown, init?: RequestInit) => {
+    ids.push(JSON.parse(String(init?.body)).operationId);
+    return Response.json({ error: { code: "INSUFFICIENT_BALANCE", message: "Insufficient currency holdings for this operation.", details: { required: 12 } } }, { status: 409 });
+  }, { preconnect: originalFetch.preconnect });
+  try {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await playerOperation("/api/v1/shops/test/player/checkout/confirm", {});
+        throw new Error("Expected insufficient balance");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ApiError);
+        const failure = error as ApiError;
+        expect(failure.message).toBe("余额不足，请充值后重试");
+        expect(failure.code).toBe("INSUFFICIENT_BALANCE");
+        expect(failure.status).toBe(409);
+        expect(failure.details).toEqual({ required: 12 });
+        expect(failure.sessionExpired).toBe(false);
+      }
+      expect(ids.length).toBe(attempt);
+      expect(storage.size).toBe(0);
+    }
+    expect(ids[0]).not.toBe(ids[1]);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "sessionStorage", previous);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
+  }
+});

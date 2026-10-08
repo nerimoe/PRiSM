@@ -1,4 +1,8 @@
-import { useState } from "react";
+import { ShopDataTransfer } from "./ShopDataTransfer";
+import { IdentityConverter } from "./IdentityConverter";
+import { useEffect, useState, type ReactNode } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Store, Receipt, Users, MapPin, Plug, ShieldCheck, Database } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { BillingSettings } from "../BillingPages";
 import {
@@ -50,91 +54,248 @@ type Settings = {
   }[];
 };
 type Token = { id: string; label: string; role: string; status: string };
-export function SettingsPage() {
+const groups = [
+  {
+    id: "general",
+    label: "基本资料",
+    description: "店铺名称、封面、位置与时区。",
+    icon: Store,
+  },
+  {
+    id: "billing",
+    label: "营业与计费",
+    description: "入场计费、前台收银与收费规则。",
+    icon: Receipt,
+  },
+  {
+    id: "players",
+    label: "玩家与身份",
+    description: "身份绑定要求、新玩家注册与身份转换。",
+    icon: Users,
+  },
+  {
+    id: "devices",
+    label: "位置与设备",
+    description: "到店位置校验、投币冷却与门锁连接。",
+    icon: MapPin,
+  },
+  {
+    id: "integrations",
+    label: "Bot 与接入",
+    description: "Bot 配置与机台接入凭据。",
+    icon: Plug,
+  },
+  {
+    id: "data",
+    label: "数据管理",
+    description: "JSON 备份、恢复与跨环境迁移。",
+    icon: Database,
+  },
+  {
+    id: "members",
+    label: "成员与权限",
+    description: "管理店铺成员及其操作权限。",
+    icon: ShieldCheck,
+  },
+] as const;
+
+export function SettingsPage({
+  shopDetails,
+  members,
+}: {
+  shopDetails: ReactNode;
+  members: ReactNode;
+}) {
   const { t } = useI18n();
-  const { shopCode, canWrite, owner } = useMerchant();
+  const { shopCode, owner } = useMerchant();
   const request = useStaffApi();
-  const settings = useResource<{ settings: Settings }>("settings");
+  const [params] = useSearchParams();
+  const group =
+    groups.find((item) => item.id === params.get("group")) ?? groups[0];
+  const settings = useResource<{ settings: Settings }>(
+    owner ? "settings" : null,
+  );
   const gifts = useResource<{
     presents: { id: string; name: string; status: string }[];
-  }>("presents");
+  }>(owner ? "presents" : null);
   const [notice, setNotice] = useState("");
+  useEffect(() => {
+    window.addEventListener("prism-shop-settings", settings.reload);
+    return () =>
+      window.removeEventListener("prism-shop-settings", settings.reload);
+  }, [settings.reload]);
+  // Staff settings are a whole-document API; merge only this form's fields into the latest document.
+  async function saveSettings(patch: Partial<Settings>) {
+    const current = await request<{ settings: Settings }>("settings");
+    await request("settings", "PUT", { ...current.settings, ...patch });
+  }
+  function saved(id: string) {
+    setNotice(id);
+    settings.reload();
+  }
+  if (!owner) return null;
   return (
     <div className="grid gap-5">
       <h2 className="text-xl font-semibold">{t("店铺设置")}</h2>
-      {notice && (
-        <p role="status" className="text-sm">
-          {notice}
-        </p>
-      )}
-      {owner && <BillingSettings shopCode={shopCode} embedded />}
-      {owner && settings.data && (
-        <TTLockConnection
-          settings={settings.data.settings}
-          reload={settings.reload}
-        />
-      )}
-      {!settings.data ? (
-        <State error={settings.error} />
-      ) : (
-        <section className="rounded-xl border border-ink/10 bg-panel p-5">
-          <h3 className="mb-4 font-semibold">{t("营业设置")}</h3>
-          <ActionForm
-            done={() => {
-              setNotice(t("已保存"));
-              settings.reload();
-            }}
-            submit={(f) =>
-              request("settings", "PUT", {
-                ...settings.data!.settings,
-                operations: {
-                  coinCooldownMs: Number(f.get("cooldown")) * 1000,
-                },
-                registration: { defaultPresentId: f.get("present") || null },
-              })
+      <div className="grid gap-5 lg:grid-cols-[11rem_minmax(0,1fr)] lg:gap-8">
+        <nav
+          aria-label={t("设置分类")}
+          className="flex gap-1 overflow-x-auto pb-1 lg:flex-col lg:self-start"
+        >
+          {groups.map((item) => {
+            const next = new URLSearchParams(params);
+            next.set("group", item.id);
+            return (
+              <Link
+                key={item.id}
+                to={`?${next}`}
+                aria-current={group.id === item.id ? "page" : undefined}
+                className={`focus-ring flex shrink-0 items-center gap-2 rounded-lg px-3 py-3 text-sm ${group.id === item.id ? "bg-mint/10 font-semibold text-ink" : "text-ink/60 hover:bg-ink/5 hover:text-ink"}`}
+              >
+                <item.icon size={18} aria-hidden="true" />
+                {t(item.label)}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="min-w-0 space-y-5">
+          <header>
+            <h3 className="text-lg font-semibold">{t(group.label)}</h3>
+            <p className="mt-1 text-sm leading-relaxed text-ink/60">
+              {t(group.description)}
+            </p>
+          </header>
+          {notice === group.id && (
+            <p role="status" className="text-sm text-mint">
+              {t("已保存")}
+            </p>
+          )}
+          {/* Keep drafts and one-time credentials mounted when changing groups. */}
+          <div hidden={group.id !== "general"}>{shopDetails}</div>
+          <BillingSettings
+            shopCode={shopCode}
+            embedded
+            section={
+              group.id === "billing" ||
+              group.id === "players" ||
+              group.id === "devices"
+                ? group.id
+                : null
             }
-          >
-            <fieldset disabled={!canWrite} className="grid gap-4">
-              <Field label="投币冷却时间（秒）">
-                <input
-                  className={input}
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  name="cooldown"
-                  defaultValue={
-                    settings.data.settings.operations.coinCooldownMs / 1000
-                  }
-                  required
-                />
-              </Field>
-              <Field label="新玩家礼物">
-                <select
-                  className={input}
-                  name="present"
-                  defaultValue={
-                    settings.data.settings.registration.defaultPresentId ?? ""
-                  }
-                >
-                  <option value="">{t("无")}</option>
-                  {gifts.data?.presents
-                    .filter((p) => p.status !== "archived")
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                </select>
-              </Field>
-            </fieldset>
-          </ActionForm>
-        </section>
-      )}
-      {owner && (
-        <>
-          <Tokens shopCode={shopCode} />
-        </>
-      )}
+          />
+          <div hidden={group.id !== "players"}>
+            <div className="grid gap-5">
+              {!settings.data ? (
+                <State error={settings.error} />
+              ) : (
+                <section className="rounded-xl border border-ink/10 bg-panel p-5">
+                  <h4 className="mb-4 font-semibold">{t("新玩家礼物")}</h4>
+                  {!gifts.data ? (
+                    <State error={gifts.error} />
+                  ) : (
+                    <ActionForm
+                      label="保存玩家礼物"
+                      done={() => saved("players")}
+                      submit={(f) =>
+                        saveSettings({
+                          registration: {
+                            defaultPresentId:
+                              String(f.get("present") || "") || null,
+                          },
+                        })
+                      }
+                    >
+                      <Field label="新玩家礼物">
+                        <select
+                          className={input}
+                          name="present"
+                          defaultValue={
+                            settings.data.settings.registration
+                              .defaultPresentId ?? ""
+                          }
+                          disabled={!gifts.data}
+                        >
+                          <option value="">{t("无")}</option>
+                          {gifts.data?.presents
+                            .filter((p) => p.status !== "archived")
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}
+                              </option>
+                            ))}
+                        </select>
+                      </Field>
+                    </ActionForm>
+                  )}
+                </section>
+              )}
+              <details className="rounded-xl border border-ink/10 bg-panel p-5">
+                <summary className="cursor-pointer font-semibold">
+                  {t("平台身份转换")}
+                </summary>
+                <p className="mt-2 text-sm leading-relaxed text-ink/60">
+                  {t("需要变更平台标识时使用，由店主预览后主动执行。")}
+                </p>
+                <div className="mt-5">
+                  <IdentityConverter
+                    key={shopCode}
+                    shopCode={shopCode}
+                    embedded
+                  />
+                </div>
+              </details>
+            </div>
+          </div>
+          <div hidden={group.id !== "devices"}>
+            <div className="grid gap-5">
+              {!settings.data ? (
+                <State error={settings.error} />
+              ) : (
+                <>
+                  <section className="rounded-xl border border-ink/10 bg-panel p-5">
+                    <h4 className="mb-4 font-semibold">{t("投币设置")}</h4>
+                    <ActionForm
+                      label="保存投币设置"
+                      done={() => saved("devices")}
+                      submit={(f) =>
+                        saveSettings({
+                          operations: {
+                            coinCooldownMs: Number(f.get("cooldown")) * 1000,
+                          },
+                        })
+                      }
+                    >
+                      <Field label="投币冷却时间（秒）">
+                        <input
+                          className={input}
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          name="cooldown"
+                          defaultValue={
+                            settings.data.settings.operations.coinCooldownMs /
+                            1000
+                          }
+                          required
+                        />
+                      </Field>
+                    </ActionForm>
+                  </section>
+                  <TTLockConnection
+                    settings={settings.data.settings}
+                    reload={settings.reload}
+                  />
+                </>
+              )}
+            </div>
+          </div>
+          <div hidden={group.id !== "integrations"}>
+            <Tokens shopCode={shopCode} />
+          </div>
+          <div hidden={group.id !== "data"}><ShopDataTransfer key={shopCode} /></div>
+          <div hidden={group.id !== "members"}>{members}</div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -155,9 +316,9 @@ function Tokens({ shopCode }: { shopCode: string }) {
       </div>
       <div className="grid gap-3 rounded-lg border border-ink/10 bg-surface p-4">
         <div>
-          <p className="text-sm font-medium">Koishi / 集成配置</p>
+          <p className="text-sm font-medium">{t("Koishi / 集成配置")}</p>
           <p className="mt-1 text-xs text-ink/60">
-            将下面的店铺编号和正式 API 地址填入 Bot 配置。
+            {t("将下面的店铺编号和正式 API 地址填入 Bot 配置。")}
           </p>
         </div>
         <CopyValue label="店铺编号" value={shopCode} />
@@ -178,7 +339,7 @@ function Tokens({ shopCode }: { shopCode: string }) {
             <tr key={token.id}>
               <td className={cell}>{token.label}</td>
               <td className={cell}>
-                {token.role === "integration" ? "QQ Bot" : t("机台")}
+                {token.role === "integration" ? "Bot" : t("机台")}
               </td>
               <td className={cell}>
                 {t(token.status === "active" ? "有效" : "已撤销")}
@@ -218,7 +379,7 @@ function Tokens({ shopCode }: { shopCode: string }) {
             </Field>
             <Field label="用途">
               <select className={input} name="role">
-                <option value="integration">QQ Bot</option>
+                <option value="integration">Bot</option>
                 <option value="machine">{t("机台")}</option>
               </select>
             </Field>
@@ -246,18 +407,19 @@ function Tokens({ shopCode }: { shopCode: string }) {
 }
 
 function CopyValue({ label, value }: { label: string; value: string }) {
+  const { t } = useI18n();
   const copy = async () => {
     await navigator.clipboard?.writeText(value);
   };
   return (
     <div className="grid gap-1">
-      <span className="text-xs text-ink/60">{label}</span>
+      <span className="text-xs text-ink/60">{t(label)}</span>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 break-all rounded border border-ink/10 bg-panel px-3 py-2 text-sm">
           {value}
         </code>
         <button className={button} type="button" onClick={copy}>
-          复制
+          {t("复制")}
         </button>
       </div>
     </div>
@@ -285,11 +447,12 @@ function TTLockConnection({
             setSaved(true);
             reload();
           }}
-          submit={(f) =>
-            request("settings", "PUT", {
-              ...settings,
+          submit={async (f) => {
+            const current = await request<{ settings: Settings }>("settings");
+            return request("settings", "PUT", {
+              ...current.settings,
               ttLockConnection: {
-                ...connection,
+                ...current.settings.ttLockConnection,
                 baseUrl: f.get("baseUrl"),
                 clientId: f.get("clientId"),
                 clientSecret: f.get("clientSecret"),
@@ -297,10 +460,12 @@ function TTLockConnection({
                 appPwd: f.get("appPwd"),
                 accessToken: f.get("accessToken"),
                 refreshToken: f.get("refreshToken"),
-                accessTokenExpiresAt: connection?.accessTokenExpiresAt ?? null,
+                accessTokenExpiresAt:
+                  current.settings.ttLockConnection?.accessTokenExpiresAt ??
+                  null,
               },
-            })
-          }
+            });
+          }}
         >
           {(
             [

@@ -8,7 +8,7 @@ const redirectPath = fileURLToPath(new URL("../.wrangler/deploy/config.json", im
 const localOnly = Bun.argv.includes("--local");
 const platform = Bun.argv.includes("--platform");
 
-const workerName = readOptional("WORKER_NAME") ?? "prism-api";
+const workerName = readOptional("WORKER_NAME") ?? readOptional("WRANGLER_CI_OVERRIDE_NAME") ?? "prism-api";
 const databaseName = readOptional("D1_DATABASE_NAME") ?? "prism";
 const databaseId = readOptional("D1_DATABASE_ID") ?? (localOnly ? "00000000-0000-0000-0000-000000000000" : undefined);
 const previewDatabaseId = readOptional("D1_PREVIEW_DATABASE_ID");
@@ -50,8 +50,7 @@ if (platform) {
     return value;
   };
   const accountId = required("CLOUDFLARE_ACCOUNT_ID", "00000000000000000000000000000000");
-  const kvId = required("RATE_LIMIT_KV_ID", "00000000000000000000000000000000");
-  for (const [name, value] of [["CLOUDFLARE_ACCOUNT_ID", accountId], ["RATE_LIMIT_KV_ID", kvId]]) {
+  for (const [name, value] of [["CLOUDFLARE_ACCOUNT_ID", accountId]]) {
     if (!/^[0-9a-f]{32}$/i.test(value!)) throw new Error(`${name} must be a 32-character hexadecimal ID.`);
   }
   const appOrigin = required("APP_ORIGIN", "http://localhost:8787");
@@ -64,7 +63,6 @@ if (platform) {
     name: workerName,
     ...(!localOnly ? { account_id: accountId } : {}),
     d1_databases: [{ ...databaseBinding, migrations_dir: "migrations" }],
-    kv_namespaces: [{ binding: "RATE_LIMIT", id: kvId }],
     workers_dev: !route,
     preview_urls: false,
     routes: route ? [{ pattern: route.replace(/\/\*$/, ""), custom_domain: true }] : [],
@@ -101,7 +99,8 @@ function validateWorkerName(value: string): void {
 }
 
 function validateDatabaseId(name: string, value: string): void {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
-    throw new Error(`${name} must be a D1 database UUID.`);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+      || (!localOnly && value === "00000000-0000-0000-0000-000000000000")) {
+    throw new Error(`${name} must be a non-placeholder D1 database UUID.`);
   }
 }

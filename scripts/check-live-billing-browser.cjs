@@ -1,0 +1,99 @@
+const { chromium } = require(process.env.PRISM_PLAYWRIGHT_MODULE || '/opt/codex/runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const origin = process.env.PRISM_BROWSER_ORIGIN || 'http://127.0.0.1:4173';
+const output = process.env.PRISM_SCAN_OUTPUT || '.scan-check';
+fs.mkdirSync(output, { recursive: true });
+const capturedAt = '2026-10-07T10:00:00.000Z', startedAt = '2026-09-07T10:00:00.000Z';
+const shop = { id: 'shop', publicId: 'demo', name: '长期账单测试', timeZone: 'Asia/Shanghai', billingEnabled: true };
+function data(unitPrice, broken) {
+  const config = { id: 'rate', version: 1, versionId: 'v1', kind: 'time.priority', name: 'Original', enabled: true, status: 'active', createdAt: startedAt, updatedAt: startedAt,
+    provider: { id: 'provider', timeZone: 'UTC', rules: [{ id: 'day', label: 'Day', priority: 1, timeRange: { start: '02:00', end: '19:00' }, pricing: { unitMinutes: 60, unitPrice, roundGraceMinutes: 10, priceCap: 90 } }] } };
+  const players = Array.from({ length: 16 }, (_, i) => ({ playerId: 'p' + i, displayName: 'Player ' + i, status: 'active', walletTotal: 9999, stayDurationMinutes: 43200, estimatedTotal: null, globalCapWindows: [],
+    identities: [{ provider: 'web-account', subject: 'account-' + i, displayName: 'Account ' + i }],
+    sessions: [{ id: 's' + i, label: 'entry', startedAt: '2026-09-07T18:00:00.000+08:00', endedAt: null, status: 'active', elapsedMinutes: 43200, currentImpact: null, pricingCharges: [], pricingSegments: [] }] }));
+  return { players, billingSnapshot: { version: 1, capturedAt, currentPricingConfigs: [config], pricingReleases: [{ id: 'release', timeZone: 'UTC', configs: [config] }],
+    assetDefinitions: [{ type: 'currency', code: 'paid', name: 'Paid', stackable: true, metadata: null }],
+    players: players.map((player, i) => ({ playerId: player.playerId, sessions: [{ id: 's' + i, playerId: player.playerId, label: 'entry', startedAt, status: 'active', paymentStatus: 'unpaid', pricingConfigIds: ['rate'], pricingReleaseId: broken && i === 15 ? 'missing' : 'release', metadata: {} }],
+      holdings: [{ id: 'h' + i, assetType: 'currency', assetCode: 'paid', quantity: 999900 }], pastAppliedAdjustments: [], pricingPaidHistory: {}, capPaidHistory: {} })) } };
+}
+(async () => {
+  const executablePath = process.env.PRISM_CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined);
+  const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}), args: ['--no-sandbox'] });
+  try {
+    // The computer zone deliberately differs from the merchant shop zone.
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN', timezoneId: 'America/New_York' });
+    const errors = [], requests = [];
+    let unitPrice = 18, broken = true, loads = 0;
+    await page.addInitScript(() => {
+      const Original = window.Worker;
+      window.workerStarts = 0; window.workerStops = 0;
+      window.Worker = class extends Original {
+        constructor(...args) { super(...args); window.workerStarts++; }
+        terminate() { window.workerStops++; super.terminate(); }
+      };
+    });
+    page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/api/**', async route => {
+      const req = route.request(), pathname = new URL(req.url()).pathname;
+      requests.push({ path: pathname, url: req.url(), method: req.method(), body: req.postData() });
+      let body;
+      if (pathname === '/api/v1/me') body = { user: { id: 'owner', username: 'owner', displayName: '店员', role: 'user', hasShops: true } };
+      else if (pathname === '/api/v1/merchant/shops') body = { shops: [shop] };
+      else if (pathname === '/api/v1/shops/demo') body = { shop };
+      else if (pathname.endsWith('/staff/me')) body = { staff: { canWrite: true, role: 'manager' } };
+      else if (pathname.endsWith('/staff/live-players')) { loads++; body = data(unitPrice, broken); }
+      else if (pathname.endsWith('/billing-inputs')) {
+        const playerId = pathname.split('/players/')[1].split('/')[0];
+        const inputs = data(unitPrice, broken).billingSnapshot;
+        inputs.players = inputs.players.filter(player => player.playerId === playerId);
+        body = { playerId, billingSnapshot: inputs };
+      }
+      else if (pathname.endsWith('/checkout/preview')) body = { settlementPreview: { total: 777 }, chargeItems: [], adjustments: [], wallet: { balanceBefore: 9999, balanceAfter: 9222 } };
+      else body = {};
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: body }) });
+    });
+    await page.goto(origin + '/merchant/demo/live');
+    const panel = page.getByRole('region', { name: '账单', exact: true });
+    await panel.getByText('2,790.00', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: /^Player / }).count(), 16);
+    await page.getByRole('button', { name: /^Player 14 / }).getByText('2,790.00', { exact: true }).waitFor();
+    assert.equal(await panel.locator('time').first().textContent(), '18:00');
+    assert.equal(await panel.locator('.bill-event-heading time').first().textContent(), '18:00');
+    assert.equal(requests.filter(req => req.path.includes('checkout') || req.url.includes('playerId=')).length, 0);
+    await page.getByRole('button', { name: /^Player 15 / }).click();
+    await panel.getByRole('alert').waitFor();
+    assert.match(await panel.getByRole('alert').textContent(), /账单预估失败/);
+    broken = false;
+    await panel.getByRole('button', { name: '重试', exact: true }).click();
+    await panel.getByText('2,790.00', { exact: true }).waitFor();
+    assert.ok(loads >= 2);
+    assert.ok(await page.evaluate(() => window.workerStops >= 1));
+    // A refresh replaces all calculations; no old 2790 result may overwrite the new price.
+    unitPrice = 0;
+    await page.getByRole('button', { name: '刷新', exact: true }).click();
+    await panel.locator('dl dd').filter({ hasText: /^0\.00$/ }).waitFor();
+    await page.getByRole('searchbox', { name: '搜索玩家' }).fill('Account 3');
+    assert.equal(await page.getByRole('button', { name: /^Player / }).count(), 1);
+    await panel.getByRole('heading', { name: 'Player 3 · 账单' }).waitFor();
+    await panel.getByRole('button', { name: '结账', exact: true }).click();
+    const checkout = page.getByRole('dialog', { name: '结账', exact: true });
+    await checkout.locator('.bill-total > strong').filter({ hasText: /^0\.00$/ }).waitFor();
+    assert.equal(requests.filter(req => req.path.endsWith('/checkout/preview')).length, 0);
+    assert.equal(requests.filter(req => req.path.endsWith('/billing-inputs')).length, 1);
+    await checkout.getByRole('button', { name: '确认结账', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[role="dialog"]'));
+    const confirmation = requests.find(req => req.path.endsWith('/checkout/confirm'));
+    assert.deepEqual(Object.keys(JSON.parse(confirmation.body)), ['operationId']);
+    assert.match(JSON.parse(confirmation.body).operationId, /^[0-9a-f-]{36}$/);
+    await panel.locator('dl dd').filter({ hasText: /^0\.00$/ }).waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await panel.screenshot({ path: path.join(output, 'live-billing-mobile.png') });
+    const starts = await page.evaluate(() => window.workerStarts);
+    await page.goto(origin + '/merchant/demo/players');
+    assert.ok(starts > 0);
+    assert.deepEqual(errors, []);
+    console.log('Live billing browser checks passed: real workers, month-long visits, error isolation, refresh, shop timezone, account search and authoritative checkout.');
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

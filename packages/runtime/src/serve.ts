@@ -1,3 +1,5 @@
+import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
+import { migrateLegacyPricingToUtc } from "@prism/storage-sql";
 import { Database } from "bun:sqlite";
 import {
   handleMachineWebSocketClose,
@@ -65,6 +67,8 @@ if (billingColumns.some((column) => column.name === "remote_entry_enabled")) {
   console.log("Created pre-drop-remote-entry SQLite backup:", backupPath);
 }
 initializeSqliteSchema(db);
+const utcMigration = await migrateLegacyPricingToUtc({ executor: createBunSqliteExecutor(db), now: new Date(), id: () => crypto.randomUUID() });
+if (utcMigration.applied) console.log("Applied UTC pricing data migration:", utcMigration);
 
 const dependencies = createPrismLocalDependencies({
   db,

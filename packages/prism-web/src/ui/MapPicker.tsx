@@ -209,6 +209,15 @@ function MapController({
   const map = useMap();
 
   useEffect(() => {
+    // Settings panels remain mounted while hidden; refresh Leaflet when they become visible.
+    const observer = new ResizeObserver(() => {
+      map.invalidateSize({ animate: false });
+    });
+    observer.observe(map.getContainer());
+    return () => observer.disconnect();
+  }, [map]);
+
+  useEffect(() => {
     if (flyTarget) {
       map.flyTo(flyTarget, 16, { duration: 1 });
       onFlyDone();

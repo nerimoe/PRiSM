@@ -1,3 +1,8 @@
+import { registerShopDataRoutes } from "./shop-data";
+import { munetSuccessReturn, munetFailureReturn } from "./auth-return";
+import { ensureD1UtcPricing } from "@prism/runtime";
+import { registerCashierRoutes } from "./cashier";
+import { registerAdminAccountRoutes } from "./admin-accounts";
 import {
   registerDeviceRoutes,
   listDevices,
@@ -6,8 +11,9 @@ import {
   requireDeviceStaff,
   claimDeviceCoin,
 } from "./devices";
-import { PrismDomainError } from "@prism/core";
-import { serializePricingProviderConfig } from "@prism/storage-sql";
+import { PrismDomainError, resolveLocationTimeZone } from "@prism/core";
+import { ensureShopLocationTimeZones } from "./location-time-zone";
+import { billingSetupStatements } from "./billing-setup";
 import {
   registerBillingRoutes,
   getBillingShop,
@@ -37,7 +43,7 @@ import {
   sha256,
   sha256Hex,
 } from "./crypto";
-import { canAccessShop, getMachineByPublicId, listShopsForUser } from "./db";
+import { canAccessShop, getMachineByPublicId, listShopsForUser, shopTimeZoneStatement } from "./db";
 import { checkLocation, clampShopRadius } from "./geo";
 import {
   allowedOrigins,
@@ -57,6 +63,7 @@ import {
 } from "./apple";
 import {
   createMachineSession,
+  mintMachineTicket,
   publicMachine,
   resolveMachineSession,
 } from "./machine-session";
@@ -94,7 +101,7 @@ import {
 const app = new Hono<AppBindings>();
 app.use("/api/v1/*", async (c, next) => {
   await next();
-  c.res = await wrapApiResponse(c.res);
+  c.res = await wrapApiResponse(c.res, c.get("responseTimeZone") ?? "UTC");
 });
 app.all("/api/*", async (c, next) => {
   if (c.req.path.startsWith("/api/v1/")) return next();
@@ -130,7 +137,7 @@ app.use(
       return allowedOrigins(c.env).has(origin) ? origin : "";
     },
     allowHeaders: ["content-type"],
-    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
   }),
 );
@@ -146,9 +153,26 @@ app.use("*", async (c, next) => {
   if (rejected) return rejected;
   await next();
 });
-app.use("*", attachUser);
+app.use("*", async (c, next) => {
+  if (/^\/t\/[^/]+\/[^/]+$/.test(c.req.path) || c.req.path === "/api/v1/machines/session/start"
+    || c.req.path === "/api/v1/machines/session" || /^\/api\/v1\/machines\/[^/]+$/.test(c.req.path)) {
+    await enforceRateLimits(c, [{ key: `machine-navigation:${clientIp(c.req.raw)}`, limit: 60, windowSeconds: 60 }]);
+  }
+  await next();
+});
+app.use("*", async (c, next) => {
+  if (c.req.path.startsWith("/api/") && c.env?.DB) {
+    await ensureD1UtcPricing(c.env.DB);
+    await ensureShopLocationTimeZones(c.env.DB);
+  }
+  await next();
+});
+app.use("/api/*", attachUser);
+app.use("/callback*", attachUser);
 registerDeviceRoutes(app);
 registerBillingRoutes(app);
+registerCashierRoutes(app);
+registerShopDataRoutes(app);
 
 app.get("/api/v1/health", (c) => c.json({ ok: true }));
 
@@ -225,12 +249,11 @@ app.post("/api/v1/auth/logout", async (c) => {
 });
 
 app.get("/api/v1/auth/passkey/options", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `passkey:options:${clientIp(c.req.raw)}:${minute}`,
+      key: `passkey:options:${clientIp(c.req.raw)}`,
       limit: 10,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   return c.json(await authenticationOptions(c));
@@ -331,12 +354,11 @@ app.get("/api/v1/auth/munet", (c) => {
 app.get("/api/v1/appclip/auth/start", async (c) => {
   if (!c.env.MUNET_CLIENT_ID || !c.env.MUNET_CLIENT_SECRET)
     jsonError(503, "MuNET 登录尚未配置");
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `appclip-auth:start:${clientIp(c.req.raw)}:${minute}`,
+      key: `appclip-auth:start:${clientIp(c.req.raw)}`,
       limit: 5,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   const state = `appclip.${randomToken(24)}`;
@@ -375,9 +397,9 @@ async function finishAppClipCallback(
       code,
       redirectUri: `${c.env.APP_ORIGIN}${redirectPath}`,
     });
-    const { userId } = await provisionMunetUser(c, munet);
+    const { userId, isNewUser } = await provisionMunetUser(c, munet);
     const exchangeCode = await createAppClipAuthCode(c, userId);
-    return callback({ code: exchangeCode });
+    return callback({ code: exchangeCode, ...(isNewUser ? { setup: "passkey" } : {}) });
   } catch (error) {
     console.error(error);
     return callback({
@@ -392,12 +414,11 @@ async function finishAppClipCallback(
 }
 
 app.post("/api/v1/appclip/auth/exchange", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
   await enforceRateLimits(c, [
     {
-      key: `appclip-auth:exchange:${clientIp(c.req.raw)}:${minute}`,
+      key: `appclip-auth:exchange:${clientIp(c.req.raw)}`,
       limit: 10,
-      windowSeconds: 90,
+      windowSeconds: 60,
     },
   ]);
   const body = appClipAuthExchangeSchema.parse(await c.req.json());
@@ -413,10 +434,7 @@ app.get("/callback", async (c) => {
     return finishAppClipCallback(c, "/callback");
   }
   const next = safePath(getCookie(c, oauthNextCookie));
-  const fail = (message: string) =>
-    c.redirect(
-      `/login?error=${encodeURIComponent(message)}&next=${encodeURIComponent(next)}`,
-    );
+  const fail = (message: string) => c.redirect(munetFailureReturn(next, message));
   const expectedState = getCookie(c, oauthStateCookie);
   deleteCookie(c, oauthStateCookie, { path: "/" });
   deleteCookie(c, oauthNextCookie, { path: "/" });
@@ -434,11 +452,7 @@ app.get("/callback", async (c) => {
     });
     const { userId, isNewUser } = await provisionMunetUser(c, munet);
     await createSession(c, userId);
-    return c.redirect(
-      isNewUser
-        ? `/settings?setup=passkey&next=${encodeURIComponent(next)}`
-        : next,
-    );
+    return c.redirect(munetSuccessReturn(next, isNewUser));
   } catch (error) {
     console.error(error);
     return fail(
@@ -450,6 +464,8 @@ app.get("/callback", async (c) => {
     );
   }
 });
+
+registerAdminAccountRoutes(app);
 
 app.post("/api/v1/admin/users/role", async (c) => {
   requireAdmin(c);
@@ -556,12 +572,14 @@ app.delete("/api/v1/cards/:id", async (c) => {
 
 app.get("/t/:shopCode/:publicId", async (c) => {
   try {
-    const session = await createMachineSession(
-      c,
+    const session = await mintMachineTicket(
+      c.env.SESSION_SECRET,
       c.req.param("shopCode"),
       c.req.param("publicId"),
     );
-    return c.redirect(`/m?ticket=${encodeURIComponent(session.ticket)}`, 302);
+    c.header("cache-control", "no-store");
+    c.header("referrer-policy", "no-referrer");
+    return c.redirect(`/m#ticket=${encodeURIComponent(session.ticket)}`, 302);
   } catch (error) {
     if (error instanceof HTTPException && error.status === 404) {
       return c.redirect(
@@ -574,14 +592,6 @@ app.get("/t/:shopCode/:publicId", async (c) => {
 });
 
 app.post("/api/v1/machines/session/start", async (c) => {
-  const minute = Math.floor(Date.now() / 60_000);
-  await enforceRateLimits(c, [
-    {
-      key: `machine-session:start:${clientIp(c.req.raw)}:${minute}`,
-      limit: 60,
-      windowSeconds: 90,
-    },
-  ]);
   const body = machineSessionStartSchema.parse(await c.req.json());
   const session = await createMachineSession(c, body.shopCode, body.publicId);
   return c.json({
@@ -811,12 +821,12 @@ app.get("/api/v1/merchant/shops", async (c) => {
 app.post("/api/v1/merchant/shops", async (c) => {
   const user = requireUser(c);
   const body = createShopSchema.parse(await c.req.json());
+  const timeZone = resolveLocationTimeZone(body.latitude, body.longitude);
   const shopId = crypto.randomUUID();
   const publicId = randomToken(8);
   const heroHash = body.heroData ? await sha256(body.heroData) : null;
   const setup = body.billingSetup;
-  const botToken = setup ? `prism_integration_${randomToken(32)}` : null;
-  const ruleId = crypto.randomUUID();
+  const botToken = setup?.createBotToken ? `prism_integration_${randomToken(32)}` : null;
   const now = new Date().toISOString();
   const statements = [
     c.env.DB.prepare(
@@ -836,52 +846,13 @@ app.post("/api/v1/merchant/shops", async (c) => {
       "INSERT INTO shop_members (id, shop_id, user_id, role) VALUES (?, ?, ?, 'owner')",
     ).bind(crypto.randomUUID(), shopId, user.id),
   ];
+  statements.push(shopTimeZoneStatement(c.env.DB, shopId, timeZone));
   if (setup) {
-    for (const [code, name] of [
-      ["paid", setup.paidName],
-      ["free", setup.freeName],
-    ])
-      statements.push(
-        c.env.DB.prepare(
-          "INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES (?,'currency',?,?,1,'active')",
-        ).bind(shopId, code, name),
-      );
-    const provider = {
-      id: ruleId,
-      rules: [
-        {
-          id: crypto.randomUUID(),
-          label: "全天",
-          priority: 0,
-          timeRange: { start: "00:00", end: "00:00" },
-          pricing: {
-            unitMinutes: 60,
-            unitPrice: setup.hourlyPrice,
-            roundGraceMinutes: setup.graceMinutes,
-            priceCap: setup.dailyCap,
-          },
-        },
-      ],
-    };
-    statements.push(
+    statements.push(...billingSetupStatements(c.env.DB, shopId, setup).statements);
+    if (botToken) statements.push(
       c.env.DB.prepare(
-        "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES (?,?,'time.priority','标准入场',1,'active',?,?,?)",
-      ).bind(shopId, ruleId, JSON.stringify(serializePricingProviderConfig(provider)), now, now),
-    );
-    statements.push(
-      c.env.DB.prepare(
-        "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,'QQ Bot','integration','prism_integration',?,'active',?)",
-      ).bind(shopId, crypto.randomUUID(), await sha256Hex(botToken!), now),
-    );
-    statements.push(
-      c.env.DB.prepare(
-        "INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,entry_pricing_ids_json,bot_contact) VALUES (?,1,?,?,?)",
-      ).bind(
-        shopId,
-        +setup.autoRegister,
-        JSON.stringify([ruleId]),
-        setup.botContact,
-      ),
+        "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,'Bot','integration','prism_integration',?,'active',?)",
+      ).bind(shopId, crypto.randomUUID(), await sha256Hex(botToken), now),
     );
   }
   await c.env.DB.batch(statements);
@@ -893,6 +864,7 @@ app.post("/api/v1/merchant/shops", async (c) => {
         id: shopId,
         publicId,
         ...shop,
+        timeZone,
         heroUrl: heroHash ? shopHeroPath(publicId, heroHash) : null,
       },
     },
@@ -917,9 +889,15 @@ app.patch("/api/v1/merchant/shops/:id", async (c) => {
   }
 
   const body = patchShopSchema.parse(await c.req.json());
+  const location = await c.env.DB.prepare("SELECT latitude,longitude FROM shops WHERE id=?")
+    .bind(shopId).first<{ latitude: number; longitude: number }>();
+  if (!location) jsonError(404, "没有找到这个店铺", "SHOP_NOT_FOUND");
+  const latitude = body.latitude ?? location.latitude;
+  const longitude = body.longitude ?? location.longitude;
+  const timeZone = resolveLocationTimeZone(latitude, longitude);
   const radius =
     body.radiusMeters !== undefined ? clampShopRadius(body.radiusMeters) : null;
-  await c.env.DB.prepare(
+  const statements = [c.env.DB.prepare(
     `UPDATE shops
      SET name = COALESCE(?, name),
          hero_data = CASE WHEN ? THEN ? ELSE hero_data END,
@@ -936,15 +914,16 @@ app.patch("/api/v1/merchant/shops/:id", async (c) => {
       body.heroData ?? null,
       body.heroData !== undefined ? 1 : 0,
       body.heroData ? await sha256(body.heroData) : null,
-      body.latitude ?? null,
-      body.longitude ?? null,
+      latitude,
+      longitude,
       radius,
       shopId,
-    )
-    .run();
+    )];
+  statements.push(shopTimeZoneStatement(c.env.DB, shopId, timeZone));
+  await c.env.DB.batch(statements);
 
   const updated = await c.env.DB.prepare(
-    "SELECT id, public_id AS publicId, name, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters AS radiusMeters, radius_meters, created_at AS createdAt, updated_at AS updatedAt FROM shops WHERE id = ?",
+    "SELECT id, public_id AS publicId, name, COALESCE((SELECT json_extract(value_json,'$.timeZone') FROM app_settings WHERE shop_id=shops.id AND key='store.profile'),'Asia/Shanghai') AS timeZone, CASE WHEN hero_data IS NULL OR hero_data = '' THEN NULL ELSE '/api/shops/' || public_id || '/hero?v=' || COALESCE(hero_hash, 'original') END AS heroUrl, latitude, longitude, radius_meters AS radiusMeters, radius_meters, created_at AS createdAt, updated_at AS updatedAt FROM shops WHERE id = ?",
   )
     .bind(shopId)
     .first();
@@ -977,7 +956,7 @@ app.delete("/api/v1/merchant/shops/:id", async (c) => {
     .first();
   if (used) jsonError(409, "店铺已有业务记录，不能删除", "SHOP_HAS_HISTORY");
   await c.env.DB.batch([
-    c.env.DB.prepare("DELETE FROM qq_binding_codes WHERE shop_id=?").bind(
+    c.env.DB.prepare("DELETE FROM platform_binding_codes WHERE shop_id=?").bind(
       shopId,
     ),
     c.env.DB.prepare("DELETE FROM shop_billing_settings WHERE shop_id=?").bind(
@@ -1151,6 +1130,12 @@ app.delete("/api/v1/admin/bans/:id", async (c) => {
 });
 
 app.onError((error, c) => {
+  if (String(error).includes("SHOP_IMPORT_QUOTA"))
+    return c.json({ error: { code: "IMPORT_MONTHLY_LIMIT", message: "本月导入次数已用完，需要更多次数请联系平台管理员" } }, 429);
+  if (String(error).includes("SHOP_EXPORT_LOCKED"))
+    return c.json({ error: { code: "SHOP_EXPORT_LOCKED", message: "店铺正在导出数据，暂时不能进行业务操作，请稍后重试" } }, 423);
+  if (String(error).includes("SHOP_EXPORT_QUOTA"))
+    return c.json({ error: { code: "EXPORT_MONTHLY_LIMIT", message: "本月导出次数已用完，需要更多次数请联系平台管理员" } }, 429);
   if (error instanceof HTTPException) return error.getResponse();
   if (error instanceof z.ZodError) {
     const message = error.errors[0]?.message || "请检查填写内容";

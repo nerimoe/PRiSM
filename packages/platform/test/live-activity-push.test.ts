@@ -1,3 +1,8 @@
+import { beforeEach } from "bun:test";
+import { createTestRateLimits } from "./rate-limit-fixture";
+const rateLimits = createTestRateLimits();
+beforeEach(rateLimits.reset);
+import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { Miniflare } from "miniflare";
 import app from "../src/index";
@@ -280,14 +285,13 @@ const mf = new Miniflare({
   modules: true,
   script: "export default { fetch() { return new Response('test'); } }",
   d1Databases: ["DB"],
-  kvNamespaces: ["RATE_LIMIT"],
   compatibilityDate: "2026-06-01",
 });
 const origin = "https://prism.test";
 const cookie = "arcadelink_session=e2e-session";
 const routeEnv = {
   DB: await mf.getD1Database("DB"),
-  RATE_LIMIT: await mf.getKVNamespace("RATE_LIMIT"),
+  ...rateLimits.bindings,
   APP_ORIGIN: origin,
   SESSION_SECRET: "test-only",
   URL_ENCRYPTION_KEY: "test-only",
@@ -326,15 +330,10 @@ beforeAll(async () => {
     "0024_drop_remote_entry.sql",
     "0025_live_activity_push_tokens.sql",
     "0026_live_activity_start_tokens.sql",
+    "0030_platform_identity_bindings.sql",
   ]) {
     statements.push(
-      ...readFileSync(new URL(`../../../migrations/${file}`, import.meta.url), "utf8")
-        // Strip `--` comments first: a leading comment would otherwise be sent to D1 as
-        // part of the statement and rejected as a syntax error.
-        .replace(/^\s*--.*$/gm, "")
-        .split(";")
-        .map((statement) => statement.trim())
-        .filter(Boolean),
+      ...splitD1MigrationStatements(readFileSync(new URL(`../../../migrations/${file}`, import.meta.url), "utf8")),
     );
   }
   for (const sql of statements) await db.prepare(sql).run();
@@ -371,9 +370,11 @@ beforeAll(async () => {
     .run();
   await db
     .prepare(
-      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,qq,verified_at) VALUES ('a','u','p','123456','2026-01-01')",
+      "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('a','u','p','2026-01-01')",
     )
     .run();
+  await db.prepare("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('a','p','onebot','123456','2026-01-01')").run();
+  await db.prepare("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('a','u','onebot','123456','2026-01-01')").run();
 }, 30000);
 
 afterAll(async () => {
@@ -504,7 +505,7 @@ test("settling a visit pushes an end event to the player's phone", async () => {
     const finalBill = (await recovered.json() as any).data;
     expect(finalBill).toMatchObject({ phase: "ended", startedAtUnix: Date.parse(startedAt) / 1000,
       endedAtUnix: Date.parse(stoppedAt) / 1000,
-      bill: { amountCents: Math.round((payload as any).data.playerSettlement.total * 100), nextChargeAtUnix: null } });
+      bill: { amountCents: Math.round((payload as any).data.playerSettlement.total * 100), nextEvent: null } });
     await routeEnv.DB.prepare("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json,payment_status) VALUES ('a','next-visit','p',?,'active','[]','unpaid')").bind(new Date().toISOString()).run();
     const again = await e2eRequest("/api/v1/shops/a/player/live-activity/bill?sessionId=sess-1");
     expect((await again.json() as any).data).toEqual(finalBill);

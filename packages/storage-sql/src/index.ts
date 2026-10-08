@@ -1,4 +1,6 @@
+import { cashierSchema } from "./cashier-schema";
 import { pricingVersionSchema } from "./pricing-version-schema";
+import { utcPricingSchema } from "./utc-pricing-schema";
 
 export const sqliteSchema = [
   `CREATE TABLE IF NOT EXISTS staff_users (
@@ -289,6 +291,15 @@ export const sqliteSchema = [
     PRIMARY KEY (shop_id, session_id, id),
     FOREIGN KEY (shop_id, session_id) REFERENCES sessions(shop_id, id)
   )`,
+  `CREATE TABLE IF NOT EXISTS checkout_report_states (
+    shop_id TEXT NOT NULL DEFAULT 'legacy',
+    checkout_id TEXT NOT NULL,
+    archived INTEGER NOT NULL CHECK (archived IN (0, 1)),
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    PRIMARY KEY (shop_id, checkout_id),
+    FOREIGN KEY (shop_id, checkout_id) REFERENCES player_checkouts(shop_id, id)
+  )`,
   `CREATE TABLE IF NOT EXISTS pricing_history_entries (
     shop_id TEXT NOT NULL DEFAULT 'legacy',
     id TEXT NOT NULL,
@@ -386,6 +397,7 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_asset_ledger_player_created ON asset_ledger_entries(shop_id, player_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_redeem_records_code ON redeem_records(shop_id, code_id)`,
   `CREATE INDEX IF NOT EXISTS idx_device_commands_status_requested ON device_commands(shop_id, status, requested_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_device_commands_player_requested ON device_commands(shop_id, player_id, requested_at, type, status)`,
   `CREATE INDEX IF NOT EXISTS idx_device_states_reported_at ON device_states(shop_id, reported_at)`,
   `CREATE INDEX IF NOT EXISTS idx_machine_connections_status_seen ON machine_connections(shop_id, status, last_seen_at)`,
   `CREATE INDEX IF NOT EXISTS idx_player_checkouts_player_settled ON player_checkouts(shop_id, player_id, settled_at)`,
@@ -405,9 +417,15 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_api_tokens_role_status ON api_tokens(shop_id, role, status)`,
   `CREATE INDEX IF NOT EXISTS idx_operation_locks_expires_at ON operation_locks(shop_id, expires_at)`,
   ...pricingVersionSchema,
+  ...utcPricingSchema,
+  ...cashierSchema,
 ] as const;
 
+export { cashierSchema } from "./cashier-schema";
 export * from "./repositories";
 export * from "./read-models";
 
 export * from "./shop-scope";
+
+export * from "./utc-pricing-migration";
+export { splitD1MigrationStatements } from "./d1-migrations";

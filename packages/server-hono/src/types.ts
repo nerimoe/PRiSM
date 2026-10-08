@@ -310,6 +310,7 @@ export type BusinessItemOrderCommands = {
 
 export type StaffPreviewPricingTimelineInput = {
   localDate: string;
+  displayTimeZone?: string;
   provider: Extract<PricingConfig, { kind: "time.priority" | "time.cap" }>["provider"];
 };
 
@@ -457,6 +458,7 @@ export type StaffCheckoutOverrideInput = {
 };
 
 export type StaffCheckoutCommands = {
+  checkoutExternal?(input: import("@prism/application").ExternalCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   previewCheckout?(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   checkoutWithOverride?(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;
@@ -573,6 +575,9 @@ export type PrismAppDependencies = {
   integrationCommands?: IntegrationCommands;
   staffCheckoutCommands?: StaffCheckoutCommands;
   staffOperations: StaffOperationsService<SettlePlayerCheckoutResult>;
+  staffReportCommands?: import("@prism/application").StaffReportService;
+  billingInputs?: (playerIds: readonly string[]) => Promise<import("@prism/core").LiveBillingSnapshot>;
+  staffLiveBillingSnapshot?: (playerIds: readonly string[]) => Promise<import("@prism/core").LiveBillingSnapshot>;
   staffPlayerCommands?: StaffPlayerCommands;
   staffAssetDefinitionCommands?: StaffAssetDefinitionCommands;
   staffPricingEffectCommands?: StaffPricingEffectCommands;
@@ -810,6 +815,7 @@ export type StaffUpdatePricingConfigBody = {
 };
 
 export type StaffPreviewPricingTimelineBody = {
+  displayTimeZone?: string;
   localDate: string;
   provider: Extract<PricingConfig, { kind: "time.priority" | "time.cap" }>["provider"];
 };

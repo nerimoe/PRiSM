@@ -51,9 +51,8 @@ export async function operateMahjong(c:C, machine:MachineRow, body:Record<string
     const rules = (await repos.pricingConfigs.listEnabled()).filter(r => config.pricingConfigIds.includes(r.id));
     if (!rules.length || rules.length !== config.pricingConfigIds.length)
       jsonError(409,"请店家配置麻将计费规则","DEVICE_CONFIGURATION_REQUIRED");
-    const profile = await repos.system.getAppSetting<{timeZone?:string}>("store.profile");
     if (rules.every(r => r.kind === "time.priority" && !canStartPriorityTimePricingSession({
-      config:{...r.provider,timeZone:r.provider.timeZone ?? profile?.timeZone},at:new Date(),
+      config:{...r.provider,timeZone:r.provider.timeZone ?? "UTC"},at:new Date(),
     }))) jsonError(409,"当前不在麻将计费时段","PLAYER_SESSION_OUTSIDE_BILLABLE_TIME");
   }
   return runPlayerOperation(c,shop.id,`mahjong/${machine.id}`,body,()=>withOperationLease({

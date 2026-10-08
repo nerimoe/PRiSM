@@ -1,3 +1,5 @@
+import { useLocation, useSearchParams } from "react-router-dom";
+import { billTime } from "./bill-time";
 import { useEffect, useState } from "react";
 import { Fingerprint, Loader2 } from "lucide-react";
 import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
@@ -19,17 +21,24 @@ export function ShopHero({ name, heroUrl, subtitle }: { name: string; heroUrl?: 
   </header>;
 }
 
-export function SessionSignIn({ next }: { next: string }) {
+export function SessionSignIn() {
   const { t, errorText } = useI18n();
   const { refresh } = useAuth();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [params] = useSearchParams();
+  const location = useLocation();
+  const nextParams = new URLSearchParams(params);
+  nextParams.delete("error"); nextParams.delete("setup");
+  const next = location.pathname + (nextParams.size ? `?${nextParams}` : "") + location.hash;
+  const queryError = params.get("error");
+  const displayedError = error || (queryError === "MuNET 授权已取消" ? "" : queryError);
   async function passkey() {
     setBusy("passkey"); setError("");
     try {
       await Api.loginWithPasskey(await startAuthentication({ optionsJSON: await Api.passkeyOptions() }));
       await refresh();
-    } catch (e) { const message = passkeyErrorMessage(e); if (message) setError(errorText(message)); }
+    } catch (e) { const message = passkeyErrorMessage(e); if (message) setError(message); }
     finally { setBusy(""); }
   }
   return <div className="session-actions">
@@ -42,11 +51,11 @@ export function SessionSignIn({ next }: { next: string }) {
       {t(busy === "passkey" ? "正在验证 Passkey…" : "使用 Passkey 登录")}
     </button>
     {!browserSupportsWebAuthn() && <p className="session-subtitle text-center">{t("当前浏览器不支持 Passkey，请使用 MuNET 登录")}</p>}
-    {error && <p role="alert" className="text-coral">{error}</p>}
+    {displayedError && <p role="alert" className="text-coral">{errorText(displayedError)}</p>}
   </div>;
 }
 
-export function QQBinding({ code }: { code: string }) {
+export function PlatformBinding({ code }: { code: string }) {
   const { t, errorText } = useI18n();
   const [binding, setBinding] = useState<{ code: string; expiresAt: string } | null>(null);
   const [error, setError] = useState("");
@@ -55,15 +64,15 @@ export function QQBinding({ code }: { code: string }) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     setBinding(null); setError("");
-    api<{ code: string; expiresAt: string }>(shopApi(code, "qq-binding"), post()).then(result => {
+    api<{ code: string; expiresAt: string }>(shopApi(code, "platform-binding"), post()).then(result => {
       if (cancelled) return;
       setBinding(result);
       timer = setTimeout(() => setAttempt(value => value + 1), Math.max(1000, Date.parse(result.expiresAt) - Date.now()));
     }).catch(e => { if (!cancelled) setError(errorText(e instanceof Error ? e.message : "操作失败")); });
     return () => { cancelled = true; clearTimeout(timer); };
   }, [code, attempt, errorText]);
-  return <div className="grid gap-6"><h2>{t("绑定 QQ")}</h2><div className="binding-code">
-    <p>{t("在 QQ 群中发送")}</p>
-    {binding ? <><code className="select-all">prism.bind {binding.code}</code><small>{t("有效期至")} {new Date(binding.expiresAt).toLocaleTimeString()}</small></> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></> : <Loader2 className="animate-spin" />}
+  return <div className="grid gap-6"><h2>{t("绑定平台身份")}</h2><div className="binding-code">
+    <p>{t("向店铺 Bot 发送")}</p>
+    {binding ? <><code className="select-all">prism.bind {binding.code}</code><small>{t("有效期至")} {billTime(binding.expiresAt).time}</small></> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></> : <Loader2 className="animate-spin" />}
   </div></div>;
 }

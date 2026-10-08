@@ -1,3 +1,4 @@
+import { dateTimeFormatterCache } from "./date-time-formatter";
 import { PrismDomainError } from "./errors";
 import {
   type Cents,
@@ -42,6 +43,10 @@ export type PriorityTimePricingRule = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -57,6 +62,10 @@ export type TimeCapPricingRule = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -66,6 +75,8 @@ export type TimeCapPricingRule = {
 };
 
 export type PriorityTimePricingProviderConfig = {
+  /** Historical aliases retain the original cap/history identity. */
+  historyProviderId?: string;
   name?: string;
   id: string;
   pricingConfigId?: string;
@@ -98,6 +109,10 @@ type TimeRuleLike = {
   status?: PriorityTimePricingRuleStatus;
   weekdays?: readonly number[];
   specificDates?: readonly string[];
+  /** Absolute UTC anchor retained by the historical data migration. */
+  anchorAt?: Date;
+  /** Original rule identity when UTC date groups need distinct editor IDs. */
+  historyRuleId?: string;
   timeRange?: TimeRange;
   dateTimeRange?: {
     start: Date;
@@ -121,6 +136,8 @@ export type PriorityTimePricingTimelineSegment = {
   endMinute: number;
   startLabel: string;
   endLabel: string;
+  startedAt?: string;
+  endedAt?: string;
   pricing?: UnitPricingConfig;
   priceCap?: number;
   isClosed?: true;
@@ -251,7 +268,7 @@ export function createPriorityTimePricingProvider(config: PriorityTimePricingPro
           pricingHistory: {
             pricingConfigId: config.pricingConfigId ?? config.id,
             providerId: config.id,
-            ruleId: rule.id,
+            ruleId: rule.historyRuleId ?? rule.id,
             ruleAnchorAt: getRuleAnchor(cursor, rule, timeZone),
             amount,
           },
@@ -309,10 +326,10 @@ export function collectTimeCapPricingHistoryLookupKeys(input: {
       }
       const nextBoundary = findNextPriorityBoundary(cursor, endedAt, rule, rules, timeZone);
       const capAnchorAt = getRuleAnchor(cursor, rule, timeZone);
-      const key = buildTimeCapHistoryKey(capConfigId, rule.id, capAnchorAt);
+      const key = buildTimeCapHistoryKey(capConfigId, rule.historyRuleId ?? rule.id, capAnchorAt);
       keys.set(key, {
         capConfigId,
-        capRuleId: rule.id,
+        capRuleId: rule.historyRuleId ?? rule.id,
         capAnchorAt,
         key,
       });
@@ -388,7 +405,7 @@ export function explainTimeCapPricing(input: {
       const nextBoundary = findNextPriorityBoundary(cursor, endedAt, rule, rules, timeZone);
       const overlapMs = nextBoundary.getTime() - cursor.getTime();
       const capAnchorAt = getRuleAnchor(cursor, rule, timeZone);
-      const key = buildTimeCapHistoryKey(capConfigId, rule.id, capAnchorAt);
+      const key = buildTimeCapHistoryKey(capConfigId, rule.historyRuleId ?? rule.id, capAnchorAt);
       segments.push({ rule, capAnchorAt, key, weight: overlapMs });
       cursor = nextBoundary;
     }
@@ -431,7 +448,7 @@ export function explainTimeCapPricing(input: {
       key,
       capName: input.config.name,
       capConfigId,
-      capRuleId: bucket.rule.id,
+      capRuleId: bucket.rule.historyRuleId ?? bucket.rule.id,
       ruleLabel: bucket.rule.label,
       windowStartedAt: bucket.capAnchorAt,
       windowEndedAt: getRuleNaturalEnd(bucket.capAnchorAt, bucket.rule, timeZone),
@@ -474,7 +491,7 @@ export function collectPriorityTimePricingHistoryLookupKeys(input: {
     keys.set(key, {
       pricingConfigId: input.config.pricingConfigId ?? input.config.id,
       providerId: input.config.id,
-      ruleId: rule.id,
+      ruleId: rule.historyRuleId ?? rule.id,
       ruleAnchorAt,
       key,
     });
@@ -495,10 +512,12 @@ export function canStartPriorityTimePricingSession(input: {
 export function buildPriorityTimePricingTimeline(input: {
   localDate: string;
   config: PriorityTimePricingProviderConfig;
+  displayTimeZone?: string;
 }): PriorityTimePricingTimeline {
   return buildTimeRuleTimeline({
     localDate: input.localDate,
     config: input.config,
+    displayTimeZone: input.displayTimeZone,
     segmentValue: (rule) => ({ pricing: rule.pricing }),
   });
 }
@@ -506,16 +525,19 @@ export function buildPriorityTimePricingTimeline(input: {
 export function buildTimeCapPricingTimeline(input: {
   localDate: string;
   config: TimeCapPricingProviderConfig;
+  displayTimeZone?: string;
 }): PriorityTimePricingTimeline {
   return buildTimeRuleTimeline({
     localDate: input.localDate,
     config: input.config,
+    displayTimeZone: input.displayTimeZone,
     segmentValue: (rule) => ({ priceCap: rule.priceCap }),
   });
 }
 
 function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
   localDate: string;
+  displayTimeZone?: string;
   config: {
     id: string;
     rules: readonly T[];
@@ -525,8 +547,9 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
 }): PriorityTimePricingTimeline {
   const rules = activeRules(input.config.rules).sort((a, b) => b.priority - a.priority);
   const timeZone = input.config.timeZone ?? "UTC";
-  const dayStart = parseLocalDateTime(input.localDate, "00:00", timeZone);
-  const dayEnd = parseLocalDateTime(addLocalDays(input.localDate, 1), "00:00", timeZone);
+  const displayTimeZone = input.displayTimeZone ?? timeZone;
+  const dayStart = parseLocalDateTime(input.localDate, "00:00", displayTimeZone);
+  const dayEnd = parseLocalDateTime(addLocalDays(input.localDate, 1), "00:00", displayTimeZone);
   const segments: PriorityTimePricingTimelineSegment[] = [];
   let cursor = dayStart;
 
@@ -539,8 +562,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
       throw new PrismDomainError("Time pricing timeline cannot advance.", "TIME_PRICING_TIMELINE_STALLED");
     }
 
-    const startMinute = getLocalMinuteOfDay(cursor, input.localDate, timeZone);
-    const endMinute = getLocalMinuteOfDay(nextBoundary, input.localDate, timeZone);
+    const startMinute = getLocalMinuteOfDay(cursor, input.localDate, displayTimeZone);
+    const endMinute = getLocalMinuteOfDay(nextBoundary, input.localDate, displayTimeZone);
     if (rule) {
       segments.push({
         ruleId: rule.id,
@@ -550,6 +573,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
         endMinute,
         startLabel: formatMinuteLabel(startMinute),
         endLabel: formatMinuteLabel(endMinute),
+        startedAt: cursor.toISOString(),
+        endedAt: nextBoundary.toISOString(),
         ...input.segmentValue(rule),
       });
     } else {
@@ -561,6 +586,8 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
         endMinute,
         startLabel: formatMinuteLabel(startMinute),
         endLabel: formatMinuteLabel(endMinute),
+        startedAt: cursor.toISOString(),
+        endedAt: nextBoundary.toISOString(),
         isClosed: true,
       });
     }
@@ -571,7 +598,7 @@ function buildTimeRuleTimeline<T extends TimeRuleLike>(input: {
   return {
     providerId: input.config.id,
     localDate: input.localDate,
-    timeZone,
+    timeZone: displayTimeZone,
     segments: mergeAdjacentTimelineSegments(segments),
   };
 }
@@ -625,7 +652,10 @@ function calculateRawUnitPrice(
 
 function calculateUnits(durationMinutes: number, config: UnitPricingConfig, invalidateFirstGrace?: boolean): number {
   let units = Math.floor(Math.max(0, durationMinutes) / config.unitMinutes);
-  if (durationMinutes % config.unitMinutes > config.roundGraceMinutes) {
+  const leftover = durationMinutes % config.unitMinutes;
+  // A partial unit rounds up once the leftover reaches the grace. Zero grace
+  // still charges any nonzero leftover, while exact unit multiples never do.
+  if (leftover > 0 && leftover >= config.roundGraceMinutes) {
     units += 1;
   }
   if (invalidateFirstGrace && units === 0) {
@@ -642,7 +672,7 @@ export function nextTimePricingEvent(input: {
   now: Date;
   intervalCapReached?: boolean;
   intervalStartedAt?: Date;
-}): { ruleLabel: string | null; ruleAt: Date | null; chargeAt: Date | null } {
+}): { ruleLabel: string | null; ruleAt: Date | null; chargeAt: Date | null; intervalStartedAt: Date } {
   const { config, session, now } = input;
   const rules = activeRules<PriorityTimePricingRule | TimeCapPricingRule>(config.rules).sort((a, b) => b.priority - a.priority);
   const zone = config.timeZone ?? "UTC";
@@ -667,10 +697,13 @@ export function nextTimePricingEvent(input: {
     const operated = Boolean(session.metadata?.deviceOperated || session.metadata?.hasDeviceActivity);
     let minutes = Math.max(0, Math.floor((now.getTime() - cursor.getTime()) / 60_000));
     const units = calculateUnits(minutes, pricing, operated);
-    // At most two thresholds: grace expiry and the next whole unit.
+    // At most two thresholds: grace expiry and the next whole unit. The unit
+    // count rises once the leftover reaches the grace, so the grace boundary
+    // is `cycle + max(grace, 1)` on the floored-minute grid (zero grace still
+    // charges from the first whole minute).
     for (let attempt = 0; attempt < 3; attempt++) {
       const cycle = Math.floor(minutes / pricing.unitMinutes) * pricing.unitMinutes;
-      const graceEnd = cycle + pricing.roundGraceMinutes + 1;
+      const graceEnd = cycle + Math.max(pricing.roundGraceMinutes, 1);
       minutes = Math.min(cycle + pricing.unitMinutes, graceEnd > minutes ? graceEnd : Infinity);
       if (calculateUnits(minutes, pricing, operated) <= units) continue;
       const candidate = new Date(cursor.getTime() + minutes * 60_000);
@@ -678,7 +711,122 @@ export function nextTimePricingEvent(input: {
       break;
     }
   }
-  return { ruleLabel: rule?.label ?? null, ruleAt, chargeAt };
+  return { ruleLabel: rule?.label ?? null, ruleAt, chargeAt, intervalStartedAt: cursor };
+}
+
+/** Resolve a historical pricing event from the same quote and cap rules used
+ * by the live alarm. Snapshot refreshes are deliberately not event candidates.
+ * Current interval boundaries also include periods without an active rule. */
+export function previousBillingEvent(input: {
+  now: Date;
+  sessions: readonly Session[];
+  chargeItems: readonly ChargeItem[];
+  globalCapWindows: readonly TimeCapPricingWindow[];
+  ruleBoundaries: readonly Date[];
+}): { at: Date; label: string } | null {
+  const state: { event: { at: Date; label: string } | null } = { event: null };
+  const record = (at: Date, label: string) => {
+    if (at > input.now || !Number.isFinite(at.getTime())) return;
+    if (!state.event || at > state.event.at) state.event = { at, label };
+    else if (at.getTime() === state.event.at.getTime() &&
+      new Set([label, state.event.label]).has("计费") && new Set([label, state.event.label]).has("规则切换")) {
+      state.event.label = "计费与规则切换";
+    }
+  };
+  for (const session of input.sessions) {
+    record(session.startedAt, "入场");
+    if (session.endedAt) record(session.endedAt, "结束计费");
+  }
+  if (!state.event) return null;
+  const startedAt = state.event.at;
+  for (const at of input.ruleBoundaries) {
+    if (at > startedAt) record(at, "规则切换");
+  }
+  const boundary = state.event.at;
+  if (boundary.getTime() === input.now.getTime()) return state.event;
+
+  // Grace invalidation is consumed by the first positive segment, exactly as
+  // in createPriorityTimePricingProvider.quote(). Completed segments before
+  // the latest structural event are constant throughout this search window.
+  const sessions = new Map(input.sessions.map(session => [session.id, session]));
+  const charges = input.chargeItems.map(item => {
+    const session = item.sessionId ? sessions.get(item.sessionId) : undefined;
+    const explanation = item.pricingExplanation;
+    const operated = Boolean(session?.metadata?.deviceOperated || session?.metadata?.hasDeviceActivity);
+    const priorPositive = input.chargeItems.some(prior => prior.sessionId === item.sessionId &&
+      prior.pricingExplanation?.pricingConfigId === explanation?.pricingConfigId &&
+      prior.period && item.period && prior.period.startedAt < item.period.startedAt && isPositiveCents(prior.amount));
+    const amountAt = (at: Date) => {
+      if (!explanation?.pricing || !item.period || item.period.endedAt <= at) return item.amount;
+      const minutes = Math.max(0, Math.floor((at.getTime() - item.period.startedAt.getTime()) / 60_000));
+      return calculateUnitPriceWithHistory(minutes, explanation.pricing,
+        centsOf(explanation.paidBefore ?? 0), operated && !priorPositive);
+    };
+    return { item, amountAt };
+  });
+  const projectedAt = (at: Date) => charges.flatMap(({ item, amountAt }) => {
+    if (item.period && item.period.startedAt > at) return [];
+    if (!item.period || item.period.endedAt <= at) return [item];
+    return [{ ...item, amount: amountAt(at), period: { ...item.period, endedAt: at } }];
+  });
+
+  // A global cap can be shared by staggered sessions and several plans. Replay
+  // its actual proration instead of dividing the cap by a single unit price.
+  const cutoffs = input.globalCapWindows.filter(window =>
+    window.windowStartedAt <= input.now && window.windowEndedAt > input.now &&
+    compareCents(addCents(window.paidBefore, window.currentAmount), window.priceCap) >= 0,
+  ).map(window => {
+    const config: TimeCapPricingProviderConfig = {
+      id: window.capConfigId,
+      includedPricingConfigIds: [...new Set(window.contributions.map(item => item.pricingConfigId))],
+      paidHistory: { [window.key]: window.paidBefore },
+      rules: [{ id: window.capRuleId, label: window.ruleLabel, priority: 1,
+        dateTimeRange: { start: window.windowStartedAt, end: window.windowEndedAt },
+        priceCap: yuanOf(window.priceCap) }],
+    };
+    const cappedAt = (at: Date) => {
+      const projected = explainTimeCapPricing({ config, chargeItems: projectedAt(at) })
+        .find(candidate => candidate.key === window.key);
+      return compareCents(addCents(window.paidBefore, projected?.currentAmount ?? ZERO_CENTS), window.priceCap) >= 0;
+    };
+    let low = boundary.getTime(), high = input.now.getTime();
+    if (cappedAt(boundary)) return { window, at: boundary };
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (cappedAt(new Date(middle))) high = middle;
+      else low = middle + 1;
+    }
+    const at = new Date(low);
+    return { window, at };
+  });
+
+  for (const cutoff of cutoffs) {
+    // A looser overlapping cap must not advance a timeline whose contributors
+    // were already stopped by an earlier cap.
+    const affectsUncappedCharge = cutoff.window.contributions.some(contribution =>
+      !cutoffs.some(other => other.at < cutoff.at && other.window.contributions.some(candidate =>
+        candidate.sessionId === contribution.sessionId && candidate.pricingConfigId === contribution.pricingConfigId)));
+    if (affectsUncappedCharge && cutoff.at > boundary) record(cutoff.at, "计费");
+  }
+
+  for (const { item, amountAt } of charges) {
+    if (!item.period || !item.pricingExplanation?.pricing || item.period.endedAt < boundary) continue;
+    const applicable = cutoffs.filter(({ window }) => window.contributions.some(contribution =>
+      contribution.sessionId === item.sessionId && contribution.pricingConfigId === item.pricingExplanation?.pricingConfigId));
+    const until = new Date(Math.min(input.now.getTime(), item.period.endedAt.getTime(),
+      ...applicable.map(cutoff => cutoff.at.getTime())));
+    let low = 0, high = Math.max(0, Math.floor((until.getTime() - item.period.startedAt.getTime()) / 60_000));
+    const target = amountAt(until);
+    if (!isPositiveCents(target)) continue;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (compareCents(amountAt(new Date(item.period.startedAt.getTime() + middle * 60_000)), target) >= 0) high = middle;
+      else low = middle + 1;
+    }
+    const at = new Date(item.period.startedAt.getTime() + low * 60_000);
+    if (at >= boundary && at <= until) record(at, "计费");
+  }
+  return state.event;
 }
 
 function findActiveRule<T extends TimeRuleLike>(
@@ -699,7 +847,7 @@ function buildRuleHistoryKey(
   rule: TimeRuleLike,
   timeZone: string,
 ): string {
-  return `${pricingConfigId}@${providerId}@${rule.id}@${getRuleAnchor(date, rule, timeZone).toISOString()}`;
+  return `${pricingConfigId}@${providerId}@${rule.historyRuleId ?? rule.id}@${getRuleAnchor(date, rule, timeZone).toISOString()}`;
 }
 
 function buildTimeCapHistoryKey(capConfigId: string, capRuleId: string, capAnchorAt: Date): string {
@@ -707,6 +855,7 @@ function buildTimeCapHistoryKey(capConfigId: string, capRuleId: string, capAncho
 }
 
 function getRuleAnchor(date: Date, rule: TimeRuleLike, timeZone: string): Date {
+  if (rule.anchorAt) return new Date(rule.anchorAt);
   if (rule.dateTimeRange && !rule.timeRange) return new Date(rule.dateTimeRange.start);
   if (!rule.timeRange) {
     throw new PrismDomainError("Time pricing rule has no time range.", "INVALID_TIME_PRICING_RULE");
@@ -718,7 +867,7 @@ function getRuleAnchor(date: Date, rule: TimeRuleLike, timeZone: string): Date {
   const end = parseClockMinutes(rule.timeRange.end);
   const current = getZonedParts(date, timeZone).hour * 60 + getZonedParts(date, timeZone).minute;
 
-  if (start > end && current < end) {
+  if (start >= end && current < start) {
     anchorLocalDate = addLocalDays(localDate, -1);
   }
 
@@ -823,7 +972,7 @@ function getRuleDateMatchAnchor(date: Date, rule: TimeRuleLike, timeZone: string
   const current = parts.hour * 60 + parts.minute;
   const start = parseClockMinutes(rule.timeRange.start);
   const end = parseClockMinutes(rule.timeRange.end);
-  if (start > end && current < end) {
+  if (start >= end && current < start) {
     return parseLocalDateTime(addLocalDays(formatLocalDateFromParts(parts), -1), rule.timeRange.start, timeZone);
   }
 
@@ -871,18 +1020,24 @@ type ZonedParts = {
   weekday: number;
 };
 
+const pricingFormatter = dateTimeFormatterCache({
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  weekday: "short",
+});
+
 function getZonedParts(date: Date, timeZone: string): ZonedParts {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    weekday: "short",
-  }).formatToParts(date);
+  if (timeZone === "UTC") {
+    if (!Number.isFinite(date.getTime())) throw new RangeError("Invalid time value");
+    return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate(),
+      hour: date.getUTCHours(), minute: date.getUTCMinutes(), second: date.getUTCSeconds(), weekday: date.getUTCDay() };
+  }
+  const parts = pricingFormatter(timeZone).formatToParts(date);
   const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return {
     year: Number(map.year),
@@ -900,6 +1055,7 @@ function zonedLocalTimeToUtc(
   timeZone: string,
 ): Date {
   let utc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0);
+  if (timeZone === "UTC") return new Date(utc);
   for (let iteration = 0; iteration < 3; iteration += 1) {
     const offset = getTimeZoneOffsetMs(new Date(utc), timeZone);
     utc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0) - offset;
@@ -952,6 +1108,7 @@ function mergeAdjacentTimelineSegments(
     if (previous && previous.ruleId === segment.ruleId && previous.endMinute === segment.startMinute) {
       previous.endMinute = segment.endMinute;
       previous.endLabel = segment.endLabel;
+      previous.endedAt = segment.endedAt;
       continue;
     }
     merged.push({ ...segment });

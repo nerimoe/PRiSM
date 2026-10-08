@@ -42,8 +42,9 @@ export function createSqlReadModels(input: CreateSqlReadModelsInput): Applicatio
 }
 
 async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: string, checkoutId?: string): Promise<import("@prism/application").PlayerCheckoutReceipt | null> {
-  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null }>(
-    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json FROM player_checkouts c
+  const [checkout] = await input.executor.all<{ id: string; total: number; settled_at: string; timeline_json: string | null; profile_json: string | null; metadata_json: string | null; payment_method: string | null; collected_by: string | null; collected_at: string | null }>(
+    `SELECT c.id, c.total, c.settled_at, t.timeline_json, profile.value_json AS profile_json, tx.metadata_json, payment.method AS payment_method, payment.staff_id AS collected_by, payment.collected_at FROM player_checkouts c
+     LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
      LEFT JOIN checkout_timelines t ON t.shop_id = c.shop_id AND t.checkout_id = c.id
      LEFT JOIN app_settings profile ON profile.shop_id = c.shop_id AND profile.key = 'store.profile'
      LEFT JOIN asset_transactions tx ON tx.shop_id = c.shop_id AND tx.player_id = c.player_id
@@ -119,6 +120,7 @@ async function getPlayerCheckout(input: CreateSqlReadModelsInput, playerId: stri
     timeline.totals = [...totals].map(([name, amount]) => ({ name, amount: yuanOf(centsOfInteger(amount)) }));
   }
   return {
+    ...(checkout.payment_method ? { externalPayment: { method: checkout.payment_method, staffId: checkout.collected_by!, collectedAt: checkout.collected_at! } } : {}),
     wallet: typeof balance === "number" && Number.isSafeInteger(balance) ? { balanceAfter: yuanOf(centsOfInteger(balance)) } : null,
     playerSettlement: { total: yuanOf(centsOfInteger(checkout.total)), settledAt: checkout.settled_at },
     settlements: sessions.map(session => ({ settlement: { sessionId: session.sessionId,
@@ -259,6 +261,7 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            p.id,
            p.display_name,
            p.status,
+           EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(input.executor)} AND cp.player_id=p.id) AS cashier,
            wallet_rows.wallet_rows_json,
            active_sessions.active_session_id,
            active_sessions.has_unpaid_session,
@@ -296,7 +299,9 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
       return groupStaffActiveSessions(rows, now);
     },
 
-    async listLiveSessions() {
+    async listLiveSessions(options) {
+      const ids = options?.playerIds;
+      if (ids?.length === 0) return [];
       const rows = await input.executor.all<StaffActiveSessionRow & { status: string }>(
         `SELECT
            s.id,
@@ -308,8 +313,10 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            s.status
          FROM (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s
          INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
-         WHERE s.status = 'active' OR s.payment_status = 'unpaid'
+         WHERE (s.status = 'active' OR s.payment_status = 'unpaid')
+           ${ids ? 'AND s.player_id IN (SELECT value FROM json_each(?))' : ''}
          ORDER BY s.started_at`,
+        ids ? [JSON.stringify(ids)] : [],
       );
       const now = input.now();
 
@@ -404,6 +411,15 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
     async listReportPlayers(query) {
       return listReportPlayers(input, query);
     },
+    listReportCheckouts: (query) => listReportCheckouts(input, query),
+    async getReportCheckout(checkoutId) {
+      const record = (await listReportCheckouts(input, {
+        checkoutId, limit: 1, archive: "all",
+      }))[0];
+      if (!record) return null;
+      const receipt = await getPlayerCheckout(input, record.playerId, checkoutId);
+      return receipt ? { record, receipt } : null;
+    },
   };
 }
 
@@ -448,6 +464,7 @@ async function getReportsSummary(
        FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
+         AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=pc.shop_id AND a.checkout_id=pc.id AND a.archived=1)
      ), asset_summary AS (
        SELECT COUNT(*) AS asset_grant_total
        FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${sqlShop(input.executor)}), bounds
@@ -490,11 +507,14 @@ async function listReportSettlements(
        s.ended_at,
        st.settled_at,
        st.subtotal,
-       st.total
+       st.total,
+       payment.method AS payment_method, payment.staff_id AS collected_by
      FROM (SELECT * FROM settlements WHERE shop_id = ${sqlShop(input.executor)}) st
      INNER JOIN (SELECT * FROM sessions WHERE shop_id = ${sqlShop(input.executor)}) s ON s.id = st.session_id
      INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = s.player_id
+     LEFT JOIN cashier_payments payment ON payment.shop_id = ${sqlShop(input.executor)} AND payment.checkout_id = st.checkout_id
      WHERE st.settled_at >= ? AND st.settled_at < ?
+       AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=st.shop_id AND a.checkout_id=st.checkout_id AND a.archived=1)
      ORDER BY st.settled_at DESC, st.id DESC
      LIMIT ? OFFSET ?`,
     [query.from.toISOString(), query.to.toISOString(), query.limit, query.offset ?? 0],
@@ -505,6 +525,7 @@ async function listReportSettlements(
     const endedAt = row.ended_at ? new Date(row.ended_at) : null;
 
     return {
+      ...(row.payment_method ? { externalPayment: { method: row.payment_method, staffId: row.collected_by! } } : {}),
       settlementId: row.settlement_id,
       sessionId: row.session_id,
       playerId: row.player_id,
@@ -544,6 +565,7 @@ async function listReportPlayers(
        FROM (SELECT * FROM player_checkouts WHERE shop_id = ${sqlShop(input.executor)}) pc
        CROSS JOIN bounds
        WHERE pc.settled_at >= bounds.from_at AND pc.settled_at < bounds.to_at
+         AND NOT EXISTS(SELECT 1 FROM checkout_report_states a WHERE a.shop_id=pc.shop_id AND a.checkout_id=pc.id AND a.archived=1)
        GROUP BY pc.player_id
      ), player_activity AS (
        SELECT
@@ -559,11 +581,11 @@ async function listReportPlayers(
        player_activity.player_id,
        player_activity.player_display_name,
        player_activity.settlement_count,
-       player_revenue.revenue_total,
+       COALESCE(player_revenue.revenue_total, 0) AS revenue_total,
        player_activity.total_duration_minutes,
        player_activity.last_settled_at
      FROM player_activity
-     INNER JOIN player_revenue ON player_revenue.player_id = player_activity.player_id
+     LEFT JOIN player_revenue ON player_revenue.player_id = player_activity.player_id
      ORDER BY revenue_total DESC, settlement_count DESC, last_settled_at DESC, player_activity.player_id
      LIMIT ? OFFSET ?`,
     [query.from.toISOString(), query.to.toISOString(), query.limit, query.offset ?? 0],
@@ -915,6 +937,7 @@ function groupStaffPlayers(
         id: row.id,
         displayName: row.display_name,
         status: row.status,
+        ...(row.cashier ? { paymentMode: "cashier" as const } : {}),
         walletTotal: availableCurrencyTotal(row.wallet_rows_json, at),
         activeSessionId: row.active_session_id,
         hasUnpaidSession: !!row.has_unpaid_session,
@@ -1036,6 +1059,7 @@ type StaffPlayerRow = {
 };
 
 type StaffPlayerWithIdentityRow = StaffPlayerRow & {
+  cashier?: number;
   identity_provider: string | null;
   identity_subject: string | null;
   identity_created_at: string | null;
@@ -1108,6 +1132,8 @@ type MachineConnectionRow = {
 };
 
 type StaffReportSettlementRow = {
+  payment_method: string | null;
+  collected_by: string | null;
   settlement_id: string;
   session_id: string;
   player_id: string;
@@ -1141,4 +1167,81 @@ function toPlayerView(row: PlayerRow): PlayerSummary["player"] {
     displayName: row.display_name,
     status: row.status,
   };
+}
+
+async function listReportCheckouts(
+  input: CreateSqlReadModelsInput,
+  query: {
+    from?: Date;
+    to?: Date;
+    checkoutId?: string;
+    limit: number;
+    offset?: number;
+    archive?: import("@prism/application").ReportArchiveFilter;
+  },
+): Promise<import("@prism/application").StaffReportCheckout[]> {
+  const shop = sqlShop(input.executor);
+  const archive = query.archive ?? "active";
+  const rows = await input.executor.all<{
+    checkout_id: string;
+    player_id: string;
+    display_name: string;
+    started_at: string | null;
+    ended_at: string | null;
+    settled_at: string;
+    subtotal: number;
+    total: number;
+    session_count: number;
+    duration_minutes: number;
+    archived: number;
+    updated_at: string | null;
+    updated_by: string | null;
+    method: string | null;
+    staff_id: string | null;
+    collected_at: string | null;
+  }>(
+    `SELECT c.id AS checkout_id,c.player_id,p.display_name,MIN(s.started_at) AS started_at,MAX(s.ended_at) AS ended_at,
+      c.settled_at,c.subtotal,c.total,COUNT(s.id) AS session_count,
+      COALESCE(SUM(CASE WHEN s.ended_at IS NOT NULL THEN MAX(0,CAST(ROUND((julianday(s.ended_at)-julianday(s.started_at))*86400000)/60000 AS INTEGER)) ELSE 0 END),0) AS duration_minutes,
+      COALESCE(a.archived,0) AS archived,a.updated_at,a.updated_by,payment.method,payment.staff_id,payment.collected_at
+    FROM player_checkouts c JOIN players p ON p.shop_id=c.shop_id AND p.id=c.player_id
+    LEFT JOIN settlements st ON st.shop_id=c.shop_id AND st.checkout_id=c.id
+    LEFT JOIN sessions s ON s.shop_id=st.shop_id AND s.id=st.session_id AND s.player_id=c.player_id
+    LEFT JOIN checkout_report_states a ON a.shop_id=c.shop_id AND a.checkout_id=c.id
+    LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
+    WHERE c.shop_id=${shop} AND ${query.checkoutId ? "c.id=?" : "c.settled_at>=? AND c.settled_at<?"}
+      ${archive === "all" ? "" : `AND COALESCE(a.archived,0)=${archive === "archived" ? 1 : 0}`}
+    GROUP BY c.id ORDER BY c.settled_at DESC,c.id DESC LIMIT ? OFFSET ?`,
+    [
+      ...(query.checkoutId
+        ? [query.checkoutId]
+        : [query.from!.toISOString(), query.to!.toISOString()]),
+      query.limit,
+      query.offset ?? 0,
+    ],
+  );
+  return rows.map((row) => ({
+    checkoutId: row.checkout_id,
+    playerId: row.player_id,
+    playerDisplayName: row.display_name,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    settledAt: row.settled_at,
+    durationMinutes: row.duration_minutes,
+    sessionCount: row.session_count,
+    subtotal: yuanOf(centsOfInteger(row.subtotal)),
+    total: yuanOf(centsOfInteger(row.total)),
+    archived: !!row.archived,
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by,
+    ...(row.method
+      ? {
+          externalPayment: {
+            method: row.method,
+            staffId: row.staff_id!,
+            collectedAt: row.collected_at!,
+          },
+        }
+      : {}),
+  }));
 }

@@ -1,8 +1,8 @@
 # PRiSM Next 部署与生产环境指南
 
-PRiSM Next 采用 **完全解耦** 的“单店单部署”架构设计。整个系统包含三个独立的部分：
+PRiSM Next 的统一平台支持多店铺，Worker 同时提供 API 与 React 页面；独立单店 runtime 保留供兼容 API 使用。系统包含以下部分：
 1. **后端 API 服务**：提供无状态的 REST API 与游戏机 WebSocket 联线（基于 Hono 框架，支持本地 Bun + SQLite 单机部署或云端 Cloudflare Worker + D1 数据库部署）。
-2. **管理后台 (Dashboard)**：基于 Flutter Web 开发的静态前端网页（支持 `prism-dashboard` 与 `admin-flutter` 两个版本），与后端完全解耦，需独立构建并以静态资源形式托管。
+2. **管理与玩家前端**：`packages/prism-web` 的 React 网页，由 Vite 构建，统一平台 Worker 同时托管前端资源与 API。店铺后台入口为 `/merchant`。
 3. **机器人插件 (Koishi / AstrBot)**：独立运行的聊天机器人客户端，通过网络调用后端的 Integration API 对接店铺业务。
 
 ---
@@ -11,14 +11,13 @@ PRiSM Next 采用 **完全解耦** 的“单店单部署”架构设计。整个
 
 ### 0022 整数计费升级注意事项
 
-金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。首次升级前备份目标库，暂停访问并等待在途写入结束，再执行迁移并部署新 Worker。自动部署脚本按「迁移 → 部署」顺序执行，本身不提供维护窗口。详见 [计费整数与单位约定](money.md)。
+金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。统一平台的 `deploy:beta` 自动提供维护窗口和数据库写入屏障，保护首次从旧 stable 升级以及后续部署；独立兼容 API 的 `deploy:worker` 仍须自行停止旧写入并备份。详见下面的自动维护部署及 [计费整数与单位约定](money.md)。
 
 本地 `dev:local` 会在升级前生成 `.before-integer-money-*.sqlite` 备份并在事务内执行 0022；直接调用 `initializeSqliteSchema` 遇到旧金额 schema 会拒绝启动，防止误读。升级后核对金额、券票数量、JSON 定价和外键；回滚必须同时协调数据库与代码。
 
 在进行任何部署之前，请确保您的宿主机环境已安装：
 - **Bun**：版本 1.3 或以上。
 - **Wrangler**（云端部署需要）：版本 4.x。
-- **Flutter SDK**（管理后台构建需要）：对应 Dart SDK 及 Flutter 命令行工具。
 
 在 `prism-next` 根目录下安装系统依赖：
 ```bash
@@ -35,8 +34,8 @@ bun run dev:all
 ```
 该命令会自动：
 1. **关联 AstrBot 机器人插件**：自动在同级目录查找 `prism-astr` 或 `AstrBot` 文件夹，并将 `packages/plugin-prism-next-astrbot` 插件目录以符号链接（symlink）形式挂载到其插件目录中。
-2. **启动本地后端 API**：在后台启动本地 API 并监听 `8787` 端口。
-3. **托管 Dashboard**：自动检测是否已有编译好的静态资源（如 `packages/prism-dashboard/build/web`）。若存在，会启动一个极简静态 SPA 服务器秒级托管并监听 `5500` 端口；若未编译，将自动通过 Flutter 启动调试 Web 服务器。
+2. **准备统一平台**：构建 React 静态资源，生成本地配置，并自动应用本地 D1 迁移。
+3. **启动 API 与 React**：Wrangler Worker 默认监听 `8787`，Vite 热更新服务器监听 `5173`；管理入口为 `http://127.0.0.1:5173/merchant`。可用 `PORT`、`WEB_PORT` 改端口，代理和允许来源同步更新。
 4. **启动机器人**：在工作目录下自动调用 `uv` 启动您的 AstrBot 实例。
 
 在终端中按下 `Ctrl+C` 将优雅地一并杀掉所有开启的子服务进程。
@@ -47,8 +46,8 @@ bun run dev:all
 
 后端服务可根据场馆的网络和硬件条件选择以下两种部署模式之一：
 
-### A. 本地单机部署 (Local SQLite)
-适用于局域网环境、网络连接较弱或不希望依赖 Cloudflare 云端服务的场馆。
+### A. 独立兼容 API (Local SQLite)
+保留给 SQLite 回归验证和既有 API 集成。此入口不托管 React，也不提供独立管理后台；开发完整平台请使用 `dev:all`。独立 API 的首次安装仍可通过 setup 接口完成 OOBE。
 
 1. **启动服务**：
    ```bash
@@ -60,7 +59,7 @@ bun run dev:all
    - 本地程序启动时会自动初始化并升级 SQLite 架构（与测试所用 schema 一致）。
    - 默认监听端口为 `8787`。
 
-### B. 云端部署 (Cloudflare Worker & D1)
+### B. 独立兼容 API 云端部署 (Cloudflare Worker & D1)
 适用于需要高可用、公网可直接访问的云端场景。
 
 1. **创建 D1 远程数据库**：
@@ -95,7 +94,7 @@ bun run dev:all
    快捷指令会先根据当前部署者的环境变量生成 Wrangler 配置，再应用所有未执行的远程 D1 迁移，最后读取根目录 `package.json` 的 SemVer 并将该版本及当前 Git 短提交号注入 Worker。迁移失败时命令会停止，不会上传 Worker；线上可通过 `GET /version` 核对实际运行版本。不要直接调用裸 `wrangler deploy`，否则会绕过配置生成、迁移和版本注入。
    部署完成后，您将获得一个类似 `https://prism-api.your-subdomain.workers.dev` 的 API 接口域名。
 
-### C. GitHub 自动构建（Cloudflare Workers Builds）
+### C. 独立兼容 API 自动构建（Cloudflare Workers Builds）
 
 每位部署者都可以 fork 同一个公共仓库，并把自己的 fork 连接到独立的 Cloudflare Worker。进入 Worker 的 **Settings > Build**，配置：
 
@@ -121,43 +120,48 @@ Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不�
 
 ---
 
-## 3. 管理后台部署 (Dashboard / Admin Flutter)
+## 3. React 统一平台部署
 
-> [!WARNING]
-> 后端服务（无论是本地 Bun 还是 Cloudflare Worker）**不托管**管理后台静态资源。访问后端的 `/admin` 路由仅会显示 API 运行状态的提示页。您必须单独构建后台并将其部署为静态 Web 页面。
+管理职能全部位于 `packages/prism-web`，不再需要 Flutter SDK、独立 UI 子模块或 `build/web` 静态目录。
 
-系统中存在两个 Flutter 管理后台版本，构建方式如下：
+### 构建与部署
 
-### 步骤 1：构建静态资源
-在根目录下运行以下命令之一进行编译：
+```bash
+bun run build:web
+bun run check:platform
+bun run deploy:beta
+```
 
-* **构建新版后台 (`prism-dashboard`)**（推荐）：
-  ```bash
-  bun run prism-dashboard:build  # 自动注入发布版本与 Dashboard Git 提交号
-  ```
-  构建生成的静态文件位于：`packages/prism-dashboard/build/web/`。
+构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，注入根 SemVer 和 Git 提交号。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
 
-* **构建老版后台 (`admin-flutter`)**：
-  ```bash
-  bun run admin-flutter:build  # 实际执行 cd packages/admin-flutter && flutter build web --no-pub
-  ```
-  构建生成的静态文件位于：`packages/admin-flutter/build/web/`。
+### 自动维护部署
 
-### 步骤 2：部署静态资源
-将编译生成的 `build/web/` 目录上传至您选择的静态托管服务中，例如：
-- Cloudflare Pages
-- Vercel / Netlify
-- 本地 Nginx / Apache 静态文件服务器
+脚本先编译三个部署阶段，再开始改变线上服务；也可在生成生产平台配置后运行 `bun run scripts/deploy-platform.ts --dry-run`，仅编译三个阶段，不请求线上接口或执行迁移。
 
-### 步骤 3：配置与使用
-1. 使用浏览器打开您部署好的管理后台 URL。
-2. 登录界面同时填写 **API Base URL**、账号和密码（API Base URL 如本地的 `http://localhost:8787` 或云端的 Worker 域名）。
-   生产环境不会猜测或自动连接 API，服务器地址默认为空；点击「登录」后才会检查后端，已初始化时继续登录，未初始化时原地切换为初始化表单。单个请求最多等待 10 秒。本地 Web 开发默认填写 `http://localhost:8787`。
-3. 首次部署时，连接上正确的 API 地址后会自动进入开箱配置向导（OOBE），您需要设置：
-   - 首个 owner 级别员工账号及密码。
-   - 店铺名称和时区。
-   - 店铺本位币资产定义。
-   - 自动生成「机器人/店内入口」和「机器软件接入」API Token。
+1. 发布独立维护 Worker，网页、API、OAuth 回调及新设备连接均返回不可缓存的 HTTP 503 和 `Retry-After: 30`；页面显示「正在升级，请稍后重试」。不依赖旧 stable 认识维护开关。
+2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。
+3. 屏障生效后获取 D1 Time Travel 恢复书签，并在构建日志及 `.wrangler/platform-deploy-*/recovery.json` 记录。请保留构建日志。没有获取到书签则停止，不开始迁移。
+4. 按文件名和数字前缀顺序执行未应用 SQL。沿用 Wrangler 的 `d1_migrations` 表和完整文件名，因此两个 0029 都会执行，已执行的文件跳过。SQL、重建表的屏障及迁移记录在同一个 D1 batch 内提交；失败整批回滚，之前成功的文件仍保留。部署流水线不再直接运行 `wrangler d1 migrations apply`，避免绕过屏障。
+5. 发布处于 verify 阶段的正式 Worker，继续返回维护响应。执行一次性 UTC 计费转换和位置时区补齐，检查完成标记、当前及历史方案的 UTC 状态、外键及真实 API 健康响应。数据转换失败保持屏障，重复部署不会再次偏移。
+6. 发布 live 阶段的正式 Worker，数据库仍关闭业务写入；仅在此前验证成功时解除屏障，再检查公开健康接口及预期提交号。计时方案同时有 UTC 写入约束，迟到的旧代码不能重新发布本地时钟。
+
+屏障使用主 D1 控制行，不依赖 KV 的传播延迟。部署写入许可只在一个原子 batch 内打开并关闭，业务请求不能看到中间许可。控制接口校验每次部署随机生成的令牌和当前数据库所有者，普通账号、Bot 及其他部署不能借此写库；令牌不放在命令行或日志中。Worker 保留的仅为令牌哈希。数据库表的写入屏障只在维护期间拦截，恢复后正常业务可继续写入。
+
+任意阶段失败都不自动解除维护或回滚数据库。若已经恢复后公开健康检查失败，脚本尝试重新阻止业务；如果网络故障使维护状态无法确认，明确报告而不声称恢复成功。重跑同一流程即可接管失败部署并跳过已完成迁移。并行部署可能因所有者变化安全中止，请为同一 Worker 串行运行构建。
+
+恢复操作须使用日志中的目标数据库和书签；不要仅回滚 Worker 到旧 stable，因为表结构可能已升级。书签是在屏障启用后取得的，恢复该数据库仍保留维护屏障。通常先修复并重新运行 `deploy:beta`；确需恢复旧版时，由管理员恢复对应 D1 书签和匹配的 Worker，再确认兼容性并明确解除 `prism_deployment_gate` 的维护状态。脚本不会自动恢复数据库或删除业务记录。
+
+Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及 Time Travel info 权限；无须手工配置维护令牌或新增 KV namespace。
+
+统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
+
+Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成 `--platform` 配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
+
+### 登录与配置
+
+打开部署域名的 `/merchant`，通过平台登录后创建或选择店铺，在 React 设置页面维护位置、成员、设备及「接入凭证」。时区根据店铺位置自动设置；计费区间的编辑与展示使用该时区，业务执行统一 UTC。创建店铺时可选计费模式并初始化余额资产和入场方案；旧店铺也可通过设置中的转换向导启用计费。
+
+独立兼容 API 的 `/admin` 仅显示 React 平台的开发／部署提示，不再要求构建另一个 UI。
 
 ---
 
@@ -202,7 +206,9 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    # 方式二：随本 monorepo 一起克隆（会拉取子模块）
    git clone --recurse-submodules <prism-next-repo>
    ```
-2. **在 Koishi 中注册与初始化**：
+2. **平台身份来源**：`provider` 配置已移除，插件对每条消息读取 `session.platform` 和 `session.userId`；同一个实例可同时接入 OneBot、Telegram 等适配器。旧店如需改标识，请由店主在 React「设置 → 玩家与身份 → 平台身份转换」预览后确认。升级 SQL 不自动转换身份。
+
+3. **在 Koishi 中注册与初始化**：
    在您的 Koishi 配置中启用 `koishi-plugin-prism` 插件（Koishi 控制台会读取其 `Config` Schema），或在自定义插件入口中引入并使用 `applyPrismKoishiPlugin`。示例代码如下：
    ```typescript
    import { Context, Schema } from 'koishi';
@@ -213,7 +219,6 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    export interface Config {
      baseUrl: string;
      integrationToken: string;
-     provider: string;
      autoRegister: boolean;
      defaultDoorDeviceId: string;
      enableStaffCommands?: boolean;
@@ -222,7 +227,6 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
    export const Config: Schema<Config> = Schema.object({
      baseUrl: Schema.string().required().description('PRiSM API Base URL'),
      integrationToken: Schema.string().required().description('Integration API Token'),
-     provider: Schema.string().default('qq').description('Identity provider (e.g., qq, aime)'),
      autoRegister: Schema.boolean().default(true).description('Auto register player on first command'),
      defaultDoorDeviceId: Schema.string().required().description('Default door device name or alias'),
      enableStaffCommands: Schema.boolean().default(false).description('Enable staff admin commands'),
@@ -232,8 +236,9 @@ Koishi 插件位于独立的 GitHub 仓库 `koishi-plugin-prism`，在本 monore
      applyPrismKoishiPlugin(ctx, {
        baseUrl: config.baseUrl,
        integrationToken: config.integrationToken,
-       provider: config.provider,
        autoRegister: config.autoRegister,
+       defaultScanProvider: "aime",
+       currencyName: "余额",
        defaultDoorDeviceId: config.defaultDoorDeviceId,
        enableStaffCommands: config.enableStaffCommands,
      });
@@ -326,3 +331,31 @@ PRiSM Next 对网络接口实行严格的数据库级 Token 认证拦截：
 bun run typecheck   # 检查 TypeScript 类型约束是否通过
 bun test            # 运行所有的单元测试和集成测试
 ```
+
+## 平台身份结构升级
+
+发布此版前应用 `migrations/0030_platform_identity_bindings.sql`，新版 React 与 Koishi 插件使用 `platform-binding` API。迁移保留原标识及玩家绑定，店主决定是否批量转换，例如 `qq → onebot`；转换不会调整余额或账单。强制绑定开关位于 React「设置 → 玩家与身份」，默认开启。新 API 与适配器来源的具体约定见 [API 文档](api.md#店铺绑定要求与身份转换)。
+
+限流由 `wrangler.platform.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
+
+### Workers Builds 上传占位 D1 配置的排查
+
+如果日志中 Web 构建成功，但 `versions upload` 只有 DB binding、提示 Worker 名称从 `prism-api` 覆盖为目标名称，并以 10021 报 D1 database_id 无效，说明上传使用了根目录的兼容 API 模板。`build:web` 现在在 Workers Builds 中自动先生成统一平台配置与 `.wrangler/deploy/config.json` 重定向；本地及 GitHub CI 的纯 Web 构建不需要 Cloudflare 构建变量。显式执行 `generate-wrangler-config.ts --platform` 仍可用。
+
+在目标 Worker 的 Settings > Build > Variables and Secrets 中填写真实的 `D1_DATABASE_ID`（D1 数据库页面的 UUID）及上文五项必需变量；运行时 Variables & Secrets 不会提供构建变量。生成器会拒绝空值、非法 UUID 和远程部署的全零占位 UUID，失败时不会继续构建或上传。`WORKER_NAME` 未设置时采用 Workers Builds 提供的目标名称，本地仍默认 `prism-api`；显式设置时须与目标 Worker 一致。真实 ID 或凭据无需提交到仓库。默认 `versions upload` 仅上传版本，生产发布仍走 `deploy:beta` 的维护、迁移和验证流程。
+
+### 防止 PR 构建修改运行中的 Worker
+
+`deploy:beta` 与直接运行 `scripts/deploy-platform.ts` 都会在任何发布操作之前检查 Workers Builds 分支：`WORKERS_CI=1` 时，`WORKERS_CI_BRANCH` 必须等于 `PRISM_DEPLOY_BRANCH`（默认 `main`）。非生产分支或缺少分支信息会立即失败，不构建、不发布维护 Worker，也不执行 D1 迁移。生产分支另有名称时，在构建变量中明确设置 `PRISM_DEPLOY_BRANCH`。本地发布流程不受 Workers Builds 分支检查影响。
+
+Cloudflare 中生产 Deploy command 使用 `bun run deploy:beta`；关闭预览构建，或使用独立预览命令与隔离资源。预览命令不可填写 `deploy:beta` 或 `wrangler deploy`；旧版上传预览流程可使用 `bunx wrangler versions upload`，新版 Worker Previews 使用 Cloudflare 控制台指定的 `wrangler preview` 命令。已有 PR 构建失败不能只看 GitHub 测试是否通过，应检查对应的 Workers Builds check。
+
+如果站点持续返回 `503 MAINTENANCE`，先检查失败构建日志及当前发布阶段；分支保护只能避免后续误发布，不能解除已有维护状态。确认并修复失败步骤后，从生产分支重新运行完整部署流程；不要将修改数据库维护行或只回滚 Worker 当作通用恢复方式。
+
+### 上传成功后控制请求返回 404
+
+Wrangler 报告上传/发布成功后，部署脚本会使用本次随机令牌调用只读 `probe`，确认自定义域名正在执行预期提交及阶段；此探测不读写 D1。确认后才执行 `begin`、迁移和恢复操作。404、临时网络错误及可重试 HTTP 状态使用最多三分钟的有界重试，每次网络请求最多十秒；认证后明确的 SQL/所有权错误立即失败。错误日志不打印令牌或任意响应体。
+
+`Deployment begin failed (404)` 表示控制请求在认证处被拒绝（或尚未到达预期 Worker），发生于本次数据库迁移之前；不能把它等同于 D1 UUID 错误。检查域名路由与部署绑定是否指向预期 Worker。`resume` 对已验证、同一部署所有者的重复请求返回成功，避免首次成功但响应丢失后重新关闭业务。上述改动仍保留维护期间的写入保护，不自动关闭未知部署的维护状态。
+
+恢复请求的 409 会区分阶段未就绪（可重试）、部署所有者变化、缺少验证和维护状态不符（立即失败）。部署日志只输出固定错误码，不丢弃可诊断的原因，也不打印任意响应体。并行构建或重试旧提交可能覆盖正在执行的发布；恢复时使用最新修复提交，且同一 Worker 只运行一个完整部署任务。

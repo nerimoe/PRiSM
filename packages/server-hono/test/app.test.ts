@@ -3094,7 +3094,7 @@ describe("createPrismApp", () => {
       },
     });
 
-    const response = await app.request("/rpc/staff/live-players", {
+    const response = await app.request("/rpc/staff/live-players?playerId=player-1", {
       headers: {
         Authorization: "Bearer staff-token",
       },

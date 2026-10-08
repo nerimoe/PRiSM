@@ -1,3 +1,4 @@
+import { hasEventTimestamps, projectApiTimes } from "./api-time";
 /** JSON transport shared by PRiSM Web, native clients and integrations. */
 export type ApiError = { code: string; message: string; details?: unknown };
 export type ApiResponse<T> = { data: T } | { error: ApiError };
@@ -6,8 +7,10 @@ export function apiErrorCode(status: number): string {
   return ({ 400: "INVALID_REQUEST", 401: "AUTHENTICATION_REQUIRED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT", 410: "EXPIRED", 422: "VALIDATION_FAILED", 429: "RATE_LIMITED" } as Record<number, string>)[status] ?? "INTERNAL_ERROR";
 }
 
-export async function wrapApiResponse(response: Response): Promise<Response> {
+export async function wrapApiResponse(response: Response, timeZone?: string | (() => Promise<string>)): Promise<Response> {
   if (response.status === 204 || response.status === 304) return response;
+  // Downloadable JSON is a storage artifact: keep its bytes, UTC clocks and root shape intact.
+  if (response.ok && response.headers.get("content-disposition")?.startsWith("attachment;")) return response;
   const json = response.headers.get("content-type")?.includes("application/json");
   if (response.ok && !json) return response;
   const payload: unknown = json ? await response.json() : null;
@@ -16,7 +19,8 @@ export async function wrapApiResponse(response: Response): Promise<Response> {
   headers.set("cache-control", "no-store");
   let body: ApiResponse<unknown>;
   if (response.ok) {
-    body = { data: payload };
+    const zone = timeZone && hasEventTimestamps(payload) ? typeof timeZone === "function" ? await timeZone() : timeZone : undefined;
+    body = { data: zone ? projectApiTimes(payload, zone) : payload };
   } else {
     const error = payload && typeof payload === "object" && "error" in payload ? payload.error : null;
     const structured = error && typeof error === "object" ? error as Partial<ApiError> : null;
@@ -34,6 +38,7 @@ export async function unwrapLegacyResponse(response: Response): Promise<Response
   const headers = new Headers(response.headers);
   headers.set("deprecation", "true");
   headers.delete("content-length");
+  if (headers.get("content-disposition")?.startsWith("attachment;")) return new Response(response.body, { status: response.status, headers });
   if (!headers.get("content-type")?.includes("application/json")) return new Response(response.body, { status: response.status, headers });
   const body = await response.json() as ApiResponse<unknown>;
   return Response.json("data" in body ? body.data : body, { status: response.status, headers });

@@ -1,3 +1,4 @@
+import { PlayerReadCache, subscribeRead } from "./player-read-cache";
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -62,6 +63,7 @@ export type Shop = {
   id: string;
   publicId: string;
   name: string;
+  timeZone?: string;
   heroUrl?: string | null;
   latitude: number;
   longitude: number;
@@ -155,8 +157,9 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly details?: unknown,
+    readonly retryAfterMs?: number,
   ) {
-    super(message);
+    super(code === "INSUFFICIENT_BALANCE" ? "余额不足，请充值后重试" : message);
   }
 
   get sessionExpired(): boolean {
@@ -168,7 +171,23 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(
+const playerReads = new PlayerReadCache();
+export const invalidatePlayerReads = () => playerReads.clear();
+export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const readOnly = (options.method ?? "GET").toUpperCase() === "GET";
+  const shop = /^\/api\/v1\/shops\/[^/?]+(?:\?pricing=raw)?$/.test(path);
+  const summary = /^\/api\/v1\/shops\/[^/]+\/player\/me$/.test(path);
+  if (readOnly && (shop || summary)) {
+    const user = typeof sessionStorage === "undefined" ? "" : sessionStorage.getItem("prism.user") ?? "";
+    return subscribeRead(playerReads.read(`${user}:${path}`, shop ? 30_000 : 1000,
+      () => fetchApi<T>(path, { ...options, signal: undefined })), options.signal);
+  }
+  const result = await fetchApi<T>(path, options);
+  if (!readOnly) invalidatePlayerReads();
+  return result;
+}
+
+async function fetchApi<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
@@ -199,8 +218,16 @@ export async function api<T>(
       response.status,
       payload.error?.code,
       payload.error?.details,
+      parseRetryAfter(response.headers.get("retry-after")),
     );
   return payload.data as T;
+}
+
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  const delay = /^\d+(?:\.\d+)?$/.test(value.trim()) ? seconds * 1000 : Date.parse(value) - now;
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
 }
 
 export const Api = {
@@ -394,6 +421,8 @@ export const Api = {
       method: "POST",
       body: JSON.stringify({ userId, role }),
     }),
+  deleteUser: (userId: string) =>
+    api<{ ok: true }>(`/api/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
   bans: () => api<{ bans: Ban[] }>("/api/v1/admin/bans"),
   createBan: (input: {
     subjectType: Ban["subjectType"];

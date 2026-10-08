@@ -8,7 +8,7 @@ import type { PastAppliedAdjustment, PlayerCheckout, SettlementRecord } from "./
 import type { Cents } from "./money";
 
 export type CheckoutCommit = {
-  assets: Parameters<AssetRepository["commitAssetTransaction"]>[0];
+  assets: Parameters<AssetRepository["commitAssetTransaction"]>[0] | null;
   checkout: PlayerCheckout;
   settlements: readonly SettlementRecord[];
   sessions: readonly Session[];
@@ -131,6 +131,8 @@ export type SystemRepository = {
 };
 
 export type Player = {
+  /** Card UID profiles only support staff-collected external payment. */
+  paymentMode?: "cashier";
   id: string;
   displayName: string;
   status: PlayerStatus;
@@ -252,6 +254,15 @@ export type SettlementRepository = {
   saveCheckout(checkout: PlayerCheckout, records: readonly SettlementRecord[]): Promise<void>;
   findSettlementBySessionId(sessionId: string): Promise<SettlementRecord | null>;
   listPastAppliedAdjustmentsByPlayerId(playerId: string): Promise<PastAppliedAdjustment[]>;
+};
+
+export type ReportArchiveRepository = {
+  setArchived(input: {
+    checkoutId: string;
+    archived: boolean;
+    staffId: string;
+    at: Date;
+  }): Promise<boolean>;
 };
 
 export type PricingConfigRepository = {

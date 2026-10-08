@@ -77,4 +77,18 @@ describe("asset definition effects", () => {
       amount: moneyFixture(-3),
     }]);
   });
+
+  it("uses UTC coupon dates and daily limits independently of UI timezone", async () => {
+    const provider = createAssetDefinitionEffectProvider({ async listAll() {
+      return [{ type: "coupon", code: "daily", name: "Daily", stackable: true, status: "active",
+        pricingEffect: { id: "effect", name: "Daily", type: "discount", scope: "session", value: 3, consumable: false, limitPerDay: 1, status: "active",
+          config: { startDate: "2026-07-16", endDate: "2026-07-16", daysOfWeek: [4] } } }];
+    } } as any);
+    const at = new Date("2026-07-16T15:30:00Z"); // Tokyo Friday, UTC Thursday.
+    const context = { session: { id: "s", playerId: "p", startedAt: at }, now: at, subtotal: centsOf(10), chargeItems: [],
+      assetHoldings: [{ assetType: "coupon", assetCode: "daily", quantity: 1 }], timeZone: "Asia/Tokyo" };
+    expect(await provider.apply(context)).toHaveLength(1);
+    expect(await provider.apply({ ...context, pastAppliedAdjustments: [{ source: "coupon.daily", sessionStartedAt: new Date("2026-07-16T01:00:00Z") }] })).toEqual([]);
+  });
+
 });

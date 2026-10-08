@@ -7,15 +7,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:8787",
+        target: process.env.PRISM_API_URL ?? "http://localhost:8787",
         changeOrigin: true,
       },
       "/callback": {
-        target: "http://localhost:8787",
+        target: process.env.PRISM_API_URL ?? "http://localhost:8787",
         changeOrigin: true,
       },
-      "^/t/": {
-        target: "http://localhost:8787",
+      "^/t/[^/]+/[^/]+": {
+        target: process.env.PRISM_API_URL ?? "http://localhost:8787",
         changeOrigin: true,
       },
     },

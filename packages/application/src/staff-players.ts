@@ -10,7 +10,7 @@ import type {
   PlayerStatus,
   RedeemRepository,
 } from "@prism/core";
-import { diffAssetHoldings, grantAssets, isActiveInWindow, PrismDomainError } from "@prism/core";
+import { diffAssetHoldings, grantAssets, isActiveInWindow, normalizeExternalIdentity, PrismDomainError } from "@prism/core";
 import { assertPresentGrantAssetDefinitionsActive } from "./redeem";
 
 export type StaffCreatePlayerInput = {
@@ -148,8 +148,7 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
 
       const identity: PlayerIdentity = {
         playerId: input.playerId,
-        provider: input.provider,
-        subject: input.subject,
+        ...editableIdentity(input),
         createdAt: dependencies.now(),
       };
       await dependencies.playerIdentities.save(identity);
@@ -166,7 +165,8 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
         throw new PrismDomainError("Player not found.", "PLAYER_NOT_FOUND");
       }
 
-      await dependencies.playerIdentities.delete(input.playerId, input.provider, input.subject);
+      const identity = editableIdentity(input);
+      await dependencies.playerIdentities.delete(input.playerId, identity.provider, identity.subject);
     },
 
     async resolvePlayerIdentity(input) {
@@ -240,4 +240,12 @@ async function resolveDefaultRegistrationGrants(
     transactionRefId: present.id,
     metadata: { presentId: present.id, presentName: present.name, grantCount: grants.length },
   };
+}
+
+function editableIdentity(input: { provider: string; subject: string }) {
+  const identity = normalizeExternalIdentity(input);
+  if (identity.provider === "web-account") {
+    throw new PrismDomainError("PRiSM 账号请通过绑定码关联，不能手工修改", "ACCOUNT_IDENTITY_READ_ONLY");
+  }
+  return identity;
 }
