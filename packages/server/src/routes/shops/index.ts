@@ -320,6 +320,29 @@ shopRouter.get("/", async (c) => {
   });
 });
 
+// Shop cover image: preserve immutable versioned URLs and conditional caching.
+shopRouter.get("/hero", async (c) => {
+  const shop = getShop(c);
+  const row = await c.env.DB.prepare(
+    "SELECT hero_data AS heroData, COALESCE(hero_hash,'original') AS version FROM shops WHERE id=?",
+  ).bind(shop.id).first<{ heroData: string | null; version: string }>();
+  const version = c.req.query("v");
+  const missing = () => new Response(null, { status: 404, headers: { "cache-control": "no-store" } });
+  if (!row || (version !== undefined && row.version !== version)) return missing();
+  const match = row.heroData?.match(/^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
+  if (!match || !match[1] || !match[2]) return missing();
+  const headers = {
+    "cache-control": version ? "public, max-age=31536000, immutable" : "public, max-age=60, must-revalidate",
+    "content-type": match[1],
+    etag: `"${row.version}"`,
+  };
+  const validators = c.req.header("if-none-match")?.split(",").map(v => v.trim().replace(/^W\//, ""));
+  if (validators?.some(v => v === "*" || v === headers.etag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(Uint8Array.from(atob(match[2]), ch => ch.charCodeAt(0)), { headers });
+});
+
 // Shop Settings
 shopRouter.get("/settings", async (c) => {
   const shop = getShop(c);
