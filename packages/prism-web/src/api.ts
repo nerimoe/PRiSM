@@ -175,7 +175,7 @@ const playerReads = new PlayerReadCache();
 export const invalidatePlayerReads = () => playerReads.clear();
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const readOnly = (options.method ?? "GET").toUpperCase() === "GET";
-  const shop = /^\/api\/v1\/shops\/[^/]+$/.test(path);
+  const shop = /^\/api\/v1\/shops\/[^/?]+(?:\?pricing=raw)?$/.test(path);
   const summary = /^\/api\/v1\/shops\/[^/]+\/player\/me$/.test(path);
   if (readOnly && (shop || summary)) {
     const user = typeof sessionStorage === "undefined" ? "" : sessionStorage.getItem("prism.user") ?? "";

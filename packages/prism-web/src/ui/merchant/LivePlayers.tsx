@@ -1,9 +1,11 @@
+import { browserCheckoutPreview } from "../../browser-billing";
 import { billTime } from "../bill-time";
 import { Link } from "react-router-dom";
 import { BillTotal, BillTimeline } from "../BillTimeline";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { ActionForm, Modal, button, input, money, primary, segment, useMerchant, useStaffApi, type LivePlayer, type Preview } from "./shared";
+import { shopApi } from "../BillingPages";
 import { liveBilling, stayDuration } from "./live-billing";
 import { useLiveBilling } from "./use-live-billing";
 
@@ -14,6 +16,8 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
   const { timeZone, canWrite, shopCode, cashierEnabled } = useMerchant();
   const request = useStaffApi();
   const billPanel = useRef<HTMLElement>(null);
+  const quoteRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { quoteRequest.current?.abort(); }, []);
   const [selectedId, setSelectedId] = useState<string>();
   const [groupBy, setGroupBy] = useState("none");
   const [busy, setBusy] = useState(false);
@@ -42,11 +46,14 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
   async function previewCheckout() {
     if (!selected || busy) return;
     setBusy(true); setError("");
+    const controller = new AbortController();
+    quoteRequest.current = controller;
     try {
-      const preview = await request<Preview>(`players/${segment(selected.playerId)}/checkout/preview`, "POST", {});
+      const preview = await browserCheckoutPreview(shopApi(shopCode, `staff/players/${segment(selected.playerId)}/billing-inputs`), shopApi(shopCode, `staff/players/${segment(selected.playerId)}/checkout/preview`), controller.signal);
+      if (controller.signal.aborted) return;
       setCheckout({ player: selected, preview });
-    } catch (e) { setError((e as Error).message); }
-    finally { setBusy(false); }
+    } catch (e) { if (!controller.signal.aborted) setError((e as Error).message); }
+    finally { if (!controller.signal.aborted) setBusy(false); }
   }
   return <>
     <select className={`${input} !w-auto justify-self-start`} aria-label={t("玩家分组")} value={groupBy} onChange={e => setGroupBy(e.target.value)}>

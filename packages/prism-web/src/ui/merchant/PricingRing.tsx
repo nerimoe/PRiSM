@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import type { Pricing } from "./Pricing";
+import { pricingPreview } from "./pricing-preview";
 import { pricingInZone } from "./pricing-clock";
-import { input, money, useMerchant, useStaffApi } from "./shared";
+import { input, money, useMerchant } from "./shared";
 
 type Segment = {
   ruleId: string;
@@ -47,7 +48,6 @@ export function PricingRing({
 }) {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
-  const request = useStaffApi();
   const [segments, setSegments] = useState<Segment[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -57,16 +57,25 @@ export function PricingRing({
     let current = true;
     setLoading(true);
     const timer = setTimeout(() => {
-      void Promise.resolve().then(() => request<{ timeline: { segments: Segment[] } }>(
-        "pricing-timeline/preview",
-        "POST",
-        { localDate: day, displayTimeZone: timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-          provider: pricingInZone({ ...value, provider: JSON.parse(provider) },
-            timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", day).provider },
-      ))
-        .then((r) => {
+      void Promise.resolve()
+        .then(() => {
+          const zone =
+            timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+          return pricingPreview(
+            pricingInZone(
+              { ...value, provider: JSON.parse(provider) },
+              zone,
+              "UTC",
+              day,
+            ),
+            day,
+            zone,
+            true,
+          );
+        })
+        .then((timeline) => {
           if (current) {
-            setSegments(r.timeline.segments);
+            setSegments(timeline?.segments ?? []);
             setError("");
           }
         })
@@ -81,7 +90,7 @@ export function PricingRing({
       current = false;
       clearTimeout(timer);
     };
-  }, [provider, day, request, timeZone]);
+  }, [provider, day, timeZone, value.kind]);
   const color = (s: Segment) =>
     s.isClosed
       ? "#d5d9d7"

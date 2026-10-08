@@ -51,7 +51,7 @@ export function hydrateLiveBillingSnapshot(
 /** The browser uses the same preview orchestration, asset effects and version resolvers as checkout. */
 export function createLiveBillingCalculator(
   snapshot: LiveBillingSnapshot,
-  players: LivePlayerView[],
+  players: LivePlayerView[] = [],
 ) {
   const readOnly = async (): Promise<never> => {
     throw new Error("Live billing snapshots cannot perform writes");
@@ -214,6 +214,10 @@ export function createLiveBillingCalculator(
     },
   });
   return {
+    async previewCheckout(playerId: string) {
+      state(playerId);
+      return preview.previewCheckout({ playerId });
+    },
     async calculatePlayer(playerId: string) {
       const row = (await operations.listLivePlayers({ playerId }))[0];
       if (!row) throw new Error("该玩家已不在店，请刷新列表");

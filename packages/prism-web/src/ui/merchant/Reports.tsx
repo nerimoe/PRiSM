@@ -4,8 +4,10 @@ import type {
   StaffReportCheckoutDetail,
 } from "@prism/application";
 import { addLocalDays, formatLocalDate, parseLocalDateTime } from "@prism/core";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
+import { api } from "../../api";
+import { shopApi } from "../BillingPages";
 import { BillTimeline, BillTotal } from "../BillTimeline";
 import { displayDateTime } from "../bill-time";
 import {
@@ -21,8 +23,21 @@ import {
   segment,
   useResource,
   useMerchant,
-  useStaffApi,
 } from "./shared";
+
+// Explicit state assignment is idempotent; it is not a debit operation.
+const setReportArchive = (
+  shopCode: string,
+  checkoutId: string,
+  archived: boolean,
+) =>
+  api(
+    shopApi(shopCode, `staff/reports/checkouts/${segment(checkoutId)}/archive`),
+    {
+      method: "POST",
+      body: JSON.stringify({ archived }),
+    },
+  );
 
 function payment(record: StaffReportCheckout, t: (key: string) => string) {
   return record.externalPayment
@@ -145,8 +160,8 @@ function ReportResults({
     setSelected(null);
     summary.reload();
     checkouts.reload();
-    // Return to the first page when a row disappears, avoiding an empty last page.
-    if (offset && archive !== "all") setOffset(0);
+    if (offset && archive !== "all" && checkouts.data?.records.length === 1)
+      setOffset(Math.max(0, offset - 50));
   }
   const open = (record: StaffReportCheckout) => (
     <button className={button} onClick={() => setSelected(record.checkoutId)}>
@@ -203,9 +218,12 @@ function ReportResults({
                 </span>
                 <span className="text-xs text-ink/60">
                   {record.sessionCount} {t("项计时")} · {record.durationMinutes}{" "}
-                  {t("分钟")} · {t(record.archived ? "已归档" : "未归档")}
+                  {t("分钟")}
                 </span>
-                {open(record)}
+                <div className="col-span-2 flex flex-wrap justify-end gap-2">
+                  {open(record)}
+                  <ReportArchiveAction record={record} changed={changed} />
+                </div>
               </div>
             ))}
           </div>
@@ -217,7 +235,6 @@ function ReportResults({
                 "累计时长（分钟）",
                 "金额",
                 "收款方式",
-                "归档状态",
                 "操作",
               ]}
             >
@@ -236,9 +253,11 @@ function ReportResults({
                   <td className={cell}>{money(record.total)}</td>
                   <td className={cell}>{payment(record, t)}</td>
                   <td className={cell}>
-                    {t(record.archived ? "已归档" : "未归档")}
+                    <div className="flex flex-wrap gap-2">
+                      {open(record)}
+                      <ReportArchiveAction record={record} changed={changed} />
+                    </div>
                   </td>
-                  <td className={cell}>{open(record)}</td>
                 </tr>
               ))}
             </Table>
@@ -286,6 +305,61 @@ function ReportResults({
   );
 }
 
+function ReportArchiveAction({
+  record,
+  changed,
+}: {
+  record: StaffReportCheckout;
+  changed: () => void;
+}) {
+  const { t, errorText } = useI18n();
+  const { canWrite, shopCode } = useMerchant();
+  const locked = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    locked.current = false;
+    setBusy(false);
+  }, [record]);
+  async function change() {
+    if (locked.current) return;
+    locked.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await setReportArchive(shopCode, record.checkoutId, !record.archived);
+      changed();
+    } catch (e) {
+      locked.current = false;
+      setBusy(false);
+      setError(errorText(e instanceof Error ? e.message : "操作失败"));
+    }
+  }
+  if (!canWrite) return null;
+  return (
+    <div className="grid gap-1">
+      <button
+        className={button}
+        disabled={busy}
+        onClick={() => void change()}
+        title={t(
+          record.archived
+            ? "恢复此账单后，营业额将增加 {amount}。"
+            : "归档此账单后，营业额将减少 {amount}。",
+          { amount: money(record.total) },
+        )}
+      >
+        {t(busy ? "处理中…" : record.archived ? "恢复账单" : "归档账单")}
+      </button>
+      {error && (
+        <p className="text-xs text-coral" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ReportDetail({
   checkoutId,
   close,
@@ -296,8 +370,7 @@ function ReportDetail({
   changed: () => void;
 }) {
   const { t, errorText } = useI18n();
-  const { timeZone, canWrite } = useMerchant();
-  const request = useStaffApi();
+  const { timeZone, canWrite, shopCode } = useMerchant();
   const detail = useResource<StaffReportCheckoutDetail>(
     `reports/checkouts/${segment(checkoutId)}`,
   );
@@ -311,10 +384,10 @@ function ReportDetail({
     setBusy(true);
     setError("");
     try {
-      await request(
-        `reports/checkouts/${segment(checkoutId)}/archive`,
-        "POST",
-        { archived: !detail.data.record.archived },
+      await setReportArchive(
+        shopCode,
+        checkoutId,
+        !detail.data.record.archived,
       );
       changed();
     } catch (e) {
