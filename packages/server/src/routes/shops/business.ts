@@ -30,8 +30,8 @@ staffBusinessRouter.post("/business-items", async (c) => {
     price: body.price,
     assetType: body.assetType,
     assetCode: body.assetCode,
-    activeAt: body.activeAt ? new Date(body.activeAt) : undefined,
-    expiresAt: body.expiresAt ? new Date(body.expiresAt) : undefined,
+    activeAt: body.activeAt ? new Date(body.activeAt) : null,
+    expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
     metadata: body.metadata,
   });
   return c.json({ businessItem: toBusinessItemManagementView(item) });
