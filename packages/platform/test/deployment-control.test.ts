@@ -147,6 +147,10 @@ test("read-only export migration safely removes only staged legacy exports and r
     ]);
     const sql = readFileSync(new URL("0032_read_only_shop_export.sql", root), "utf8");
     for (let i = 0; i < 2; i++) expect((await control({ action: "schema", name: "0032_read_only_shop_export.sql", sql })).status).toBe(200);
+    // Overwrite support is schema-only: deploying it cannot overwrite an existing shop.
+    for (const name of ["0035_checkout_report_states.sql", "0036_overwrite_shop_import.sql", "0036_overwrite_shop_import.sql"])
+      expect((await control({ action: "schema", name, sql: readFileSync(new URL(name, root), "utf8") })).status).toBe(200);
+    expect(await DB.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='shop_import_target_players_update'").first("n")).toBe(1);
     expect(await DB.prepare("SELECT COUNT(*) AS n FROM shop_data_rows").first("n")).toBe(0);
     expect(await DB.prepare("SELECT COUNT(*) AS n FROM players").first("n")).toBe(1);
     expect(await DB.prepare("SELECT quantity FROM asset_holdings").first("quantity")).toBe(10000);

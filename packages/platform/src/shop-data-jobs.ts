@@ -20,6 +20,7 @@ import {
   type FullTable,
 } from "./shop-data-v2-format";
 import type { DataRow } from "./shop-data-format";
+import { restoreTriggerNames, replaceBusinessStatements, configurationConflict } from "./shop-data-replace";
 import type { AppBindings } from "./types";
 
 type C = Context<AppBindings>;
@@ -176,7 +177,7 @@ async function previewJob(
   header: FullHeader,
   manifest: { counts: Record<string, number>; parts: number },
 ) {
-  if (!["uploading", "ready"].includes(job.status)) jsonError(409, "任务状态不允许预检", "TRANSFER_LOCKED");
+  if (!["uploading", "ready", "stale"].includes(job.status)) jsonError(409, "任务状态不允许预检", "TRANSFER_LOCKED");
   const errors: string[] = [],
     tables = fullTables(header),
     actual = await counts(c.env.DB, job.id, tables);
@@ -381,21 +382,23 @@ async function previewJob(
         errors.push("平台绑定与玩家身份不一致");
     }
   }
+  const installed = await c.env.DB.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='shop_import_target_players_update'").first();
+  if (!installed) errors.push("请先完成覆盖导入数据库迁移");
   const state = await targetState(c, shop.id);
-  if (state.rows) errors.push("目标店铺已有玩家、账单、配置或设备，请选择空店铺导入");
+
   const parts = (
     await c.env.DB.prepare("SELECT part,request_hash FROM shop_data_parts WHERE job_id=? ORDER BY part")
       .bind(job.id)
       .all()
   ).results;
-  const fingerprint = await sha256(JSON.stringify({ jobId: job.id, header, parts, state }));
+  const fingerprint = await sha256(JSON.stringify({ jobId: job.id, header, parts, state, revision: crypto.randomUUID() }));
   if (!errors.length) {
     const statements = [
       c.env.DB.prepare(
         `UPDATE shop_data_jobs SET status=CASE WHEN
       (SELECT COUNT(*) FROM shop_data_parts WHERE job_id=shop_data_jobs.id)=? AND
       (SELECT COUNT(*) FROM shop_data_rows WHERE job_id=shop_data_jobs.id)=? THEN 'ready' ELSE NULL END,
-      target_state=?,fingerprint=? WHERE id=? AND status IN ('uploading','ready')`,
+      target_state=?,fingerprint=? WHERE id=? AND status IN ('uploading','ready','stale')`,
       ).bind(
         manifest.parts,
         Object.values(actual).reduce((a, b) => a + b, 0),
@@ -407,12 +410,12 @@ async function previewJob(
       c.env.DB.prepare(
         `INSERT INTO shop_data_device_ids(job_id,source_id,id,public_id)
         SELECT ?,json_extract(r.payload_json,'$.id'),
-        CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.id=json_extract(r.payload_json,'$.id') OR m.public_id=json_extract(r.payload_json,'$.public_id'))
+        CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.shop_id!=? AND (m.id=json_extract(r.payload_json,'$.id') OR m.public_id=json_extract(r.payload_json,'$.public_id')))
           THEN lower(hex(randomblob(16))) ELSE json_extract(r.payload_json,'$.id') END,
-        CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.id=json_extract(r.payload_json,'$.id') OR m.public_id=json_extract(r.payload_json,'$.public_id'))
+        CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.shop_id!=? AND (m.id=json_extract(r.payload_json,'$.id') OR m.public_id=json_extract(r.payload_json,'$.public_id')))
           THEN lower(hex(randomblob(16))) ELSE json_extract(r.payload_json,'$.public_id') END
         FROM shop_data_rows r WHERE r.job_id=? AND r.table_name='machines'`,
-      ).bind(job.id, job.id),
+      ).bind(job.id, shop.id, shop.id, job.id),
     ];
     try {
       await c.env.DB.batch(statements);
@@ -429,9 +432,15 @@ async function previewJob(
     scope: header.scope,
     source: header.source,
     counts: actual,
+    target: { records: state.rows, mode: header.scope === "business" ? "replace" : "merge" },
     warnings: [
+      header.scope === "business"
+        ? "业务备份将替换目标店铺现有玩家、余额、账单和计费配置；此操作不能撤销，请先保留原店铺备份。"
+        : "仅配置导入会覆盖同编号配置并新增文件中的配置和设备，保留玩家、余额、账单及其他配置。",
       header.version === 2
-        ? "将恢复完整店铺资料、设置、设备连接及业务记录。目标店铺编号和当前管理员保留。"
+        ? header.scope === "business"
+          ? "将恢复完整店铺资料、设置、设备连接及业务记录。目标店铺编号和当前管理员保留。"
+          : "将恢复店铺资料和设置，并覆盖或新增配置及设备；目标店铺编号和当前管理员保留。"
         : "此为 v1 备份，仅恢复文件已有内容，目标店铺资料保留。",
       "备份包含连接密钥、平台身份、卡片和财务数据，请妥善保管。",
       "账号按同一账号 ID 或已验证登录身份恢复关联；无法匹配的关联保留，需重新绑定。",
@@ -446,6 +455,7 @@ async function applyJob(
   header: FullHeader,
   fingerprint: string,
   operationId: string,
+  overwrite: boolean,
 ) {
   if (job.result_json) {
     if (job.fingerprint !== fingerprint || job.operation_id !== operationId)
@@ -458,11 +468,14 @@ async function applyJob(
     .bind(shop.id, requireUser(c).id, operationId)
     .first();
   if (previous) jsonError(409, "请求编号已用于其他操作", "OPERATION_CONFLICT");
+  if (job.status === "stale") jsonError(409, "预检后店铺数据或文件已变化，请重新预检", "IMPORT_TARGET_CHANGED");
   if (job.status !== "ready" || fingerprint !== job.fingerprint)
     jsonError(409, "请先完成备份预检", "IMPORT_NOT_READY");
   const state = await targetState(c, shop.id);
   if (snapshotKey(state) !== job.target_state)
     jsonError(409, "预检后店铺数据或文件已变化，请重新预检", "IMPORT_TARGET_CHANGED");
+  if (header.scope === "business" && state.rows && !overwrite)
+    jsonError(409, "请确认覆盖目标店铺现有数据", "IMPORT_OVERWRITE_REQUIRED");
   const db = c.env.DB,
     tables = fullTables(header),
     now = new Date().toISOString();
@@ -493,14 +506,16 @@ async function applyJob(
       ? (
           await db
             .prepare(
-              "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('pricing_config_version_insert','session_pricing_bind')",
+              `SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN (${restoreTriggerNames.map(() => "?").join(",")})`,
             )
+            .bind(...restoreTriggerNames)
             .all<{ name: string; sql: string }>()
         ).results
       : [];
-  if (header.scope === "business" && triggers.length !== 2)
+  if (header.scope === "business" && triggers.length !== restoreTriggerNames.length)
     jsonError(409, "计费数据库结构不完整，无法恢复历史版本", "IMPORT_SCHEMA_MISMATCH");
   statements.push(...triggers.map((t) => db.prepare(`DROP TRIGGER ${t.name}`)));
+  if (header.scope === "business") statements.push(...replaceBusinessStatements(db, shop.id, requireUser(c).id, header.version === 2));
   // Machines have global IDs. The preflight stores collision mappings in D1, not Worker memory.
   if (rowsCount.machines) {
     const cols = sourceColumns("machines"),
@@ -516,7 +531,7 @@ async function applyJob(
         .prepare(
           `INSERT INTO machines(shop_id,${cols.join(",")}) SELECT ?,${expressions.join(",")}
       FROM shop_data_rows r JOIN shop_data_device_ids d ON d.job_id=r.job_id AND d.source_id=json_extract(r.payload_json,'$.id')
-      WHERE r.job_id=? AND r.table_name='machines'`,
+      WHERE r.job_id=? AND r.table_name='machines'${header.scope === "configuration" ? configurationConflict("machines", cols) : ""}`,
         )
         .bind(shop.id, job.id),
     );
@@ -555,7 +570,7 @@ async function applyJob(
     }
     if (table === "device_states" || table === "machine_connections")
       expressions[cols.indexOf("status")] = "'offline'";
-    let conflict = "";
+    let conflict = header.scope === "configuration" ? configurationConflict(table) : "";
     if (table === "app_settings")
       conflict =
         " ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at";
@@ -680,7 +695,7 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
   app.delete(base + "/imports/:jobId", async (c) => {
     const { job } = await getJob(c, "import");
     if (job.status === "completed") jsonError(409, "已完成导入不能撤销", "TRANSFER_LOCKED");
-    await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=? AND status IN ('uploading','ready')")
+    await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=? AND status IN ('uploading','ready','stale')")
       .bind(job.id)
       .run();
     return c.json({ deleted: true });
@@ -728,7 +743,7 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
   app.post(base + "/imports/:jobId/apply", async (c) => {
     const { shop, job, header } = await getJob(c, "import");
     const input = parse(
-      z.object({ fingerprint: z.string(), operationId: z.string().uuid() }).strict(),
+      z.object({ fingerprint: z.string(), operationId: z.string().uuid(), overwrite: z.boolean().optional().default(false) }).strict(),
       await body(c),
     );
     const repos = createD1Repositories({
@@ -739,7 +754,7 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
     });
     return withOperationLease(
       { repository: repos.operationLocks, scope: "shop.cashier", resourceId: shop.id, now: () => new Date() },
-      async () => c.json(await applyJob(c, shop, job, header, input.fingerprint, input.operationId)),
+      async () => c.json(await applyJob(c, shop, job, header, input.fingerprint, input.operationId, input.overwrite ?? false)),
     );
   });
 }
