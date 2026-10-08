@@ -17,6 +17,7 @@ import { adminManagementRouter } from "./routes/platform/admin-management.js";
 import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
 import { cardsRouter } from "./routes/platform/cards.js";
 import { machineSessionRouter, machineTicketRouter } from "./routes/platform/machine-session.js";
+import { munetAuthRouter, appclipAuthRouter, munetCallbackRouter } from "./routes/platform/munet-routes.js";
 import { healthRouter } from "./routes/system/health.js";
 import { versionRouter } from "./routes/system/version.js";
 
@@ -111,6 +112,9 @@ export function createApp(): Hono<AppBindings> {
 
   // Platform routes
   app.route("/api/v1/auth", authRouter);
+  app.route("/api/v1/auth", munetAuthRouter);
+  app.route("/api/v1/appclip/auth", appclipAuthRouter);
+  app.route("/callback", munetCallbackRouter);
   app.route("/api/v1/passkeys", passkeysRouter);
   app.route("/api/v1/account", userRouter);
   app.route("/api/v1/user", userRouter);

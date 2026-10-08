@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
+import { syncMunetCards } from "./oauth.js";
 
 export const cardsRouter = new Hono<AppBindings>();
 const cardInput = z.object({
@@ -40,4 +41,18 @@ cardsRouter.delete("/:id", async (c) => {
   await c.env.DB.prepare("DELETE FROM cards WHERE id=? AND user_id=?")
     .bind(c.req.param("id"),user.id).run();
   return c.json({ok:true});
+});
+
+cardsRouter.post("/sync", async (c) => {
+  const user = requireUser(c);
+  let authorizationRequired = false;
+  let syncError: string | null = null;
+  try {
+    const sync = await syncMunetCards(c, user.id);
+    authorizationRequired = sync.authorizationRequired;
+  } catch (error) {
+    console.error(error);
+    syncError = "MuNET 暂时无法同步，显示上次结果";
+  }
+  return c.json({ cards: await listCards(c, user.id), authorizationRequired, syncError });
 });
