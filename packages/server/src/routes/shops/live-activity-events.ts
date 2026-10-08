@@ -6,6 +6,7 @@ import {
   liveActivityStartPayload,
   maskToken,
   type LiveActivityPushRecord,
+  type ApnsTransport,
 } from "../../durable-objects/live-activity-push.js";
 import type { AppBindings } from "../../bindings.js";
 import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
@@ -143,6 +144,8 @@ export async function pushSessionEvent(
     event: "start" | "end";
     initiatorClientId?: string | null;
   },
+  // Test seam: APNs transport is injectable, never replaced in production.
+  transport?: ApnsTransport,
 ): Promise<void> {
   const config = liveActivityConfig(c.env);
   // No APNs credentials (local, beta, tests) means the whole feature is inert.
@@ -155,7 +158,7 @@ export async function pushSessionEvent(
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const pusher = new LiveActivityPusher({ config });
+  const pusher = new LiveActivityPusher({ config, transport });
 
   if (input.event === "start") {
     if (c.env.LIVE_BILLING) {
