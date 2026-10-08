@@ -10,6 +10,7 @@ import { shopRouter } from "../src/routes/shops/index.js";
 import { createApp } from "../src/app.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
+import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
 
 class InMemoryD1Database implements D1DatabaseLike {
   constructor(private readonly db: Database) {}
@@ -507,12 +508,16 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       "Content-Type": "application/json",
     };
 
+    // The real player entry requires a QR-derived, shop-scoped machine ticket
+    // and affirmative acknowledgement of the billing terms.
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?, 'entry-machine', 'entry-machine', 'Entry Machine', 'machine', 1)", [shopId]);
+    const ticket = (await mintMachineTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
     // 1. Player session start
     const startRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/session/start`, {
         method: "POST",
         headers: aliceHeaders,
-        body: JSON.stringify({ label: "play" }),
+        body: JSON.stringify({ ticket, consent: true }),
       }),
       env,
     );
