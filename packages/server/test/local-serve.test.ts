@@ -46,6 +46,31 @@ describe("Local Server Entrypoint & Runtime", () => {
       const totalAfterBatch = await d1.prepare("SELECT COUNT(*) AS total FROM test_items;").bind().first<{ total: number }>();
       expect(totalAfterBatch?.total).toBe(3);
     });
+
+    it("preserves D1 batch SELECT results, affected-row metadata and atomic rollback", async () => {
+      const sqlite = new Database(":memory:");
+      sqlite.run("CREATE TABLE entries (id TEXT PRIMARY KEY, amount INTEGER NOT NULL)");
+      const d1 = createD1DatabaseFromSqlite(sqlite);
+      const inserted = await d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("one", 12).run()
+        as { meta: { changes: number } };
+      expect(inserted.meta.changes).toBe(1);
+      const results = await d1.batch([
+        d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("two", 34),
+        d1.prepare("SELECT id, amount FROM entries ORDER BY id").bind(),
+        d1.prepare("UPDATE entries SET amount=amount+1 WHERE id=?").bind("one"),
+      ]) as Array<{ results: Array<{ id: string; amount: number }>; meta: { changes: number } }>;
+      expect(results[0]?.meta.changes).toBe(1);
+      expect(results[1]?.results).toEqual([
+        { id: "one", amount: 12 }, { id: "two", amount: 34 },
+      ]);
+      expect(results[2]?.meta.changes).toBe(1);
+      await expect(d1.batch([
+        d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("rollback", 0),
+        d1.prepare("INSERT INTO entries VALUES (?, ?)").bind("one", 0),
+      ])).rejects.toThrow();
+      expect(sqlite.query("SELECT id FROM entries WHERE id='rollback'").get()).toBeNull();
+      sqlite.close();
+    });
   });
 
   describe("initializeLocalDatabase", () => {

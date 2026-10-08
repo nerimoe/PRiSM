@@ -246,18 +246,39 @@ export type SqliteD1Database = D1DatabaseLike & {
 export function createD1DatabaseFromSqlite(db: Database): SqliteD1Database {
   return {
     prepare(sql: string): SqliteD1PreparedStatement {
-      const createStatement = (...values: SqlValue[]): D1BoundStatementLike => ({
+      type LocalBatchResult = {
+        results: unknown[];
+        success: true;
+        meta: { changes: number };
+      };
+      type LocalBoundStatement = D1BoundStatementLike & {
+        executeBatch(): Promise<LocalBatchResult>;
+      };
+      const createStatement = (...values: SqlValue[]): LocalBoundStatement => ({
         async first<T = unknown>() {
           return (db.query(sql).get(...values) as T | null) ?? null;
         },
         async all<T = unknown>() {
-          return {
-            results: db.query(sql).all(...values) as T[],
-          };
+          return { results: db.query(sql).all(...values) as T[] };
         },
         async run() {
-          db.query(sql).run(...values);
-          return { success: true };
+          const result = db.query(sql).run(...values);
+          return { success: true, meta: { changes: result.changes } };
+        },
+        async executeBatch() {
+          // Cloudflare D1 returns rows for SELECT/RETURNING statements inside a batch;
+          // a plain .run() silently discards those rows and breaks shop-data exports.
+          const returnsRows = /^(?:SELECT|WITH|PRAGMA|EXPLAIN)\\b/i.test(sql.trim())
+            || /\\bRETURNING\\b/i.test(sql);
+          if (returnsRows) {
+            const results = db.query(sql).all(...values) as unknown[];
+            const changed = /\\bRETURNING\\b/i.test(sql)
+              ? (db.query("SELECT changes() AS changes").get() as { changes: number } | null)?.changes ?? 0
+              : 0;
+            return { results, success: true as const, meta: { changes: changed } };
+          }
+          const result = db.query(sql).run(...values);
+          return { results: [], success: true as const, meta: { changes: result.changes } };
         },
       });
 
@@ -278,7 +299,10 @@ export function createD1DatabaseFromSqlite(db: Database): SqliteD1Database {
       try {
         const results: unknown[] = [];
         for (const statement of statements) {
-          results.push(await statement.run());
+          const local = statement as D1BoundStatementLike & {
+            executeBatch?: () => Promise<unknown>;
+          };
+          results.push(local.executeBatch ? await local.executeBatch() : await statement.run());
         }
         if (needsTransaction) {
           db.run("COMMIT");
