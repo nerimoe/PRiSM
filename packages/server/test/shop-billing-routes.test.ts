@@ -529,6 +529,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       }),
       env,
     );
+    if (!startRes.ok) console.error("QR-confirmed start failed", startRes.status, await startRes.clone().text());
     expect(startRes.status).toBe(200);
     const startData = (await startRes.json()) as any;
     expect(startData.session).toBeDefined();
