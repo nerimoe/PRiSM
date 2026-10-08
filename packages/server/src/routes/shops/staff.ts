@@ -4,7 +4,6 @@ import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
-import { startEntrySession } from "./entry.js";
 import { runPlayerOperation } from "./player-operation.js";
 import { withPrismAccountIdentities } from "./shop-player-identities.js";
 import {
@@ -192,7 +191,11 @@ staffRouter.post("/players/:playerId/session/start", async (c) => {
     pricingConfigIds?: string[];
     label?: string;
   };
-  const session = await startEntrySession(shop, deps, c.req.param("playerId"));
+  const session = await deps.playerCommands.startSession({
+    playerId: c.req.param("playerId"),
+    pricingConfigIds: body?.pricingConfigIds,
+    label: body?.label,
+  });
   return c.json({ session: toSessionView(session) });
 });
 
