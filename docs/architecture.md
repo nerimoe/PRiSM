@@ -33,6 +33,7 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
   - `src/deployment-gate.ts`：零停机部署栅栏门控。拦截 `/__prism_deploy` 部署动作与检查请求，执行维护窗口隔离、SQL schema 锁检查与 D1 状态围栏。
   - `src/tasks/cron-handlers.ts`：后台定时任务处理模块。实现 `purgeExpiredPlatformState`，按批次（每次最多 500 条）安全清理过期的临时验证凭据与已注销的平台状态。
   - `src/migrations/shop-time-zone-migration.ts`：店铺位置 IANA 时区幂等迁移脚本，基于经纬度地理编码解析缺失的时区配置并批量入库。
+  - `src/local-server.ts` 与 `src/serve.ts`：本地 Bun 原生运行入口与独立服务端运行时。实现 `createD1DatabaseFromSqlite` 将 `bun:sqlite` 封装为 `D1DatabaseLike` 适配器；实现 `initializeLocalDatabase` 自动初始化 `@prism/storage-sql` 与平台表结构并配置默认管理用户与店铺计费；通过 `createLocalServer` 启动 `Bun.serve`，支持离线单店开发调试、HTTP 请求处理与机台 WebSocket 协议升级（`/rpc/machine/ws`）。
 - `packages/server-hono`：Hono 路由应用工厂和强类型 RPC/API 层。只负责鉴权、参数解析、调用应用服务和映射视图模型，不直接执行 SQL，也不承载玩家批量结账、实时聚合或 Home Assistant 同步等业务流程。
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作、设备状态同步和统一资产效果；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。

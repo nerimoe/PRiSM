@@ -13,3 +13,4 @@ export * from "./deployment-gate.js";
 export * from "./tasks/cron-handlers.js";
 export * from "./migrations/shop-time-zone-migration.js";
 export * from "./durable-objects/index.js";
+export * from "./local-server.js";
