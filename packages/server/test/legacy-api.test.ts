@@ -347,7 +347,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       new Request("https://prism.test/api/v1/player/session/start", {
         method: "POST",
         headers: bobHeaders,
-        body: JSON.stringify({ ticket, consent: true }),
+        body: JSON.stringify({ ticket, consent: true, operationId: crypto.randomUUID() }),
       }),
       env,
     );
