@@ -29,6 +29,7 @@ import { SettingsPage } from "./merchant/Settings";
 import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup";
 import { DevicesPage } from "./merchant/Devices";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
+import { resolveStaffAccess, type StaffMe } from "./merchant/staff-access";
 
 export function MerchantPage() {
   return (
@@ -130,14 +131,13 @@ function Workspace({
       api<{ shop: { billingEnabled: boolean; cashierEnabled: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
-      api<{ staff: { canWrite: boolean; role: string } }>(
+      api<{ staff: StaffMe }>(
         shopApi(shop.publicId, "staff/me"),
       ),
     ]);
     setState({
       ...info.shop,
-      canWrite: me.staff.canWrite,
-      owner: me.staff.role === "owner",
+      ...resolveStaffAccess(me.staff),
     });
   }, [shop.publicId]);
   useEffect(() => {
