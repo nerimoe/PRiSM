@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
-import { sha256 } from "../../crypto.js";
+import { sha256Hex } from "../../crypto.js";
 import { staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 
@@ -19,7 +19,7 @@ legacyAdminRouter.post("/logout", async (c) => {
   const token = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token) jsonError(403, "Staff principal required.", "FORBIDDEN");
   const system = getShopDeps(c).repositories.system;
-  const session = await system.findAdminSessionByTokenHash(await sha256(token));
+  const session = await system.findAdminSessionByTokenHash(await sha256Hex(token));
   if (!session || session.expiresAt.getTime() <= Date.now()) {
     jsonError(403, "Staff principal required.", "FORBIDDEN");
   }
@@ -30,7 +30,7 @@ legacyAdminRouter.post("/logout", async (c) => {
 legacyPlayerAuthRouter.post("/login/by-identity", async (c) => {
   const token = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   const system = getShopDeps(c).repositories.system;
-  const integration = token && (await system.findActiveApiTokenByHash(await sha256(token)))?.role === "integration";
+  const integration = token && (await system.findActiveApiTokenByHash(await sha256Hex(token)))?.role === "integration";
   if (!integration) {
     const principal = await staffPrincipal(c, getShop(c));
     if (principal.staffRole === "viewer") jsonError(403, "Trusted identity verification required.", "FORBIDDEN");

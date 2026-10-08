@@ -2,7 +2,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppBindings, AuthUser, StaffPrincipal, TenantShop } from "../bindings.js";
 import { addDays, jsonError, nowIso } from "../http.js";
-import { randomToken, sha256 } from "../crypto.js";
+import { randomToken, sha256, sha256Hex } from "../crypto.js";
 
 const cookieName = "arcadelink_session";
 const sessionDays = 30;
@@ -92,7 +92,7 @@ export async function staffPrincipal(
     const token = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
     const deps = c.get("deps");
     if (token && deps) {
-      const session = await deps.repositories.system.findAdminSessionByTokenHash(await sha256(token));
+      const session = await deps.repositories.system.findAdminSessionByTokenHash(await sha256Hex(token));
       if (session && session.expiresAt.getTime() > Date.now()) {
         const staff = await deps.repositories.system.findStaffUserById(session.staffUserId);
         if (staff?.status === "active") {

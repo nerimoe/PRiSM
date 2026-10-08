@@ -7,6 +7,13 @@ import { redeemRouter } from "../../routes/shops/redeem.js";
 
 export const legacyStaffRouter = new Hono<AppBindings>();
 
+legacyStaffRouter.get("/me", async (c) => {
+  const p = await requireStandaloneStaff(c);
+  return c.json({
+    staff: { id: p.staffId, displayName: p.staffId, role: p.staffRole, canWrite: p.staffRole !== "viewer" },
+  });
+});
+
 // Mount core staff router
 legacyStaffRouter.route("/", staffRouter);
 
@@ -33,12 +40,7 @@ async function requireStandaloneStaff(c: import("hono").Context<AppBindings>, ac
 }
 
 // Admin-session tokens and platform staff sessions share these canonical services.
-legacyStaffRouter.get("/me", async (c) => {
-  const p = await requireStandaloneStaff(c);
-  return c.json({
-    staff: { id: p.staffId, displayName: p.staffId, role: p.staffRole, canWrite: p.staffRole !== "viewer" },
-  });
-});
+
 
 legacyStaffRouter.get("/users", async (c) => {
   await requireStandaloneStaff(c, "owner");
