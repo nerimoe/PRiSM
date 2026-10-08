@@ -791,6 +791,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
         body: JSON.stringify({
           amount: 5000,
           reason: "staff bonus",
+          operationId: crypto.randomUUID(),
         }),
       }),
       env,
