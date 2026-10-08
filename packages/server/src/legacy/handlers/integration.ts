@@ -1,14 +1,27 @@
 import { Hono } from "hono";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
-import { getShopDeps } from "../../middleware/tenant.js";
-import { integrationRouter } from "../../routes/shops/integration.js";
+import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import {
+  integrationRouter,
+  requireIntegrationAuth,
+} from "../../routes/shops/integration.js";
 import {
   toDeviceCommandView,
   toPlayerCheckoutResultView,
 } from "../../routes/shops/views.js";
 
 export const legacyIntegrationRouter = new Hono<AppBindings>();
+
+// Enforce bot integration authentication and billing verification on all legacy integration routes
+legacyIntegrationRouter.use("*", async (c, next) => {
+  const shop = getShop(c);
+  if (!shop.billing_enabled) {
+    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
+  }
+  await requireIntegrationAuth(c, shop);
+  await next();
+});
 
 // Legacy-specific integration overrides and device actions
 legacyIntegrationRouter.post(

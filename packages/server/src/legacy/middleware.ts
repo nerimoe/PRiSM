@@ -63,6 +63,10 @@ export const legacyDeprecationMiddleware: MiddlewareHandler<AppBindings> = async
   );
   headers.set("Deprecation", "true");
 
+  console.warn(
+    `[DEPRECATED API] ${c.req.method} ${c.req.path} invoked by ${c.req.header("user-agent") ?? "unknown"} -> replacement: ${replacement}`,
+  );
+
   c.res = new Response(c.res.body, {
     status: c.res.status,
     statusText: c.res.statusText,

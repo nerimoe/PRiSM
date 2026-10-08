@@ -17,7 +17,7 @@ import {
   toStoppedSessionView,
 } from "./views.js";
 
-async function requireIntegrationAuth(
+export async function requireIntegrationAuth(
   c: Context<AppBindings>,
   shop: TenantShop,
 ): Promise<void> {

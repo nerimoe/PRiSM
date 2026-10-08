@@ -624,4 +624,38 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
     expect(data.holdings).toBeDefined();
     expect(data.holdings[0].quantity).toBe(300);
   });
+
+  it("rejects unauthenticated requests on legacy integration override endpoints with 403", async () => {
+    const { db, sqlite, env } = createTestContext();
+    await setupFixture(db, sqlite);
+    const app = createTestApp();
+
+    const res = await app.fetch(
+      new Request("https://prism.test/api/v1/integration/players/by-identity/checkout/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "qq", subject: "12345", total: 0 }),
+      }),
+      env,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when explicit shopCode does not match any shop instead of silent fallback", async () => {
+    const { db, sqlite, env } = createTestContext();
+    await setupFixture(db, sqlite);
+    const app = createTestApp();
+
+    const res = await app.fetch(
+      new Request("https://prism.test/api/v1/player/me", {
+        headers: {
+          "X-PRiSM-Shop-Code": "non-existent-shop",
+        },
+      }),
+      env,
+    );
+    expect(res.status).toBe(404);
+    const data = (await res.json()) as any;
+    expect(data.error?.code).toBe("SHOP_NOT_FOUND");
+  });
 });
