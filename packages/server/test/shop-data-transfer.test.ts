@@ -247,7 +247,6 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect((sqlite.query("SELECT name FROM shops WHERE id='destination'").get() as {name:string}).name).toBe("source");
     sqlite.close();
   });
-}
   it("requires explicit confirmation to overwrite live business records while preserving platform credentials",async()=>{
     const {sqlite,env,app,headers}=await transferFixture();
     const now=new Date().toISOString();
@@ -297,8 +296,8 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     });
     expect(denied.status).toBe(409);
     expect(((await denied.json()) as {error:{code:string}}).error.code).toBe("IMPORT_OVERWRITE_REQUIRED");
-    expect((sqlite.query("SELECT display_name FROM players WHERE shop_id='destination' AND id='old-player'").get()
-      as {display_name:string}).display_name).toBe("Previous Player");
+    const unchanged = sqlite.query("SELECT display_name FROM players WHERE shop_id='destination' AND id='old-player'").get() as {display_name:string}|null;
+    expect(unchanged?.display_name).toBe("Previous Player");
     const applied=await request(target+`/imports/${jobId}/apply`,{
       fingerprint:preview.fingerprint,operationId,overwrite:true,
     });
