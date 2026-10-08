@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
+import { staffMeView } from "./staff-me-view.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { runPlayerOperation } from "./player-operation.js";
@@ -27,24 +28,11 @@ import {
 
 export const staffRouter = new Hono<AppBindings>();
 
-// Staff Info — preserve the pre-consolidation browser contract. The auth
-// principal's "role: staff" is an internal discriminator, not the shop staff
-// role that controls settings and report archive actions in the merchant UI.
+// Only serialize the historic staff API view, not the authentication principal.
 staffRouter.get("/me", async (c) => {
   const shop = getShop(c);
   const principal = await staffPrincipal(c, shop, true);
-  return c.json({
-    staff: {
-      id: principal.staffId,
-      displayName: principal.staffId,
-      role: principal.staffRole,
-      canWrite: principal.staffRole !== "viewer",
-      // Preserve the explicit principal identifiers for new consumers.
-      staffId: principal.staffId,
-      staffRole: principal.staffRole,
-      principalRole: principal.role,
-    },
-  });
+  return c.json({ staff: await staffMeView(c, shop, principal) });
 });
 
 // List Players
