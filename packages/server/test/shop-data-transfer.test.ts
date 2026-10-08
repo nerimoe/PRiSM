@@ -171,19 +171,25 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect(stale.status).toBe(409);
     expect(sqlite.query("SELECT id FROM players WHERE shop_id='destination' AND id='staged-player'").get()).toBeNull();
     sqlite.run("DELETE FROM players WHERE shop_id='destination' AND id='concurrent-player'");
+    // The 0036 revision triggers intentionally keep a stale import locked until a fresh preview.
+    const refreshed=await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part});
+    expect(refreshed.status).toBe(200);
+    const freshPreview=((await refreshed.json()) as {data:{canImport:boolean;fingerprint:string}}).data;
+    expect(freshPreview.canImport).toBe(true);
+    const freshFingerprint=freshPreview.fingerprint;
 
     const operationId=crypto.randomUUID();
     const applied=await post(`${destination}/imports/${jobId}/apply`,{
-      fingerprint:preview.fingerprint,operationId,
+      fingerprint:freshFingerprint,operationId,
     });
     expect(applied.status).toBe(200);
     const repeated=await post(`${destination}/imports/${jobId}/apply`,{
-      fingerprint:preview.fingerprint,operationId,
+      fingerprint:freshFingerprint,operationId,
     });
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toEqual(await applied.json());
     const conflicting=await post(`${destination}/imports/${jobId}/apply`,{
-      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+      fingerprint:freshFingerprint,operationId:crypto.randomUUID(),
     });
     expect(conflicting.status).toBe(409);
     expect(((await conflicting.json()) as {error:{code:string}}).error.code).toBe("OPERATION_CONFLICT");
