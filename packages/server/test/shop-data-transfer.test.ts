@@ -158,6 +158,20 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     const preview=((await checked.json()) as {data:{canImport:boolean;errors:string[];fingerprint:string}}).data;
     expect(preview.errors).toEqual([]);
     expect(preview.canImport).toBe(true);
+
+    // The target must remain unchanged between preview and apply; a stale
+    // fingerprint cannot overwrite a store that has acquired business rows.
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('destination','concurrent-player','Concurrent','active',?)",
+      [new Date().toISOString()],
+    );
+    const stale=await post(`${destination}/imports/${jobId}/apply`,{
+      fingerprint:preview.fingerprint,operationId:crypto.randomUUID(),
+    });
+    expect(stale.status).toBe(409);
+    expect(sqlite.query("SELECT id FROM players WHERE shop_id='destination' AND id='staged-player'").get()).toBeNull();
+    sqlite.run("DELETE FROM players WHERE shop_id='destination' AND id='concurrent-player'");
+
     const operationId=crypto.randomUUID();
     const applied=await post(`${destination}/imports/${jobId}/apply`,{
       fingerprint:preview.fingerprint,operationId,
