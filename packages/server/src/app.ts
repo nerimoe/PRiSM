@@ -19,6 +19,7 @@ import { merchantMachineRouter } from "./routes/platform/merchant-machines.js";
 import { cardsRouter } from "./routes/platform/cards.js";
 import { machineSessionRouter, machineTicketRouter } from "./routes/platform/machine-session.js";
 import { machineLoginRouter } from "./routes/platform/machine-login.js";
+import { deviceSessionRouter, merchantMachineActionRouter } from "./routes/platform/device-session.js";
 import { appleAppSiteAssociationResponse, androidAssetLinksResponse } from "./routes/platform/apple.js";
 import { munetAuthRouter, appclipAuthRouter, munetCallbackRouter } from "./routes/platform/munet-routes.js";
 import { healthRouter } from "./routes/system/health.js";
@@ -138,6 +139,8 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/cards", cardsRouter);
   app.route("/api/v1/machines", machineSessionRouter);
   app.route("/api/v1/machines", machineLoginRouter);
+  app.route("/api/v1/devices", deviceSessionRouter);
+  app.route("/api/v1/merchant", merchantMachineActionRouter);
   app.route("/t", machineTicketRouter);
 
   // Multi-tenant shop routes (/api/v1/shops/:shopCode)
