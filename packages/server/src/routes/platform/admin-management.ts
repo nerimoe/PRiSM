@@ -52,7 +52,7 @@ adminManagementRouter.get("/bans", async (c) => {
   requireAdmin(c);
   const bans = await c.env.DB.prepare(
     "SELECT id, subject_type AS subjectType, subject_value AS subjectValue, reason, expires_at AS expiresAt, created_at AS createdAt FROM bans ORDER BY created_at DESC LIMIT 100",
-  ).all();
+  ).bind().all();
   return c.json({ bans: bans.results });
 });
 
