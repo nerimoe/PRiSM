@@ -3,6 +3,7 @@ import { yuanOf } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { sha256Hex } from "../../crypto.js";
 import { jsonError } from "../../http.js";
+import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import {
   toPlayerAssetsView,
@@ -209,4 +210,10 @@ integrationRouter.get("/device-states", async (c) => {
     ? await deps.staffQueries.listDeviceStates()
     : [];
   return c.json({ deviceStates: states });
+});
+
+// Platform Binding Confirm
+integrationRouter.post("/platform-binding/confirm", async (c) => {
+  const shop = getShop(c);
+  return confirmPlatformBinding(c, shop, "integration");
 });

@@ -116,6 +116,30 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       staff_id TEXT NOT NULL,
       PRIMARY KEY(shop_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS shop_player_accounts (
+      shop_id TEXT NOT NULL REFERENCES shops(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      player_id TEXT NOT NULL,
+      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(shop_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS shop_platform_bindings (
+      shop_id TEXT NOT NULL REFERENCES shops(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      provider TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(shop_id, provider, subject),
+      UNIQUE(shop_id, user_id, provider)
+    );
+    CREATE TABLE IF NOT EXISTS platform_binding_codes (
+      shop_id TEXT NOT NULL REFERENCES shops(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      code_hash TEXT NOT NULL UNIQUE,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(shop_id, user_id)
+    );
     CREATE TABLE IF NOT EXISTS machines (
       shop_id TEXT NOT NULL,
       id TEXT NOT NULL,
@@ -247,14 +271,34 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       [shopId, playerId],
     );
 
+    // Create Alice's user account and session
+    const aliceUserId = "user_alice";
+    const aliceToken = "session_token_alice";
+    const aliceTokenHash = await sha256(aliceToken);
+    const futureExpiry = new Date(Date.now() + 86400000 * 7).toISOString();
+    sqlite.run(
+      "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [aliceUserId],
+    );
+    sqlite.run(
+      "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES ('sess_alice', ?, ?, ?, CURRENT_TIMESTAMP)",
+      [aliceUserId, aliceTokenHash, futureExpiry],
+    );
+    sqlite.run(
+      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      [shopId, aliceUserId, playerId],
+    );
+
+    const aliceHeaders = {
+      Authorization: `Bearer ${aliceToken}`,
+      "Content-Type": "application/json",
+    };
+
     // 1. Player session start
     const startRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/session/start`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-PRiSM-Player-Id": playerId,
-        },
+        headers: aliceHeaders,
         body: JSON.stringify({ label: "play" }),
       }),
       env,
@@ -269,7 +313,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     // 2. Player summary / active session verification via GET /player/me
     const meRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/me`, {
-        headers: { "X-PRiSM-Player-Id": playerId },
+        headers: aliceHeaders,
       }),
       env,
     );
@@ -282,10 +326,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const previewRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/checkout/preview`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-PRiSM-Player-Id": playerId,
-        },
+        headers: aliceHeaders,
       }),
       env,
     );
@@ -299,10 +340,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const confirmRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/checkout/confirm`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-PRiSM-Player-Id": playerId,
-        },
+        headers: aliceHeaders,
       }),
       env,
     );
@@ -315,7 +353,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     // 5. Checkout history
     const historyRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/checkouts/history`, {
-        headers: { "X-PRiSM-Player-Id": playerId },
+        headers: aliceHeaders,
       }),
       env,
     );
@@ -323,6 +361,66 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const historyData = (await historyRes.json()) as any;
     expect(historyData.records).toBeDefined();
     expect(historyData.records.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("enforces authentication and prevents unprivileged X-PRiSM-Player-Id impersonation", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+
+    const victimPlayerId = "player_victim";
+    sqlite.run(
+      "INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, ?, 'Victim', 'active', CURRENT_TIMESTAMP)",
+      [shopId, victimPlayerId],
+    );
+
+    // 1. Unauthenticated request with X-PRiSM-Player-Id must be rejected with 401
+    const unauthRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/player/me`, {
+        headers: { "X-PRiSM-Player-Id": victimPlayerId },
+      }),
+      env,
+    );
+    expect(unauthRes.status).toBe(401);
+
+    // 2. Regular non-staff user cannot spoof X-PRiSM-Player-Id (must be rejected with 403)
+    const malloryUserId = "user_mallory";
+    const malloryToken = "token_mallory";
+    const malloryTokenHash = await sha256(malloryToken);
+    const futureExpiry = new Date(Date.now() + 86400000 * 7).toISOString();
+    sqlite.run(
+      "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [malloryUserId],
+    );
+    sqlite.run(
+      "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES ('sess_mallory', ?, ?, ?, CURRENT_TIMESTAMP)",
+      [malloryUserId, malloryTokenHash, futureExpiry],
+    );
+
+    const spoofRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/player/me`, {
+        headers: {
+          Authorization: `Bearer ${malloryToken}`,
+          "X-PRiSM-Player-Id": victimPlayerId,
+        },
+      }),
+      env,
+    );
+    expect(spoofRes.status).toBe(403);
+
+    // 3. Authorized staff member CAN act on behalf of player with X-PRiSM-Player-Id
+    const staffRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/player/me`, {
+        headers: {
+          Authorization: `Bearer ${staffSessionToken}`,
+          "X-PRiSM-Player-Id": victimPlayerId,
+        },
+      }),
+      env,
+    );
+    expect(staffRes.status).toBe(200);
+    const staffData = (await staffRes.json()) as any;
+    expect(staffData.player.id).toBe(victimPlayerId);
   });
 
   it("handles cashier card registration, lookup, entry session, preview, and external settlement", async () => {
@@ -572,5 +670,81 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const walletData = (await walletRes.json()) as any;
     expect(walletData.wallet).toBeDefined();
     expect(Array.isArray(walletData.wallet)).toBe(true);
+  });
+
+  it("handles platform-binding generation and confirmation via staff and integration", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken, botToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+
+    // 1. Create a user and player account
+    const bobUserId = "user_bob";
+    const bobToken = "token_bob";
+    const bobTokenHash = await sha256(bobToken);
+    const bobPlayerId = "player_bob";
+    const futureExpiry = new Date(Date.now() + 86400000 * 7).toISOString();
+
+    sqlite.run(
+      "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [bobUserId],
+    );
+    sqlite.run(
+      "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES ('sess_bob', ?, ?, ?, CURRENT_TIMESTAMP)",
+      [bobUserId, bobTokenHash, futureExpiry],
+    );
+    sqlite.run(
+      "INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, ?, 'Bob', 'active', CURRENT_TIMESTAMP)",
+      [shopId, bobPlayerId],
+    );
+    sqlite.run(
+      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      [shopId, bobUserId, bobPlayerId],
+    );
+
+    // 2. Bob requests a binding code via POST /platform-binding
+    const codeRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${bobToken}`,
+        },
+      }),
+      env,
+    );
+    expect(codeRes.status).toBe(200);
+    const codeData = (await codeRes.json()) as any;
+    expect(codeData.code).toBeDefined();
+    expect(codeData.code.length).toBe(8);
+    const bindingCode = codeData.code;
+
+    // 3. Confirm platform binding via bot integration
+    const confirmRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/integration/platform-binding/confirm`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${botToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code: bindingCode,
+          provider: "qq",
+          subject: "99887766",
+        }),
+      }),
+      env,
+    );
+    expect(confirmRes.status).toBe(200);
+    const confirmData = (await confirmRes.json()) as any;
+    expect(confirmData.playerId).toBe(bobPlayerId);
+    expect(confirmData.provider).toBe("qq");
+    expect(confirmData.subject).toBe("99887766");
+
+    // 4. Verify binding was saved in shop_platform_bindings
+    const bindingRow = sqlite.query(
+      "SELECT provider, subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = ?",
+    ).get(shopId, bobUserId) as { provider: string; subject: string } | null;
+    expect(bindingRow).toBeDefined();
+    expect(bindingRow?.provider).toBe("qq");
+    expect(bindingRow?.subject).toBe("99887766");
   });
 });

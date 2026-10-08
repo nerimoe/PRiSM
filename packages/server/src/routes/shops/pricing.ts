@@ -36,8 +36,11 @@ pricingRouter.get("/extensions", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
-  const extensions = (deps.staffPricingCommands as any).listPricingExtensions
-    ? await (deps.staffPricingCommands as any).listPricingExtensions()
+  const commandsWithExtensions = deps.staffPricingCommands as {
+    listPricingExtensions?: () => Promise<any[]>;
+  };
+  const extensions = commandsWithExtensions.listPricingExtensions
+    ? await commandsWithExtensions.listPricingExtensions()
     : [];
   return c.json({ pricingExtensions: extensions.map(toStaffPricingExtensionView) });
 });

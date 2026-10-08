@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
+import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import {
   toGrantAssetsView,
@@ -371,4 +372,14 @@ staffRouter.get("/reports/checkouts/:checkoutId", async (c) => {
     jsonError(404, "Checkout report not found.", "CHECKOUT_REPORT_NOT_FOUND");
   }
   return c.json(detail);
+});
+
+// Platform Binding Confirm
+staffRouter.post("/platform-binding/confirm", async (c) => {
+  const shop = getShop(c);
+  const principal = await staffPrincipal(c, shop);
+  if (principal.staffRole === "viewer") {
+    jsonError(403, "没有玩家管理权限", "FORBIDDEN");
+  }
+  return confirmPlatformBinding(c, shop, "staff");
 });

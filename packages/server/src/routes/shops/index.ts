@@ -37,6 +37,7 @@ export * from "./pricing.js";
 export * from "./assets.js";
 export * from "./cashier.js";
 export * from "./redeem.js";
+export * from "./binding.js";
 export * from "./views.js";
 
 export async function billingConfiguration(

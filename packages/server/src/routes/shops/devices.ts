@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { DeviceCommandType } from "@prism/core";
+import type { DeviceCommandType, DeviceReferenceTarget } from "@prism/core";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -185,7 +185,7 @@ devicesRouter.post("/:id/actions", async (c) => {
     "SELECT * FROM machines WHERE shop_id = ? AND (id = ? OR public_id = ?)",
   )
     .bind(shop.id, machineId, machineId)
-    .first<{ id: string; name: string; enabled: number }>();
+    .first<{ id: string; name: string; kind?: string; enabled: number }>();
 
   if (!machine) {
     jsonError(404, "没有找到这台设备", "DEVICE_NOT_FOUND");
@@ -196,10 +196,14 @@ devicesRouter.post("/:id/actions", async (c) => {
 
   const body = deviceActionSchema.parse(await c.req.json());
   const actionType = body.action as DeviceCommandType;
+  const target: DeviceReferenceTarget =
+    machine.kind === "door"
+      ? { kind: "facility", ref: machine.id }
+      : { kind: "game_machine", id: machine.id };
 
   const command = await deps.deviceActions.requestDeviceAction({
     actor: { type: "staff", staffId: staff.staffId },
-    target: { kind: "game_machine", id: machine.id },
+    target,
     type: actionType,
     payload: {
       ...(body.payload ?? {}),

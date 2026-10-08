@@ -3,7 +3,7 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
-import { requireUser } from "../../middleware/auth.js";
+import { requireUser, staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import {
   toPlayerAssetsView,
@@ -38,24 +38,29 @@ export async function requireShopPlayer(
   deviceOnly = false,
   enforceBinding = true,
 ): Promise<{ id: string; status: string }> {
+  const user = requireUser(c);
+  if (!shop.billing_enabled && !deviceOnly) {
+    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
+  }
+
   const playerIdHeader = c.req.header("X-PRiSM-Player-Id");
   if (playerIdHeader) {
+    const isStaff = await staffPrincipal(c, shop).then(() => true).catch(() => false);
+    if (!isStaff && user.role !== "admin") {
+      jsonError(403, "无权指定玩家身份", "FORBIDDEN");
+    }
     const playerRow = await c.env.DB.prepare(
       "SELECT id, status FROM players WHERE shop_id = ? AND id = ?",
     )
       .bind(shop.id, playerIdHeader)
       .first<{ id: string; status: string }>();
-    if (playerRow) {
-      if (playerRow.status !== "active") {
-        jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
-      }
-      return playerRow;
+    if (!playerRow) {
+      jsonError(404, "玩家不存在", "PLAYER_NOT_FOUND");
     }
-  }
-
-  const user = requireUser(c);
-  if (!shop.billing_enabled && !deviceOnly) {
-    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
+    if (playerRow.status !== "active") {
+      jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
+    }
+    return playerRow;
   }
 
   const find = () =>
