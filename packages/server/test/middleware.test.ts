@@ -1,3 +1,4 @@
+import { checkShopLocation } from "../src/middleware/geo.js";
 import { beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { Hono } from "hono";
@@ -700,5 +701,27 @@ describe("Middleware Test Suite", () => {
       expect(lowAccuracyCheck.allowed).toBe(false);
       expect(lowAccuracyCheck.reason).toBe("low_accuracy");
     });
+  });
+});
+
+
+describe("independent geofence flags", () => {
+  const base = {
+    id:"shop",public_id:"shop",name:"shop",latitude:35,longitude:139,radius_meters:80,
+    billing_enabled:1,cashier_enabled:0,auto_register:0,identity_binding_required:0,
+    checkin_geo:0,checkout_geo:0,machine_geo:0,entry_pricing_ids_json:"[]",bot_contact:"",
+    time_zone:"Asia/Tokyo",hero_url:null
+  };
+  it("only enforces the requested operation's flag", () => {
+    const shop = { ...base, checkin_geo:1, checkout_geo:0, machine_geo:0 };
+    expect(() => checkShopLocation(shop, "checkout", null)).not.toThrow();
+    expect(() => checkShopLocation(shop, "machine", null)).not.toThrow();
+    expect(() => checkShopLocation(shop, "checkin", null)).toThrow();
+  });
+  it("independently protects checkout and machine actions", () => {
+    const shop = { ...base, checkin_geo:0, checkout_geo:1, machine_geo:1 };
+    expect(() => checkShopLocation(shop, "checkin", null)).not.toThrow();
+    expect(() => checkShopLocation(shop, "checkout", null)).toThrow();
+    expect(() => checkShopLocation(shop, "machine", null)).toThrow();
   });
 });

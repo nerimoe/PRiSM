@@ -80,7 +80,10 @@ export function checkShopLocation(
   action: "checkin" | "checkout" | "machine",
   location: unknown,
 ): void {
-  if (!(shop.checkin_geo || shop.checkout_geo || shop.machine_geo)) return;
+  const enabled = action === "checkin" ? shop.checkin_geo
+    : action === "checkout" ? shop.checkout_geo
+    : shop.machine_geo;
+  if (!enabled) return;
 
   const result = coordinatesSchema.safeParse(location);
   if (!result.success) {
