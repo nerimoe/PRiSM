@@ -304,6 +304,45 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("registers and retires an ActivityKit token on the real tenant endpoint", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken, shopId } = await setupShopFixture(db, sqlite);
+    // The lightweight SQL fixture predates the platform's APNs migrations.
+    sqlite.run(`CREATE TABLE IF NOT EXISTS live_activity_tokens (
+      id TEXT PRIMARY KEY, shop_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL,
+      bundle_id TEXT NOT NULL, session_id TEXT, attributes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE (shop_id, user_id, activity_id))`);
+    const app = createApp();
+    const url = `https://prism.test/api/v1/shops/${publicId}/player/live-activity`;
+    const headers = { authorization: `Bearer ${staffSessionToken}`, "content-type": "application/json" };
+    const registered = await app.fetch(new Request(url + "/register", {
+      method: "POST", headers, body: JSON.stringify({
+        activityId: "test-live-activity", token: "A".repeat(64),
+        environment: "sandbox", bundleId: "moe.neri.hinatago",
+      }),
+    }), env);
+    expect(registered.status).toBe(200);
+    const token = sqlite.query("SELECT token, bundle_id FROM live_activity_tokens WHERE shop_id=?")
+      .get(shopId) as { token: string; bundle_id: string } | null;
+    expect(token).toEqual({ token: "a".repeat(64), bundle_id: "moe.neri.hinatago" });
+
+    const retired = await app.fetch(new Request(url + "/unregister", {
+      method: "POST", headers, body: JSON.stringify({ activityId: "test-live-activity" }),
+    }), env);
+    expect(retired.status).toBe(200);
+    const remain = sqlite.query("SELECT COUNT(*) AS count FROM live_activity_tokens WHERE shop_id=?")
+      .get(shopId) as { count: number };
+    expect(remain.count).toBe(0);
+    const denied = await app.fetch(new Request(url + "/register", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ activityId: "no-user", token: "a".repeat(64), environment: "sandbox", bundleId: "moe.neri.hinatago" }),
+    }), env);
+    expect(denied.status).toBe(401);
+    sqlite.close();
+  });
+
   it("keeps pre-merge API routes and requires a QR ticket to start a player visit", async () => {
     const app = createApp();
     const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
