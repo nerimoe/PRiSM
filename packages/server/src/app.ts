@@ -128,7 +128,8 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/appclip/auth", appclipAuthRouter);
   app.route("/callback", munetCallbackRouter);
   app.route("/api/v1/passkeys", passkeysRouter);
-  app.route("/api/v1/account", userRouter);
+  // Mount /account through /api/v1 only: mounting the entire userRouter at
+  // /api/v1/account shadows the account overview with its GET "/" profile route.
   app.route("/api/v1/user", userRouter);
   app.route("/api/v1", userRouter);
   app.route("/api/v1/merchant/shops", shopsRouter);
