@@ -251,7 +251,7 @@ playerRouter.get("/sessions/:sessionId/history", async (c) => {
 playerRouter.post("/session/start", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop, false, true);
-  const body = await c.req.json<{ ticket?: string; consent?: boolean; location?: unknown; operationId?: string }>().catch(() => ({}));
+  const body = (await c.req.json<{ ticket?: string; consent?: boolean; location?: unknown; operationId?: string }>().catch(() => ({}))) as { ticket?: string; consent?: boolean; location?: unknown; operationId?: string };
   const machine = await resolveMachineSession(c, body.ticket ?? "");
   if (machine.shop_id !== shop.id) {
     jsonError(403, "请扫描设备二维码", "DEVICE_QR_REQUIRED");
@@ -294,7 +294,7 @@ playerRouter.post("/checkout/preview", async (c) => {
 playerRouter.post("/checkout/confirm", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop);
-  const body = await c.req.json<{ location?: unknown; operationId?: string }>().catch(() => ({}));
+  const body = (await c.req.json<{ location?: unknown; operationId?: string }>().catch(() => ({}))) as { location?: unknown; operationId?: string };
   checkShopLocation(shop, "checkout", body.location);
   const deps = getShopDeps(c);
 
