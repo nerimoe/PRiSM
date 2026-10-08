@@ -304,6 +304,55 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("keeps pre-merge API routes and requires a QR ticket to start a player visit", async () => {
+    const app = createApp();
+    const registered = new Set(app.routes.map((route) => `${route.method} ${route.path}`));
+    const scoped = "/api/v1/shops/:shopCode";
+    for (const route of [
+      "GET /player/live-activity/bill",
+      "POST /player/live-activity/register",
+      "POST /player/live-activity/unregister",
+      "GET /staff/settings",
+      "PUT /staff/settings",
+      "GET /staff/api-tokens",
+      "POST /staff/api-tokens",
+      "POST /staff/api-tokens/:tokenId/revoke",
+      "GET /staff/users",
+      "POST /staff/users",
+      "PATCH /staff/users/:staffUserId",
+      "POST /staff/users/:staffUserId/password",
+      "POST /integration/players/by-identity/checkout/override",
+      "POST /integration/players/by-identity/device-actions",
+    ]) {
+      const [method, endpoint] = route.split(" ");
+      expect(registered.has(`${method} ${scoped}${endpoint}`)).toBe(true);
+    }
+    expect(registered.has("ALL /api/*")).toBe(true);
+
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const uri = `https://prism.test/api/v1/shops/${publicId}/player/session/start`;
+    const start = await app.fetch(new Request(uri, {
+      method: "POST",
+      headers: { authorization: `Bearer ${staffSessionToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ consent: true }),
+    }), env);
+    expect(start.status).toBe(410);
+    const result = await start.json() as { error: { code: string } };
+    expect(result.error.code).toBe("TICKET_EXPIRED");
+    const createdSessions = sqlite.query("SELECT COUNT(*) AS count FROM sessions WHERE shop_id=?").get(shopId) as { count: number };
+    expect(createdSessions.count).toBe(0);
+
+    const alias = await app.fetch(new Request("https://prism.test/api/me", {
+      headers: { authorization: `Bearer ${staffSessionToken}` },
+    }), env);
+    expect(alias.status).toBe(200);
+    const plain = await alias.json() as Record<string, unknown>;
+    expect(plain.user).toBeDefined();
+    expect(plain.data).toBeUndefined();
+    sqlite.close();
+  });
+
   it("returns a grouped on-site player and real billing inputs for the browser; unauthenticated users are denied", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
