@@ -47,6 +47,14 @@ export const legacyDeprecationMiddleware: MiddlewareHandler<AppBindings> = async
   c,
   next,
 ) => {
+  const isLegacyPath =
+    /^\/(?:api\/v1\/)?(?:player|staff|integration|setup)\b/.test(c.req.path) ||
+    c.req.path.startsWith("/rpc");
+  if (!isLegacyPath) {
+    await next();
+    return;
+  }
+
   await next();
 
   const shop = c.get("shop");

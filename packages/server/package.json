@@ -13,6 +13,7 @@
     "@prism/adapter-sqlite": "workspace:*",
     "@prism/application": "workspace:*",
     "@prism/core": "workspace:*",
+    "@prism/runtime": "workspace:*",
     "@prism/storage-sql": "workspace:*",
     "@simplewebauthn/server": "^14.0.0",
     "hono": "^4.10.7",

@@ -1,0 +1,135 @@
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
+import { PrismDomainError } from "@prism/core";
+import type { AppBindings } from "./bindings.js";
+import { corsMiddleware } from "./middleware/cors.js";
+import { attachUser } from "./middleware/auth.js";
+import { serveWebAssets } from "./routes/web-assets.js";
+
+// Platform and system routers
+import { authRouter } from "./routes/platform/auth.js";
+import { passkeysRouter } from "./routes/platform/passkeys.js";
+import { userRouter } from "./routes/platform/user.js";
+import { shopsRouter } from "./routes/platform/shops.js";
+import { healthRouter } from "./routes/system/health.js";
+import { versionRouter } from "./routes/system/version.js";
+
+// Multi-tenant shop router
+import { shopRouter } from "./routes/shops/index.js";
+
+// Legacy fallback router
+import { legacyRouter } from "./legacy/router.js";
+
+export function createApp(): Hono<AppBindings> {
+  const app = new Hono<AppBindings>();
+
+  // Centralized error handler
+  app.onError((err, c) => {
+    if (err instanceof Response) {
+      return err;
+    }
+    if (err instanceof HTTPException) {
+      return err.getResponse();
+    }
+    if (err instanceof PrismDomainError) {
+      const status =
+        err.code === "CHECKOUT_NOT_FOUND" ||
+        err.code === "SESSION_NOT_FOUND" ||
+        err.code === "PLAYER_NOT_FOUND" ||
+        err.code === "PLAYER_IDENTITY_NOT_FOUND" ||
+        err.code === "PRICING_CONFIG_NOT_FOUND" ||
+        err.code === "INTEGRATION_SESSION_NOT_FOUND" ||
+        err.code === "SHOP_NOT_FOUND"
+          ? 404
+          : err.code === "INSUFFICIENT_BALANCE" ||
+            err.code === "CHECKIN_CONSENT_REQUIRED" ||
+            err.code === "PRISM_ALREADY_INSTALLED"
+          ? 409
+          : 400;
+      return c.json(
+        {
+          error: {
+            code: err.code,
+            message: err.message,
+          },
+        },
+        status as any,
+      );
+    }
+    if (err instanceof z.ZodError) {
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_FAILED",
+            message: err.issues?.[0]?.message || "Validation failed",
+            details: err.issues,
+          },
+        },
+        422,
+      );
+    }
+    console.error("[app] unhandled error:", err);
+    return c.json(
+      {
+        error: {
+          code: "INTERNAL_ERROR",
+          message: err.message || "An unexpected error occurred.",
+        },
+      },
+      500,
+    );
+  });
+
+  // Global middleware
+  app.use("*", corsMiddleware);
+  app.use("*", async (c, next) => {
+    const start = performance.now();
+    await next();
+    const durationMs = Math.round(performance.now() - start);
+    c.header("x-response-time", `${durationMs}ms`);
+  });
+  app.use("*", attachUser);
+  app.use("*", serveWebAssets());
+
+  // System routes
+  app.route("/health", healthRouter);
+  app.route("/api/v1/health", healthRouter);
+  app.route("/version", versionRouter);
+  app.route("/api/v1/version", versionRouter);
+
+  // Platform routes
+  app.route("/api/v1/auth", authRouter);
+  app.route("/api/v1/passkeys", passkeysRouter);
+  app.route("/api/v1/account", userRouter);
+  app.route("/api/v1/user", userRouter);
+  app.route("/api/v1", userRouter);
+  app.route("/api/v1/merchant/shops", shopsRouter);
+
+  // Multi-tenant shop routes (/api/v1/shops/:shopCode)
+  app.route("/api/v1/shops/:shopCode", shopRouter);
+
+  // Platform shop routes (/api/v1/shops)
+  app.route("/api/v1/shops", shopsRouter);
+
+  // Legacy fallback router (/api/v1/player/*, /api/v1/staff/*, /rpc/*, etc.)
+  app.route("/", legacyRouter);
+
+  // 404 fallback
+  app.notFound((c) => {
+    return c.json(
+      {
+        error: {
+          code: "NOT_FOUND",
+          message: "Not found",
+        },
+      },
+      404,
+    );
+  });
+
+  return app;
+}
+
+export const app = createApp();
+export default app;

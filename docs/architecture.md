@@ -28,6 +28,11 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
     - `geo.ts`：地理围栏校验与店铺距离计算（基于 Haversine 公式与精度限制进行进出店及设备操作的围栏校验）。
     - `response-time.ts`：API 响应时间投影与格式包装中间件（拦截 `/api/v1/*` 响应，自动将 UTC 瞬时时间戳按店铺当地时区转换为带偏移量的时间字符串并包装统一 JSON 响应）。
   - `src/hardware`：统一整合的硬件驱动与执行器模块。包含 Hinata E2EE 卡片/投币驱动与执行器（`hinata.ts`，统一 PBKDF2/AES-GCM 与重试回退语义）、TTLock 云开锁与临时密码执行器（`ttlock.ts`）、Home Assistant 设施实体动作与状态执行器（`home-assistant.ts`）以及街机机台 WebSocket 协议处理器（`machine-ws.ts`）。
+  - `src/app.ts` 与 `src/worker.ts`：顶层 Hono 应用装配工厂（`createApp()` / `app`）与 Cloudflare Worker 入口点。整合 CORS、响应耗时、静态资源兜底代理（`serveWebAssets`）、领域错误分发转换、多租户及遗留路由挂载；Worker 入口导出 `fetch`、`scheduled` 定时任务处理器与 `LiveBilling` Durable Object。
+  - `src/durable-objects`：Apple Live Activity 实时活动与实时计费状态机。包含 `LiveBilling` Cloudflare Durable Object（支持闹钟定时唤醒与自适应指数退避重试）、实时账单增量计算（`live-activity-billing.ts`）以及 Apple APNs 推送协议与令牌校验实现（`live-activity-push.ts`）。
+  - `src/deployment-gate.ts`：零停机部署栅栏门控。拦截 `/__prism_deploy` 部署动作与检查请求，执行维护窗口隔离、SQL schema 锁检查与 D1 状态围栏。
+  - `src/tasks/cron-handlers.ts`：后台定时任务处理模块。实现 `purgeExpiredPlatformState`，按批次（每次最多 500 条）安全清理过期的临时验证凭据与已注销的平台状态。
+  - `src/migrations/shop-time-zone-migration.ts`：店铺位置 IANA 时区幂等迁移脚本，基于经纬度地理编码解析缺失的时区配置并批量入库。
 - `packages/server-hono`：Hono 路由应用工厂和强类型 RPC/API 层。只负责鉴权、参数解析、调用应用服务和映射视图模型，不直接执行 SQL，也不承载玩家批量结账、实时聚合或 Home Assistant 同步等业务流程。
 - 运输层依赖必须由 runtime 显式装配；Hono 不再自行构造员工现场操作服务或补齐缺失的业务依赖。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作、设备状态同步和统一资产效果；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。
