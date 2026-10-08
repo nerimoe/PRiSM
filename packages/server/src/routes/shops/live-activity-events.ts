@@ -257,7 +257,7 @@ export async function pushSessionEvent(
   // Match by player account, or directly by session_id when known, so tokens tied to the
   // ending session are always resolved even if identity resolution differed across channels.
   let tokensQuery: string;
-  let bindings: unknown[];
+  let bindings: string[];
   if (input.sessionIds.length > 0) {
     const placeholders = input.sessionIds.map(() => "?").join(",");
     tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
