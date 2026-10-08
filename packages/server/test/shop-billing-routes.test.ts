@@ -264,6 +264,56 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("preserves staff/me role and canWrite for owner, manager, viewer and unauthenticated callers", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffUserId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const uri = `https://prism.test/api/v1/shops/${publicId}/staff/me`;
+    const access = async (token?: string) => {
+      const response = await app.fetch(new Request(uri, {
+        ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+      }), env);
+      return { status: response.status, body: await response.json() as any };
+    };
+
+    const owner = await access(staffSessionToken);
+    expect(owner.status).toBe(200);
+    expect(owner.body.data.staff).toMatchObject({
+      id: `account:${staffUserId}`,
+      role: "owner",
+      staffRole: "owner",
+      canWrite: true,
+    });
+    expect(owner.body.data.staff.role).not.toBe("staff");
+
+    // The authenticated account can also be a mapped shop staff user: only
+    // the shop-scoped role, not the internal principal discriminator, controls UI.
+    sqlite.run(
+      "INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES (?, 'managed', 'managed', 'Managed', 'hash', 'salt', 'manager', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES (?, ?, 'managed')",
+      [shopId, staffUserId],
+    );
+    const manager = await access(staffSessionToken);
+    expect(manager.body.data.staff).toMatchObject({
+      id: "managed", role: "manager", staffRole: "manager", canWrite: true,
+    });
+
+    sqlite.run("UPDATE staff_users SET role='viewer' WHERE shop_id=? AND id='managed'", [shopId]);
+    const viewer = await access(staffSessionToken);
+    expect(viewer.status).toBe(200);
+    expect(viewer.body.data.staff).toMatchObject({
+      id: "managed", role: "viewer", staffRole: "viewer", canWrite: false,
+    });
+
+    const anonymous = await access();
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.error.code).toBe("AUTHENTICATION_REQUIRED");
+    sqlite.close();
+  });
+
   it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
