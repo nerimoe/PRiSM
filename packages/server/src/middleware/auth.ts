@@ -96,6 +96,9 @@ export async function staffPrincipal(
       if (session && session.expiresAt.getTime() > Date.now()) {
         const staff = await deps.repositories.system.findStaffUserById(session.staffUserId);
         if (staff?.status === "active") {
+          if (!readOnly && staff.role === "viewer") {
+            jsonError(403, "只读账号不能执行此操作", "FORBIDDEN");
+          }
           return { role: "staff", staffId: staff.id, staffRole: staff.role };
         }
       }
@@ -126,6 +129,9 @@ export async function staffPrincipal(
   }
 
   if (mapping?.status === "active") {
+    if (!readOnly && mapping.role === "viewer") {
+      jsonError(403, "只读账号不能执行此操作", "FORBIDDEN");
+    }
     return { role: "staff", staffId: mapping.id, staffRole: mapping.role };
   }
 
