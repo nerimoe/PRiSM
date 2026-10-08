@@ -1,3 +1,4 @@
+import type { LegacyD1Database } from "./compat.js";
 import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
@@ -9,7 +10,7 @@ import { owner } from "./shop-data.js";
 import { schemas, v2TablesFor, type FullTable } from "./shop-data-v2-format.js";
 import type { AppBindings } from "./compat.js";
 
-type C = Context<AppBindings>;
+type C = Context<AppBindings, any, any>;
 type ExportJob = {
   id: string;
   shop_id: string;
@@ -86,7 +87,7 @@ export function shopExportError(error: unknown): never {
   throw error;
 }
 export function importAttemptStatement(c: C, shop: BillingShop, id: string) {
-  return c.env.DB.prepare(
+  return (c.env.DB as LegacyD1Database).prepare(
     "INSERT INTO shop_data_import_attempts(id,shop_id,user_id,month,created_at) VALUES (?,?,?,?,?)",
   ).bind(
     id,
@@ -118,7 +119,7 @@ export async function startShopExport(
     month = exportMonth(shop.time_zone, now),
     user = requireUser(c);
   try {
-    const result = await c.env.DB.prepare(
+    const result = await (c.env.DB as LegacyD1Database).prepare(
       `INSERT INTO shop_data_exports(id,shop_id,user_id,scope,month,status,created_at,expires_at)
       SELECT ?,?,?,?,?,'active',?,? WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND banned_at IS NULL AND
         (role='admin' OR EXISTS(SELECT 1 FROM shop_members WHERE shop_id=? AND user_id=users.id AND role='owner')))`,
@@ -160,10 +161,10 @@ async function getExport(c: C, cancel = false) {
   const user = requireUser(c),
     code = c.req.param("shopCode")!;
   // Match staffPrincipal's owner rules without fetching billing/settings or doing three serial permission reads.
-  const [permission, jobs] = await c.env.DB.batch<
+  const [permission, jobs] = await (c.env.DB as LegacyD1Database).batch<
     ExportJob & { allowed: number }
   >([
-    c.env.DB.prepare(
+    (c.env.DB as LegacyD1Database).prepare(
       `SELECT s.id,
       (m.user_id IS NOT NULL OR ?='admin') AND
       CASE WHEN f.status='active' THEN f.role='owner' ELSE (m.role='owner' OR ?='admin') END AS allowed
@@ -171,7 +172,7 @@ async function getExport(c: C, cancel = false) {
       LEFT JOIN shop_staff_accounts a ON a.shop_id=s.id AND a.user_id=?
       LEFT JOIN staff_users f ON f.shop_id=a.shop_id AND f.id=a.staff_id WHERE s.public_id=?`,
     ).bind(user.role, user.role, user.id, user.id, code),
-    c.env.DB.prepare(
+    (c.env.DB as LegacyD1Database).prepare(
       `SELECT * FROM shop_data_exports WHERE id=?
       AND shop_id=(SELECT id FROM shops WHERE public_id=?)${cancel ? "" : " AND user_id=?"}`,
     ).bind(c.req.param("jobId"), code, ...(cancel ? [] : [user.id])),
@@ -224,8 +225,8 @@ const validJobSql =
   "SELECT 1 AS valid FROM shop_data_exports WHERE id=? AND status='active' AND expires_at>? AND cursor=?";
 async function metadata(c: C, shop: BillingShop, job: ExportJob) {
   const tables = v2TablesFor(job.scope);
-  const result = await c.env.DB.batch<Record<string, string | number>>([
-    c.env.DB.prepare(
+  const result = await (c.env.DB as LegacyD1Database).batch<Record<string, string | number>>([
+    (c.env.DB as LegacyD1Database).prepare(
       `SELECT json_object('format','prism-shop-data','version',2,'scope',?,'exportedAt',?,
       'source',json_object('publicId',s.public_id,'name',s.name,'timeZone',?,'origin',?,'location',json_object('latitude',s.latitude,'longitude',s.longitude,'radiusMeters',s.radius_meters)),
       'storage',json_object('timeZone','UTC','money','minor-units'),
@@ -250,14 +251,14 @@ async function metadata(c: C, shop: BillingShop, job: ExportJob) {
     ),
     ...tables.map((table) =>
       table === "account_links"
-        ? c.env.DB.prepare(
+        ? (c.env.DB as LegacyD1Database).prepare(
             accountIdsSql + " SELECT COUNT(*) AS n FROM related",
           ).bind(...accountBindings(shop.id))
-        : c.env.DB.prepare(
+        : (c.env.DB as LegacyD1Database).prepare(
             `SELECT COUNT(*) AS n FROM ${table} WHERE shop_id=?`,
           ).bind(shop.id),
     ),
-    c.env.DB.prepare(validJobSql).bind(job.id, new Date().toISOString(), 0),
+    (c.env.DB as LegacyD1Database).prepare(validJobSql).bind(job.id, new Date().toISOString(), 0),
   ]);
   if (!result.at(-1)!.results.length)
     jsonError(410, "导出锁已过期，请联系平台管理员重试", "EXPORT_EXPIRED");
@@ -279,7 +280,7 @@ async function createExport(
   const job = await startShopExport(c, shop, scope);
   try {
     const info = await metadata(c, shop, job);
-    const saved = await c.env.DB.prepare(
+    const saved = await (c.env.DB as LegacyD1Database).prepare(
       "UPDATE shop_data_exports SET counts_json=? WHERE id=? AND status='active' AND expires_at>?",
     )
       .bind(JSON.stringify(info.counts), job.id, new Date().toISOString())
@@ -303,7 +304,7 @@ async function page(c: C, job: ExportJob, after: number) {
     expires = new Date(
       Math.min(+now + leaseMs, Date.parse(job.created_at) + maximumMs),
     ).toISOString();
-  const renewed = await c.env.DB.prepare(
+  const renewed = await (c.env.DB as LegacyD1Database).prepare(
     "UPDATE shop_data_exports SET expires_at=?,reading=1 WHERE id=? AND status='active' AND expires_at>? AND cursor=? AND reading=0",
   )
     .bind(expires, job.id, now.toISOString(), after)
@@ -390,7 +391,7 @@ async function readPage(c: C, job: ExportJob, after: number) {
       SELECT row_key,payload_json FROM sized WHERE bytes<=? OR item_index=1 ORDER BY item_index`;
     const query =
       table === "account_links"
-        ? c.env.DB.prepare(sql).bind(
+        ? (c.env.DB as LegacyD1Database).prepare(sql).bind(
             ...accountSources.flatMap(() => [
               job.shop_id,
               previous[0] ?? "",
@@ -400,7 +401,7 @@ async function readPage(c: C, job: ExportJob, after: number) {
             ...Array(6).fill(job.shop_id),
             remainingBytes,
           )
-        : c.env.DB.prepare(sql).bind(
+        : (c.env.DB as LegacyD1Database).prepare(sql).bind(
             job.shop_id,
             ...previous,
             limit,
@@ -409,9 +410,9 @@ async function readPage(c: C, job: ExportJob, after: number) {
             remainingBytes,
           );
     // Lock validity and each source read share a transaction; the final CAS also rejects in-flight cancellation.
-    const [check, data] = await c.env.DB.batch<Record<string, string | number>>(
+    const [check, data] = await (c.env.DB as LegacyD1Database).batch<Record<string, string | number>>(
       [
-        c.env.DB.prepare(validJobSql).bind(
+        (c.env.DB as LegacyD1Database).prepare(validJobSql).bind(
           job.id,
           new Date().toISOString(),
           after,
@@ -466,7 +467,7 @@ async function readPage(c: C, job: ExportJob, after: number) {
   }
   const cursor = rows.at(-1)?.seq ?? after,
     done = rows.length === 0;
-  const saved = await c.env.DB.prepare(
+  const saved = await (c.env.DB as LegacyD1Database).prepare(
     `UPDATE shop_data_exports SET cursor=?,row_cursor=?,page_rows=?,status=?,reading=0
     WHERE id=? AND status='active' AND cursor=? AND expires_at>?`,
   )
@@ -491,7 +492,7 @@ async function readPage(c: C, job: ExportJob, after: number) {
 async function allowance(c: C, shopId: string, zone: string) {
   const month = exportMonth(zone);
   const now = new Date().toISOString();
-  const row = await c.env.DB.prepare(
+  const row = await (c.env.DB as LegacyD1Database).prepare(
     `SELECT
     1+COALESCE((SELECT extra FROM shop_data_export_allowances WHERE shop_id=? AND month=?),0) AS allowance,
     (SELECT COUNT(*) FROM shop_data_exports WHERE shop_id=? AND month=?) AS used,
@@ -580,7 +581,7 @@ export function registerShopExportRoutes(app: Hono<AppBindings>) {
     if (!parsed.success)
       jsonError(400, "备份格式或版本不受支持", "INVALID_BACKUP");
     const info = await createExport(c, shop, parsed.data);
-    let current = (await c.env.DB.prepare(
+    let current = (await (c.env.DB as LegacyD1Database).prepare(
       "SELECT * FROM shop_data_exports WHERE id=?",
     )
       .bind(info.jobId)
@@ -663,7 +664,7 @@ export function registerShopTransferAllowanceRoutes(app: Hono<AppBindings>) {
   const adminPath = "/shops/:shopCode/transfer-allowance";
   async function adminShop(c: C) {
     requireAdmin(c);
-    const shop = await c.env.DB.prepare(
+    const shop = await (c.env.DB as LegacyD1Database).prepare(
       `SELECT s.id,COALESCE((SELECT json_extract(value_json,'$.timeZone')
       FROM app_settings WHERE shop_id=s.id AND key='store.profile'),'Asia/Shanghai') AS time_zone FROM shops s WHERE public_id=?`,
     )
@@ -687,7 +688,7 @@ export function registerShopTransferAllowanceRoutes(app: Hono<AppBindings>) {
         .safeParse(await c.req.json());
     if (!parsed.success)
       jsonError(400, "额外次数必须是 0 到 100 的整数", "INVALID_REQUEST");
-    await c.env.DB.prepare(
+    await (c.env.DB as LegacyD1Database).prepare(
       `INSERT INTO shop_data_export_allowances(shop_id,month,extra,import_extra,updated_by,updated_at) VALUES (?,?,?,?,?,?)
       ON CONFLICT(shop_id,month) DO UPDATE SET extra=excluded.extra,import_extra=excluded.import_extra,updated_by=excluded.updated_by,updated_at=excluded.updated_at`,
     )

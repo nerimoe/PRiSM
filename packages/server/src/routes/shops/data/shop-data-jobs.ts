@@ -1,3 +1,4 @@
+import type { LegacyD1Database } from "./compat.js";
 import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import { registerShopExportRoutes, sourceColumns, importAttemptStatement, shopExportError } from "./shop-data-export.js";
 import type { Context, Hono } from "hono";
@@ -23,7 +24,7 @@ import {
 import type { DataRow } from "./shop-data-format.js";
 import type { AppBindings } from "./compat.js";
 
-type C = Context<AppBindings>;
+type C = Context<AppBindings, any, any>;
 type Job = {
   id: string;
   kind: string;
@@ -73,7 +74,7 @@ function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
 async function getJob(c: C, kind?: string) {
   const shop = await owner(c, false),
     user = requireUser(c);
-  const job = await c.env.DB.prepare(
+  const job = await (c.env.DB as LegacyD1Database).prepare(
     "SELECT * FROM shop_data_jobs WHERE id=? AND shop_id=? AND user_id=? AND expires_at>?",
   )
     .bind(c.req.param("jobId"), shop.id, user.id, new Date().toISOString())
@@ -103,7 +104,7 @@ async function stage(
   const table = input.table as FullTable;
   if (!fullTables(header).includes(table)) jsonError(400, "备份包含不支持的数据表", "INVALID_BACKUP");
   const hash = await sha256(JSON.stringify(input)),
-    previous = await c.env.DB.prepare("SELECT request_hash FROM shop_data_parts WHERE job_id=? AND part=?")
+    previous = await (c.env.DB as LegacyD1Database).prepare("SELECT request_hash FROM shop_data_parts WHERE job_id=? AND part=?")
       .bind(job.id, input.part)
       .first<{ request_hash: string }>();
   if (previous) {
@@ -144,25 +145,25 @@ async function stage(
     schema = schemas[table],
     seq = input.part * 100000;
   const statements = [
-    c.env.DB.prepare(
+    (c.env.DB as LegacyD1Database).prepare(
       `INSERT INTO shop_data_parts(job_id,part,request_hash)
     SELECT CASE WHEN status='uploading' THEN id ELSE NULL END,?,? FROM shop_data_jobs WHERE id=?`,
     ).bind(input.part, hash, job.id),
-    c.env.DB.prepare(
+    (c.env.DB as LegacyD1Database).prepare(
       `INSERT INTO shop_data_rows(job_id,seq,table_name,payload_json)
       SELECT ?,?+CAST(key AS INTEGER)+1,?,value FROM json_each(?)`,
     ).bind(job.id, seq, table, json),
   ];
   schema.keys.forEach((key, index) =>
     statements.push(
-      c.env.DB.prepare(
+      (c.env.DB as LegacyD1Database).prepare(
         `INSERT INTO shop_data_keys(job_id,table_name,key_kind,key_json)
     SELECT ?,?,?,json_array(${key.map(q).join(",")}) FROM json_each(?) ${key.length ? `WHERE ${key.map((k) => `${q(k)} IS NOT NULL`).join(" AND ")}` : ""}`,
       ).bind(job.id, table, index, json),
     ),
   );
   try {
-    await c.env.DB.batch(statements);
+    await (c.env.DB as LegacyD1Database).batch(statements);
   } catch (error) {
     if (String(error).includes("constraint failed"))
       jsonError(409, "备份中存在重复标识或分片状态发生变化", "INVALID_BACKUP");
@@ -192,7 +193,7 @@ async function previewJob(
     tables.some((t) => manifest.counts[t] !== actual[t])
   )
     errors.push("备份文件未完整上传或数据表不完整");
-  const partState = await c.env.DB.prepare(
+  const partState = await (c.env.DB as LegacyD1Database).prepare(
     "SELECT COUNT(*) AS n,MAX(part) AS last FROM shop_data_parts WHERE job_id=?",
   )
     .bind(job.id)
@@ -224,22 +225,22 @@ async function previewJob(
     const statements: D1PreparedStatement[] = [];
     for (let offset = 0; offset < checks.length; offset += 5)
       statements.push(
-        c.env.DB.prepare(
+        (c.env.DB as LegacyD1Database).prepare(
           `WITH job(id) AS(SELECT ?) ${checks.slice(offset, offset + 5).join(" UNION ALL ")}`,
         ).bind(job.id),
       );
-    const results = await c.env.DB.batch<{ check_index: number }>(statements);
+    const results = await (c.env.DB as LegacyD1Database).batch<{ check_index: number }>(statements);
     for (const result of results) for (const row of result.results) errors.push(messages[row.check_index]!);
   }
   // Check all release version IDs and unpaid session bindings in SQL as well.
   if (header.scope === "business") {
-    const result = await c.env.DB.batch([
-      c.env.DB.prepare(
+    const result = await (c.env.DB as LegacyD1Database).batch([
+      (c.env.DB as LegacyD1Database).prepare(
         `SELECT 1 FROM shop_data_rows r JOIN json_each(json_extract(r.payload_json,'$.version_ids_json')) v
         WHERE r.job_id=? AND r.table_name='pricing_releases' AND NOT EXISTS(
         SELECT 1 FROM shop_data_keys k WHERE k.job_id=r.job_id AND k.table_name='pricing_config_versions' AND k.key_kind=0 AND k.key_json=json_array(v.value)) LIMIT 1`,
       ).bind(job.id),
-      c.env.DB.prepare(
+      (c.env.DB as LegacyD1Database).prepare(
         `SELECT 1 FROM shop_data_rows r WHERE r.job_id=? AND r.table_name='sessions' AND json_extract(r.payload_json,'$.payment_status')='unpaid'
         AND NOT EXISTS(SELECT 1 FROM shop_data_keys k WHERE k.job_id=r.job_id AND k.table_name='session_pricing_releases' AND k.key_kind=0
         AND k.key_json=json_array(json_extract(r.payload_json,'$.id'))) LIMIT 1`,
@@ -249,7 +250,7 @@ async function previewJob(
     if (result[1]!.results.length) errors.push("未结会话缺少计费版本绑定");
   }
   const configRows = (
-    await c.env.DB.prepare(
+    await (c.env.DB as LegacyD1Database).prepare(
       `SELECT json_extract(payload_json,'$.id') AS id,json_extract(payload_json,'$.kind') AS kind,
     json_extract(payload_json,'$.enabled') AS enabled,json_extract(payload_json,'$.status') AS status
     FROM shop_data_rows WHERE job_id=? AND table_name='pricing_configs'
@@ -263,7 +264,7 @@ async function previewJob(
   if (settings.entryPricingIds.some((id) => !configs.has(id))) errors.push("入场规则引用了不存在的计费方案");
   if (settings.billingEnabled) {
     const assets = (
-      await c.env.DB.prepare(
+      await (c.env.DB as LegacyD1Database).prepare(
         `SELECT json_extract(payload_json,'$.type') AS type,json_extract(payload_json,'$.code') AS code,json_extract(payload_json,'$.status') AS status
       FROM shop_data_rows WHERE job_id=? AND table_name='asset_definitions' AND json_extract(payload_json,'$.code') IN ('paid','free')`,
       )
@@ -288,7 +289,7 @@ async function previewJob(
   if (settings.cashierEnabled && !settings.billingEnabled) errors.push("前台收银要求启用入场计费");
   if (
     settings.defaultPresentId &&
-    !(await c.env.DB.prepare(
+    !(await (c.env.DB as LegacyD1Database).prepare(
       "SELECT 1 FROM shop_data_keys WHERE job_id=? AND table_name='presents' AND key_kind=0 AND key_json=json_array(?)",
     )
       .bind(job.id, settings.defaultPresentId)
@@ -299,7 +300,7 @@ async function previewJob(
     if (actual.pricing_configs && actual.pricing_release_heads !== 1)
       errors.push("缺少唯一的当前计费发布版本");
     if (
-      await c.env.DB.prepare(
+      await (c.env.DB as LegacyD1Database).prepare(
         `SELECT 1 FROM shop_data_rows c JOIN shop_data_rows r ON r.job_id=c.job_id
       AND r.table_name='asset_holdings' AND json_extract(r.payload_json,'$.player_id')=json_extract(c.payload_json,'$.player_id')
       WHERE c.job_id=? AND c.table_name='cashier_profiles' LIMIT 1`,
@@ -310,14 +311,14 @@ async function previewJob(
       errors.push("前台玩家不可拥有余额资产");
   }
   if (header.version === 2) {
-    const billing = await c.env.DB.prepare(
+    const billing = await (c.env.DB as LegacyD1Database).prepare(
       "SELECT payload_json FROM shop_data_rows WHERE job_id=? AND table_name='shop_billing_settings'",
     )
       .bind(job.id)
       .first<{ payload_json: string }>();
     const raw = billing ? (JSON.parse(billing.payload_json) as DataRow) : {};
     const settingRows = (
-      await c.env.DB.prepare(
+      await (c.env.DB as LegacyD1Database).prepare(
         `SELECT json_extract(payload_json,'$.key') AS key,
       json_extract(json_extract(payload_json,'$.value_json'),'$.enabled') AS enabled,
       json_extract(json_extract(payload_json,'$.value_json'),'$.coinCooldownMs') AS cooldown,
@@ -350,7 +351,7 @@ async function previewJob(
       errors.push("计费设置与文件摘要不一致");
     if (tables.includes("account_links")) {
       if (
-        await c.env.DB.prepare(
+        await (c.env.DB as LegacyD1Database).prepare(
           `SELECT 1 FROM shop_data_rows i WHERE i.job_id=? AND i.table_name='player_identities'
         AND json_extract(i.payload_json,'$.provider')='web-account' AND NOT EXISTS(SELECT 1 FROM shop_data_rows a WHERE a.job_id=i.job_id AND a.table_name='account_links'
         AND json_extract(a.payload_json,'$.source_user_id')=json_extract(i.payload_json,'$.subject') AND json_extract(a.payload_json,'$.player_id')=json_extract(i.payload_json,'$.player_id')) LIMIT 1`,
@@ -360,7 +361,7 @@ async function previewJob(
       )
         errors.push("网页登录身份缺少对应的账号关联");
       if (
-        await c.env.DB.prepare(
+        await (c.env.DB as LegacyD1Database).prepare(
           `SELECT 1 FROM shop_data_rows r JOIN json_each(json_extract(r.payload_json,'$.identities_json')) i
         WHERE r.job_id=? AND r.table_name='account_links'
         GROUP BY json_extract(i.value,'$.provider'),json_extract(i.value,'$.subject') HAVING COUNT(*)>1 LIMIT 1`,
@@ -370,7 +371,7 @@ async function previewJob(
       )
         errors.push("多个账号关联使用了同一登录身份");
       if (
-        await c.env.DB.prepare(
+        await (c.env.DB as LegacyD1Database).prepare(
           `SELECT 1 FROM shop_data_rows r JOIN json_each(json_extract(r.payload_json,'$.platform_bindings_json')) b
         WHERE r.job_id=? AND r.table_name='account_links' AND NOT EXISTS(SELECT 1 FROM shop_data_rows i WHERE i.job_id=r.job_id AND i.table_name='player_identities'
           AND json_extract(i.payload_json,'$.player_id')=json_extract(r.payload_json,'$.player_id') AND json_extract(i.payload_json,'$.provider')=json_extract(b.value,'$.provider')
@@ -385,14 +386,14 @@ async function previewJob(
   const state = await targetState(c, shop.id);
   if (state.rows) errors.push("目标店铺已有玩家、账单、配置或设备，请选择空店铺导入");
   const parts = (
-    await c.env.DB.prepare("SELECT part,request_hash FROM shop_data_parts WHERE job_id=? ORDER BY part")
+    await (c.env.DB as LegacyD1Database).prepare("SELECT part,request_hash FROM shop_data_parts WHERE job_id=? ORDER BY part")
       .bind(job.id)
       .all()
   ).results;
   const fingerprint = await sha256(JSON.stringify({ jobId: job.id, header, parts, state }));
   if (!errors.length) {
     const statements = [
-      c.env.DB.prepare(
+      (c.env.DB as LegacyD1Database).prepare(
         `UPDATE shop_data_jobs SET status=CASE WHEN
       (SELECT COUNT(*) FROM shop_data_parts WHERE job_id=shop_data_jobs.id)=? AND
       (SELECT COUNT(*) FROM shop_data_rows WHERE job_id=shop_data_jobs.id)=? THEN 'ready' ELSE NULL END,
@@ -404,8 +405,8 @@ async function previewJob(
         fingerprint,
         job.id,
       ),
-      c.env.DB.prepare("DELETE FROM shop_data_device_ids WHERE job_id=?").bind(job.id),
-      c.env.DB.prepare(
+      (c.env.DB as LegacyD1Database).prepare("DELETE FROM shop_data_device_ids WHERE job_id=?").bind(job.id),
+      (c.env.DB as LegacyD1Database).prepare(
         `INSERT INTO shop_data_device_ids(job_id,source_id,id,public_id)
         SELECT ?,json_extract(r.payload_json,'$.id'),
         CASE WHEN EXISTS(SELECT 1 FROM machines m WHERE m.id=json_extract(r.payload_json,'$.id') OR m.public_id=json_extract(r.payload_json,'$.public_id'))
@@ -416,7 +417,7 @@ async function previewJob(
       ).bind(job.id, job.id),
     ];
     try {
-      await c.env.DB.batch(statements);
+      await (c.env.DB as LegacyD1Database).batch(statements);
     } catch (error) {
       if (String(error).includes("constraint failed"))
         jsonError(409, "预检时上传状态发生变化，请重试", "TRANSFER_CHANGED");
@@ -453,7 +454,7 @@ async function applyJob(
       jsonError(409, "请求编号已用于其他操作", "OPERATION_CONFLICT");
     return JSON.parse(job.result_json);
   }
-  const previous = await c.env.DB.prepare(
+  const previous = await (c.env.DB as LegacyD1Database).prepare(
     "SELECT 1 FROM player_operations WHERE shop_id=? AND user_id=? AND id=?",
   )
     .bind(shop.id, requireUser(c).id, operationId)
@@ -464,7 +465,7 @@ async function applyJob(
   const state = await targetState(c, shop.id);
   if (snapshotKey(state) !== job.target_state)
     jsonError(409, "预检后店铺数据或文件已变化，请重新预检", "IMPORT_TARGET_CHANGED");
-  const db = c.env.DB,
+  const db = c.env.DB as LegacyD1Database,
     tables = fullTables(header),
     now = new Date().toISOString();
   const rowsCount = await counts(db, job.id, tables),
@@ -681,7 +682,7 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
   app.delete(base + "/imports/:jobId", async (c) => {
     const { job } = await getJob(c, "import");
     if (job.status === "completed") jsonError(409, "已完成导入不能撤销", "TRANSFER_LOCKED");
-    await c.env.DB.prepare("DELETE FROM shop_data_jobs WHERE id=? AND status IN ('uploading','ready')")
+    await (c.env.DB as LegacyD1Database).prepare("DELETE FROM shop_data_jobs WHERE id=? AND status IN ('uploading','ready')")
       .bind(job.id)
       .run();
     return c.json({ deleted: true });
@@ -692,9 +693,9 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
     const header = parse(fullHeaderSchema, await body(c));
     const id = crypto.randomUUID();
     try {
-      await c.env.DB.batch([
+      await (c.env.DB as LegacyD1Database).batch([
         importAttemptStatement(c, shop, id),
-        c.env.DB.prepare(
+        (c.env.DB as LegacyD1Database).prepare(
           "INSERT INTO shop_data_jobs(id,shop_id,user_id,kind,status,header_json,created_at,expires_at) VALUES (?,?,?,'import','uploading',?,?,?)",
         ).bind(id, shop.id, requireUser(c).id, JSON.stringify(header), new Date().toISOString(), expiry()),
       ]);

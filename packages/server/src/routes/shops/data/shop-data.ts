@@ -1,3 +1,4 @@
+import type { LegacyD1Database } from "./compat.js";
 import type { D1BoundStatementLike as D1PreparedStatement } from "@prism/adapter-d1";
 import { registerShopDataJobRoutes } from "./shop-data-jobs.js";
 import { startShopExport, finishShopExport, importAttemptStatement } from "./shop-data-export.js";
@@ -16,7 +17,7 @@ import {
   tableSchemas, tablesFor, validateBackup, type DataRow, type ShopBackup,
 } from "./shop-data-format.js";
 
-type C = Context<AppBindings>;
+type C = Context<AppBindings, any, any>;
 const limits = { fileBytes: maxFileBytes, rowBytes: maxChunkBytes };
 const warnings = [
   "仅导入空店铺，保留目标店铺的名称、位置、时区、封面和管理员。",
@@ -39,7 +40,7 @@ export const snapshotBindings = (shopId: string) => Array(emptyTables.length + 4
 type Snapshot = { rows: number; settings: string; billing: string };
 export const snapshotKey = (state: Snapshot) => JSON.stringify([state.rows, state.settings, state.billing]);
 export async function targetState(c: C, shopId: string) {
-  const state = await c.env.DB.prepare(snapshotSql).bind(...snapshotBindings(shopId)).first<Snapshot>();
+  const state = await (c.env.DB as LegacyD1Database).prepare(snapshotSql).bind(...snapshotBindings(shopId)).first<Snapshot>();
   if (!state) throw new Error("Missing shop data snapshot");
   return state;
 }
@@ -87,11 +88,11 @@ async function inspect(c: C, shop: BillingShop, backup: ShopBackup) {
 }
 async function exportBackup(c: C, shop: BillingShop, scope: ShopBackup["scope"]): Promise<ShopBackup> {
   const tables = tablesFor(scope);
-  const result = await c.env.DB.batch<DataRow>([
-    ...tables.map(table => c.env.DB.prepare(`SELECT ${tableSchemas[table].columns.map(column => column.name).join(",")} FROM ${table}
+  const result = await (c.env.DB as LegacyD1Database).batch<DataRow>([
+    ...tables.map(table => (c.env.DB as LegacyD1Database).prepare(`SELECT ${tableSchemas[table].columns.map(column => column.name).join(",")} FROM ${table}
       WHERE shop_id=? ${table === "player_identities" ? "AND provider!='web-account'" : ""} ORDER BY rowid`).bind(shop.id)),
-    c.env.DB.prepare("SELECT key,value_json FROM app_settings WHERE shop_id=? AND key IN ('venue.operations','player.registration','cashier.settings')").bind(shop.id),
-    c.env.DB.prepare("SELECT * FROM shop_billing_settings WHERE shop_id=?").bind(shop.id),
+    (c.env.DB as LegacyD1Database).prepare("SELECT key,value_json FROM app_settings WHERE shop_id=? AND key IN ('venue.operations','player.registration','cashier.settings')").bind(shop.id),
+    (c.env.DB as LegacyD1Database).prepare("SELECT * FROM shop_billing_settings WHERE shop_id=?").bind(shop.id),
   ]);
   const settings = new Map(result[tables.length]!.results.map(row => [row.key, JSON.parse(String(row.value_json))]));
   const billing = result[tables.length + 1]!.results[0];
@@ -145,7 +146,7 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
     const hash = await sha256(JSON.stringify(backup));
     const repos = createD1Repositories({ db: c.env.DB, shopId: shop.id, id: crypto.randomUUID, now: () => new Date() });
     return withOperationLease({ repository: repos.operationLocks, scope: "shop.cashier", resourceId: shop.id, now: () => new Date() }, async () => {
-      const previous = await c.env.DB.prepare("SELECT kind,request_hash,result_json FROM player_operations WHERE shop_id=? AND user_id=? AND id=?")
+      const previous = await (c.env.DB as LegacyD1Database).prepare("SELECT kind,request_hash,result_json FROM player_operations WHERE shop_id=? AND user_id=? AND id=?")
         .bind(shop.id, user.id, operationId).first<{ kind: string; request_hash: string; result_json: string | null }>();
       if (previous) {
         if (previous.kind !== "data/import" || previous.request_hash !== hash) jsonError(409, "请求编号已用于其他操作", "OPERATION_CONFLICT");
@@ -164,28 +165,28 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
       const statements: D1PreparedStatement[] = [
         importAttemptStatement(c, shop, operationId),
         // A NOT NULL failure aborts the entire batch if an ordinary writer changed the target.
-        c.env.DB.prepare(`INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash,result_json,created_at)
+        (c.env.DB as LegacyD1Database).prepare(`INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash,result_json,created_at)
           SELECT ?,?,CASE WHEN json_array(rows,settings,billing)=? THEN ? ELSE NULL END,'data/import','completed',?,?,?
           FROM (${snapshotSql})`).bind(shop.id, user.id, snapshotKey(state), operationId, hash, JSON.stringify(result), now, ...snapshotBindings(shop.id)),
       ];
       // Disable only automatic publication/binding in the same transaction as the import.
       // Immutable history, UTC guards and deployment fences stay installed throughout.
       const triggers = backup.scope === "business"
-        ? (await c.env.DB.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('pricing_config_version_insert','session_pricing_bind') ORDER BY name")
+        ? (await (c.env.DB as LegacyD1Database).prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN ('pricing_config_version_insert','session_pricing_bind') ORDER BY name")
           .all<{ name: string; sql: string }>()).results : [];
       if (backup.scope === "business" && triggers.length !== 2) jsonError(409, "计费数据库结构不完整，无法恢复历史版本", "IMPORT_SCHEMA_MISMATCH");
-      statements.push(...triggers.map(trigger => c.env.DB.prepare(`DROP TRIGGER ${trigger.name}`)));
+      statements.push(...triggers.map(trigger => (c.env.DB as LegacyD1Database).prepare(`DROP TRIGGER ${trigger.name}`)));
       for (const table of tablesFor(backup.scope)) {
         const rows = backup.tables[table]!;
         if (!rows.length) continue;
         const columns = tableSchemas[table].columns.map(column => column.name);
-        for (const chunk of rowChunks(rows)) statements.push(c.env.DB.prepare(`INSERT INTO ${table}(shop_id,${columns.join(",")})
+        for (const chunk of rowChunks(rows)) statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO ${table}(shop_id,${columns.join(",")})
           SELECT ?,${columns.map(column => `json_extract(value,'$.${column}')`).join(",")} FROM json_each(?)`)
           .bind(shop.id, chunk));
       }
-      statements.push(...triggers.map(trigger => c.env.DB.prepare(trigger.sql)));
+      statements.push(...triggers.map(trigger => (c.env.DB as LegacyD1Database).prepare(trigger.sql)));
       const s = backup.settings;
-      statements.push(c.env.DB.prepare(`INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)
+      statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)
         VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
         checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,
         bot_contact=excluded.bot_contact,identity_binding_required=excluded.identity_binding_required`)
@@ -193,9 +194,9 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
       for (const [key, value] of [
         ["venue.operations", { timeZone: "UTC", coinCooldownMs: s.coinCooldownMs }],
         ["player.registration", { defaultPresentId: s.defaultPresentId }], ["cashier.settings", { enabled: s.cashierEnabled }],
-      ] as const) statements.push(c.env.DB.prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,?,?,?)
+      ] as const) statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,?,?,?)
         ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`).bind(shop.id, key, JSON.stringify(value), now));
-      try { await c.env.DB.batch(statements); }
+      try { await (c.env.DB as LegacyD1Database).batch(statements); }
       catch (error) {
         const message = String(error);
         if (message.includes("NOT NULL constraint failed: player_operations.id")) jsonError(409, "预检后店铺数据或文件已变化，请重新预检", "IMPORT_TARGET_CHANGED");
