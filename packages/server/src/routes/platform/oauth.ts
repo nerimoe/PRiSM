@@ -90,6 +90,9 @@ export async function syncMunetCards(
   if (!credential) return { authorizationRequired: true, synced: false };
 
   try {
+    const clientId = c.env.MUNET_CLIENT_ID;
+    const clientSecret = c.env.MUNET_CLIENT_SECRET;
+    if (!clientId || !clientSecret) throw new Error("MuNET authentication is not configured");
     const secret = oauthSecret(c);
     let accessToken = await decryptSecret(credential.access_token_encrypted, secret);
     let refreshedAccessToken = false;
@@ -97,8 +100,8 @@ export async function syncMunetCards(
     if (Date.parse(credential.access_token_expires_at) <= Date.now() + 30_000) {
       const refreshToken = await decryptSecret(credential.refresh_token_encrypted, secret);
       const refreshed = await refreshMunetTokens({
-        clientId: c.env.MUNET_CLIENT_ID,
-        clientSecret: c.env.MUNET_CLIENT_SECRET,
+        clientId,
+        clientSecret,
         refreshToken,
       });
       accessToken = refreshed.accessToken;
@@ -117,8 +120,8 @@ export async function syncMunetCards(
       if (!(error instanceof MunetAuthorizationExpiredError) || refreshedAccessToken) throw error;
       const refreshToken = await decryptSecret(credential.refresh_token_encrypted, secret);
       const refreshed = await refreshMunetTokens({
-        clientId: c.env.MUNET_CLIENT_ID,
-        clientSecret: c.env.MUNET_CLIENT_SECRET,
+        clientId,
+        clientSecret,
         refreshToken,
       });
       accessToken = refreshed.accessToken;
