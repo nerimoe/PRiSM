@@ -5,6 +5,7 @@ import { staffPrincipal } from "../../middleware/auth.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { startEntrySession } from "./entry.js";
+import { withPrismAccountIdentities } from "./shop-player-identities.js";
 import {
   toGrantAssetsView,
   toPlayerAssetsView,
@@ -39,7 +40,10 @@ staffRouter.get("/players", async (c) => {
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
   const players = await deps.staffQueries.listPlayers();
-  return c.json({ players: players.map(toStaffPlayerListView) });
+  const data = await withPrismAccountIdentities(c.env.DB, shop.id, {
+    players: players.map(toStaffPlayerListView),
+  }) as { players: unknown[] };
+  return c.json(data);
 });
 
 // Standalone and tenant-scoped staff browser billing preview inputs.
@@ -296,7 +300,10 @@ staffRouter.get("/live-players", async (c) => {
   const billingSnapshot = players.length && deps.staffLiveBillingSnapshot
     ? await deps.staffLiveBillingSnapshot(players.map((player) => player.playerId))
     : undefined;
-  return c.json({ players, ...(billingSnapshot ? { billingSnapshot } : {}) });
+  const data = await withPrismAccountIdentities(c.env.DB, shop.id, {
+    players, ...(billingSnapshot ? { billingSnapshot } : {}),
+  });
+  return c.json(data);
 });
 
 // Active Sessions
