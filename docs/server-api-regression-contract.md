@@ -66,3 +66,29 @@ registration/retirement and APNs push fanout. The browser matrix runs Chromium
 and WebKit at mobile and desktop widths for player balances and full role
 navigation. WebKit is an approximation, not a substitute for real iPhone
 ActivityKit/APNs testing.
+
+## Staff identity and public DTO boundaries
+
+`GET /api/v1/shops/:shopCode/staff/me` and its historical standalone alias
+return exactly `{ staff: { id, displayName, role, canWrite } }` (inside the
+canonical API's `data` envelope). The public `staff.role` is one of
+`owner | manager | viewer` and never the internal authentication principal
+discriminator `"staff"`. `canWrite` is false for viewers, true for owners
+and managers. Display names come from the selected shop's staff record.
+
+The interface `StaffMeView` is shared by the browser and server through
+`@prism/core`. Never serialize a `StaffPrincipal` directly, and do not add
+`staffRole` or `principalRole` to public responses as a workaround.
+
+The `packages/server/test/shop-billing-routes.test.ts` production
+`createApp()` suite checks **exact field equality** for owner, manager, and
+viewer and verifies private password hashes/salts and API-token hashes are
+absent from public staff-management endpoints. Browser tests check that the
+owner settings tab exists, manager report quick archive works, and viewers
+cannot use either action.
+
+`node scripts/check-public-api-dtos.cjs` is a CI gate that scans the actual
+TypeScript server sources and rejects direct JSON serialization of internal
+auth principal objects or their `role` discriminator. It is intentionally a
+static anti-leak guard, **not** a proof that all historic API DTOs match; each
+consumer-specific contract must also have a runtime integration test.
