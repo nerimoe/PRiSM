@@ -83,14 +83,14 @@ export function accountLinkStatements(
 export async function reconnectImportedAccount(c: Context<AppBindings>, shopId: string) {
   const user = c.get("user");
   if (!user) return;
-  const marker = await (c.env.DB as LegacyD1Database).prepare(
+  const marker = await (c.env.DB as D1Database).prepare(
     "SELECT 1 FROM app_settings WHERE shop_id=? AND key='backup.importedAccounts'",
   )
     .bind(shopId)
     .first();
   if (!marker) return;
   const links = (
-    await (c.env.DB as LegacyD1Database).prepare(
+    await (c.env.DB as D1Database).prepare(
       `SELECT h.* FROM shop_imported_accounts h WHERE h.shop_id=? AND h.matched_user_id IS NULL
     AND (h.source_user_id=? OR EXISTS(SELECT 1 FROM auth_identities a JOIN json_each(h.identities_json) j
       ON json_extract(j.value,'$.provider')=a.provider AND json_extract(j.value,'$.subject')=a.provider_subject WHERE a.user_id=?))`,
@@ -102,7 +102,7 @@ export async function reconnectImportedAccount(c: Context<AppBindings>, shopId: 
     jsonError(409, "导入账号关联存在冲突，请联系店主处理", "IMPORT_ACCOUNT_CONFLICT");
   if (links.length) {
     try {
-      await (c.env.DB as LegacyD1Database).batch(links.flatMap((link) => accountLinkStatements(c.env.DB as LegacyD1Database, shopId, link, user.id)));
+      await (c.env.DB as D1Database).batch(links.flatMap((link) => accountLinkStatements(c.env.DB as D1Database, shopId, link, user.id)));
     } catch (error) {
       if (String(error).includes("constraint failed") || String(error).includes("platform binding identity"))
         jsonError(409, "导入账号关联存在冲突，请联系店主处理", "IMPORT_ACCOUNT_CONFLICT");

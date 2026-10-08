@@ -289,7 +289,7 @@ async function createExport(
       jsonError(410, "导出锁已过期，请联系平台管理员重试", "EXPORT_EXPIRED");
     return info;
   } catch (error) {
-    await finishShopExport(c.env.DB, job.id, "failed");
+    await finishShopExport(c.env.DB as LegacyD1Database, job.id, "failed");
     throw error;
   }
 }
@@ -321,7 +321,7 @@ async function page(c: C, job: ExportJob, after: number) {
     return await readPage(c, job, after);
   } catch (error) {
     // A failed page must not leave reading=1 and fence the shop until the lease expires.
-    await finishShopExport(c.env.DB, job.id, "failed");
+    await finishShopExport(c.env.DB as LegacyD1Database, job.id, "failed");
     throw error;
   }
 }
@@ -567,7 +567,7 @@ export function registerShopExportRoutes(app: Hono<AppBindings>) {
   async function cancelExport(c: C) {
     // Any current shop owner can recover an interrupted export; page contents stay private to its creator.
     const { job } = await getExport(c, true);
-    await finishShopExport(c.env.DB, job.id, "cancelled");
+    await finishShopExport(c.env.DB as LegacyD1Database, job.id, "cancelled");
     return c.json({ deleted: true });
   }
   app.delete(base + "/exports/:jobId", cancelExport);
@@ -639,13 +639,13 @@ export function registerShopExportRoutes(app: Hono<AppBindings>) {
             if (result.done) controller.close();
             else controller.enqueue(encoder.encode(result.value));
           } catch (error) {
-            await finishShopExport(c.env.DB, current.id, "failed");
+            await finishShopExport(c.env.DB as LegacyD1Database, current.id, "failed");
             controller.error(error);
           }
         },
         async cancel() {
           await iterator.return(undefined);
-          await finishShopExport(c.env.DB, current.id, "cancelled");
+          await finishShopExport(c.env.DB as LegacyD1Database, current.id, "cancelled");
         },
       }),
       {

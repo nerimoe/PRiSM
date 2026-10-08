@@ -140,7 +140,7 @@ async function stage(
   if (table === "machines")
     for (const row of input.rows)
       for (const key of ["hinata_url", "hinata_password", "ha_binding_json"])
-        if (row[key]) row[key] = await encryptSecret(String(row[key]), c.env.URL_ENCRYPTION_KEY);
+        if (row[key]) row[key] = await encryptSecret(String(row[key]), c.env.URL_ENCRYPTION_KEY!);
   const json = JSON.stringify(input.rows),
     schema = schemas[table],
     seq = input.part * 100000;
@@ -181,7 +181,7 @@ async function previewJob(
   if (!["uploading", "ready"].includes(job.status)) jsonError(409, "任务状态不允许预检", "TRANSFER_LOCKED");
   const errors: string[] = [],
     tables = fullTables(header),
-    actual = await counts(c.env.DB, job.id, tables);
+    actual = await counts(c.env.DB as LegacyD1Database, job.id, tables);
   // v2 backups created before report archiving have no metadata table.
   // Only an absent, empty new table is compatible; never ignore uploaded rows.
   if (header.version === 2 && header.scope === "business" &&
@@ -689,7 +689,7 @@ export function registerShopDataJobRoutes(app: Hono<AppBindings>) {
   });
   app.post(base + "/imports", async (c) => {
     const shop = await owner(c);
-    await cleanup(c.env.DB);
+    await cleanup(c.env.DB as LegacyD1Database);
     const header = parse(fullHeaderSchema, await body(c));
     const id = crypto.randomUUID();
     try {

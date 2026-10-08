@@ -126,8 +126,8 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
     const job = await startShopExport(c, shop, scope);
     let backup: ShopBackup;
     try { backup = await exportBackup(c, shop, scope); }
-    catch (error) { await finishShopExport(c.env.DB, job.id, "failed"); throw error; }
-    await finishShopExport(c.env.DB, job.id, "completed");
+    catch (error) { await finishShopExport(c.env.DB as LegacyD1Database, job.id, "failed"); throw error; }
+    await finishShopExport(c.env.DB as LegacyD1Database, job.id, "completed");
     const file = `prism-${shop.public_id}-${scope}-${backup.exportedAt.slice(0, 10)}.json`;
     return c.body(JSON.stringify(backup, null, 2), 200, {
       "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="${file}"`,
