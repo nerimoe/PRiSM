@@ -56,7 +56,8 @@ const backup = {
         previews.push(req.postDataJSON());
         data = { canImport, fingerprint: 'a'.repeat(43), scope: 'business', source: backup.source,
           counts: { players: 1, asset_holdings: 1, asset_ledger_entries: 27, sessions: 1 },
-          errors: canImport ? [] : ['目标店铺已有玩家、账单、配置或设备，请选择空店铺导入'],
+          target: { records: 73, mode: 'replace' },
+          errors: canImport ? [] : ['备份文件未完整上传或数据表不完整'],
           warnings: ['将恢复完整店铺资料、设置、设备连接及业务记录。目标店铺编号和当前管理员保留。'] };
       } else if (/\/data\/imports\/[^/]+\/apply$/.test(pathname)) {
         applies.push(req.postDataJSON());
@@ -135,12 +136,15 @@ const backup = {
     await page.getByRole('button', { name: '预检导入', exact: true }).click();
     await page.getByText('预检未通过，请处理上述问题后重试。', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: '确认导入', exact: true }).count(), 0);
-    canImport = true;
+    canImport = true; importRemaining = 0;
+    assert.equal(await page.getByRole('button', { name: '预检导入', exact: true }).isEnabled(), true);
     await page.getByRole('button', { name: '预检导入', exact: true }).click();
     await page.getByText('预检通过，可以确认导入。', { exact: true }).waitFor();
     assert.ok(await page.getByText('来源环境: https://beta.example.com', { exact: true }).last().isVisible());
     const { tables, ...header } = backup;
     assert.deepEqual(headers[0], header);
+    assert.equal(headers.length, 1, 'rechecking must reuse staging and monthly allowance');
+    assert.equal(uploads.length, 3);
     assert.deepEqual(previews[0], { counts: Object.fromEntries(Object.entries(tables).map(([t,r])=>[t,r.length])), parts: 3 });
     assert.deepEqual(uploads.slice(0,3).map(p=>[p.table,p.rows]), Object.entries(tables));
     await page.screenshot({ path: path.join(output, 'shop-data-desktop.png'), fullPage: true });
@@ -149,10 +153,14 @@ const backup = {
     const dialog = page.getByRole('dialog', { name: '确认导入店铺数据', exact: true });
     await dialog.waitFor();
     await page.screenshot({ path: path.join(output, 'shop-data-mobile-confirm.png'), fullPage: true });
+    assert.equal(await dialog.getByRole('button', { name: '开始导入', exact: true }).isEnabled(), false);
+    await dialog.getByRole('checkbox').check();
     await dialog.getByRole('button', { name: '开始导入', exact: true }).click();
     await dialog.waitFor({ state: 'hidden' });
     await page.getByRole('alert').filter({ hasText: '操作失败，请稍后重试' }).waitFor();
     await page.getByRole('button', { name: '确认导入', exact: true }).click();
+    assert.equal(await dialog.getByRole('button', { name: '开始导入', exact: true }).isEnabled(), false);
+    await dialog.getByRole('checkbox').check();
     await dialog.getByRole('button', { name: '开始导入', exact: true }).click();
     await page.getByText('导入完成，请核对玩家、余额、账单及设备设置后再营业。', { exact: true }).waitFor();
     await page.getByRole('combobox', { name: '切换店铺', exact: true }).getByRole('option', { name: '来源店铺', exact: true }).waitFor({ state: 'attached' });
@@ -160,6 +168,7 @@ const backup = {
     assert.deepEqual(applies[0], applies[1]);
     assert.equal(applies[1].backup, undefined);
     assert.ok(applies[1].operationId);
+    assert.equal(applies[1].overwrite, true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
     await page.evaluate(() => localStorage.setItem('prism.locale', 'en'));
     await page.reload();

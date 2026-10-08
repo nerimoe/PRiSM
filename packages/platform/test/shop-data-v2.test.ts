@@ -32,7 +32,7 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
     MUNET_CLIENT_SECRET: "",
     APPLE_TEAM_ID: "TEST",
   } as Env;
-  for (const sql of sqliteSchema) await db.prepare(sql).run();
+  await db.batch(sqliteSchema.map(sql => db.prepare(sql)));
   for (const name of [
     "0017_platform_accounts",
     "0018_unified_devices",
@@ -42,13 +42,13 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
     "0023_remote_entry",
     "0024_drop_remote_entry",
     "0030_platform_identity_bindings",
-    "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export", "0035_checkout_report_states",
+    "0025_live_activity_push_tokens", "0026_live_activity_start_tokens", "0031_shop_data_transfer", "0032_read_only_shop_export", "0035_checkout_report_states", "0036_overwrite_shop_import",
   ]) {
     const sql = readFileSync(new URL(`../../../migrations/${name}.sql`, import.meta.url), "utf8").replace(
       /^\s*--.*$/gm,
       "",
     );
-    for (const part of splitD1MigrationStatements(sql)) await db.prepare(part).run();
+    await db.batch(splitD1MigrationStatements(sql).map(part => db.prepare(part)));
   }
   for (const name of ["owner", "player", "other", "admin"]) {
     await db
@@ -69,7 +69,7 @@ async function initialize(db: D1Database, prefix = ""): Promise<Env> {
       .bind(prefix + name, prefix + name, await sha256(`${name}-session`))
       .run();
   }
-  for (const sql of utcWriteGuards) await db.prepare(sql).run();
+  await db.batch(utcWriteGuards.map(sql => db.prepare(sql)));
   return env;
 }
 beforeAll(async () => {
@@ -173,7 +173,7 @@ async function apply(
   fingerprint: string,
   operationId = op(),
 ) {
-  return request(env, base(shop) + `/imports/${jobId}/apply`, { fingerprint, operationId });
+  return request(env, base(shop) + `/imports/${jobId}/apply`, { fingerprint, operationId, overwrite: true });
 }
 
 test("pure cashier players and paid bills are exported without platform identities and restored in another database", async () => {
@@ -265,7 +265,7 @@ test("pure cashier players and paid bills are exported without platform identiti
   expect(legacyPreview.data.errors).toEqual([]);
   expect((await apply(targetEnv, legacyTarget, legacyUpload.jobId, legacyPreview.data.fingerprint)).status).toBe(200);
   expect(await rows(targetEnv, "checkout_report_states", legacyTarget.id)).toEqual([]);
-}, 30000);
+}, 60000);
 
 test("cashier identities and verified accounts survive backup and cross-database restore without gaining assets", async () => {
   const shop = await store(sourceEnv, true), target = await store(targetEnv);
@@ -627,12 +627,19 @@ test("staged import accepts identical part retries, rejects changed/late parts a
 
 test("failed restore rolls back all rows and triggers, then safely retries the same job and operation", async () => {
   const source = await store(sourceEnv, true),
-    target = await store(targetEnv),
-    backup = await download(sourceEnv, source),
-    staged = await upload(targetEnv, target, backup),
-    check = await preview(targetEnv, target, staged),
-    id = op();
+    target = await store(targetEnv, true),
+    backup = await download(sourceEnv, source), id = op();
+  await targetEnv.DB.batch([
+    targetEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'old-player','原有玩家','active',?)").bind(target.id, new Date().toISOString()),
+    targetEnv.DB.prepare("INSERT INTO asset_holdings(shop_id,id,player_id,asset_type,asset_code,quantity) VALUES (?,'old-wallet','old-player','currency','paid',12345)").bind(target.id),
+    targetEnv.DB.prepare("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,'old-bill','old-player',1800,1800,'settled',?)").bind(target.id, new Date().toISOString()),
+    targetEnv.DB.prepare("INSERT INTO checkout_timelines(shop_id,checkout_id,timeline_json) VALUES (?,'old-bill','{}')").bind(target.id),
+    targetEnv.DB.prepare("INSERT INTO checkout_report_states(shop_id,checkout_id,archived,updated_at,updated_by) VALUES (?,'old-bill',1,?,'restore-owner')").bind(target.id, new Date().toISOString()),
+  ]);
+  const staged = await upload(targetEnv, target, backup), check = await preview(targetEnv, target, staged);
   expect(check.data.canImport).toBe(true);
+  const watched = ["players", "asset_holdings", "player_checkouts", "checkout_timelines", "checkout_report_states", "asset_definitions", "pricing_configs", "pricing_config_versions", "pricing_releases", "pricing_release_heads", "app_settings", "shop_billing_settings", "staff_users", "shop_staff_accounts", "shop_members", "shop_data_export_allowances"];
+  const before = await Promise.all(watched.map(table => rows(targetEnv, table, target.id)));
   await targetEnv.DB.prepare(
     `CREATE TRIGGER test_import_failure BEFORE UPDATE ON shops WHEN NEW.id='${target.id}' BEGIN SELECT RAISE(ABORT,'test restore failure'); END`,
   ).run();
@@ -642,7 +649,7 @@ test("failed restore rolls back all rows and triggers, then safely retries the s
     await targetEnv.DB.prepare("SELECT COUNT(*) AS n FROM asset_definitions WHERE shop_id=?")
       .bind(target.id)
       .first("n"),
-  ).toBe(0);
+  ).toBe(2);
   expect(
     await targetEnv.DB.prepare(
       "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name IN ('pricing_config_version_insert','session_pricing_bind')",
@@ -658,6 +665,8 @@ test("failed restore rolls back all rows and triggers, then safely retries the s
       .bind(staged.jobId)
       .first("n"),
   ).toBeGreaterThan(0);
+  expect(await Promise.all(watched.map(table => rows(targetEnv, table, target.id)))).toEqual(before);
+  expect(await targetEnv.DB.prepare("SELECT status FROM shop_data_jobs WHERE id=?").bind(staged.jobId).first("status")).toBe("ready");
   await targetEnv.DB.prepare("DROP TRIGGER test_import_failure").run();
   expect((await apply(targetEnv, target, staged.jobId, check.data.fingerprint, id)).status).toBe(200);
   expect((await apply(targetEnv, target, staged.jobId, check.data.fingerprint, id)).status).toBe(200);
@@ -665,13 +674,13 @@ test("failed restore rolls back all rows and triggers, then safely retries the s
 
 test("v1 files remain importable through bounded staging and target profile changes invalidate preflight", async () => {
   const source = await store(sourceEnv, true),
-    target = await store(targetEnv),
+    target = await store(targetEnv, true),
     old = (await request(sourceEnv, base(source) + "/export?version=1")).backup;
   expect(old.version).toBe(1);
   const staged = await upload(targetEnv, target, old),
     check = await preview(targetEnv, target, staged);
   expect(check.data.errors).toEqual([]);
-  await targetEnv.DB.prepare("UPDATE shops SET latitude=35,longitude=139 WHERE id=?").bind(target.id).run();
+  await targetEnv.DB.prepare("UPDATE shops SET name='目标资料',latitude=35,longitude=139 WHERE id=?").bind(target.id).run();
   expect((await apply(targetEnv, target, staged.jobId, check.data.fingerprint)).error?.code).toBe(
     "IMPORT_TARGET_CHANGED",
   );
@@ -679,7 +688,7 @@ test("v1 files remain importable through bounded staging and target profile chan
   expect(next.data.canImport).toBe(true);
   expect((await apply(targetEnv, target, staged.jobId, next.data.fingerprint)).status).toBe(200);
   expect(await targetEnv.DB.prepare("SELECT name FROM shops WHERE id=?").bind(target.id).first("name")).toBe(
-    "目标店",
+    "目标资料",
   );
 }, 30000);
 
@@ -1054,4 +1063,120 @@ test("batched export permissions preserve the existing owner and active staff ma
     expect((await request(sourceEnv, base(shop) + "/export-status", undefined, "other-session")).status).toBe(allowed ? 200 : 403);
     expect((await request(sourceEnv, base(shop) + "/exports/not-a-job", undefined, "other-session", "DELETE")).status).toBe(allowed ? 404 : 403);
   }
+}, 30000);
+
+
+test("business overwrite requires confirmation, replaces live shop data, preserves credentials and never replays deletion", async () => {
+  const source = await deviceSource(), shop = source.shop;
+  const backup = await download(sourceEnv, shop);
+  const preserved = await Promise.all(["users", "auth_sessions", "auth_identities"].map(async table => (await sourceEnv.DB.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()).results));
+  await sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("UPDATE players SET display_name='覆盖前' WHERE shop_id=? AND id='p'").bind(shop.id),
+    sourceEnv.DB.prepare("UPDATE asset_holdings SET quantity=1 WHERE shop_id=?").bind(shop.id),
+    sourceEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'obsolete','旧玩家','active',?)").bind(shop.id, new Date().toISOString()),
+    sourceEnv.DB.prepare("INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'obsolete','{}',?)").bind(shop.id, new Date().toISOString()),
+    sourceEnv.DB.prepare("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,'old-bill','obsolete',100,100,'settled',?)").bind(shop.id, new Date().toISOString()),
+    sourceEnv.DB.prepare("INSERT INTO checkout_timelines(shop_id,checkout_id,timeline_json) VALUES (?,'old-bill','{}')").bind(shop.id),
+    sourceEnv.DB.prepare("INSERT INTO player_operations(shop_id,user_id,id,kind,status,device_id,created_at) VALUES (?,'owner','old-receipt','coin','completed',?,?)").bind(shop.id, source.machineId, new Date().toISOString()),
+    sourceEnv.DB.prepare("INSERT INTO machine_tickets(token_hash,machine_id,claimed_by,expires_at) VALUES ('overwrite-test',?,'owner','2999-01-01')").bind(source.machineId),
+    sourceEnv.DB.prepare("INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES (?,'obsolete-staff','obsolete','旧员工','','','manager','active',?,?)").bind(shop.id, new Date().toISOString(), new Date().toISOString()),
+    sourceEnv.DB.prepare("INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES (?,'other','obsolete-staff')").bind(shop.id),
+    sourceEnv.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES (?,?,'other','staff')").bind(op(), shop.id),
+  ]);
+  const staged = await upload(sourceEnv, shop, backup), checked = await preview(sourceEnv, shop, staged), id = op();
+  expect(checked.data.canImport).toBe(true);
+  expect(checked.data.target).toEqual({ records: expect.any(Number), mode: "replace" });
+  expect(checked.data.target.records).toBeGreaterThan(0);
+  expect((await request(sourceEnv, base(shop) + `/imports/${staged.jobId}/apply`, { fingerprint: checked.data.fingerprint, operationId: id })).error.code).toBe("IMPORT_OVERWRITE_REQUIRED");
+  expect((await rows(sourceEnv, "players", shop.id)).map(r => r.id)).toContain("obsolete");
+  expect((await apply(sourceEnv, shop, staged.jobId, checked.data.fingerprint, id)).status).toBe(200);
+  expect((await rows(sourceEnv, "players", shop.id)).map(r => r.id)).toEqual(["p"]);
+  expect(await rows(sourceEnv, "player_checkouts", shop.id)).toEqual([]);
+  expect(await rows(sourceEnv, "checkout_timelines", shop.id)).toEqual([]);
+  expect((await rows(sourceEnv, "asset_holdings", shop.id))[0]!.quantity).toBe(114514);
+  expect((await rows(sourceEnv, "app_settings", shop.id)).some(r => r.key === "obsolete")).toBe(false);
+  expect((await rows(sourceEnv, "machines", shop.id))[0]!.id).toBe(source.machineId);
+  expect(await sourceEnv.DB.prepare("SELECT COUNT(*) AS n FROM machine_tickets WHERE machine_id=?").bind(source.machineId).first("n")).toBe(0);
+  expect(await sourceEnv.DB.prepare("SELECT device_id FROM player_operations WHERE shop_id=? AND id='old-receipt'").bind(shop.id).first()).toEqual({ device_id: null });
+  expect((await rows(sourceEnv, "shop_members", shop.id)).some(r => r.user_id === "owner" && r.role === "owner")).toBe(true);
+  expect((await rows(sourceEnv, "shop_members", shop.id)).some(r => r.user_id === "other")).toBe(false);
+  expect((await rows(sourceEnv, "shop_staff_accounts", shop.id)).some(r => r.user_id === "other")).toBe(false);
+  expect((await rows(sourceEnv, "staff_users", shop.id)).some(r => r.id === "obsolete-staff")).toBe(false);
+  expect(await Promise.all(["users", "auth_sessions", "auth_identities"].map(async table => (await sourceEnv.DB.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()).results))).toEqual(preserved);
+  await sourceEnv.DB.prepare("UPDATE asset_holdings SET quantity=42 WHERE shop_id=?").bind(shop.id).run();
+  expect((await apply(sourceEnv, shop, staged.jobId, checked.data.fingerprint, id)).status).toBe(200);
+  expect((await rows(sourceEnv, "asset_holdings", shop.id))[0]!.quantity).toBe(42);
+}, 30000);
+
+test("same-count business changes invalidate import; rechecking reuses staging and other shops do not invalidate", async () => {
+  const source = await deviceSource(), target = await store(targetEnv, true), other = await store(targetEnv, true), backup = await download(sourceEnv, source.shop);
+  await targetEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'old','原玩家','active',?)").bind(target.id, new Date().toISOString()).run();
+  const staged = await upload(targetEnv, target, backup), first = await preview(targetEnv, target, staged);
+  await targetEnv.DB.prepare("UPDATE players SET display_name='已变更' WHERE shop_id=?").bind(target.id).run();
+  expect((await apply(targetEnv, target, staged.jobId, first.data.fingerprint)).error.code).toBe("IMPORT_TARGET_CHANGED");
+  expect((await rows(targetEnv, "players", target.id))[0]!.display_name).toBe("已变更");
+  const allowance = await rows(targetEnv, "shop_data_export_allowances", target.id);
+  const next = await preview(targetEnv, target, staged);
+  expect(next.data.canImport).toBe(true);
+  expect(next.data.fingerprint).not.toBe(first.data.fingerprint);
+  expect((await apply(targetEnv, target, staged.jobId, first.data.fingerprint)).error.code).toBe("IMPORT_NOT_READY");
+  const otherBefore = await rows(targetEnv, "asset_definitions", other.id);
+  await targetEnv.DB.prepare("UPDATE pricing_configs SET name='别的店铺' WHERE shop_id=?").bind(other.id).run();
+  expect((await apply(targetEnv, target, staged.jobId, next.data.fingerprint)).status).toBe(200);
+  expect(await rows(targetEnv, "asset_definitions", other.id)).toEqual(otherBefore);
+  expect((await rows(targetEnv, "pricing_configs", other.id))[0]!.name).toBe("别的店铺");
+  expect(await rows(targetEnv, "shop_data_export_allowances", target.id)).toEqual(allowance);
+}, 30000);
+
+test("configuration overwrite keeps wallets, sessions, pinned history and device identities", async () => {
+  const source = await deviceSource(), shop = source.shop, backup = await download(sourceEnv, shop, "configuration");
+  backup.tables.pricing_configs[0].name = "修改规则名";
+  backup.tables.machines[0].name = "修改设备名";
+  backup.tables.asset_definitions[0].name = "修改资产名";
+  const history = await Promise.all(["players", "asset_holdings", "sessions", "session_pricing_releases", "pricing_config_versions", "pricing_releases"].map(t => rows(sourceEnv, t, shop.id)));
+  const staged = await upload(sourceEnv, shop, backup), checked = await preview(sourceEnv, shop, staged);
+  expect(checked.data.canImport).toBe(true);
+  expect(checked.data.target.mode).toBe("merge");
+  // Normal Bot use and unchanged device heartbeats must not make confirmation impossible.
+  await sourceEnv.DB.batch([
+    sourceEnv.DB.prepare("UPDATE api_tokens SET last_used_at=? WHERE shop_id=?").bind(new Date().toISOString(), shop.id),
+    sourceEnv.DB.prepare("UPDATE machine_connections SET last_seen_at=?,status='online' WHERE shop_id=?").bind(new Date().toISOString(), shop.id),
+    sourceEnv.DB.prepare("UPDATE device_states SET reported_at=?,state='on',status='online' WHERE shop_id=?").bind(new Date().toISOString(), shop.id),
+  ]);
+  expect(await sourceEnv.DB.prepare("SELECT status FROM shop_data_jobs WHERE id=?").bind(staged.jobId).first("status")).toBe("ready");
+  expect((await apply(sourceEnv, shop, staged.jobId, checked.data.fingerprint)).status).toBe(200);
+  const after = await Promise.all(["players", "asset_holdings", "sessions", "session_pricing_releases", "pricing_config_versions", "pricing_releases"].map(t => rows(sourceEnv, t, shop.id)));
+  for (let i = 0; i < 4; i++) expect(after[i]).toEqual(history[i]);
+  for (let i = 4; i < 6; i++) for (const original of history[i]!) expect(after[i]).toContainEqual(original);
+  expect((await rows(sourceEnv, "pricing_configs", shop.id))[0]!.name).toBe("修改规则名");
+  expect((await rows(sourceEnv, "machines", shop.id))).toHaveLength(1);
+  expect((await rows(sourceEnv, "machines", shop.id))[0]).toMatchObject({ id: source.machineId, public_id: source.publicId, name: "修改设备名" });
+  expect((await rows(sourceEnv, "asset_definitions", shop.id)).find(r => r.code === backup.tables.asset_definitions[0].code)!.name).toBe("修改资产名");
+}, 30000);
+
+
+test("atomic overwrite guard rejects a same-count change immediately before the batch", async () => {
+  const source = await store(sourceEnv, true), target = await store(targetEnv, true), backup = await download(sourceEnv, source);
+  await targetEnv.DB.prepare("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'old','旧玩家','active',?)").bind(target.id, new Date().toISOString()).run();
+  const staged = await upload(targetEnv, target, backup), checked = await preview(targetEnv, target, staged), db = targetEnv.DB;
+  let applying = false, injected = false;
+  const env = { ...targetEnv, DB: {
+    prepare(sql: string) {
+      if (sql.includes("INSERT INTO player_operations(shop_id,user_id,id,kind,status,request_hash")) applying = true;
+      return db.prepare(sql);
+    },
+    async batch(statements: D1PreparedStatement[]) {
+      if (applying && !injected) {
+        injected = true;
+        await db.prepare("UPDATE players SET display_name='并发修改' WHERE shop_id=?").bind(target.id).run();
+      }
+      return db.batch(statements);
+    },
+  } as D1Database };
+  const before = await rows(targetEnv, "pricing_config_versions", target.id);
+  expect((await apply(env, target, staged.jobId, checked.data.fingerprint)).status).toBe(409);
+  expect(injected).toBe(true);
+  expect((await rows(targetEnv, "players", target.id))[0]!.display_name).toBe("并发修改");
+  expect(await rows(targetEnv, "pricing_config_versions", target.id)).toEqual(before);
+  expect(await db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name='pricing_config_versions_immutable_delete'").first("n")).toBe(1);
 }, 30000);

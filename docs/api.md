@@ -481,7 +481,7 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 
 ### 店铺 JSON 数据备份与迁移
 
-店主可以使用 `/api/v1/shops/:shopCode/data/export` 下载原始 JSON 文件，大文件通过 `data/exports` 任务分页下载，通过 `data/imports` 分片上传、预检并原子恢复到空店铺。新版后台支持 v1／v2 文件，旧整文件接口仅为兼容保留。此附件保留数据库原始 UTC 时间、整数货币和历史计费版本，不进行展示时区转换。范围、权限、格式、限制及跨环境迁移注意事项见 [店铺数据导入导出](shop-data-transfer.md)。
+店主可以使用 `/api/v1/shops/:shopCode/data/export` 下载原始 JSON 文件，大文件通过 `data/exports` 任务分页下载，通过 `data/imports` 分片上传、预检并原子覆盖目标店铺；仅配置备份按同编号覆盖，保留玩家和账单。非空店铺业务导入需在 apply 中显式传入 `overwrite:true`，预检返回 `target:{records,mode}`。待确认期间的本店业务变更会使预检失效，同一任务可重新预检，无需再次上传或消耗额度。新版后台支持 v1／v2 文件，旧整文件接口仅为兼容保留。此附件保留数据库原始 UTC 时间、整数货币和历史计费版本，不进行展示时区转换。范围、权限、格式、限制及跨环境迁移注意事项见 [店铺数据导入导出](shop-data-transfer.md)。
 
 ### 店铺只读导出及月度额度
 

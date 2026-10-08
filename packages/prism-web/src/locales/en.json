@@ -1089,5 +1089,15 @@
   "账单归档状态": "Bill archive states",
   "无效的归档筛选": "Invalid archive filter.",
   "无效的归档状态": "Invalid archive state.",
-  "Checkout not found.": "Bill not found."
+  "Checkout not found.": "Bill not found.",
+  "先预检再确认。业务备份覆盖现有数据；仅配置备份保留玩家和账单。目标店铺编号和当前管理员保留。": "Preview and confirm before importing. Business backups replace existing data; configuration backups retain players and bills. The target shop ID and current administrator are retained.",
+  "业务备份将覆盖目标店铺现有数据，而不是追加。": "A business backup replaces existing shop data instead of adding to it.",
+  "将覆盖同编号配置并补充新配置，保留玩家和账单。": "Overwrite matching configuration and add new configuration, retaining players and bills.",
+  "目标店铺现有记录": "Existing target shop records",
+  "我确认覆盖目标店铺现有数据，并已保留所需备份": "I confirm replacing the target shop data and have saved the backups I need",
+  "请确认覆盖目标店铺现有数据": "Confirm replacing the existing target shop data",
+  "请先完成覆盖导入数据库迁移": "Complete the overwrite import database migration first",
+  "业务备份将替换目标店铺现有玩家、余额、账单和计费配置；此操作不能撤销，请先保留原店铺备份。": "Business backups replace the target players, balances, bills and billing configuration. This cannot be undone; save the original shop backup first.",
+  "仅配置导入会覆盖同编号配置并新增文件中的配置和设备，保留玩家、余额、账单及其他配置。": "Configuration imports overwrite matching configuration and add configuration and devices from the file, retaining players, balances, bills and other configuration.",
+  "将恢复店铺资料和设置，并覆盖或新增配置及设备；目标店铺编号和当前管理员保留。": "Restore the shop profile and settings, and overwrite or add configuration and devices. Retain the target shop ID and current administrator."
 }

@@ -16,6 +16,7 @@ type Preview = {
   scope: "business" | "configuration";
   source: { name: string; publicId: string; origin?: string };
   counts: Record<string, number>;
+  target?: { records: number; mode: "replace" | "merge" };
   warnings: string[];
   errors: string[];
 };
@@ -65,6 +66,10 @@ export function ShopDataTransfer() {
   const [scope, setScope] = useState<"business" | "configuration">("business");
   const [file, setFile] = useState<File>();
   const [jobId, setJobId] = useState("");
+  const stagedImport = useRef<Awaited<
+    ReturnType<typeof uploadShopBackup>
+  > | null>(null);
+  const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
   const [progress, setProgress] = useState<number>();
   const [exported, setExported] = useState<ExportInfo>();
   const [exporting, setExporting] = useState(false);
@@ -204,6 +209,8 @@ export function ShopDataTransfer() {
     const selected = event.target.files?.[0];
     setFile(selected);
     setJobId("");
+    stagedImport.current = null;
+    setOverwriteConfirmed(false);
     setPreview(undefined);
     setFilename(selected?.name ?? "");
     setError("");
@@ -217,7 +224,11 @@ export function ShopDataTransfer() {
     try {
       if (!file) return;
       setProgress(0);
-      const upload = await uploadShopBackup(path, file, setProgress);
+      const upload =
+        stagedImport.current ??
+        (await uploadShopBackup(path, file, setProgress));
+      stagedImport.current = upload;
+      setOverwriteConfirmed(false);
       setJobId(upload.jobId);
       setPreview(
         await api<Preview>(`${path}/imports/${upload.jobId}/preview`, {
@@ -226,6 +237,10 @@ export function ShopDataTransfer() {
         }),
       );
     } catch (value) {
+      if (value instanceof ApiError && value.code === "TRANSFER_NOT_FOUND") {
+        stagedImport.current = null;
+        setJobId("");
+      }
       failed(value);
     } finally {
       setBusy(false);
@@ -234,17 +249,28 @@ export function ShopDataTransfer() {
     }
   }
   async function apply() {
-    if (!preview?.canImport) return;
+    if (
+      !preview?.canImport ||
+      (preview.scope === "business" &&
+        (preview.target?.records ?? 0) > 0 &&
+        !overwriteConfirmed)
+    )
+      return;
     setBusy(true);
     setError("");
     try {
       await api(`${path}/imports/${jobId}/apply`, {
         method: "POST",
-        body: JSON.stringify({ fingerprint: preview.fingerprint, operationId }),
+        body: JSON.stringify({
+          fingerprint: preview.fingerprint,
+          operationId,
+          overwrite: preview.scope === "business",
+        }),
       });
       setConfirm(false);
       setSuccess(true);
       setFile(undefined);
+      stagedImport.current = null;
       setPreview(undefined);
       window.dispatchEvent(new Event("prism-shop-settings"));
     } catch (value) {
@@ -390,7 +416,7 @@ export function ShopDataTransfer() {
         )}
         <p className="text-sm leading-relaxed text-ink/60">
           {t(
-            "导入到空店铺，先预检再确认。恢复来源店铺的资料、设置和业务数据，保留目标店铺编号和当前管理员。",
+            "先预检再确认。业务备份覆盖现有数据；仅配置备份保留玩家和账单。目标店铺编号和当前管理员保留。",
           )}
         </p>
         <p className="text-sm leading-relaxed text-ink/60">
@@ -417,7 +443,7 @@ export function ShopDataTransfer() {
             !file ||
             success ||
             !allowance ||
-            allowance.importRemaining === 0 ||
+            (allowance.importRemaining === 0 && !jobId) ||
             allowance.locked
           }
           onClick={preflight}
@@ -466,7 +492,10 @@ export function ShopDataTransfer() {
               <button
                 className={`${primary} justify-self-start`}
                 disabled={busy}
-                onClick={() => setConfirm(true)}
+                onClick={() => {
+                  setOverwriteConfirmed(false);
+                  setConfirm(true);
+                }}
               >
                 {t("确认导入")}
               </button>
@@ -496,7 +525,18 @@ export function ShopDataTransfer() {
           dismissDisabled={busy}
         >
           <div className="grid gap-4 p-5">
-            <p>{t("将来源店铺的业务数据导入当前空店铺。")}</p>
+            <p>
+              {t(
+                preview.scope === "business"
+                  ? "业务备份将覆盖目标店铺现有数据，而不是追加。"
+                  : "将覆盖同编号配置并补充新配置，保留玩家和账单。",
+              )}
+            </p>
+            {!!preview.target?.records && (
+              <p>
+                {t("目标店铺现有记录")}: {preview.target.records}
+              </p>
+            )}
             <p className="font-medium">
               {preview.source.name} · {preview.source.publicId}
             </p>
@@ -505,7 +545,30 @@ export function ShopDataTransfer() {
                 <li key={message}>{t(message)}</li>
               ))}
             </ul>
-            <button className={primary} disabled={busy} onClick={apply}>
+            {preview.scope === "business" &&
+              (preview.target?.records ?? 0) > 0 && (
+                <label className="flex items-start gap-2 text-sm text-rose-600">
+                  <input
+                    type="checkbox"
+                    checked={overwriteConfirmed}
+                    onChange={(event) =>
+                      setOverwriteConfirmed(event.target.checked)
+                    }
+                    disabled={busy}
+                  />
+                  {t("我确认覆盖目标店铺现有数据，并已保留所需备份")}
+                </label>
+              )}
+            <button
+              className={primary}
+              disabled={
+                busy ||
+                (preview.scope === "business" &&
+                  (preview.target?.records ?? 0) > 0 &&
+                  !overwriteConfirmed)
+              }
+              onClick={apply}
+            >
               {t(busy ? "处理中…" : "开始导入")}
             </button>
           </div>
