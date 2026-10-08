@@ -517,7 +517,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/session/start`, {
         method: "POST",
         headers: aliceHeaders,
-        body: JSON.stringify({ ticket, consent: true }),
+        body: JSON.stringify({ ticket, consent: true, operationId: crypto.randomUUID() }),
       }),
       env,
     );
@@ -559,6 +559,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/checkout/confirm`, {
         method: "POST",
         headers: aliceHeaders,
+        body: JSON.stringify({ operationId: crypto.randomUUID() }),
       }),
       env,
     );
