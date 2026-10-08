@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { isKnownLiveActivityBundle, type LiveActivityEnvironment } from "../../durable-objects/live-activity-push.js";
 import { Hono, type Context } from "hono";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
@@ -121,6 +124,22 @@ export async function requireShopPlayer(
 }
 
 export const playerRouter = new Hono<AppBindings>();
+
+// The ActivityKit client uses these store-scoped endpoints. They must be routed
+// before normal player commands; they were previously handled by billing.ts's wildcard.
+playerRouter.get("/live-activity/bill", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  return handleLiveActivityRoute(c, shop, player, "live-activity/bill", undefined);
+});
+for (const action of ["register", "unregister"] as const) {
+  playerRouter.post(`/live-activity/${action}`, async (c) => {
+    const shop = getShop(c);
+    const player = await requireShopPlayer(c, shop);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
+    return handleLiveActivityRoute(c, shop, player, `live-activity/${action}`, body);
+  });
+}
 
 // Player Summary
 playerRouter.get("/me", async (c) => {
@@ -341,3 +360,108 @@ playerRouter.get("/business-item-orders", async (c) => {
   });
   return c.json({ orders: orders.map(toBusinessItemOrderView) });
 });
+
+async function handleLiveActivityRoute(
+  c: Context<AppBindings>,
+  shop: TenantShop,
+  player: { id: string },
+  path: string,
+  body: Record<string, unknown> | undefined,
+): Promise<Response> {
+  const user = requireUser(c);
+  if (path === "live-activity/bill" && c.req.method === "GET") {
+    // A local activity must recover its own checkout, never the player's latest visit.
+    const sessionId = c.req.query("sessionId");
+    if (sessionId) {
+      const session = await c.env.DB.prepare(`SELECT s.started_at, s.ended_at, s.payment_status,
+        pc.total, pc.settled_at FROM sessions s
+        LEFT JOIN settlements st ON st.shop_id=s.shop_id AND st.session_id=s.id
+        LEFT JOIN player_checkouts pc ON pc.shop_id=st.shop_id AND pc.id=st.checkout_id
+        WHERE s.shop_id=? AND s.player_id=? AND s.id=?`)
+        .bind(shop.id, player.id, sessionId)
+        .first<{ started_at: string; ended_at: string | null; payment_status: string; total: number | null; settled_at: string | null }>();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+      if (session.payment_status === "paid") {
+        if (session.total === null || !session.ended_at || !session.settled_at)
+          jsonError(409, "结算账单尚不可用");
+        return c.json({ phase: "ended", startedAtUnix: Date.parse(session.started_at) / 1000,
+          endedAtUnix: Date.parse(session.ended_at) / 1000, nextCheckAtUnix: null,
+          bill: { amountCents: session.total, planLabel: "", nextEvent: null,
+            asOfUnix: Date.parse(session.settled_at) / 1000 } });
+      }
+    }
+    const snapshot = await activityBill(c.env, shop.id, player.id);
+    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
+    try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+    return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
+  }
+  if (path === "live-activity/register") {
+    const parsed = z
+      .object({
+        activityId: z.string().min(1).max(200),
+        token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+        environment: z.enum(["sandbox", "production"]),
+        bundleId: z.string().min(1).max(200),
+        sessionId: z.string().min(1).max(200).nullish(),
+        attributes: z.record(z.string(), z.unknown()).optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注册参数无效");
+    const input = parsed.data;
+    if (!isKnownLiveActivityBundle(input.bundleId))
+      jsonError(400, "未知的应用标识");
+
+    if (input.sessionId) {
+      const session = await c.env.DB.prepare(
+        "SELECT id FROM sessions WHERE id=? AND shop_id=? AND player_id=?",
+      )
+        .bind(input.sessionId, shop.id, player.id)
+        .first();
+      if (!session) jsonError(404, "未找到对应的在店计费会话");
+    }
+
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(
+      `INSERT INTO live_activity_tokens
+        (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(shop_id, user_id, activity_id) DO UPDATE SET
+         token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
+         session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        shop.id,
+        user.id,
+        input.activityId,
+        // APNs requires lowercase hex; normalising here keeps the lookup exact.
+        input.token.toLowerCase(),
+        input.environment satisfies LiveActivityEnvironment,
+        input.bundleId,
+        input.sessionId ?? null,
+        JSON.stringify(input.attributes ?? {}),
+        now,
+        now,
+      )
+      .run();
+    await refreshActivityBill(c.env, shop.id, player.id);
+    return c.json({ ok: true });
+  }
+
+  if (path === "live-activity/unregister") {
+    const parsed = z
+      .object({ activityId: z.string().min(1).max(200) })
+      .safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动注销参数无效");
+    // Scoped by user so one player can never retire another player's activity.
+    await c.env.DB.prepare(
+      "DELETE FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=?",
+    )
+      .bind(shop.id, user.id, parsed.data.activityId)
+      .run();
+    return c.json({ ok: true });
+  }
+
+  // Any other `live-activity/*` path is a client bug; answering 200 would hide it.
+  jsonError(404, "未知的实时活动操作");
+}
