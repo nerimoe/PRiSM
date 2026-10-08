@@ -62,9 +62,11 @@ deviceSessionRouter.post("/session/actions",async c=>{
 
 async function merchantMachine(c:import("hono").Context<AppBindings, any, any>,write=false):Promise<Machine>{
   const user=requireUser(c);
+  const id=c.req.param("id");
+  if(!id)jsonError(400,"缺少设备编号","INVALID_REQUEST");
   const machine=await c.env.DB.prepare(
     "SELECT m.*,s.public_id AS shop_public_id FROM machines m JOIN shops s ON s.id=m.shop_id WHERE m.id=?",
-  ).bind(c.req.param("id")).first<Machine>();
+  ).bind(id).first<Machine>();
   if(!machine)jsonError(404,"没有找到这台设备","DEVICE_NOT_FOUND");
   if(user.role!=="admin"){
     const member=await c.env.DB.prepare(

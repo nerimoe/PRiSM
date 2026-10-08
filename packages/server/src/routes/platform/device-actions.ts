@@ -72,13 +72,14 @@ export async function executeDeviceAction(
   if (isPower && !ha)
     jsonError(409, "设备未绑定电源", "DEVICE_ACTION_UNSUPPORTED");
   const deps = getOrCreateShopDependencies(c.env.DB, shop);
-  const lockSetting = isDoor
+  const lockSettingRow = isDoor
     ? await c.env.DB.prepare(
         "SELECT value_json FROM app_settings WHERE shop_id=? AND key='devices.ttlock_connection'",
       )
         .bind(shop.id)
-        .first<string>("value_json")
+        .first<{ value_json: string }>()
     : null;
+  const lockSetting = lockSettingRow?.value_json;
   const connection = isDoor
     ? normalizeTTLockConnectionConfig(
         lockSetting ? JSON.parse(lockSetting) : undefined,
@@ -209,7 +210,7 @@ export async function executeDeviceAction(
         } else {
           const sent = await sendHinataCoin(
             await decryptSecret(
-              machine.hinata_url_encrypted,
+              machine.hinata_url_encrypted!,
               c.env.URL_ENCRYPTION_KEY!,
             ),
             machine.coin_key,
