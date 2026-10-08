@@ -73,7 +73,7 @@ For Cloudflare Workers Builds:
 - Deploy command: `bun run deploy:beta`
 - Non-production branch deploy command: `bunx wrangler versions upload`
 
-Each project owns its deployment variables. Generated Wrangler configuration and local data remain ignored. `bun run deploy:worker` is retained for the standalone API, without React assets. See [docs/deployment.md](docs/deployment.md) for configuration and migration details.
+Each project owns its deployment variables. Generated Wrangler configuration and local data remain ignored. `bun run deploy:worker` builds React assets and deploys the unified Worker via `wrangler.jsonc`. See [docs/deployment.md](docs/deployment.md) for configuration and migration details.
 
 ## Auth Model
 

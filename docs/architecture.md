@@ -27,6 +27,12 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
     - `rate-limit.ts`：限流中间件（优先调用 Cloudflare Worker 原生 `RATE_LIMIT_*` 绑定，本地或单机环境平滑降级至内存滑动窗口限流）。
     - `geo.ts`：地理围栏校验与店铺距离计算（基于 Haversine 公式与精度限制进行进出店及设备操作的围栏校验）。
     - `response-time.ts`：API 响应时间投影与格式包装中间件（拦截 `/api/v1/*` 响应，自动将 UTC 瞬时时间戳按店铺当地时区转换为带偏移量的时间字符串并包装统一 JSON 响应）。
+  - `src/routes`：服务端 REST API 路由分层。
+    - `platform/`：平台级路由（`auth.ts`, `passkeys.ts`, `user.ts`, `shops.ts`），处理平台登录、Passkey 凭据与店铺生命周期。
+    - `system/`：系统探针路由（`health.ts`, `version.ts`）。
+    - `web-assets.ts`：静态前端 SPA 资源代理与维护期拦截。
+    - `shops/`：多租户店铺级业务路由（`player.ts`, `staff.ts`, `integration.ts`, `devices.ts`, `pricing.ts`, `assets.ts`, `cashier.ts`, `redeem.ts`）。依托 `tenantMiddleware` 依赖注入直接调用应用层服务，彻底废除了旧版的虚拟 HTTP 请求转发（`createPrismApp().fetch()`）。
+  - `src/legacy`：遗留单店 API 集中隔离与弃用管理模块。收拢旧版未携带 `:shopCode` 的单店 API（`/api/v1/player/*`, `/api/v1/staff/*`, `/api/v1/integration/*`, `/api/v1/setup/*`），自动附加 `X-API-Deprecated: true`、`X-API-Replacement`、`Link` 与 `Warning` 弃用标头，并提供回退租户解析与详细迁移指南，详见 [packages/server/src/legacy/README.md](../packages/server/src/legacy/README.md)。
   - `src/hardware`：统一整合的硬件驱动与执行器模块。包含 Hinata E2EE 卡片/投币驱动与执行器（`hinata.ts`，统一 PBKDF2/AES-GCM 与重试回退语义）、TTLock 云开锁与临时密码执行器（`ttlock.ts`）、Home Assistant 设施实体动作与状态执行器（`home-assistant.ts`）以及街机机台 WebSocket 协议处理器（`machine-ws.ts`）。
   - `src/app.ts` 与 `src/worker.ts`：顶层 Hono 应用装配工厂（`createApp()` / `app`）与 Cloudflare Worker 入口点。整合 CORS、响应耗时、静态资源兜底代理（`serveWebAssets`）、领域错误分发转换、多租户及遗留路由挂载；Worker 入口导出 `fetch`、`scheduled` 定时任务处理器与 `LiveBilling` Durable Object。
   - `src/durable-objects`：Apple Live Activity 实时活动与实时计费状态机。包含 `LiveBilling` Cloudflare Durable Object（支持闹钟定时唤醒与自适应指数退避重试）、实时账单增量计算（`live-activity-billing.ts`）以及 Apple APNs 推送协议与令牌校验实现（`live-activity-push.ts`）。
@@ -67,7 +73,7 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 
 **运输层关注点不得下沉到核心域。**
 
-APNs 实时活动推送由 platform 层协调。玩家、员工、机器人操作经 `forward()` 通知店铺／玩家对应的 Durable Object，麻将与设备操作也通知同一对象。核心域只提供与原计价一致的下一计费／规则边界计算，不依赖 APNs 或 Cloudflare。实时活动令牌与账单摘要接口由 platform 处理，设计与失败处理见 `live-activity-push.md`。
+APNs 实时活动推送由 `@prism/server` 的 `durable-objects` 模块协调。玩家、员工、机器人操作经路由层处理后通知店铺／玩家对应的 `LiveBilling` Durable Object，麻将与设备操作也通知同一对象。核心域只提供与原计价一致的下一计费／规则边界计算，不依赖 APNs 或 Cloudflare。实时活动令牌与账单摘要接口由 `@prism/server` 处理，设计与失败处理见 `live-activity-push.md`。
 
 ## 资产模型
 

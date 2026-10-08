@@ -41,7 +41,7 @@ const currentTail = !session.endedAt && !next && endedAt.getTime() < end.getTime
 const eventAt = currentTail ? end : endedAt;
 ```
 
-注释只想兼容分钟取整后的秒级尾差，但条件没有限制尾差大小，也没有确认当前仍处于该规则内。实际收费在 22:00 停止，23:00 预览时仍将最后一个收费段的 `endedAt` 改成 23:00；次日 09:00 则改到次日 09:00。因此显示时长与收费明细不一致。此结构由 `packages/server-hono/src/views.ts` 的 `toPlayerCheckoutPreviewView` 返回给客户端。
+注释只想兼容分钟取整后的秒级尾差，但条件没有限制尾差大小，也没有确认当前仍处于该规则内。实际收费在 22:00 停止，23:00 预览时仍将最后一个收费段的 `endedAt` 改成 23:00；次日 09:00 则改到次日 09:00。因此显示时长与收费明细不一致。此结构由 `packages/server/src/routes/shops/views.ts` 的 `toPlayerCheckoutPreviewView` 返回给客户端。
 
 空白期结束后，时间轴还会在前一营业段结束时显示“营业时段 → 营业时段”的切换，把中间的非营业时间省略。建议保留收费项实际起止时间，并独立表达空白期及当前状态；不要通过改写收费段末尾表达会话仍进行中。
 

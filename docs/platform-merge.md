@@ -62,7 +62,7 @@ Player checkout/redeem/device commands and merchant money/device POSTs carry an 
 
 Machine ticket claiming and its pending operation/audit rows commit in one D1 batch before relay delivery. Each ticket can send once; relay acceptance is recorded as sent, and uncertain delivery is not automatically retried. Neither swipe failure nor closing a client checks out the billing session. Player checkout fails atomically on insufficient funds and continues timing. Used shops and machines cannot be deleted through the new UI/API; machines can be disabled.
 
-For a synthetic merchant preview: `bun run build:web`, then `bun packages/platform/scripts/preview.ts`. Open `http://127.0.0.1:8790/merchant/demo`. This process binds only to loopback, seeds its own in-memory D1 and session, and has no real device URLs or production credentials.
+For a synthetic local preview: run `bun run dev:all` (or `bun run dev:local` for SQLite mode). Open `http://127.0.0.1:5173/merchant` (or `http://127.0.0.1:8787` for local API). This process binds to loopback with in-memory or local storage and has no production credentials.
 
 
 The local preview includes `/t/demo/entrance`, `/t/demo/maimai`, `/t/demo/chunithm`, `/t/demo/card-only` and `/t/demo/empty`. Its TTLock, HA and IO endpoints are simulations under `.preview.invalid`; outbound physical-device requests to other hosts are rejected. Restarting the preview resets the fixtures. Production snapshot rehearsal applies migration 0018 after row-hash verification of the original columns, keeping the source snapshots read-only.

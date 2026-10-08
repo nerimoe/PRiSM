@@ -44,96 +44,49 @@ export const roomFeeProvider: PricingProvider = {
 
 ---
 
-## 3. 运行时插件容器注册 (Runtime Plugins)
+## 3. 计费与结算扩展机制 (Pricing & Effect Providers)
 
-`packages/application` 与 `packages/server` 公开了一个轻量级的插件容器。你可以在容器中定义前端后台的配置卡片信息、固定的计费处理器、根据业务数据动态生成的计费处理器，以及资产打折效果处理器。
+在 PRiSM Next 中，计费与资产效果扩展遵循纯函数的契约设计。你可以在领域和应用层直接实现 `@prism/core` 定义的 `PricingProvider` 与 `AssetEffectProvider`：
 
 ```ts
-import type { PrismRuntimePlugin } from "@prism/application";
+import type {
+  PricingProvider,
+  PricingQuoteContext,
+  ChargeItem,
+  AssetEffectProvider,
+  AssetEffectEvaluationContext,
+  SettlementAdjustment,
+} from "@prism/core";
 
-export const storePlugin: PrismRuntimePlugin = {
-  id: "plugin.my-store",
-  // 供 Staff Web 渲染的非计时或折扣项的插件能力声明卡片
-  staffCatalog: [
-    {
-      id: "plugin.my-store.room-fee",
-      name: "包间使用费插件",
-      kind: "pricing",
-      summary: "在玩家结算时追加结算包间费用，从同一钱包扣费。",
-      status: "enabled",
-      configuredBy: "plugin",
-      capabilities: ["结账加项", "包间费", "余额扣费"],
-      // 声明本插件需要店铺在资产目录中定义过以下资产
-      requiredAssets: [
-        {
-          type: "entitlement",
-          code: "vip-room",
-          name: "VIP包间使用权",
-        },
-      ],
-    },
-  ],
-  // 静态注册的计费提供商
-  pricingProviders: [roomFeeProvider],
-  // 动态生成的计费提供商（例如需要从数据库查询某种非计时商品的状态）
-  createPricingProviders(context) {
+// 1. 自定义计费提供商
+export const roomFeeProvider: PricingProvider = {
+  id: "provider.my-store.room-fee",
+  quote(context: PricingQuoteContext): readonly ChargeItem[] {
     return [
       {
-        id: "plugin.my-store.event-entry",
-        async quote(quoteContext) {
-          // 通过上下文安全只读地列出店铺发布的活跃赛事报名商品
-          const items = await context.businessItems.listActive({
-            kind: "event.entry",
-            now: quoteContext.now,
-          });
-
-          return items.map((item) => ({
-            id: `${quoteContext.session.id}:${item.id}`,
-            source: "plugin.my-store.event-entry",
-            label: item.name,
-            amount: item.price,
-          }));
-        },
+        id: `${context.session.id}:room-fee`,
+        source: "room-fee",
+        label: "VIP 包间费",
+        amount: 2000, // 20.00 元（以分为单位）
       },
     ];
   },
-  // 注册资产打折效果
-  assetEffectProviders: [monthlyPassDiscount],
 };
-```
 
-### 插件装配挂载方式
-
-**本地单机部署**：在实例化 App 时直接传入插件数组：
-```ts
-import { Database } from "bun:sqlite";
-import { createPrismLocalApp } from "@prism/runtime";
-import { storePlugin } from "./store-plugin";
-
-const app = createPrismLocalApp({
-  db: new Database("./prism.sqlite"),
-  plugins: [storePlugin],
-});
-```
-
-**Cloudflare Worker 部署**：在 Worker 入口文件的第二个参数中注入：
-```ts
-import { createApp, type Env } from "@prism/server";
-import { storePlugin } from "./store-plugin";
-
-const app = createApp();
-
-export default {
-  fetch(request: Request, env: Env) {
-    return app.fetch(request, env);
+// 2. 自定义资产抵扣效果
+export const monthlyPassDiscount: AssetEffectProvider = {
+  id: "effect.my-store.monthly-pass",
+  evaluate(context: AssetEffectEvaluationContext): readonly SettlementAdjustment[] {
+    // 检查玩家持有的月卡资产并产生抵扣项
+    return [];
   },
 };
 ```
 
-### 插件装配规范
-- **加法原则**：注册的插件计费提供商是累加生效的。无论后台是否启用了其他持久化时间计费方案，插件计费都会在结账结算中叠加执行。时间计费规则也可以用负数单价表达叠加抵扣，例如某类麻将桌在标准入场计时之外每小时抵扣固定金额。负数 session 会保留真实计费贡献，系统只在所有待结 session 汇总完成后把最终应付金额限制为不低于 `0`。
-- **后台集成（`staffCatalog`）**：插件可以在后台声明自身所需的“前置资产”（如某项月卡卡券或 VIP 资格）。系统会自动检测资产库中是否缺失或归档了这些定义，并在后台展示状态，避免配置失误。
-- **纯函数化设计**：计费和折扣计算应当是确定且无外部副作用的。系统通过应用层服务统一扣款，插件禁止自主写入数据。
+### 扩展契约规范
+- **纯函数化设计**：计费（`quote`）和折扣计算（`evaluate`）必须是确定且无外部副作用的。系统通过应用层服务（如 `SettlementService`）统一结算与扣减资产，扩展逻辑禁止自主写入数据或直接修改钱包。
+- **加法原则**：注册的自定义计费提供商是累加生效的。无论后台是否启用了其他持久化时间计费方案，自定义计费都会在结账结算中叠加执行。时间计费规则也可以用负数单价表达叠加抵扣，系统只在所有待结会话汇总完成后把最终应付金额限制为不低于 `0`。
+- **配置式扩展**：对于大多数不需要代码编写的业务场景，商家可直接在 React 控制台中配置「固定收费项目（`charge.fixed`）」或在资产定义中绑定「计费效果（`PricingEffect`）」，系统会自动解析并在结算时生效。
 
 ---
 

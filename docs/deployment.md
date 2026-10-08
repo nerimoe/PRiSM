@@ -155,7 +155,7 @@ Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及
 
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
-Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成 `--platform` 配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
+Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成统一配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。日常亦可使用统一指令 `bun run deploy:worker` 构建前端并发布统一 Worker。
 
 ### 登录与配置
 
