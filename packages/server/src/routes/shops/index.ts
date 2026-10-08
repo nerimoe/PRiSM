@@ -28,6 +28,7 @@ import { pricingRouter } from "./pricing.js";
 import { assetsRouter } from "./assets.js";
 import { cashierRouter } from "./cashier.js";
 import { redeemRouter } from "./redeem.js";
+import { billingCompatRouter } from "./billing-compat.js";
 
 export * from "./player.js";
 export * from "./staff.js";
@@ -73,7 +74,7 @@ export async function billingConfiguration(
   };
 }
 
-function publicSettings(shop: TenantShop) {
+export function publicSettings(shop: TenantShop) {
   let entryPricingIds: string[] = [];
   try {
     entryPricingIds = JSON.parse(shop.entry_pricing_ids_json) as string[];
@@ -163,6 +164,7 @@ shopRouter.route("/assets", assetsRouter);
 shopRouter.route("/staff/asset-definitions", assetsRouter);
 shopRouter.route("/redeem", redeemRouter);
 shopRouter.route("/staff/redeem-codes", redeemRouter);
+shopRouter.route("/", billingCompatRouter);
 
 // Shop Overview, Entry Pricing and Today's Schedule
 shopRouter.get("/", async (c) => {
