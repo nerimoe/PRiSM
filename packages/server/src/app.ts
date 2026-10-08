@@ -42,6 +42,10 @@ export function createApp(): Hono<AppBindings> {
         err.code === "INTEGRATION_SESSION_NOT_FOUND" ||
         err.code === "SHOP_NOT_FOUND"
           ? 404
+          : err.code === "UNAUTHORIZED"
+          ? 401
+          : err.code === "FORBIDDEN"
+          ? 403
           : err.code === "INSUFFICIENT_BALANCE" ||
             err.code === "CHECKIN_CONSENT_REQUIRED" ||
             err.code === "PRISM_ALREADY_INSTALLED"

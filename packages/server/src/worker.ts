@@ -5,6 +5,7 @@ import {
   maintenanceResponse,
 } from "./deployment-gate.js";
 import { purgeExpiredPlatformState } from "./tasks/cron-handlers.js";
+import { isAssetEligiblePath } from "./routes/web-assets.js";
 import type { Env } from "./bindings.js";
 
 export const worker = {
@@ -40,11 +41,7 @@ export const worker = {
       env.PRISM_DEPLOY_PHASE !== "maintenance" &&
       env.PRISM_DEPLOY_PHASE !== "verify" &&
       ["GET", "HEAD"].includes(request.method) &&
-      !path.startsWith("/api/") &&
-      !path.startsWith("/.well-known/") &&
-      !path.startsWith("/callback") &&
-      !path.startsWith("/__prism_deploy") &&
-      !/^\/t\/[^/]+\/[^/]+/.test(path)
+      isAssetEligiblePath(path)
     ) {
       return env.ASSETS.fetch(request);
     }

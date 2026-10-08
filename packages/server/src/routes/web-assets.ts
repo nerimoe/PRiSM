@@ -4,6 +4,7 @@ import type { AppBindings } from "../bindings.js";
 export function isAssetEligiblePath(path: string): boolean {
   return (
     !path.startsWith("/api/") &&
+    !path.startsWith("/rpc") &&
     !path.startsWith("/.well-known/") &&
     !path.startsWith("/callback") &&
     !path.startsWith("/__prism_deploy") &&

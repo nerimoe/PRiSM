@@ -816,5 +816,56 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       expect(visit?.revision).toBe(1);
       expect(mockStorage.alarm).toBeDefined();
     });
+
+    it("does not intercept /health, /version, or /rpc when ASSETS is configured", async () => {
+      let assetsFetched = false;
+      const mockAssets = {
+        async fetch() {
+          assetsFetched = true;
+          return new Response("asset content", { status: 200 });
+        },
+      };
+
+      const { env } = createTestEnvironment();
+      const envWithAssets = {
+        ...env,
+        ASSETS: mockAssets as any,
+      };
+
+      // 1. /health must reach Hono app, not ASSETS
+      assetsFetched = false;
+      const healthRes = await worker.fetch(
+        new Request("https://prism.test/health"),
+        envWithAssets,
+      );
+      expect(healthRes.status).toBe(200);
+      expect(assetsFetched).toBe(false);
+
+      // 2. /version must reach Hono app, not ASSETS
+      assetsFetched = false;
+      const versionRes = await worker.fetch(
+        new Request("https://prism.test/version"),
+        envWithAssets,
+      );
+      expect(versionRes.status).toBe(200);
+      expect(assetsFetched).toBe(false);
+
+      // 3. /rpc/* must reach legacyRouter, not ASSETS
+      assetsFetched = false;
+      await worker.fetch(
+        new Request("https://prism.test/rpc/player/assets"),
+        envWithAssets,
+      );
+      expect(assetsFetched).toBe(false);
+
+      // 4. Regular static asset like /index.html SHOULD be intercepted by ASSETS
+      assetsFetched = false;
+      const assetRes = await worker.fetch(
+        new Request("https://prism.test/index.html"),
+        envWithAssets,
+      );
+      expect(assetRes.status).toBe(200);
+      expect(assetsFetched).toBe(true);
+    });
   });
 });
