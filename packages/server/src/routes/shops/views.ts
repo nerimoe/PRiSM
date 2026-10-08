@@ -34,6 +34,7 @@ import type {
   StaffReportsSummary,
   StaffRedeemCodeRedemptionListItem,
   PlayerRedeemRecordListItem,
+  StaffPlayerListItem,
   PreviewPlayerCheckoutResult,
   SettlePlayerCheckoutResult,
 } from "@prism/application";
@@ -499,6 +500,24 @@ export function toPlayerManagementView(
     displayName: player.displayName,
     status: player.status,
     ...(player.createdAt ? { createdAt: player.createdAt.toISOString() } : {}),
+  };
+}
+
+/** List rows contain balances and sessions; the create/update player DTO does not. */
+export function toStaffPlayerListView(player: StaffPlayerListItem) {
+  return {
+    id: player.id,
+    displayName: player.displayName,
+    status: player.status,
+    walletTotal: yuanOf(player.walletTotal),
+    activeSessionId: player.activeSessionId,
+    hasUnpaidSession: player.hasUnpaidSession ?? false,
+    ...(player.paymentMode ? { paymentMode: player.paymentMode } : {}),
+    identities: (player.identities ?? []).map((identity) => ({
+      provider: identity.provider,
+      subject: identity.subject,
+      createdAt: identity.createdAt.toISOString(),
+    })),
   };
 }
 
