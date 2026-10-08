@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import type { D1BoundStatementLike, D1DatabaseLikeLike } from "@prism/adapter-d1";
+import type { D1BoundStatementLike, D1DatabaseLike } from "@prism/adapter-d1";
 import { decryptSecret, encryptSecret } from "../../crypto.js";
 import {
   fetchMunetCards,
