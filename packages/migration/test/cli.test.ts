@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { createBunSqliteExecutor, createSqliteRepositories } from "@prism/adapter-sqlite";
-import { createRuntimeQueries } from "@prism/runtime";
+import { createRuntimeQueries } from "@prism/server";
 
 const bunExecutable = Bun.which("bun") ?? process.execPath;
 const projectRoot = fileURLToPath(new URL("../../../", import.meta.url));

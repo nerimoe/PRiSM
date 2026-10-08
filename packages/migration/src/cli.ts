@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createBunSqliteExecutor } from "@prism/adapter-sqlite";
-import { initializeSqliteSchema } from "@prism/runtime";
+import { initializeSqliteSchema } from "@prism/server";
 import {
   optionalBoolean,
   optionalJson,

@@ -1,0 +1,26 @@
+{
+  "name": "@prism/server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@prism/adapter-d1": "workspace:*",
+    "@prism/adapter-sqlite": "workspace:*",
+    "@prism/application": "workspace:*",
+    "@prism/core": "workspace:*",
+    "@prism/storage-sql": "workspace:*",
+    "@simplewebauthn/server": "^14.0.0",
+    "hono": "^4.10.7",
+    "zod": "^3.25.56"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "bun-types": "1.3.14",
+    "typescript": "^5.9.3"
+  }
+}

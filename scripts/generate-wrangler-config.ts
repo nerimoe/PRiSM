@@ -33,7 +33,7 @@ if (previewDatabaseId) databaseBinding.preview_database_id = previewDatabaseId;
 const config: Record<string, unknown> = {
   $schema: "node_modules/wrangler/config-schema.json",
   name: workerName,
-  main: "packages/runtime/src/worker.ts",
+  main: "packages/server/src/worker.ts",
   compatibility_date: "2026-06-07",
   d1_databases: [databaseBinding],
   vars: {},
@@ -43,7 +43,7 @@ const config: Record<string, unknown> = {
 };
 
 if (platform) {
-  const template = await Bun.file(new URL("../wrangler.platform.jsonc", import.meta.url)).json();
+  const template = await Bun.file(new URL("../wrangler.jsonc", import.meta.url)).json();
   const required = (name: string, localDefault: string): string => {
     const value = readOptional(name) ?? (localOnly ? localDefault : undefined);
     if (!value) throw new Error(`${name} is required in Cloudflare Workers Builds variables.`);

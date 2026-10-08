@@ -1,4 +1,4 @@
-import { deploymentControlPath } from "../packages/platform/src/deployment-gate";
+import { deploymentControlPath } from "../packages/server/src/deployment-gate";
 
 type Result = { ok?: boolean; revision?: string; phase?: string; code?: string; error?: unknown };
 type Options = {

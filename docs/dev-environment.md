@@ -1,6 +1,6 @@
 # 开发环境
 
-管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/platform` 的统一 Worker 提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
+管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/server` 的统一服务提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
 
 当前工作区位于 `/workspace/PRiSM`，已安装 Bun 1.4.2。Koishi 和 AstrBot 子模块是可选机器人集成，不影响 React 后台开发。
 
@@ -19,7 +19,7 @@ bun run dev:all
 
 可通过 `PORT` 和 `WEB_PORT` 分别修改 API 和前端端口，代理与允许来源同步调整。平台登录需配置真实 OAuth 凭据；本地配置和数据库不提交到 Git。可用 `ASTRBOT_DIR` 指定可选 AstrBot 目录；Ctrl+C 或 SIGTERM 会停止开发进程。
 
-`bun run dev:local` 保留独立 SQLite 兼容 API，用于旧接口调试和回归。它不提供统一平台的 React API；其 `/admin` 页面提示启动 React 开发环境。
+`bun run dev:local` 提供基于 Bun 原生 `Bun.serve` + `bun:sqlite` 的本地独立服务端运行时（入口为 `packages/server/src/serve.ts` / `local-server.ts`），支持离线单店开发与接口调试，自动初始化 SQLite 表结构及默认店铺计费配置，并完整支持机台 WebSocket 协议（`/rpc/machine/ws`）。
 
 ## 检查与发布
 

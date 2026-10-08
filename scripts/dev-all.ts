@@ -112,11 +112,10 @@ const main = async () => {
 
   // 2. 准备统一平台的 React 静态资源及本地 D1 数据库
   await run(["bun", "run", "build:web"]);
-  await run(["bun", "run", "scripts/generate-wrangler-config.ts", "--platform", "--local"]);
-  await run(["bunx", "wrangler", "d1", "migrations", "apply", "DB", "--local", "--config", "wrangler.generated.jsonc"]);
+  await run(["bunx", "wrangler", "d1", "migrations", "apply", "DB", "--local", "--config", "wrangler.jsonc"]);
 
   // 3. 启动与 React API 契约一致的 Worker 和 Vite 热更新服务器
-  startProcessWithPrefix("API", "36", ["bunx", "wrangler", "dev", "--config", "wrangler.generated.jsonc",
+  startProcessWithPrefix("API", "36", ["bunx", "wrangler", "dev", "--config", "wrangler.jsonc",
     "--ip", "127.0.0.1", "--port", String(API_PORT)], PROJECT_ROOT, localEnv);
   startProcessWithPrefix("Web", "35", ["bun", "run", "dev", "--port", String(WEB_PORT), "--strictPort"],
     join(PROJECT_ROOT, "packages/prism-web"), { ...process.env, PRISM_API_URL: apiOrigin });

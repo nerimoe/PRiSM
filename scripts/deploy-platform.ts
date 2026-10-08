@@ -2,9 +2,9 @@ import { assertDeploymentBranch } from "./deployment-branch";
 import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomToken, sha256 } from "../packages/platform/src/crypto";
+import { randomToken, sha256 } from "../packages/server/src/crypto";
 import { deploymentRequest } from "./deployment-control-client";
-import { deploymentControlPath } from "../packages/platform/src/deployment-gate";
+import { deploymentControlPath } from "../packages/server/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
 
 assertDeploymentBranch(process.env);
@@ -12,7 +12,7 @@ assertDeploymentBranch(process.env);
 const root = fileURLToPath(new URL("..", import.meta.url));
 const configPath = resolve(root, "wrangler.generated.jsonc");
 const base = await Bun.file(configPath).json();
-if (base.main !== "packages/platform/src/worker.ts" || !base.vars?.APP_ORIGIN)
+if (base.main !== "packages/server/src/worker.ts" || !base.vars?.APP_ORIGIN)
   throw new Error("Generate the platform configuration before running this script");
 const origin = new URL(base.vars.APP_ORIGIN);
 if (origin.protocol !== "https:" || origin.origin !== base.vars.APP_ORIGIN)
@@ -31,7 +31,7 @@ const configs = new Map<string, string>();
 for (const phase of ["maintenance", "verify", "live"] as const) {
   const config = {
     ...base,
-    main: resolve(root, phase === "maintenance" ? "packages/platform/src/maintenance-worker.ts" : "packages/platform/src/worker.ts"),
+    main: resolve(root, phase === "maintenance" ? "packages/server/src/maintenance-worker.ts" : "packages/server/src/worker.ts"),
     assets: { ...base.assets, binding: "ASSETS", directory: resolve(root, base.assets.directory), run_worker_first: phase === "live" ? [...base.assets.run_worker_first, deploymentControlPath] : true },
     d1_databases: base.d1_databases.map((db: Record<string, unknown>) => ({ ...db, migrations_dir: resolve(root, "migrations") })),
     vars: { ...base.vars, PRISM_DEPLOY_GUARD: "1", PRISM_DEPLOY_PHASE: phase, PRISM_DEPLOY_TOKEN_HASH: tokenHash, PRISM_DEPLOY_REVISION: revision },

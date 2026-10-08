@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { Database } from "bun:sqlite";
 import { centsOf, yuanOf, validatePricingConfig, buildPriorityTimePricingTimeline, type PricingConfig } from "../packages/core/src";
 import { sqliteSchema } from "../packages/storage-sql/src";
-import { RuntimeRepositories, createPrismRuntimeDependencies } from "../packages/runtime/src";
+import {
+  createD1DatabaseFromSqlite,
+  createShopDependencies,
+  type TenantShop,
+} from "../packages/server/src";
 import { buildBillTimeline } from "../packages/application/src/bill-timeline";
 
 // Diagnostic only: all data stays in an in-memory SQLite database.
@@ -13,12 +17,29 @@ let clock = new Date("2026-10-02T01:00:00Z"); // 09:00 Asia/Shanghai
 const now = () => clock;
 const id = () => crypto.randomUUID();
 const shopId = "gap-repro";
-const repositories = RuntimeRepositories.fromBunSqlite({ db, shopId, now, id });
-const deps = createPrismRuntimeDependencies({
-  repositories,
-  queries: RuntimeRepositories.queriesFromBunSqlite({ db, shopId, now }),
-  now, id, pricingProviders: [], assetEffectProviders: [], coinCooldownMs: 0,
-});
+const shop: TenantShop = {
+  id: shopId,
+  public_id: shopId,
+  name: shopId,
+  latitude: 0,
+  longitude: 0,
+  radius_meters: 0,
+  billing_enabled: 1,
+  cashier_enabled: 0,
+  auto_register: 0,
+  identity_binding_required: 1,
+  checkin_geo: 0,
+  checkout_geo: 0,
+  machine_geo: 0,
+  entry_pricing_ids_json: "[]",
+  bot_contact: "",
+  time_zone: "Asia/Shanghai",
+  hero_url: null,
+};
+const d1 = createD1DatabaseFromSqlite(db);
+const deps = createShopDependencies({ db: d1, shop, now, id });
+const repositories = deps.repositories;
+
 await repositories.system.setAppSetting("store.profile", { timeZone: "Asia/Shanghai" });
 db.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES(?, 'player', 'Gap test', 'active', ?)", [shopId, clock.toISOString()]);
 db.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable) VALUES(?,'currency','paid','Balance',1)", [shopId]);

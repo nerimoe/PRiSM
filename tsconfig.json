@@ -17,16 +17,10 @@
       "path": "./packages/adapter-d1"
     },
     {
-      "path": "./packages/server-hono"
-    },
-    {
-      "path": "./packages/runtime"
+      "path": "./packages/server"
     },
     {
       "path": "./packages/migration"
-    },
-    {
-      "path": "./packages/platform"
     },
     {
       "path": "./packages/prism-web"
