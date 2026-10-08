@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -10,8 +10,6 @@ import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
 import type { Env } from "../src/bindings.js";
 
 const migrations=resolve(import.meta.dir,"../../../migrations");
-const responseFetch=spyOn(globalThis,"fetch");
-afterEach(()=>responseFetch.mockRestore());
 
 async function fixture(){
   const sqlite=new Database(":memory:");
@@ -48,6 +46,7 @@ async function fixture(){
 describe("pre-fork authenticated Aime machine login",()=>{
   it("sends a validated card and journals successful hardware commands",async()=>{
     const {sqlite,app,env,ticket,token}=await fixture();
+    const responseFetch=spyOn(globalThis,"fetch");
     try{
       responseFetch.mockResolvedValue(new Response(null,{status:204}));
       const res=await app.fetch(new Request("https://prism.test/api/v1/machines/login",{
@@ -72,10 +71,11 @@ describe("pre-fork authenticated Aime machine login",()=>{
       const event=sqlite.query("SELECT result,card_id FROM machine_login_events ORDER BY created_at DESC LIMIT 1")
         .get() as {result:string;card_id:string}|null;
       expect(event).toEqual({result:"sent",card_id:"card-one"});
-    }finally{sqlite.close();}
+    }finally{responseFetch.mockRestore(); sqlite.close();}
   });
   it("rejects cards owned by other users before sending hardware commands",async()=>{
     const {sqlite,app,env,ticket,token}=await fixture();
+    const responseFetch=spyOn(globalThis,"fetch");
     try{
       responseFetch.mockResolvedValue(new Response(null,{status:204}));
       const res=await app.fetch(new Request("https://prism.test/api/v1/machines/login",{
@@ -85,6 +85,6 @@ describe("pre-fork authenticated Aime machine login",()=>{
       expect(res.status).toBe(404);
       expect(responseFetch).not.toHaveBeenCalled();
       expect((sqlite.query("SELECT COUNT(*) AS n FROM device_commands").get() as {n:number}).n).toBe(0);
-    }finally{sqlite.close();}
+    }finally{responseFetch.mockRestore(); sqlite.close();}
   });
 });
