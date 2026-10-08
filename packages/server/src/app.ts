@@ -125,7 +125,15 @@ export function createApp(): Hono<AppBindings> {
     const response = await app.fetch(new Request(url, c.req.raw), c.env, (() => {
       try { return c.executionCtx; } catch { return undefined; }
     })());
-    return unwrapLegacyResponse(response);
+    const legacy = await unwrapLegacyResponse(response);
+    // The pre-merge /api/* shim returned string errors for non-v1 callers.
+    if (!legacy.ok && legacy.headers.get("content-type")?.includes("application/json")) {
+      const error = await legacy.json() as { error?: { message?: string } | string };
+      const message = typeof error.error === "string"
+        ? error.error : error.error?.message ?? "请求失败";
+      return c.json({ error: message }, legacy.status as 400);
+    }
+    return legacy;
   });
 
   // System routes
