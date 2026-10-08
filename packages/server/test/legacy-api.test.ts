@@ -364,6 +364,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       }),
       env,
     );
+    if (!startRes.ok) console.error("QR-confirmed start failed", startRes.status, await startRes.clone().text());
     expect(startRes.status).toBe(200);
     expect(startRes.headers.get("X-API-Deprecated")).toBe("true");
     expect(startRes.headers.get("X-API-Replacement")).toBe(
