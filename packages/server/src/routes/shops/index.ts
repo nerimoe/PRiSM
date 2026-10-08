@@ -128,7 +128,8 @@ shopRouter.use("*", tenantMiddleware);
 // forget to wake the Live Activity. Send APNs after the response is committed.
 shopRouter.use("*", async (c, next) => {
   await next();
-  if (!c.res.ok || c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
+  if (!c.res.ok || c.res.headers.get("x-prism-operation-replayed") === "true" ||
+      c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
   const match = c.req.path.match(/^\/api\/v1\/shops\/[^/]+\/(player|staff|integration)\/(.+)$/);
   if (!match) return;
   const [, channel, path] = match;
