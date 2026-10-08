@@ -254,6 +254,41 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("keeps pre-fork shop data transfer owner-only and fails closed without rate limiting", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const exportUrl=`https://prism.test/api/v1/shops/${publicId}/data/export`;
+    const previewUrl=`https://prism.test/api/v1/shops/${publicId}/data/import/preview`;
+
+    const anonymous=await app.fetch(new Request(exportUrl),env);
+    expect(anonymous.status).toBe(401);
+    const anonymousPreview=await app.fetch(new Request(previewUrl,{
+      method:"POST",headers:{"content-type":"application/json"},body:"{}",
+    }),env);
+    expect(anonymousPreview.status).toBe(401);
+
+    const strangerToken="stranger-transfer-session";
+    const strangerId="user_data_stranger";
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",[strangerId]);
+    sqlite.run("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES ('stranger-session',?,?,?)",[
+      strangerId,await sha256(strangerToken),new Date(Date.now()+86_400_000).toISOString(),
+    ]);
+    const stranger=await app.fetch(new Request(exportUrl,{
+      headers:{authorization:`Bearer ${strangerToken}`},
+    }),env);
+    expect(stranger.status).toBe(403);
+
+    // A legitimate owner is still blocked if Cloudflare's distributed limiter is absent.
+    // The endpoint must not silently fall back to unbounded import/export operations.
+    const owner=await app.fetch(new Request(exportUrl,{
+      headers:{authorization:`Bearer ${staffSessionToken}`},
+    }),env);
+    expect(owner.status).toBe(503);
+    expect((await owner.json() as {error:{code:string}}).error.code).toBe("RATE_LIMIT_UNAVAILABLE");
+    expect(sqlite.query("SELECT id FROM shops WHERE id=?").get(shopId)).not.toBeNull();
+  });
+
   it("handles player session start, checkout preview, checkout confirm, and history", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId } = await setupShopFixture(db, sqlite);
