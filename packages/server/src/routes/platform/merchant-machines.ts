@@ -289,8 +289,10 @@ async function changeMachine(c:C, machineId?:string) {
   const coinKey=body.coinKey??current?.coin_key??32;
   const coinAfterSwipe=!!url&&coinKey>0&&(body.coinAfterSwipe??!!current?.coin_after_swipe);
   if(coinAfterSwipe&&!password)jsonError(400,"自动投币需要 HINATA IO 连接密码","DEVICE_CONFIGURATION_REQUIRED");
-  const values=[
-    body.name??current?.name, url,url?password:null,+(body.enabled??!!current?.enabled),
+  const name=body.name??current?.name;
+  if (!name) jsonError(400,"设备名称不能为空","INVALID_DEVICE_NAME");
+  const values: Array<string|number|null>=[
+    name, url,url?password:null,+(body.enabled??!!current?.enabled),
     kind,encryptedHA,body.ttlockLockId===undefined?current?.ttlock_lock_id??null:body.ttlockLockId,
     coinKey,+coinAfterSwipe,mahjong?JSON.stringify(mahjong):null,JSON.stringify(aliases),
   ];
