@@ -788,7 +788,9 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(assetsData.holdings).toBeDefined();
     expect(assetsData.ledgerEntries).toBeDefined();
 
-    // 3. Staff wallet adjustment
+    // 3. Staff wallet adjustment; a replay must return the persisted result
+    // without applying the financial mutation twice.
+    const walletOperationId = crypto.randomUUID();
     const adjustRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/staff/players/p_staff_test/wallet/adjustment`, {
         method: "POST",
@@ -799,12 +801,23 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
         body: JSON.stringify({
           amount: 5000,
           reason: "staff bonus",
-          operationId: crypto.randomUUID(),
+          operationId: walletOperationId,
         }),
       }),
       env,
     );
     expect(adjustRes.status).toBe(200);
+    const repeatRes = await app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players/p_staff_test/wallet/adjustment`,
+      { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: 5000, reason: "staff bonus", operationId: walletOperationId }) },
+    ), env);
+    expect(repeatRes.status).toBe(200);
+    expect(await repeatRes.json()).toEqual(await adjustRes.json());
+    const walletRows = sqlite.query(
+      "SELECT COALESCE(SUM(quantity),0) AS total FROM asset_holdings WHERE shop_id=? AND player_id='p_staff_test' AND asset_type='currency'",
+    ).get(shopId) as { total: number };
+    expect(walletRows.total).toBe(500000);
 
     // 4. Staff reports summary
     const reportsRes = await app.fetch(
