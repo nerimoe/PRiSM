@@ -6,7 +6,7 @@ import {
   configurationTables,
   tableSchemas,
   type DataRow,
-} from "./shop-data-format";
+} from "./shop-data-format.js";
 
 export const extraSchema = [
   `CREATE TABLE IF NOT EXISTS shop_billing_settings (

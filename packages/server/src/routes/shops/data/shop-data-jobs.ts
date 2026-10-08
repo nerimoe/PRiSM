@@ -1,5 +1,5 @@
-import type { D1DatabaseLike as D1Database, D1BoundStatementLike as D1PreparedStatement } from "@prism/adapter-d1";
-import { registerShopExportRoutes, sourceColumns, importAttemptStatement, shopExportError } from "./shop-data-export";
+import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
+import { registerShopExportRoutes, sourceColumns, importAttemptStatement, shopExportError } from "./shop-data-export.js";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { validatePricingConfig, resolveLocationTimeZone } from "@prism/core";
@@ -19,9 +19,9 @@ import {
   validateRows,
   type FullHeader,
   type FullTable,
-} from "./shop-data-v2-format";
-import type { DataRow } from "./shop-data-format";
-import type { AppBindings } from "../../../bindings.js";
+} from "./shop-data-v2-format.js";
+import type { DataRow } from "./shop-data-format.js";
+import type { AppBindings } from "./compat.js";
 
 type C = Context<AppBindings>;
 type Job = {

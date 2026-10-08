@@ -1,6 +1,5 @@
-import type { D1DatabaseLike as D1Database, D1BoundStatementLike as D1PreparedStatement } from "@prism/adapter-d1";
 import type { Context } from "hono";
-import type { AppBindings } from "../../../bindings.js";
+import type { AppBindings, LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import { jsonError } from "../../../http.js";
 
 type Link = {

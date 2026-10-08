@@ -1,6 +1,6 @@
 import type { D1BoundStatementLike as D1PreparedStatement } from "@prism/adapter-d1";
-import { registerShopDataJobRoutes } from "./shop-data-jobs";
-import { startShopExport, finishShopExport, importAttemptStatement } from "./shop-data-export";
+import { registerShopDataJobRoutes } from "./shop-data-jobs.js";
+import { startShopExport, finishShopExport, importAttemptStatement } from "./shop-data-export.js";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { createD1Repositories } from "@prism/adapter-d1";
@@ -10,11 +10,11 @@ import { getBillingShop, staffPrincipal, type BillingShop } from "./compat.js";
 import { sha256 } from "../../../crypto.js";
 import { jsonError } from "../../../http.js";
 import { enforceRateLimits } from "./compat.js";
-import type { AppBindings } from "../../../bindings.js";
+import type { AppBindings } from "./compat.js";
 import {
   backupSchema, businessTables, maxFileBytes, maxChunkBytes, rowChunks, scopeSchema,
   tableSchemas, tablesFor, validateBackup, type DataRow, type ShopBackup,
-} from "./shop-data-format";
+} from "./shop-data-format.js";
 
 type C = Context<AppBindings>;
 const limits = { fileBytes: maxFileBytes, rowBytes: maxChunkBytes };
@@ -44,7 +44,7 @@ export async function targetState(c: C, shopId: string) {
   return state;
 }
 export async function owner(c: C, rate = true) {
-  const shop = await getBillingShop(c, c.req.param("shopCode")!, false);
+  const shop = await getBillingShop(c, c.req.param("shopCode")!);
   const principal = await staffPrincipal(c, shop, true);
   if (principal.staffRole !== "owner") jsonError(403, "只有店铺负责人可以导入和导出数据", "FORBIDDEN");
   if (rate) await enforceRateLimits(c, [{ key: `shop-data:${shop.id}:${requireUser(c).id}`, limit: 10, windowSeconds: 60 }]);

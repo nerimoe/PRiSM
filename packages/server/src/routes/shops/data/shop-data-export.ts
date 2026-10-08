@@ -1,4 +1,4 @@
-import type { D1DatabaseLike as D1Database, D1BoundStatementLike as D1PreparedStatement } from "@prism/adapter-d1";
+import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import type { Context, Hono } from "hono";
 import { z } from "zod";
 import { requireAdmin, requireUser } from "../../../middleware/auth.js";
@@ -6,8 +6,8 @@ import type { BillingShop } from "./compat.js";
 import { decryptSecret } from "../../../crypto.js";
 import { jsonError } from "../../../http.js";
 import { owner } from "./shop-data.js";
-import { schemas, v2TablesFor, type FullTable } from "./shop-data-v2-format";
-import type { AppBindings } from "../../../bindings.js";
+import { schemas, v2TablesFor, type FullTable } from "./shop-data-v2-format.js";
+import type { AppBindings } from "./compat.js";
 
 type C = Context<AppBindings>;
 type ExportJob = {
