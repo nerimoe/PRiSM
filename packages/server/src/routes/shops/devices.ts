@@ -168,9 +168,17 @@ devicesRouter.delete("/:id", async (c) => {
     jsonError(404, "没有找到这台设备", "DEVICE_NOT_FOUND");
   }
 
-  await c.env.DB.prepare("DELETE FROM machines WHERE id = ?")
-    .bind(existing.id)
-    .run();
+  // Machine activity is an audit trail. Historical machines must be disabled, not removed.
+  const used = await c.env.DB.prepare(
+    `SELECT 1 FROM machine_login_events WHERE machine_id=?
+     UNION ALL SELECT 1 FROM player_operations WHERE device_id=?
+     UNION ALL SELECT 1 FROM device_commands WHERE shop_id=? AND device_id=? LIMIT 1`,
+  ).bind(existing.id, existing.id, shop.id, existing.id).first();
+  if (used) jsonError(409, "机台已有操作记录，请改为停用", "MACHINE_HAS_HISTORY");
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM machine_tickets WHERE machine_id=?").bind(existing.id),
+    c.env.DB.prepare("DELETE FROM machines WHERE id=? AND shop_id=?").bind(existing.id, shop.id),
+  ]);
   return c.json({ ok: true });
 });
 
