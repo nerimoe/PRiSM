@@ -8,16 +8,12 @@ import { getOrCreateShopDependencies } from "../middleware/tenant.js";
  * Normalizes shop record by ensuring numerical boolean representation for geo flags.
  */
 export function normalizeShop(shopRow: TenantShop): TenantShop {
-  const enabled = +(!!(
-    shopRow.checkin_geo ||
-    shopRow.checkout_geo ||
-    shopRow.machine_geo
-  ));
   return {
     ...shopRow,
-    checkin_geo: enabled,
-    checkout_geo: enabled,
-    machine_geo: enabled,
+    // Keep the three independent geofence settings; the aggregate is UI-only.
+    checkin_geo: +!!shopRow.checkin_geo,
+    checkout_geo: +!!shopRow.checkout_geo,
+    machine_geo: +!!shopRow.machine_geo,
   };
 }
 

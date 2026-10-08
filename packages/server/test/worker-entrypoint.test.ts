@@ -313,9 +313,9 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         env,
       );
       expect(r2.status).toBe(200);
-      const b2 = (await r2.json()) as { ok: boolean; status: string };
-      expect(b2.ok).toBe(true);
-      expect(b2.status).toBe("healthy");
+      const b2 = (await r2.json()) as { data: { ok: boolean; status: string } };
+      expect(b2.data.ok).toBe(true);
+      expect(b2.data.status).toBe("healthy");
     });
 
     it("routes GET /version and GET /api/v1/version with service metadata", async () => {
@@ -334,8 +334,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         env,
       );
       expect(r2.status).toBe(200);
-      const b2 = (await r2.json()) as { service: string };
-      expect(b2.service).toBe("prism-api");
+      const b2 = (await r2.json()) as { data: { service: string } };
+      expect(b2.data.service).toBe("prism-api");
     });
 
     it("dispatches platform auth and shop routes correctly", async () => {
@@ -366,8 +366,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         env,
       );
       expect(meRes.status).toBe(200);
-      const meData = (await meRes.json()) as { user: { username: string } };
-      expect(meData.user.username).toBe("alice");
+      const meData = (await meRes.json()) as { data: { user: { username: string } } };
+      expect(meData.data.user.username).toBe("alice");
 
       // Create a shop via /api/v1/shops
       const shopRes = await testApp.request(
@@ -389,9 +389,9 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       );
       expect(shopRes.status).toBe(201);
       const shopData = (await shopRes.json()) as {
-        shop: { id: string; publicId: string; name: string };
+        data: { shop: { id: string; publicId: string; name: string } };
       };
-      expect(shopData.shop.name).toBe("Wonderland Arcade");
+      expect(shopData.data.shop.name).toBe("Wonderland Arcade");
 
       // List shops via /api/v1/shops
       const listRes = await testApp.request(
@@ -401,10 +401,10 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       );
       expect(listRes.status).toBe(200);
       const listData = (await listRes.json()) as {
-        shops: Array<{ name: string }>;
+        data: { shops: Array<{ name: string }> };
       };
-      expect(listData.shops).toHaveLength(1);
-      expect(listData.shops[0]!.name).toBe("Wonderland Arcade");
+      expect(listData.data.shops).toHaveLength(1);
+      expect(listData.data.shops[0]!.name).toBe("Wonderland Arcade");
     });
 
     it("dispatches tenant shop routes under /api/v1/shops/:shopCode", async () => {
@@ -453,11 +453,11 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       );
       expect(overviewRes.status).toBe(200);
       const overviewData = (await overviewRes.json()) as {
-        shop: { publicId: string; name: string; billingEnabled: boolean };
+        data: { shop: { publicId: string; name: string; billingEnabled: boolean } };
       };
-      expect(overviewData.shop.publicId).toBe(publicId);
-      expect(overviewData.shop.name).toBe("Wonder Arcade");
-      expect(overviewData.shop.billingEnabled).toBe(true);
+      expect(overviewData.data.shop.publicId).toBe(publicId);
+      expect(overviewData.data.shop.name).toBe("Wonder Arcade");
+      expect(overviewData.data.shop.billingEnabled).toBe(true);
 
       // Access tenant pricing as shop owner
       const pricingRes = await testApp.request(
@@ -467,9 +467,9 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       );
       expect(pricingRes.status).toBe(200);
       const pricingData = (await pricingRes.json()) as {
-        pricingConfigs: Array<{ name: string }>;
+        data: { pricingConfigs: Array<{ name: string }> };
       };
-      expect(pricingData.pricingConfigs.length).toBeGreaterThan(0);
+      expect(pricingData.data.pricingConfigs.length).toBeGreaterThan(0);
     });
 
     it("falls through to legacy router for un-prefixed player routes with deprecation headers", async () => {

@@ -152,9 +152,9 @@ describe("Local Server Entrypoint & Runtime", () => {
         }),
       );
       expect(authShopRes.status).toBe(200);
-      const authShopJson = await authShopRes.json() as { player: { id: string } };
-      expect(authShopJson.player).toBeDefined();
-      expect(authShopJson.player.id).toBeDefined();
+      const authShopJson = await authShopRes.json() as { data: { player: { id: string } } };
+      expect(authShopJson.data.player).toBeDefined();
+      expect(authShopJson.data.player.id).toBeDefined();
 
       const authLegacyRes = await server.fetch(
         new Request(`http://localhost:${server.port}/api/v1/player/me`, {
@@ -162,8 +162,8 @@ describe("Local Server Entrypoint & Runtime", () => {
         }),
       );
       expect(authLegacyRes.status).toBe(200);
-      const authLegacyJson = await authLegacyRes.json() as { player: { id: string } };
-      expect(authLegacyJson.player.id).toBe(authShopJson.player.id);
+      const authLegacyJson = await authLegacyRes.json() as { data: { player: { id: string } } };
+      expect(authLegacyJson.data.player.id).toBe(authShopJson.data.player.id);
     });
 
     it("handles machine WebSocket upgrade /rpc/machine/ws with authentication and messaging", async () => {
