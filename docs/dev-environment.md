@@ -67,3 +67,25 @@ React 商户工作台的「设置」按六个分类组织，分类写入 URL 的
 跨客户端时间检查：业务与 SQL 保持 UTC，事件响应输出店铺偏移 ISO 时间。商户／Bot 显示店铺时间，玩家个人时间显示设备时区。Swift 源码克隆于 `/workspace/hinata_go`，Foundation 时间回归可运行 `test/native/run-prism-time-check.sh`；完整 iOS 编译需 macOS／Xcode。详见 [客户端时间约定](client-time-contract.md)。
 
 测试 MuNET 首次注册流程可使用 React 平台管理员「管理 → 删除账号」入口，无需手改数据库。清理范围、重新注册行为与负责人接管规则见 [删除测试账号](admin-account-deletion.md)。
+
+## 账号页面与 CI 回归检查
+
+平台账号总览使用 `GET /api/v1/account`，成功时 API 响应体应为
+`{ "data": { "identities": [...], "passkeys": [...] } }`。
+`GET /api/v1/me` 则返回 `{ "data": { "user": ... } }`。
+顶层服务在 `/api/v1` 挂载 `userRouter` 以暴露账号总览；**不得**再把整个
+`userRouter` 挂载到 `/api/v1/account`，否则其根路由会抢先返回用户资料，
+导致 React 账号页面的列表无法渲染。
+
+GitHub Actions 的 `test` job 逐文件隔离运行 Bun 测试，其中
+`packages/server/test/platform-routes.test.ts` 还通过生产用
+`createApp()` 验证账号总览、用户资料与未登录行为及统一 `data` 包装，
+避免只测试单独挂载的子路由而漏掉顶层路径冲突。随后执行 TypeScript 检查、
+Web 构建和 Worker dry-run。
+
+`browser` job 首先执行原有流程检查，然后分别使用 Chromium 和 WebKit
+对访客／玩家／店员／店主／管理员执行移动端及桌面端路由矩阵。
+账号页面的模拟数据必须包含实际身份和 Passkey 条目，测试同时要求页面标题
+与具体条目渲染成功；禁止把未知 API 请求或 JS 错误当作成功。
+失败截图及扫描结果作为 `scan-first-paint` artifact 保存 7 天。
+WebKit 是对 iOS Safari 渲染行为的近似检查，不能替代真实 iPhone Safari 验收。
