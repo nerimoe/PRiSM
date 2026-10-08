@@ -11,6 +11,7 @@ import {
   toPlayerCheckoutResultView,
   toPlayerIdentityView,
   toPlayerManagementView,
+  toStaffPlayerListView,
   toPlayerRedeemRecordsView,
   toSessionHistoryDetailView,
   toSessionHistoryView,
@@ -37,7 +38,7 @@ staffRouter.get("/players", async (c) => {
   await staffPrincipal(c, shop, true);
   const deps = getShopDeps(c);
   const players = await deps.staffQueries.listPlayers();
-  return c.json({ players: players.map(toPlayerManagementView) });
+  return c.json({ players: players.map(toStaffPlayerListView) });
 });
 
 // Standalone and tenant-scoped staff browser billing preview inputs.
