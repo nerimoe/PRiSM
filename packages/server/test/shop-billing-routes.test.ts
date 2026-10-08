@@ -7,6 +7,7 @@ import type { AppBindings, Env } from "../src/bindings.js";
 import { attachUser } from "../src/middleware/auth.js";
 import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
 import { shopRouter } from "../src/routes/shops/index.js";
+import { createApp } from "../src/app.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
 
@@ -253,6 +254,55 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     app.route("/api/v1/shops/:shopCode", shopRouter);
     return app;
   }
+
+  it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+
+    sqlite.run(
+      "INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, 'funded', '有余额玩家', 'active', CURRENT_TIMESTAMP), (?, 'empty', '零余额玩家', 'active', CURRENT_TIMESTAMP)",
+      [shopId, shopId],
+    );
+    sqlite.run(
+      "INSERT INTO asset_holdings (shop_id, id, player_id, asset_type, asset_code, quantity) VALUES (?, 'paid-1', 'funded', 'currency', 'paid', 12345), (?, 'free-1', 'funded', 'currency', 'free', 250)",
+      [shopId, shopId],
+    );
+    sqlite.run(
+      "INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at) VALUES (?, 'funded', 'aime', 'card-1', '2026-10-01T00:00:00Z')",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO sessions (shop_id, id, player_id, started_at, status, payment_status, pricing_config_ids_json) VALUES (?, 'active-funded', 'funded', '2026-10-02T02:08:00Z', 'active', 'unpaid', '[]')",
+      [shopId],
+    );
+
+    const response = await app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players`,
+      { headers: { authorization: `Bearer ${staffSessionToken}` } },
+    ), env);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      data: { players: Array<{
+        id: string; walletTotal: number; activeSessionId: string | null;
+        hasUnpaidSession: boolean; identities: Array<{ provider: string; subject: string; createdAt: string }>;
+      }> };
+    };
+    const byId = new Map(body.data.players.map((player) => [player.id, player]));
+    expect(byId.get("funded")).toMatchObject({
+      walletTotal: 125.95,
+      activeSessionId: "active-funded",
+      hasUnpaidSession: true,
+      identities: [{ provider: "aime", subject: "card-1", createdAt: expect.any(String) }],
+    });
+    expect(byId.get("empty")).toMatchObject({
+      walletTotal: 0,
+      activeSessionId: null,
+      hasUnpaidSession: false,
+      identities: [],
+    });
+    sqlite.close();
+  });
 
   it("returns a grouped on-site player and real billing inputs for the browser; unauthenticated users are denied", async () => {
     const { db, sqlite, env } = createTestContext();
