@@ -4,6 +4,7 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { decryptSecret } from "../../crypto.js";
+import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { sendHinataCard, sendHinataCoin } from "../../hardware/hinata.js";
 import { clientIp, jsonError, nowIso } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
@@ -26,7 +27,7 @@ const machineLoginSchema = z.object({
   clientTimestamp: z.string().optional(),
 });
 
-async function assertNotBanned(c: C, entries: Array<[string, string]>) {
+export async function assertNotBanned(c: C, entries: Array<[string, string]>) {
   for (const [subjectType, subjectValue] of entries) {
     const found = await c.env.DB.prepare(
       "SELECT id FROM bans WHERE subject_type=? AND subject_value=? AND (expires_at IS NULL OR expires_at>?)",
@@ -35,7 +36,7 @@ async function assertNotBanned(c: C, entries: Array<[string, string]>) {
   }
 }
 
-async function getShopForMachine(c:C, shopCode:string): Promise<TenantShop> {
+export async function getShopForMachine(c:C, shopCode:string): Promise<TenantShop> {
   const shop = await findLegacyShopByCode(c.env.DB,shopCode);
   if (!shop) jsonError(404,"没有找到这个店铺","SHOP_NOT_FOUND");
   c.set("responseTimeZone",shop.time_zone);
@@ -43,7 +44,7 @@ async function getShopForMachine(c:C, shopCode:string): Promise<TenantShop> {
   return shop;
 }
 
-async function requireShopPlayer(c:C,shop:TenantShop,deviceOnly=false):Promise<{id:string,status:string}> {
+export async function requireShopPlayer(c:C,shop:TenantShop,deviceOnly=false):Promise<{id:string,status:string}> {
   const user=requireUser(c);
   if (!shop.billing_enabled && !deviceOnly) jsonError(409,"店铺未启用计费","BILLING_DISABLED");
   const find=()=>c.env.DB.prepare(
@@ -81,7 +82,7 @@ async function requireShopPlayer(c:C,shop:TenantShop,deviceOnly=false):Promise<{
   return player;
 }
 
-async function requireActiveEntry(c:C,shop:TenantShop):Promise<string> {
+export async function requireActiveEntry(c:C,shop:TenantShop):Promise<string> {
   const player=await requireShopPlayer(c,shop);
   const repo=createD1Repositories({db:c.env.DB,shopId:shop.id,id:()=>crypto.randomUUID(),now:()=>new Date()});
   const sessions=await repo.sessions.findActiveByPlayerId(player.id);
@@ -89,7 +90,7 @@ async function requireActiveEntry(c:C,shop:TenantShop):Promise<string> {
   return player.id;
 }
 
-async function machinePower(c:C,machine:{ha_binding_encrypted:string|null}):Promise<"on"|"off"|"unknown"|"unmanaged"> {
+export async function machinePower(c:C,machine:{ha_binding_encrypted:string|null}):Promise<"on"|"off"|"unknown"|"unmanaged"> {
   if(!machine.ha_binding_encrypted)return "unmanaged";
   if(!c.env.URL_ENCRYPTION_KEY) jsonError(503,"设备密钥尚未配置","DEVICE_ENCRYPTION_UNAVAILABLE");
   try {
@@ -122,7 +123,7 @@ async function recordLoginEvent(c:C,event:{
   ).run();
 }
 
-async function claimCoin(c:C,shopId:string,machineId:string,id:string) {
+export async function claimCoin(c:C,shopId:string,machineId:string,id:string) {
   const configured=await c.env.DB.prepare(
     "SELECT json_extract(value_json,'$.coinCooldownMs') AS cooldown FROM app_settings WHERE shop_id=? AND key='venue.operations'",
   ).bind(shopId).first<{cooldown:number|null}>();
@@ -201,6 +202,11 @@ async function handleLogin(c:C,routePublicId?:string) {
     ).bind(shop.id,playerId),
   );
   await c.env.DB.batch(writes);
+  if(result.ok && playerId) {
+    const sync=refreshActivityBill(c.env,shop.id,playerId)
+      .catch(error=>console.error("Machine login live bill sync failed",error));
+    try{c.executionCtx.waitUntil(sync);}catch{void sync;}
+  }
   if(!result.ok)jsonError(502,
     result.status===0||result.status===404?"设备离线或连接地址不正确，请联系店员":"设备连接失败，请联系店员检查配置",
     "DEVICE_UNAVAILABLE",response);
