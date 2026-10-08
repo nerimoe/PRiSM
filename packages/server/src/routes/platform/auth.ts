@@ -5,8 +5,8 @@ import { passkeysRouter } from "./passkeys.js";
 
 export const authRouter = new Hono<AppBindings>();
 
-// Platform identities are provisioned by verified MuNET OAuth or Passkey flows.
-// Do not add username-only local registration or login endpoints here.
+// MuNET OAuth provisions platform accounts; Passkeys authenticate existing users.
+// Never issue a platform session solely from a caller-supplied username.
 authRouter.route("/passkey", passkeysRouter);
 
 authRouter.post("/logout", async (c) => {
