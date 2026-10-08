@@ -97,7 +97,7 @@ async function machinePower(c:C,machine:{ha_binding_encrypted:string|null}):Prom
       url:string;token:string;entityId:string;
     };
     const response=await fetch(
-      `${ha.url.replace(/\\/+$/,"")}/api/states/${encodeURIComponent(ha.entityId)}`,
+      `${ha.url.replace(new RegExp("/+$"),"")}/api/states/${encodeURIComponent(ha.entityId)}`,
       {headers:{authorization:`Bearer ${ha.token}`},signal:AbortSignal.timeout(3000)},
     );
     if(!response.ok)return "unknown";
