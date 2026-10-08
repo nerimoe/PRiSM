@@ -747,4 +747,61 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(bindingRow?.provider).toBe("qq");
     expect(bindingRow?.subject).toBe("99887766");
   });
+
+  it("preserves independent geo gates when updating shop settings", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const config = sqlite.query<{ entry_pricing_ids_json: string }, [string]>(
+      "SELECT entry_pricing_ids_json FROM shop_billing_settings WHERE shop_id=?",
+    ).get(shopId);
+    const response = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/settings`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${staffSessionToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          billingEnabled: true,
+          cashierEnabled: true,
+          autoRegister: true,
+          identityBindingRequired: false,
+          checkinGeo: true,
+          checkoutGeo: false,
+          machineGeo: true,
+          entryPricingIds: JSON.parse(config!.entry_pricing_ids_json),
+          botContact: "owner@example.test",
+        }),
+      }),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const flags = sqlite.query<{ checkin_geo: number; checkout_geo: number; machine_geo: number }, [string]>(
+      "SELECT checkin_geo,checkout_geo,machine_geo FROM shop_billing_settings WHERE shop_id=?",
+    ).get(shopId);
+    expect(flags?.checkin_geo).toBe(1);
+    expect(flags?.checkout_geo).toBe(0);
+    expect(flags?.machine_geo).toBe(1);
+  });
+
+  it("rejects invalid checkout report ranges and archive filters with stable error codes", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const base = `https://prism.test/api/v1/shops/${publicId}/staff/reports/checkouts`;
+    const headers = { Authorization: `Bearer ${staffSessionToken}` };
+    const invalidRange = await app.fetch(
+      new Request(`${base}?from=invalid&to=2026-10-01T00:00:00.000Z`, { headers }), env,
+    );
+    expect(invalidRange.status).toBe(400);
+    const badRange = await invalidRange.json() as { error: { code: string } };
+    expect(badRange.error.code).toBe("INVALID_REPORT_RANGE");
+    const invalidFilter = await app.fetch(
+      new Request(`${base}?from=2026-10-01T00:00:00.000Z&to=2026-10-02T00:00:00.000Z&archive=unknown`, { headers }), env,
+    );
+    expect(invalidFilter.status).toBe(400);
+    const badFilter = await invalidFilter.json() as { error: { code: string } };
+    expect(badFilter.error.code).toBe("INVALID_REPORT_FILTER");
+  });
 });

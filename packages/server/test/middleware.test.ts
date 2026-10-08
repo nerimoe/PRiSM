@@ -9,6 +9,7 @@ import {
   getShop,
   getShopDeps,
   clearShopDependenciesCache,
+  getOrCreateShopDependencies,
 } from "../src/middleware/tenant.js";
 import {
   responseTimeMiddleware,
@@ -261,6 +262,26 @@ describe("Middleware Test Suite", () => {
       expect(res.status).toBe(404);
       const body = await res.json() as Record<string, unknown>;
       expect(body.error).toBeDefined();
+    });
+
+    it("invalidates cached application dependencies when tenant settings change", async () => {
+      const { sqlite, db } = createTestContext();
+      sqlite.run(
+        "INSERT INTO shops (id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('cache-updated','cache-updated','First',0,0,50,'u')",
+      );
+      const shop = {
+        id: "cache-updated", public_id: "cache-updated", name: "First",
+        latitude: 0, longitude: 0, radius_meters: 50,
+        billing_enabled: 1, cashier_enabled: 0, auto_register: 0,
+        identity_binding_required: 1, checkin_geo: 0, checkout_geo: 0, machine_geo: 0,
+        entry_pricing_ids_json: "[]", bot_contact: "", time_zone: "Asia/Shanghai", hero_url: null,
+      };
+      const before = getOrCreateShopDependencies(db, shop);
+      expect(getOrCreateShopDependencies(db, shop)).toBe(before);
+      const after = getOrCreateShopDependencies(db, {
+        ...shop, auto_register: 1, time_zone: "Asia/Tokyo",
+      });
+      expect(after).not.toBe(before);
     });
 
     it("reuses cached dependencies across requests for same shop", async () => {
