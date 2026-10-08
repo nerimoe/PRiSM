@@ -54,7 +54,7 @@ function fixture() {
   `);
   sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters) VALUES ('shop-1','shop-code','Test Shop',0,0,80)");
   const db=new SqliteD1(sqlite);
-  const env={DB:db,SESSION_SECRET:"session-secret"} as Env;
+  const env={DB:db,SESSION_SECRET:"session-secret"} as unknown as Env;
   const app=new Hono<AppBindings>();
   app.use("*",async(c,next)=> {
     c.set("user",{id:"admin-1",role:"admin",username:"admin",displayName:"Admin",bannedAt:null});
