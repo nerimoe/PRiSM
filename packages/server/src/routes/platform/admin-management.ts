@@ -43,7 +43,7 @@ adminManagementRouter.get("/users", async (c) => {
         SELECT id FROM auth_identities WHERE user_id=u.id
         ORDER BY CASE WHEN provider='munet' THEN 0 ELSE 1 END, created_at LIMIT 1)
       ORDER BY u.created_at DESC LIMIT 50`,
-    );
+    ).bind();
   const users = await statement.all();
   return c.json({ users: users.results });
 });
