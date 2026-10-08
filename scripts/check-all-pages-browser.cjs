@@ -89,7 +89,7 @@ function mock(request, role, unknown, mutations) {
   const base = "/api/v1/shops/demo/staff/";
   if (p.startsWith(base)) {
     const action = p.slice(base.length);
-    if (action === "me") return { staff: { role: "staff", staffRole: owner ? "owner" : "viewer", staffId: "ci-staff" } };
+    if (action === "me") return { staff: { id: "ci-staff", displayName: "CI 店员", role: owner ? "owner" : "viewer", canWrite: owner } };
     if (action === "live-players") return { players: [live], billingSnapshot: snapshot };
     if (action === "players") return { players: [
       {
