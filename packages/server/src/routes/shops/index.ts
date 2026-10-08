@@ -27,6 +27,8 @@ import { devicesRouter } from "./devices.js";
 import { pricingRouter } from "./pricing.js";
 import { assetsRouter } from "./assets.js";
 import { cashierRouter } from "./cashier.js";
+import { staffBusinessRouter } from "./business.js";
+import { staffPricingCompatRouter } from "./staff-compat.js";
 import { redeemRouter } from "./redeem.js";
 import { billingCompatRouter } from "./billing-compat.js";
 import { identityConversionRouter } from "./identity-conversion.js";
@@ -156,6 +158,8 @@ shopRouter.onError((err, c) => {
 // Mount modular sub-routers
 shopRouter.route("/player", playerRouter);
 shopRouter.route("/staff", staffRouter);
+shopRouter.route("/staff", staffBusinessRouter);
+shopRouter.route("/staff", staffPricingCompatRouter);
 shopRouter.route("/integration", integrationRouter);
 shopRouter.route("/devices", devicesRouter);
 shopRouter.route("/cashier", cashierRouter);
