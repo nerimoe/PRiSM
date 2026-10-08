@@ -111,6 +111,6 @@ adminManagementRouter.delete("/users/:id", async (c) => {
       // cards and memberships cascade; historical login events become anonymous.
       statement(`DELETE FROM users WHERE id=? AND ${guard}`, userId),
     ]);
-    if (!results.at(-1)?.meta.changes) jsonError(409, "账号已变化，请刷新后重试");
+    if (!((results as Array<{ meta?: { changes?: number } }>).at(-1)?.meta?.changes) jsonError(409, "账号已变化，请刷新后重试");
     return c.json({ ok: true });
   });
