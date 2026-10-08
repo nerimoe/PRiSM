@@ -29,7 +29,7 @@ import { SettingsPage } from "./merchant/Settings";
 import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup";
 import { DevicesPage } from "./merchant/Devices";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
-import { resolveStaffAccess, type StaffMe } from "./merchant/staff-access";
+import type { StaffMeView } from "@prism/core";
 
 export function MerchantPage() {
   return (
@@ -131,13 +131,14 @@ function Workspace({
       api<{ shop: { billingEnabled: boolean; cashierEnabled: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
-      api<{ staff: StaffMe }>(
+      api<{ staff: StaffMeView }>(
         shopApi(shop.publicId, "staff/me"),
       ),
     ]);
     setState({
       ...info.shop,
-      ...resolveStaffAccess(me.staff),
+      canWrite: me.staff.canWrite,
+      owner: me.staff.role === "owner",
     });
   }, [shop.publicId]);
   useEffect(() => {
