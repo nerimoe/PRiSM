@@ -10,7 +10,7 @@ test("Workers Builds prepares platform bindings before the existing Web build co
   try {
     mkdirSync(join(root, "scripts"));
     mkdirSync(join(root, "packages/prism-web"), { recursive: true });
-    for (const path of ["scripts/build-web.ts", "scripts/generate-wrangler-config.ts", "wrangler.platform.jsonc"]) {
+    for (const path of ["scripts/build-web.ts", "scripts/generate-wrangler-config.ts", "wrangler.jsonc"]) {
       copyFileSync(new URL(path, source), join(root, path));
     }
     const scripts = (await Bun.file(new URL("package.json", source)).json()).scripts;
@@ -19,7 +19,7 @@ test("Workers Builds prepares platform bindings before the existing Web build co
     await Bun.write(join(root, "packages/prism-web/verify.ts"), `
       if (process.env.WORKERS_CI === "1") {
         const config = await Bun.file("../../wrangler.generated.jsonc").json();
-        if (config.main !== "packages/platform/src/worker.ts" || !config.assets || !config.durable_objects || !config.ratelimits) throw new Error("Wrong Worker configuration");
+        if (config.main !== "packages/server/src/worker.ts" || !config.assets || !config.durable_objects || !config.ratelimits) throw new Error("Wrong Worker configuration");
         const redirect = await Bun.file("../../.wrangler/deploy/config.json").json();
         if (redirect.configPath !== "../../wrangler.generated.jsonc") throw new Error("Missing upload redirect");
       }

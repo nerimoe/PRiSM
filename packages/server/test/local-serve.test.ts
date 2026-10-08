@@ -5,6 +5,7 @@ import {
   createD1DatabaseFromSqlite,
   createLocalServer,
   initializeLocalDatabase,
+  initializeSqliteSchema,
   type LocalServer,
 } from "../src/local-server.js";
 
@@ -90,6 +91,14 @@ describe("Local Server Entrypoint & Runtime", () => {
         "SELECT COUNT(*) AS total FROM shops WHERE public_id = 'test-shop';",
       ).get();
       expect(shopCount?.total).toBe(1);
+    });
+
+    it("exports initializeSqliteSchema as an alias for initializeLocalDatabase", () => {
+      expect(initializeSqliteSchema).toBe(initializeLocalDatabase);
+      const db = new Database(":memory:");
+      initializeSqliteSchema(db);
+      const usersTable = db.query("PRAGMA table_info(users);").all();
+      expect(usersTable.length).toBeGreaterThan(0);
     });
   });
 

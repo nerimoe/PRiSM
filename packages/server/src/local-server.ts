@@ -417,6 +417,8 @@ export function initializeLocalDatabase(
   }
 }
 
+export const initializeSqliteSchema = initializeLocalDatabase;
+
 export type MachineWebSocketClientData = MachineWebSocketData & {
   wsDeps?: MachineWebSocketDependencies;
 };
