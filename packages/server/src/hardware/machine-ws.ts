@@ -2,6 +2,7 @@ import { type DeviceCommand, PrismDomainError } from "@prism/core";
 
 export type MachineWebSocketData = {
   machineId?: string;
+  authorizedMachineId?: string;
 };
 
 export type MachineWebSocketPeer = {
@@ -34,7 +35,7 @@ export type MachineConnectionCommands = {
 export type MachineWebSocketDependencies = {
   machineConnectionCommands?: MachineConnectionCommands;
   apiTokenAuth?: {
-    authenticateApiToken(token: string): Promise<{ role: string } | null>;
+    authenticateApiToken(token: string): Promise<{ role: string; machineId?: string } | null>;
   };
   adminAuth?: {
     authenticateAdminSession(token: string): Promise<unknown>;
@@ -42,7 +43,7 @@ export type MachineWebSocketDependencies = {
   playerSessionAuth?: {
     authenticatePlayerSession(token: string): Promise<unknown>;
   };
-  authenticatedPrincipal?: { role: string };
+  authenticatedPrincipal?: { role: string; machineId?: string };
 };
 
 export async function authenticateMachineWebSocketRequest(
@@ -53,7 +54,7 @@ export async function authenticateMachineWebSocketRequest(
     request.headers.get("Authorization") ?? undefined,
     dependencies,
   );
-  if (!principal || principal.role !== "machine") {
+  if (!principal || principal.role !== "machine" || !principal.machineId) {
     return jsonError("FORBIDDEN", "Machine principal required.", 403);
   }
   if (!dependencies.machineConnectionCommands) {
@@ -61,7 +62,7 @@ export async function authenticateMachineWebSocketRequest(
   }
   return {
     ok: true,
-    data: {},
+    data: { authorizedMachineId: principal.machineId },
   };
 }
 
@@ -75,6 +76,9 @@ export async function handleMachineWebSocketMessage(
 
   if (message.type === "hello") {
     const machineId = stringField(message, "machineId");
+    if (!peer.data?.authorizedMachineId || machineId !== peer.data.authorizedMachineId) {
+      throw new PrismDomainError("Machine token does not authorize this machine.", "MACHINE_ID_FORBIDDEN");
+    }
     const capabilities = arrayOfStringsField(message, "capabilities");
     await commands.hello({ machineId, capabilities });
     peer.data = {
@@ -165,14 +169,14 @@ export const machineWebSocketHandler = {
 async function authenticateMachineToken(
   authorization: string | undefined,
   dependencies: MachineWebSocketDependencies,
-): Promise<{ role: string } | null> {
+): Promise<{ role: string; machineId?: string } | null> {
   if (dependencies.authenticatedPrincipal) return dependencies.authenticatedPrincipal;
   const token = authorization?.match(/^Bearer (.+)$/)?.[1];
   if (!token) return null;
 
   const apiToken = await dependencies.apiTokenAuth?.authenticateApiToken(token);
   if (apiToken) {
-    return { role: apiToken.role };
+    return { role: apiToken.role, machineId: apiToken.machineId };
   }
 
   return null;
