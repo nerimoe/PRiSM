@@ -6,6 +6,7 @@ import { sqliteSchema } from "@prism/storage-sql";
 import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adapter-d1";
 import type { AppBindings, Env } from "../src/bindings.js";
 import { attachUser } from "../src/middleware/auth.js";
+import { sha256 } from "../src/crypto.js";
 import { authRouter } from "../src/routes/platform/auth.js";
 import { passkeysRouter } from "../src/routes/platform/passkeys.js";
 import { userRouter } from "../src/routes/platform/user.js";
@@ -239,6 +240,28 @@ function createTestEnvironment(): { db: D1DatabaseLike; sqlite: Database; env: E
   return { db, sqlite, env, app };
 }
 
+// Test-only fixture: simulate a user already authenticated through MuNET.
+// Never issue platform sessions via an unauthenticated username-only HTTP route.
+async function authenticatedTestUser(
+  env: Env,
+  username: string,
+  displayName = username,
+): Promise<string> {
+  const userId = crypto.randomUUID();
+  const token = `test-session-${crypto.randomUUID()}`;
+  const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO users (id, role) VALUES (?, 'user')").bind(userId),
+    env.DB.prepare(
+      "INSERT INTO auth_identities (id, user_id, provider, provider_subject, username, display_name) VALUES (?, ?, 'munet', ?, ?, ?)",
+    ).bind(crypto.randomUUID(), userId, username, username, displayName),
+    env.DB.prepare(
+      "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+    ).bind(crypto.randomUUID(), userId, await sha256(token), expiry),
+  ]);
+  return `arcadelink_session=${token}`;
+}
+
 describe("Platform & System Routes", () => {
   let env: Env;
   let app: Hono<AppBindings>;
@@ -282,123 +305,51 @@ describe("Platform & System Routes", () => {
     });
   });
 
-  describe("Platform Auth: Register, Login, Me, Logout", () => {
-    it("registers a new user and sets session cookie", async () => {
-      const registerRes = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "alice", displayName: "Alice Wonderland" }),
-        },
-        env,
-      );
+  describe("Platform Auth: verified sessions only", () => {
+    it("does not expose username-only platform login or registration", async () => {
+      // Even an existing username must not create an authenticated session.
+      await authenticatedTestUser(env, "admin");
+      // Check both the isolated router fixture and the actual deployed app,
+      // including its legacy fallback routes.
+      for (const targetApp of [app, createApp()]) {
+        for (const route of ["login", "register"]) {
+          const res = await targetApp.request(
+            `https://prism.test/api/v1/auth/${route}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ username: "admin" }),
+            },
+            env,
+          );
+          expect(res.status).toBe(404);
+          expect(res.headers.get("set-cookie")).toBeNull();
+        }
+      }
+    });
 
-      expect(registerRes.status).toBe(201);
-      const registerData = await registerRes.json() as { ok: boolean; user: { id: string; username: string; displayName: string } };
-      expect(registerData.ok).toBe(true);
-      expect(registerData.user.username).toBe("alice");
-      expect(registerData.user.displayName).toBe("Alice Wonderland");
-
-      const cookie = registerRes.headers.get("set-cookie");
-      expect(cookie).toContain("arcadelink_session=");
-
-      // Inspect me with the session cookie
-      const meRes = await app.request(
+    it("keeps verified session inspection and logout working", async () => {
+      const sessionCookie = await authenticatedTestUser(env, "charlie");
+      const meBefore = await app.request(
         "https://prism.test/api/v1/user/me",
-        { headers: { cookie: cookie! } },
+        { headers: { cookie: sessionCookie } },
         env,
       );
-      expect(meRes.status).toBe(200);
-      const meData = await meRes.json() as { user: { username: string; hasShops: boolean } };
-      expect(meData.user.username).toBe("alice");
-      expect(meData.user.hasShops).toBe(false);
-    });
+      expect((await meBefore.json() as { user: { username: string } }).user.username).toBe("charlie");
 
-    it("rejects duplicate username registration with 409", async () => {
-      await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "bob" }),
-        },
-        env,
-      );
-
-      const dupRes = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "bob" }),
-        },
-        env,
-      );
-
-      expect(dupRes.status).toBe(409);
-    });
-
-    it("logs in existing user and terminates session on logout", async () => {
-      // Register first
-      await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "charlie" }),
-        },
-        env,
-      );
-
-      // Login
-      const loginRes = await app.request(
-        "https://prism.test/api/v1/auth/login",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "charlie" }),
-        },
-        env,
-      );
-
-      expect(loginRes.status).toBe(200);
-      const cookie = loginRes.headers.get("set-cookie");
-      expect(cookie).toContain("arcadelink_session=");
-
-      // Logout
-      const logoutRes = await app.request(
+      const logout = await app.request(
         "https://prism.test/api/v1/auth/logout",
-        {
-          method: "POST",
-          headers: { cookie: cookie! },
-        },
+        { method: "POST", headers: { cookie: sessionCookie } },
         env,
       );
-      expect(logoutRes.status).toBe(200);
+      expect(logout.status).toBe(200);
 
-      // Verify session expired
-      const meRes = await app.request(
+      const meAfter = await app.request(
         "https://prism.test/api/v1/user/me",
-        { headers: { cookie: cookie! } },
+        { headers: { cookie: sessionCookie } },
         env,
       );
-      expect(meRes.status).toBe(200);
-      const meData = await meRes.json() as { user: null };
-      expect(meData.user).toBeNull();
-    });
-
-    it("rejects login for unknown user with 401", async () => {
-      const loginRes = await app.request(
-        "https://prism.test/api/v1/auth/login",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "unknown-user" }),
-        },
-        env,
-      );
-      expect(loginRes.status).toBe(401);
+      expect((await meAfter.json() as { user: null }).user).toBeNull();
     });
   });
 
@@ -430,16 +381,7 @@ describe("Platform & System Routes", () => {
     });
 
     it("generates registration options for authenticated user", async () => {
-      const reg = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "dave" }),
-        },
-        env,
-      );
-      const sessionCookie = reg.headers.get("set-cookie")!;
+      const sessionCookie = await authenticatedTestUser(env, "dave");
 
       const res = await app.request(
         "https://prism.test/api/v1/auth/passkey/register/options",
@@ -461,16 +403,7 @@ describe("Platform & System Routes", () => {
 
   describe("User Profile & Account", () => {
     it("GET /api/v1/account lists user identities and passkeys", async () => {
-      const reg = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "eve", displayName: "Eve Tester" }),
-        },
-        env,
-      );
-      const sessionCookie = reg.headers.get("set-cookie")!;
+      const sessionCookie = await authenticatedTestUser(env, "eve", "Eve Tester");
 
       const res = await app.request(
         "https://prism.test/api/v1/account",
@@ -490,17 +423,7 @@ describe("Platform & System Routes", () => {
     it("serves the account overview instead of the user profile at /api/v1/account", async () => {
       // Unlike the lightweight router fixture, this uses the actual deployed
       // route ordering and { data } envelope, which previously hid the regression.
-      const reg = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "route-account", displayName: "Account Route" }),
-        },
-        env,
-      );
-      expect(reg.status).toBe(201);
-      const cookie = reg.headers.get("set-cookie")!;
+      const cookie = await authenticatedTestUser(env, "route-account", "Account Route");
       const productionApp = createApp();
 
       const accountResponse = await productionApp.request(
@@ -541,27 +464,8 @@ describe("Platform & System Routes", () => {
     let otherCookie: string;
 
     beforeEach(async () => {
-      const r1 = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "shop-owner" }),
-        },
-        env,
-      );
-      ownerCookie = r1.headers.get("set-cookie")!;
-
-      const r2 = await app.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ username: "other-user" }),
-        },
-        env,
-      );
-      otherCookie = r2.headers.get("set-cookie")!;
+      ownerCookie = await authenticatedTestUser(env, "shop-owner");
+      otherCookie = await authenticatedTestUser(env, "other-user");
     });
 
     it("requires authentication to create a shop", async () => {
