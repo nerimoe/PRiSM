@@ -1099,5 +1099,20 @@
   "请先完成覆盖导入数据库迁移": "Complete the overwrite import database migration first",
   "业务备份将替换目标店铺现有玩家、余额、账单和计费配置；此操作不能撤销，请先保留原店铺备份。": "Business backups replace the target players, balances, bills and billing configuration. This cannot be undone; save the original shop backup first.",
   "仅配置导入会覆盖同编号配置并新增文件中的配置和设备，保留玩家、余额、账单及其他配置。": "Configuration imports overwrite matching configuration and add configuration and devices from the file, retaining players, balances, bills and other configuration.",
-  "将恢复店铺资料和设置，并覆盖或新增配置及设备；目标店铺编号和当前管理员保留。": "Restore the shop profile and settings, and overwrite or add configuration and devices. Retain the target shop ID and current administrator."
+  "将恢复店铺资料和设置，并覆盖或新增配置及设备；目标店铺编号和当前管理员保留。": "Restore the shop profile and settings, and overwrite or add configuration and devices. Retain the target shop ID and current administrator.",
+  "计费模拟器": "Billing simulator",
+  "逐行填写 Session 的开启时间、关闭时间和计费方案；最早开启为入场时间，最晚关闭为退场时间。Session 可以重叠。": "Enter each session's start, end and pricing plan. The earliest start is admission; the latest end is departure. Sessions may overlap.",
+  "时间使用店铺时区": "Times are entered in the shop time zone",
+  "按当前启用的计费规则和全局封顶模拟，不包含余额、优惠券及既往消费历史；不会生成真实账单。": "Simulates with currently enabled plans and global caps. Excludes wallet balances, coupons and past billing history; no real bill is created.",
+  "自动参与计算的跨方案封顶": "Global caps applied automatically",
+  "开启时间": "Start time",
+  "关闭时间": "End time",
+  "选择方案": "Select a plan",
+  "移除 Session": "Remove session",
+  "添加 Session": "Add session",
+  "计算中…": "Calculating…",
+  "生成模拟账单": "Generate simulated bill",
+  "请先启用至少一个计费方案。": "Enable at least one pricing plan first.",
+  "模拟账单时间轴": "Simulated bill timeline",
+  "退场时间": "Departure time"
 }
