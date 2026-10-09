@@ -89,9 +89,10 @@ export function createSetupService(dependencies: SetupServiceDependencies) {
         for (const setting of settings) await dependencies.system.setAppSetting(setting.key, setting.value);
       }
 
+      // Machine WebSocket tokens must be bound to a specific machine by staff.
+      // Do not mint an unscoped machine credential during first-run setup.
       const generatedTokens = await Promise.all([
         createApiToken(dependencies, "integration", "机器人/店内入口 API", now),
-        createApiToken(dependencies, "machine", "机器软件接入 API", now),
       ]);
       if (dependencies.system.saveApiTokens) {
         await dependencies.system.saveApiTokens(generatedTokens.map((token) => token.record));
