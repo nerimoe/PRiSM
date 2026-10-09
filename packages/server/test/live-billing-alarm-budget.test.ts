@@ -69,12 +69,22 @@ describe("persistent LiveBilling alarm abuse budget", () => {
       const now = start + i * 60_000;
       state = spendAlarmBudget(checkAlarmBudget(state, now), now);
     }
-    const terminal = checkAlarmBudget(state, start + 3 * 60_000 + 1000, true);
+    const earlyEnd = checkAlarmBudget(state, start + 3 * 60_000 + 1000, true);
+    expect(earlyEnd.allowed).toBe(false);
+    // The final end notification may avoid the five-minute quota delay,
+    // but cannot bypass the absolute one-minute minimum.
+    const terminal = checkAlarmBudget(state, start + 4 * 60_000, true);
     expect(terminal.allowed).toBe(true);
     expect(terminal.terminalBypass).toBe(true);
-    state = spendAlarmBudget(terminal, start + 3 * 60_000 + 1000);
-    expect(checkAlarmBudget(state, start + 3 * 60_000 + 2000, true).allowed).toBe(false);
-    expect(checkAlarmBudget(state, start + 4 * 60_000, true).allowed).toBe(false);
+    state = spendAlarmBudget(terminal, start + 4 * 60_000);
+    expect(checkAlarmBudget(state, start + 4 * 60_000 + 1000, true).allowed).toBe(false);
+    // Once another normal quota slot is available, ordinary work is still
+    // permitted; the terminal-bypass privilege itself remains on cooldown.
+    const regular = checkAlarmBudget(state, start + 5 * 60_000, true);
+    expect(regular.allowed).toBe(true);
+    expect(regular.terminalBypass).toBe(false);
+    state = spendAlarmBudget(regular, start + 5 * 60_000);
+    expect(checkAlarmBudget(state, start + 6 * 60_000, true).allowed).toBe(false);
   });
 
   it("backs off maintenance alarms and stops after the eight-hour token lifetime", () => {
