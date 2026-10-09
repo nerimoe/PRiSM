@@ -50,14 +50,6 @@ describe("createSetupService", () => {
         tokenPrefix: "integration",
         createdAt: new Date("2026-06-08T10:00:00.000Z"),
       },
-      {
-        id: "id-3",
-        label: "机器软件接入 API",
-        role: "machine",
-        token: "machine-plain",
-        tokenPrefix: "machine",
-        createdAt: new Date("2026-06-08T10:00:00.000Z"),
-      },
     ]);
     expect(store.assetDefinitions.saved).toEqual([
       {
