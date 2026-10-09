@@ -1,4 +1,5 @@
 import { PricingRing } from "./PricingRing";
+import { BillingSimulator } from "./BillingSimulator";
 import { pricingInZone } from "./pricing-clock";
 import { billTime } from "../bill-time";
 import { useState } from "react";
@@ -83,6 +84,7 @@ export function PricingPage() {
   const [edit, setEdit] = useState<Pricing | null>(null);
   const [archive, setArchive] = useState<Pricing | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [showSimulator, setShowSimulator] = useState(false);
   const rows = resource.data?.pricingConfigs.filter(
     (row) => showArchived || row.status !== "archived",
   );
@@ -109,6 +111,12 @@ export function PricingPage() {
           </button>
         )}
       </div>
+      {canWrite && <div>
+        <button type="button" className={button} aria-expanded={showSimulator} onClick={() => setShowSimulator(value => !value)}>
+          {t("计费模拟器")}{showSimulator ? " −" : " +"}
+        </button>
+      </div>}
+      {showSimulator && resource.data && <BillingSimulator pricingConfigs={resource.data.pricingConfigs} />}
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
