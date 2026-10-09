@@ -220,6 +220,27 @@ describe("Local Server Entrypoint & Runtime", () => {
         [tokenHash],
       );
 
+      // A previously issued generic machine token is no longer sufficient.
+      const genericToken = "legacy-unscoped-machine-token";
+      server.db.run(
+        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default','tok-generic','Generic Machine','machine','prism_machine',?,'active',CURRENT_TIMESTAMP)",
+        [await sha256Hex(genericToken)],
+      );
+      const unscoped = await server.fetch(new Request(`http://localhost:${server.port}/rpc/machine/ws`, {
+        headers: { Authorization: `Bearer ${genericToken}` },
+      }));
+      expect(unscoped.status).toBe(403);
+
+      // The token is bound to the default shop and cannot be replayed elsewhere.
+      server.db.run(
+        "INSERT INTO shops (id,public_id,name,latitude,longitude,radius_meters,created_by,created_at,updated_at) VALUES ('other','other','Other Shop',0,0,80,'admin',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+      );
+      const crossShop = await server.fetch(new Request(
+        `http://localhost:${server.port}/rpc/machine/ws?shopCode=other`, {
+        headers: { Authorization: `Bearer ${machineToken}` },
+      }));
+      expect(crossShop.status).toBe(403);
+
       // Connect via WebSocket
       const wsUrl = `ws://localhost:${server.port}/rpc/machine/ws`;
       const ws = new WebSocket(wsUrl, {
