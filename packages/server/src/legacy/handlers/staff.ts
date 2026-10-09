@@ -88,7 +88,7 @@ legacyStaffRouter.get("/settings", async (c) => {
   return c.json({ settings: await getShopDeps(c).staffSettingsCommands.getSettings() });
 });
 legacyStaffRouter.put("/settings", async (c) => {
-  await requireStandaloneStaff(c, "write");
+  await requireStandaloneStaff(c, "owner");
   const body = await c.req.json();
   return c.json({ settings: await getShopDeps(c).staffSettingsCommands.updateSettings(body) });
 });
@@ -98,7 +98,7 @@ legacyStaffRouter.get("/api-tokens", async (c) => {
   return c.json({ apiTokens: await getShopDeps(c).staffApiTokenCommands.listApiTokens() });
 });
 legacyStaffRouter.post("/api-tokens", async (c) => {
-  await requireStandaloneStaff(c, "write");
+  await requireStandaloneStaff(c, "owner");
   const body = z.object({
     label: z.string().trim().min(1),
     role: z.enum(["integration", "machine"]),
@@ -117,7 +117,7 @@ legacyStaffRouter.post("/api-tokens", async (c) => {
   return c.json({ apiToken });
 });
 legacyStaffRouter.post("/api-tokens/:tokenId/revoke", async (c) => {
-  await requireStandaloneStaff(c, "write");
+  await requireStandaloneStaff(c, "owner");
   const apiToken = await getShopDeps(c).staffApiTokenCommands.revokeApiToken({
     tokenId: c.req.param("tokenId"),
   });
