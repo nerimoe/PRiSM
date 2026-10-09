@@ -213,7 +213,10 @@ describe("Local Server Entrypoint & Runtime", () => {
       const machineToken = "prism_machine_test_secret_key";
       const tokenHash = await sha256Hex(machineToken);
       server.db.run(
-        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default', 'tok-mach-1', 'Machine 1', 'machine', 'prism_machine', ?, 'active', CURRENT_TIMESTAMP)",
+        "INSERT INTO machines (id, public_id, shop_id, name, enabled) VALUES ('mach-arcade-1', 'arcade-machine-1', 'default', 'Machine 1', 1)",
+      );
+      server.db.run(
+        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default', 'tok-mach-1', 'machine:mach-arcade-1', 'machine', 'prism_machine', ?, 'active', CURRENT_TIMESTAMP)",
         [tokenHash],
       );
 
