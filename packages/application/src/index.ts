@@ -32,3 +32,5 @@ export * from "./bill-timeline";
 
 export * from "./versioned-pricing";
 export * from "./live-billing-snapshot";
+
+export * from "./billing-simulator";
