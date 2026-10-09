@@ -111,6 +111,8 @@ export type Env = {
 
   APP_ORIGIN: string;
   SESSION_SECRET?: string;
+  // SHA-256 hex of the one-time installation secret; required by setup/install.
+  PRISM_BOOTSTRAP_TOKEN_HASH?: string;
   URL_ENCRYPTION_KEY?: string;
   MUNET_CLIENT_ID?: string;
   MUNET_CLIENT_SECRET?: string;
