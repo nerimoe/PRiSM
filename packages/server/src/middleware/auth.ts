@@ -129,10 +129,16 @@ export async function staffPrincipal(
   }
 
   if (mapping?.status === "active") {
-    if (!readOnly && mapping.role === "viewer") {
+    // An old billing-owner mapping must not survive revocation of shop ownership.
+    // Billing managers remain writable; owner-only actions require actual membership.
+    const effectiveRole =
+      mapping.role === "owner" && member?.role !== "owner" && user.role !== "admin"
+        ? "manager"
+        : mapping.role;
+    if (!readOnly && effectiveRole === "viewer") {
       jsonError(403, "只读账号不能执行此操作", "FORBIDDEN");
     }
-    return { role: "staff", staffId: mapping.id, staffRole: mapping.role };
+    return { role: "staff", staffId: mapping.id, staffRole: effectiveRole };
   }
 
   if (member?.role !== "owner" && user.role !== "admin") {
