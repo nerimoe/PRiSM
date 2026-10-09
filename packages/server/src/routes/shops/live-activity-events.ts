@@ -152,7 +152,9 @@ export async function pushSessionEvent(
   if (!config) return;
 
   if (c.env.LIVE_BILLING) {
-    await refreshActivityBill(c.env, input.shopId, input.playerId);
+    // A genuine completed session may send its final end state promptly.
+    // Terminal bypass is itself bounded by the persistent DO budget.
+    await refreshActivityBill(c.env, input.shopId, input.playerId, input.event === "end");
     // The scheduler checks all remaining sessions before ending the visit.
     if (input.event === "end") return;
   }
