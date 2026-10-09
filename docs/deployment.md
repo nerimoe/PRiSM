@@ -359,3 +359,14 @@ Wrangler 报告上传/发布成功后，部署脚本会使用本次随机令牌�
 `Deployment begin failed (404)` 表示控制请求在认证处被拒绝（或尚未到达预期 Worker），发生于本次数据库迁移之前；不能把它等同于 D1 UUID 错误。检查域名路由与部署绑定是否指向预期 Worker。`resume` 对已验证、同一部署所有者的重复请求返回成功，避免首次成功但响应丢失后重新关闭业务。上述改动仍保留维护期间的写入保护，不自动关闭未知部署的维护状态。
 
 恢复请求的 409 会区分阶段未就绪（可重试）、部署所有者变化、缺少验证和维护状态不符（立即失败）。部署日志只输出固定错误码，不丢弃可诊断的原因，也不打印任意响应体。并行构建或重试旧提交可能覆盖正在执行的发布；恢复时使用最新修复提交，且同一 Worker 只运行一个完整部署任务。
+
+### 首次安装凭据与机器 WebSocket 令牌
+
+统一服务端的旧版单店初始化入口 `POST /rpc/setup/install`（以及 `/api/v1/setup/install`）现在必须提供一次性部署级安装令牌，避免未认证的外部请求抢占空白数据库。
+
+- 部署变量 `PRISM_BOOTSTRAP_TOKEN_HASH`：安装令牌原文的 SHA-256 十六进制摘要。未配置时初始化接口返回 HTTP 503。
+- 请求头 `X-PRiSM-Bootstrap-Token`：部署时生成的高强度随机令牌原文；摘要不应与令牌原文放在同一配置文件中。
+- 初始化完成后应移除该部署变量，并保证旧安装接口不能再次创建 owner。
+- 云端环境请使用 Cloudflare Secrets 配置此变量，不要将原文或摘要提交到 Git 仓库。
+
+机器 WebSocket `/rpc/machine/ws` 不再接受通用的 machine token 或其他店铺的 token。现有机器需要在对应店铺创建机器记录后，由有写权限的店员调用 `POST /rpc/staff/api-tokens`，传递 `{"label":"Machine 1","role":"machine","machineId":"<该店铺机器 ID 或 public_id>"}` 重新签发令牌。服务端会把新令牌绑定到一台机器；WebSocket 的 `hello.machineId` 必须使用该机器的内部 ID。旧初始化自动生成的通用机器 token 不再有效。

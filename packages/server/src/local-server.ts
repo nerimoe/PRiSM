@@ -352,10 +352,8 @@ export function initializeLocalDatabase(
       "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(id) DO NOTHING;",
       [adminId, now, now],
     );
-    db.run(
-      "INSERT INTO auth_identities (id, user_id, provider, provider_subject, username, display_name, created_at, updated_at) VALUES ('admin_identity', ?, 'local', 'admin', 'admin', 'Administrator', ?, ?) ON CONFLICT(id) DO NOTHING;",
-      [adminId, now, now],
-    );
+    // Internal bootstrap record, not a login identity. No local platform identity
+    // is provisioned; user-facing admin authentication requires MuNET / Passkey.
   }
 
   // 2. Ensure default shop
@@ -495,19 +493,20 @@ export function createLocalServer(
       const url = new URL(request.url);
       if (url.pathname === "/rpc/machine/ws") {
         const upgradeServer = s ?? server;
-        const shopCode =
+        const requestedShopCode =
           request.headers.get("X-PRiSM-Shop-Code")?.trim() ||
           request.headers.get("X-PRiSM-Shop")?.trim() ||
           request.headers.get("X-Shop-Id")?.trim() ||
-          url.searchParams.get("shopCode")?.trim() ||
-          defaultShopCode;
+          url.searchParams.get("shopCode")?.trim();
+        const shopCode = requestedShopCode || defaultShopCode;
 
         let shopRow = await d1
           .prepare(`${SHOP_QUERY} WHERE s.public_id = ? OR s.id = ?`)
           .bind(shopCode, shopCode)
           .first<TenantShop>();
 
-        if (!shopRow) {
+        // An explicitly selected tenant must never silently fall back to another shop.
+        if (!shopRow && !requestedShopCode) {
           shopRow = await d1
             .prepare(
               `${SHOP_QUERY} ORDER BY CASE WHEN s.public_id = 'default' OR s.id = 'default' THEN 0 ELSE 1 END, s.created_at ASC LIMIT 1`,
@@ -541,18 +540,21 @@ export function createLocalServer(
               const tokenHash = await sha256Hex(token);
               const row = await d1
                 .prepare(
-                  "SELECT role FROM api_tokens WHERE (shop_id = ? OR shop_id = 'default' OR shop_id = 'legacy') AND token_hash = ? AND status = 'active' LIMIT 1",
+                  "SELECT id,role,label FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active' LIMIT 1",
                 )
                 .bind(shop.id, tokenHash)
-                .first<{ role: string }>();
-              if (!row) return null;
-              await d1
-                .prepare(
-                  "UPDATE api_tokens SET last_used_at = ? WHERE id = (SELECT id FROM api_tokens WHERE (shop_id = ? OR shop_id = 'default' OR shop_id = 'legacy') AND token_hash = ? AND status = 'active' LIMIT 1)",
-                )
-                .bind(new Date().toISOString(), shop.id, tokenHash)
-                .run();
-              return { role: row.role };
+                .first<{ id: string; role: string; label: string }>();
+              // Legacy generic machine tokens are deliberately not accepted:
+              // machine:<id> labels are set only when issuing a machine-bound token.
+              if (!row || row.role !== "machine" || !row.label.startsWith("machine:")) return null;
+              const machineId = row.label.slice("machine:".length);
+              if (!machineId) return null;
+              const machine = await d1.prepare("SELECT 1 FROM machines WHERE id=? AND shop_id=? AND enabled=1")
+                .bind(machineId, shop.id).first();
+              if (!machine) return null;
+              await d1.prepare("UPDATE api_tokens SET last_used_at=? WHERE shop_id=? AND id=?")
+                .bind(new Date().toISOString(), shop.id, row.id).run();
+              return { role: "machine", machineId };
             },
           },
         };

@@ -18,8 +18,9 @@ export const appclipAuthRouter = new Hono<AppBindings>();
 export const munetCallbackRouter = new Hono<AppBindings>();
 const oauthStateCookie = "arcadelink_munet_state";
 const oauthNextCookie = "arcadelink_munet_next";
-const safePath = (value?: string) => value?.startsWith("/") && !value.startsWith("//") && value.length <= 500
-  ? value : "/cards";
+const safePath = (value?: string) =>
+  value?.startsWith("/") && !value.startsWith("//") && !value.includes("\\") && value.length <= 500
+    ? value : "/cards";
 const cookieOptions = (c: Context<AppBindings>) => ({
   httpOnly: true,
   secure: new URL(c.req.url).protocol === "https:",

@@ -47,7 +47,11 @@ async function canConfigureMachine(c: C, user: AuthUser, shopId: string) {
   const row = await c.env.DB.prepare(
     "SELECT s.role FROM shop_staff_accounts a JOIN staff_users s ON s.shop_id=a.shop_id AND s.id=a.staff_id WHERE a.shop_id=? AND a.user_id=? AND s.status='active'",
   ).bind(shopId, user.id).first<{ role: string }>();
-  return row?.role !== "viewer";
+  if (row) return row.role === "owner" || row.role === "manager";
+  const owner = await c.env.DB.prepare(
+    "SELECT 1 FROM shop_members WHERE shop_id=? AND user_id=? AND role='owner'",
+  ).bind(shopId, user.id).first();
+  return Boolean(owner);
 }
 
 async function decode(c: C, value: string) {

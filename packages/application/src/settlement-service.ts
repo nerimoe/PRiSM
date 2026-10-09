@@ -291,6 +291,8 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
     },
 
     async checkoutWithOverride(input) {
+      if (!Number.isFinite(input.total) || input.total < 0)
+        throw new PrismDomainError("Override total must be finite and nonnegative.", "INVALID_OVERRIDE_TOTAL");
       return acquireCheckoutLock(dependencies, input.playerId, async () => {
         await assertWalletPlayer(dependencies, input.playerId);
         const now = dependencies.now();
@@ -725,6 +727,8 @@ async function persistUnifiedPlayerCheckout(
   let finalTotal = details.total;
   let overrideAdjustment: SettlementAdjustment | undefined;
   if (overrideTotal) {
+    if (!Number.isFinite(overrideTotal.total) || overrideTotal.total < 0)
+      throw new PrismDomainError("Override total must be finite and nonnegative.", "INVALID_OVERRIDE_TOTAL");
     const overrideTotalAmount = centsOf(overrideTotal.total);
     const diff = subCents(overrideTotalAmount, details.total);
     finalTotal = overrideTotalAmount;

@@ -38,6 +38,7 @@ export type EncryptHinataIoMessageInput = {
 };
 
 const keyCache = new Map<string, Promise<CryptoKey>>();
+const MAX_E2EE_CACHE_ENTRIES = 128;
 
 export function normalizeHinataUrl(targetUrl: string): string {
   let url = targetUrl.trim();
@@ -80,11 +81,8 @@ export async function encryptHinataIoMessage(
     saltBytes = decodeBase64Url(input.salt, 16, "salt");
     saltB64 = input.salt;
   } else {
-    const hash = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`aimeio-salt:${input.password}`),
-    );
-    saltBytes = new Uint8Array(hash, 0, 16);
+    // Independent random salt avoids deterministic password-derived KDF inputs.
+    saltBytes = crypto.getRandomValues(new Uint8Array(16));
     saltB64 = encodeBase64Url(saltBytes);
   }
 
@@ -119,7 +117,8 @@ export async function encryptHinataIoMessage(
         ["encrypt", "decrypt"],
       );
     })();
-    keyCache.set(cacheKey, keyPromise);
+    // Do not cache random one-time salts: this would grow the key cache indefinitely.
+    if (input.salt) keyCache.set(cacheKey, keyPromise);
   }
   const key = await keyPromise;
 
@@ -201,6 +200,7 @@ export async function decryptHinataIoMessage(
         ["encrypt", "decrypt"],
       );
     })();
+    if (keyCache.size >= MAX_E2EE_CACHE_ENTRIES) keyCache.clear();
     keyCache.set(cacheKey, keyPromise);
   }
   const key = await keyPromise;

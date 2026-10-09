@@ -213,9 +213,33 @@ describe("Local Server Entrypoint & Runtime", () => {
       const machineToken = "prism_machine_test_secret_key";
       const tokenHash = await sha256Hex(machineToken);
       server.db.run(
-        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default', 'tok-mach-1', 'Machine 1', 'machine', 'prism_machine', ?, 'active', CURRENT_TIMESTAMP)",
+        "INSERT INTO machines (id, public_id, shop_id, name, enabled) VALUES ('mach-arcade-1', 'arcade-machine-1', 'default', 'Machine 1', 1)",
+      );
+      server.db.run(
+        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default', 'tok-mach-1', 'machine:mach-arcade-1', 'machine', 'prism_machine', ?, 'active', CURRENT_TIMESTAMP)",
         [tokenHash],
       );
+
+      // A previously issued generic machine token is no longer sufficient.
+      const genericToken = "legacy-unscoped-machine-token";
+      server.db.run(
+        "INSERT INTO api_tokens (shop_id, id, label, role, token_prefix, token_hash, status, created_at) VALUES ('default','tok-generic','Generic Machine','machine','prism_machine',?,'active',CURRENT_TIMESTAMP)",
+        [await sha256Hex(genericToken)],
+      );
+      const unscoped = await server.fetch(new Request(`http://localhost:${server.port}/rpc/machine/ws`, {
+        headers: { Authorization: `Bearer ${genericToken}` },
+      }));
+      expect(unscoped.status).toBe(403);
+
+      // The token is bound to the default shop and cannot be replayed elsewhere.
+      server.db.run(
+        "INSERT INTO shops (id,public_id,name,latitude,longitude,radius_meters,created_by,created_at,updated_at) VALUES ('other','other','Other Shop',0,0,80,'admin',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+      );
+      const crossShop = await server.fetch(new Request(
+        `http://localhost:${server.port}/rpc/machine/ws?shopCode=other`, {
+        headers: { Authorization: `Bearer ${machineToken}` },
+      }));
+      expect(crossShop.status).toBe(403);
 
       // Connect via WebSocket
       const wsUrl = `ws://localhost:${server.port}/rpc/machine/ws`;

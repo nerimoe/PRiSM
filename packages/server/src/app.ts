@@ -89,7 +89,7 @@ export function createApp(): Hono<AppBindings> {
       {
         error: {
           code: "INTERNAL_ERROR",
-          message: err.message || "An unexpected error occurred.",
+          message: "An unexpected error occurred.",
         },
       },
       500,

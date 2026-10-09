@@ -264,6 +264,42 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("does not disclose standalone device secrets or issue API tokens to a viewer", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { shopId, publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const viewerToken = "viewer-settings-session";
+    sqlite.run("INSERT INTO users(id,role) VALUES ('view-user','user')");
+    sqlite.run(
+      "INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('view-member',?,?,'staff')",
+      [shopId, "view-user"],
+    );
+    sqlite.run(
+      "INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES (?,'view-staff','view-staff','Viewer','','','viewer','active',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES (?,'view-user','view-staff')",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES ('view-session','view-user',?,datetime('now','+7 days'))",
+      [await sha256(viewerToken)],
+    );
+    const app = createTestApp();
+    const prefix = `https://prism.test/api/v1/shops/${publicId}/staff`;
+    const headers = { authorization: `Bearer ${viewerToken}`, "content-type": "application/json" };
+    expect((await app.fetch(new Request(prefix + "/settings", { headers }), env)).status).toBe(403);
+    expect((await app.fetch(new Request(prefix + "/settings", {
+      method: "PUT", headers, body: JSON.stringify({}),
+    }), env)).status).toBe(403);
+    expect((await app.fetch(new Request(prefix + "/api-tokens", {
+      method: "POST", headers, body: JSON.stringify({ label: "test", role: "integration" }),
+    }), env)).status).toBe(403);
+    expect((await app.fetch(new Request(prefix + "/settings", {
+      headers: { authorization: `Bearer ${staffSessionToken}` },
+    }), env)).status).toBe(200);
+  });
+
   it("preserves staff/me role and canWrite for owner, manager, viewer and unauthenticated callers", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffUserId, staffSessionToken } = await setupShopFixture(db, sqlite);

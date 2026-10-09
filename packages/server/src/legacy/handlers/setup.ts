@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
+import { sha256Hex } from "../../crypto.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 
 export const legacySetupRouter = new Hono<AppBindings>();
@@ -23,6 +24,12 @@ legacySetupRouter.get("/status", async (c) => {
 
 // POST /api/v1/setup/install
 legacySetupRouter.post("/install", async (c) => {
+  const expectedHash = c.env.PRISM_BOOTSTRAP_TOKEN_HASH;
+  if (!expectedHash || !/^[a-f0-9]{64}$/i.test(expectedHash))
+    jsonError(503, "首次安装凭据未配置", "BOOTSTRAP_NOT_CONFIGURED");
+  const supplied = c.req.header("X-PRiSM-Bootstrap-Token");
+  if (!supplied || (await sha256Hex(supplied)) !== expectedHash.toLowerCase())
+    jsonError(403, "首次安装凭据无效", "BOOTSTRAP_FORBIDDEN");
   let shop = c.get("shop");
   let deps = c.get("deps");
   const body = await c.req.json<any>();
@@ -33,12 +40,17 @@ legacySetupRouter.post("/install", async (c) => {
     const publicId = "default";
     const now = new Date().toISOString();
 
-    await c.env.DB.prepare(
-      `INSERT INTO shops (id, public_id, name, latitude, longitude, radius_meters, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, 0, 0, 80, 'system', ?, ?)`,
-    )
-      .bind(shopId, publicId, body.storeName || "Default Shop", now, now)
-      .run();
+    // The bootstrap creator must exist before a shop can reference it.
+    // This is not a login identity and cannot authenticate as a platform user.
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO users(id,role,created_at,updated_at) VALUES ('system','user',?,?) ON CONFLICT(id) DO NOTHING",
+      ).bind(now,now),
+      c.env.DB.prepare(
+        `INSERT INTO shops (id, public_id, name, latitude, longitude, radius_meters, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, 0, 0, 80, 'system', ?, ?)`,
+      ).bind(shopId, publicId, body.storeName || "Default Shop", now, now),
+    ]);
 
     const createdShop: TenantShop = {
       id: shopId,

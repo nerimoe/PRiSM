@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -242,14 +243,15 @@ staffRouter.post("/players/:playerId/checkout/override", async (c) => {
   const shop = getShop(c);
   const staff = await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
-  const body = await c.req.json<{
-    sessionId?: string;
-    finalTotal: number;
-    reason: string;
-    previewedAt: string;
-    expectedSubtotal: number;
-    expectedTotal: number;
-  }>();
+  const body = z.object({
+    sessionId: z.string().optional(),
+    finalTotal: z.number().finite().nonnegative(),
+    reason: z.string().trim().min(1),
+    previewedAt: z.string().optional(),
+    expectedSubtotal: z.number().finite().optional(),
+    expectedTotal: z.number().finite().optional(),
+    operationId: z.string().optional(),
+  }).parse(await c.req.json());
   return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/checkout/override`, body, async () => {
     const result = await deps.staffCheckoutCommands.checkoutWithOverride({
       staffId: staff.staffId,

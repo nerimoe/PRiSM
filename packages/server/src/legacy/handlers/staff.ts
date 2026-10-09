@@ -83,11 +83,12 @@ legacyStaffRouter.post("/users/:staffUserId/password", async (c) => {
 });
 
 legacyStaffRouter.get("/settings", async (c) => {
-  await requireStandaloneStaff(c);
+  // This settings DTO contains HA / TTLock access tokens and Hinata passwords.
+  await requireStandaloneStaff(c, "owner");
   return c.json({ settings: await getShopDeps(c).staffSettingsCommands.getSettings() });
 });
 legacyStaffRouter.put("/settings", async (c) => {
-  await requireStandaloneStaff(c, "write");
+  await requireStandaloneStaff(c, "owner");
   const body = await c.req.json();
   return c.json({ settings: await getShopDeps(c).staffSettingsCommands.updateSettings(body) });
 });
@@ -97,14 +98,26 @@ legacyStaffRouter.get("/api-tokens", async (c) => {
   return c.json({ apiTokens: await getShopDeps(c).staffApiTokenCommands.listApiTokens() });
 });
 legacyStaffRouter.post("/api-tokens", async (c) => {
-  await requireStandaloneStaff(c, "write");
-  const body = z.object({ label: z.string().trim().min(1), role: z.enum(["integration", "machine"]) })
-    .parse(await c.req.json());
-  const apiToken = await getShopDeps(c).staffApiTokenCommands.createApiToken(body);
+  await requireStandaloneStaff(c, "owner");
+  const body = z.object({
+    label: z.string().trim().min(1),
+    role: z.enum(["integration", "machine"]),
+    machineId: z.string().trim().min(1).optional(),
+  }).parse(await c.req.json());
+  let label = body.label;
+  if (body.role === "machine") {
+    if (!body.machineId) jsonError(400, "机器令牌必须指定 machineId", "MACHINE_ID_REQUIRED");
+    const machine = await c.env.DB.prepare(
+      "SELECT id FROM machines WHERE shop_id=? AND (id=? OR public_id=?) AND enabled=1",
+    ).bind(getShop(c).id, body.machineId, body.machineId).first<{ id: string }>();
+    if (!machine) jsonError(404, "机器不存在或已停用", "MACHINE_NOT_FOUND");
+    label = `machine:${machine.id}`;
+  }
+  const apiToken = await getShopDeps(c).staffApiTokenCommands.createApiToken({ label, role: body.role });
   return c.json({ apiToken });
 });
 legacyStaffRouter.post("/api-tokens/:tokenId/revoke", async (c) => {
-  await requireStandaloneStaff(c, "write");
+  await requireStandaloneStaff(c, "owner");
   const apiToken = await getShopDeps(c).staffApiTokenCommands.revokeApiToken({
     tokenId: c.req.param("tokenId"),
   });

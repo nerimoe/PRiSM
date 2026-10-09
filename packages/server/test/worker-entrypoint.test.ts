@@ -342,22 +342,23 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       const { env, sqlite } = createTestEnvironment();
       const testApp = createApp();
 
-      // Register a platform user
-      const regRes = await testApp.request(
-        "https://prism.test/api/v1/auth/register",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            username: "alice",
-            displayName: "Alice In Wonderland",
-          }),
-        },
-        env,
+      // Simulate an already-verified MuNET platform user.
+      // A username alone must never create a platform session.
+      const userId = crypto.randomUUID();
+      const sessionToken = `verified-worker-session-${crypto.randomUUID()}`;
+      sqlite.run(
+        "INSERT INTO users (id, role) VALUES (?, 'user')",
+        [userId],
       );
-      expect(regRes.status).toBe(201);
-      const sessionCookie = regRes.headers.get("set-cookie")!;
-      expect(sessionCookie).toBeDefined();
+      sqlite.run(
+        "INSERT INTO auth_identities (id, user_id, provider, provider_subject, username, display_name) VALUES (?, ?, 'munet', ?, ?, ?)",
+        [crypto.randomUUID(), userId, "alice", "alice", "Alice In Wonderland"],
+      );
+      sqlite.run(
+        "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
+        [crypto.randomUUID(), userId, await sha256(sessionToken), new Date(Date.now() + 86_400_000).toISOString()],
+      );
+      const sessionCookie = `arcadelink_session=${sessionToken}`;
 
       // Check /api/v1/user/me
       const meRes = await testApp.request(
