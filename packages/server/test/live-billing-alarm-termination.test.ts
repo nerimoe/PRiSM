@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { LiveBilling } from "../src/durable-objects/live-billing.js";
+import { LiveBilling as MaintenanceLiveBilling } from "../src/maintenance-worker.js";
 
 const APNS_ENV = {
   APNS_KEY_ID: "key",
@@ -84,5 +85,27 @@ describe("LiveBilling alarm termination", () => {
       expect(harness.getAlarmWrites()).toBe(0);
       expect(harness.getDeletes()).toBe(1);
     }
+  });
+});
+
+
+describe("maintenance worker alarm termination", () => {
+  it("does not shorten an existing maintenance alarm on repeated refreshes", async () => {
+    const state = new Map<string, unknown>();
+    const initial = Date.now() + 30 * 60_000;
+    let alarm: number | null = initial;
+    let writes = 0;
+    const storage = {
+      async get<T>(key: string): Promise<T | null> { return (state.get(key) as T) ?? null; },
+      async put(key: string, value: unknown) { state.set(key, value); },
+      async getAlarm() { return alarm; },
+      async setAlarm(at: number) { alarm = at; writes++; },
+      async deleteAlarm() { alarm = null; },
+    };
+    const object = new MaintenanceLiveBilling({ storage } as any, {} as any);
+    for (let i = 0; i < 10; i++) await object.refresh("s", "p");
+    expect(writes).toBe(0);
+    expect(alarm).toBe(initial);
+    expect((state.get("visit") as { revision: number }).revision).toBe(10);
   });
 });
