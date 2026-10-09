@@ -63,10 +63,7 @@ export class LiveBilling extends BaseDurableObject<Env> {
     const gate = checkAlarmBudget(
       await this.ctx.storage.get<AlarmBudget>("alarm-budget"), now, !!visit.terminal,
     );
-    const pending = await this.ctx.storage.getAlarm();
-    await this.ctx.storage.setAlarm(
-      Math.max(now + 1000, gate.nextAllowedAt, Math.min(pending ?? Infinity, now + 1000)),
-    );
+    await this.ctx.storage.setAlarm(Math.max(now + 1000, gate.nextAllowedAt));
   }
 
   private async deferMaintenanceAlarm(): Promise<void> {
@@ -150,10 +147,12 @@ export class LiveBilling extends BaseDurableObject<Env> {
       ]));
     }
     if (!valid.length) {
-      await Promise.all([
-        this.ctx.storage.deleteAlarm(),
-        this.ctx.storage.deleteAll(),
-      ]);
+      // Preserve the small persistent budget across token churn. Otherwise
+      // unregistering and registering a new activity would reset the limiter.
+      const budget = await this.ctx.storage.get<AlarmBudget>("alarm-budget");
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      if (budget) await this.ctx.storage.put("alarm-budget", budget);
       return;
     }
     const cached = await this.ctx.storage.get<CachedBill>("bill");
@@ -297,10 +296,12 @@ export class LiveBilling extends BaseDurableObject<Env> {
         Math.max(later + 1000, Number.isFinite(next) ? next : later + MIN_BILLING_ALARM_INTERVAL_MS, budget.nextAllowedAt),
       );
     } else {
-      await Promise.all([
-        this.ctx.storage.deleteAlarm(),
-        this.ctx.storage.deleteAll(),
-      ]);
+      // Preserve the small persistent budget across token churn. Otherwise
+      // unregistering and registering a new activity would reset the limiter.
+      const budget = await this.ctx.storage.get<AlarmBudget>("alarm-budget");
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      if (budget) await this.ctx.storage.put("alarm-budget", budget);
     }
   }
 }
