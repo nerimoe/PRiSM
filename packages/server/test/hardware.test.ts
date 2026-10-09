@@ -500,7 +500,7 @@ describe("Machine WebSocket handler", () => {
     const deps = {
       apiTokenAuth: {
         async authenticateApiToken(token: string) {
-          if (token === "token-mach") return { role: "machine" };
+          if (token === "token-mach") return { role: "machine", machineId: "mach-1" };
           return { role: "player" };
         },
       },
@@ -533,6 +533,7 @@ describe("Machine WebSocket handler", () => {
       deps,
     );
     expect((ok as { ok: boolean }).ok).toBe(true);
+    expect((ok as { data: { authorizedMachineId: string } }).data.authorizedMachineId).toBe("mach-1");
   });
 
   it("processes hello, ping, and ack messages", async () => {
@@ -566,7 +567,7 @@ describe("Machine WebSocket handler", () => {
       },
     };
 
-    const peer = createTestPeer(sent);
+    const peer = createTestPeer(sent, { authorizedMachineId: "mach-1" });
 
     await handleMachineWebSocketMessage(
       peer,
@@ -575,6 +576,12 @@ describe("Machine WebSocket handler", () => {
     );
 
     expect(peer.data?.machineId).toBe("mach-1");
+    const otherPeer = createTestPeer([], { authorizedMachineId: "mach-1" });
+    await expect(handleMachineWebSocketMessage(
+      otherPeer,
+      JSON.stringify({ type: "hello", machineId: "another-machine", capabilities: [] }),
+      deps,
+    )).rejects.toThrow("Machine token does not authorize this machine.");
     expect(sent.map((s) => JSON.parse(s).type)).toEqual(["hello.ack", "command"]);
 
     await handleMachineWebSocketMessage(peer, JSON.stringify({ type: "ping" }), deps);
