@@ -92,3 +92,30 @@ TypeScript server sources and rejects direct JSON serialization of internal
 auth principal objects or their `role` discriminator. It is intentionally a
 static anti-leak guard, **not** a proof that all historic API DTOs match; each
 consumer-specific contract must also have a runtime integration test.
+
+## Historical API audit gates (full path inventory and response views)
+
+Pre-consolidation commit `7fd7e7c` contains 150 explicitly declared
+`/api/v1/*` method/path combinations across `server-hono/src/index.ts` and
+`platform/src/index.ts`. The immutable
+`packages/server/test/fixtures/pre-merge-api-routes.ts` captures them;
+`pre-merge-api-routes.test.ts` asserts the **production**
+`createApp().routes` still registers all 150. It also checks more than
+100 historical tenant-scoped `player/staff/integration` endpoints and the
+three wildcard-based ActivityKit endpoints, which the baseline static list
+cannot detect by itself.
+
+The original 31 public response serializer bodies in
+`server-hono/src/views.ts` are frozen in
+`packages/server/test/fixtures/pre-merge-views.ts.txt`.
+`node scripts/check-api-view-compat.cjs` parses both original and current
+TypeScript ASTs and rejects deletion or alteration of their function bodies.
+In particular `toPlayerManagementView` must always output `createdAt`.
+
+**Do not mistake these gates for a full semantic equivalence proof.**
+Registration checks cannot detect returned 200s with wrong data. Serializer
+checks cannot catch changed repository behavior, request validation, auth,
+transaction side effects or controllers that bypass converters. Those require
+the existing `createApp()` end-to-end tests and new per-route contract
+fixtures for previously untested operations. CI should not be declared proof
+of every API's complete historical compatibility until that coverage exists.
