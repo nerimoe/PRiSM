@@ -175,6 +175,21 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
     clearShopDependenciesCache();
   });
 
+  it("requires a configured one-time secret for legacy setup install", async () => {
+    const { env, sqlite } = createTestContext();
+    const url = "https://prism.test/api/v1/setup/install";
+    const request = (token?: string) => legacyRouter.request(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token ? { "X-PRiSM-Bootstrap-Token": token } : {}) },
+      body: JSON.stringify({ storeName: "Unclaimed Shop" }),
+    }, env);
+    expect((await request()).status).toBe(503);
+    env.PRISM_BOOTSTRAP_TOKEN_HASH = await sha256Hex("correct-bootstrap-token");
+    expect((await request()).status).toBe(403);
+    expect((await request("wrong-bootstrap-token")).status).toBe(403);
+    expect(sqlite.query("SELECT id FROM shops").all()).toEqual([]);
+  });
+
   async function setupFixture(db: D1DatabaseLike, sqlite: Database) {
     const shopId = "shop_default_1";
     const publicId = "default-store";
