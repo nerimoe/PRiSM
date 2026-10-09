@@ -305,6 +305,7 @@ export async function refreshActivityBill(
   env: Env,
   shopId: string,
   playerId: string,
+  terminal = false,
 ) {
   if (!env.LIVE_BILLING || !liveActivityConfig(env)) return;
   const token = await env.DB.prepare(
@@ -317,11 +318,11 @@ export async function refreshActivityBill(
   if (!token) return;
   const liveBillingNs = env.LIVE_BILLING as unknown as {
     getByName(name: string): {
-      refresh(shopId: string, playerId: string): Promise<void>;
+      refresh(shopId: string, playerId: string, terminal?: boolean): Promise<void>;
     };
   } | undefined;
   if (!liveBillingNs) return;
   await liveBillingNs
     .getByName(JSON.stringify([shopId, playerId]))
-    .refresh(shopId, playerId);
+    .refresh(shopId, playerId, terminal);
 }

@@ -1,6 +1,7 @@
 import type { DurableObject } from "cloudflare:workers";
 import { deploymentControl, maintenanceResponse } from "./deployment-gate.js";
 import type { Env } from "./bindings.js";
+import { nextMaintenanceRetry, type MaintenanceWait } from "./durable-objects/alarm-budget.js";
 
 let BaseDurableObject: typeof DurableObject;
 try {
@@ -22,11 +23,28 @@ export class LiveBilling extends BaseDurableObject<Env> {
       playerId,
       revision: (previous?.revision ?? 0) + 1,
     });
-    await this.ctx.storage.setAlarm(Date.now() + 30_000);
+    // A refresh must not overwrite the maintenance alarm or accelerate the
+    // exponential backoff. The alarm handler is the sole retry scheduler.
+    const pending = await this.ctx.storage.getAlarm();
+    if (pending !== null && pending > Date.now()) return;
+    await this.deferAlarm();
+  }
+
+  private async deferAlarm(): Promise<void> {
+    const now = Date.now();
+    const plan = nextMaintenanceRetry(
+      await this.ctx.storage.get<MaintenanceWait>("maintenance-wait"), now,
+    );
+    if (plan.nextAt === null) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.put("maintenance-wait", plan.state);
+    await this.ctx.storage.setAlarm(plan.nextAt);
   }
 
   async alarm(): Promise<void> {
-    await this.ctx.storage.setAlarm(Date.now() + 30_000);
+    await this.deferAlarm();
   }
 }
 

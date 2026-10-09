@@ -818,6 +818,73 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       expect(mockStorage.alarm).toBeDefined();
     });
 
+    it("does not turn a high-frequency billing refresh into an early DO alarm", async () => {
+      const now = Date.now();
+      const state = new Map<string, unknown>([["alarm-budget", {
+        tokens: 0, updatedAt: now, lastRunAt: now, lastTerminalBypassAt: 0,
+      }]]);
+      let alarm: number | null = null;
+      const storage = {
+        async get<T>(key: string): Promise<T | null> {
+          return (state.get(key) as T) ?? null;
+        },
+        async put(key: string, value: unknown) { state.set(key, value); },
+        async delete(key: string) { state.delete(key); },
+        async getAlarm() { return alarm; },
+        async setAlarm(at: number) { alarm = at; },
+      };
+      const object = new LiveBilling({ storage } as any, {} as any);
+      await object.refresh("test_shop", "test_player");
+      // An exhausted quota may not be bypassed by a fresh business revision.
+      expect(alarm).not.toBeNull();
+      expect(alarm!).toBeGreaterThanOrEqual(now + 299_000);
+      const priorAlarm = alarm;
+      await object.refresh("test_shop", "test_player");
+      expect(alarm).toBe(priorAlarm);
+    });
+
+    it("preserves the first pending alarm despite rapid, legitimate refreshes", async () => {
+      const state = new Map<string, unknown>();
+      let alarm: number | null = null;
+      let writes = 0;
+      const storage = {
+        async get<T>(key: string): Promise<T | null> {
+          return (state.get(key) as T) ?? null;
+        },
+        async put(key: string, value: unknown) { state.set(key, value); },
+        async getAlarm() { return alarm; },
+        async setAlarm(at: number) { alarm = at; writes++; },
+      };
+      const object = new LiveBilling({ storage } as any, {} as any);
+      for (let i = 0; i < 10; i++) await object.refresh("test_shop", "test_player");
+      expect(writes).toBe(1);
+      expect(alarm).not.toBeNull();
+      expect((state.get("visit") as { revision: number }).revision).toBe(10);
+    });
+
+    it("cannot override a queued maintenance retry with new refreshes", async () => {
+      const now = Date.now();
+      const state = new Map<string, unknown>([
+        ["maintenance-wait", { startedAt: now - 3 * 60_000, attempts: 3 }],
+      ]);
+      let alarm: number | null = now + 60 * 60_000;
+      let writes = 0;
+      const storage = {
+        async get<T>(key: string): Promise<T | null> {
+          return (state.get(key) as T) ?? null;
+        },
+        async put(key: string, value: unknown) { state.set(key, value); },
+        async getAlarm() { return alarm; },
+        async setAlarm(at: number) { alarm = at; writes++; },
+      };
+      const object = new LiveBilling({ storage } as any, {
+        PRISM_DEPLOY_PHASE: "maintenance",
+      } as any);
+      for (let i = 0; i < 5; i++) await object.refresh("test_shop", "test_player");
+      expect(alarm).toBe(now + 60 * 60_000);
+      expect(writes).toBe(0);
+    });
+
     it("does not intercept /health, /version, or /rpc when ASSETS is configured", async () => {
       let assetsFetched = false;
       const mockAssets = {
