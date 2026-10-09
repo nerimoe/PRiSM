@@ -111,3 +111,17 @@
 - 全部展示数据复用 live-players 的玩家列表与 UTC 计费快照；预估和时间轴在浏览器 Web Worker 中使用后端同一套引擎计算。预估为空时不显示成零元；未增加轮询或逐人请求。结账仍由服务器重新核算。快照字段与资源优化见[在店计费预估](live-billing-performance.md)。
 
 主要代码：`packages/server/src/routes/shops/`、`packages/application/src/player-commands.ts`、`packages/server/src/middleware/tenant.ts`、`packages/core/src/pricing-time.ts`、`packages/application/src/settlement-service.ts`、`packages/application/src/asset-definition-effects.ts`。
+
+
+## 店长计费模拟器
+
+在店铺工作台「计费」页展开「计费模拟器」，逐行设置 Session 的「开启时间／关闭时间／计费方案」，支持多 Session 同时计费与跨日区间。入场时间取全部 Session 的最早开启时间，退场时间取最晚关闭时间，不依赖列表顺序。时间按店铺时区输入，结果复用正式账单多轨时间轴和跨方案封顶规则。
+
+只读接口：POST /api/v1/shops/:shopCode/staff/pricing-configs/simulate/preview。仅店主和经理可访问。
+请求示例：
+
+{"sessions":[{"startedAt":"2026-10-09T10:00:00Z","endedAt":"2026-10-09T11:00:00Z","pricingConfigId":"plan-id"}]}
+
+返回 admissionAt、departureAt、subtotal、total（人民币元）和 timeline。最多 30 个 Session，总跨度不超过 31 天，各 Session 的结束时间必须晚于开始时间，且必须选择已启用的按时计费或固定收费方案。已启用的全局封顶自动参与计算。
+
+此接口纯计算：不新建玩家或 Session、不持久化账单、不扣资产。模拟使用当前已启用的计费方案，不还原旧 Session 锁定的规则版本，也不包含既往付费历史、优惠券、资产折扣、设备操作与人工改价，因此不代表特定玩家最终实收账单。
