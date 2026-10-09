@@ -80,11 +80,8 @@ export async function encryptHinataIoMessage(
     saltBytes = decodeBase64Url(input.salt, 16, "salt");
     saltB64 = input.salt;
   } else {
-    const hash = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(`aimeio-salt:${input.password}`),
-    );
-    saltBytes = new Uint8Array(hash, 0, 16);
+    // Independent random salt avoids deterministic password-derived KDF inputs.
+    saltBytes = crypto.getRandomValues(new Uint8Array(16));
     saltB64 = encodeBase64Url(saltBytes);
   }
 
@@ -119,7 +116,8 @@ export async function encryptHinataIoMessage(
         ["encrypt", "decrypt"],
       );
     })();
-    keyCache.set(cacheKey, keyPromise);
+    // Do not cache random one-time salts: this would grow the key cache indefinitely.
+    if (input.salt) keyCache.set(cacheKey, keyPromise);
   }
   const key = await keyPromise;
 
