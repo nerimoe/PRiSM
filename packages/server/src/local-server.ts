@@ -352,10 +352,8 @@ export function initializeLocalDatabase(
       "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'admin', ?, ?) ON CONFLICT(id) DO NOTHING;",
       [adminId, now, now],
     );
-    db.run(
-      "INSERT INTO auth_identities (id, user_id, provider, provider_subject, username, display_name, created_at, updated_at) VALUES ('admin_identity', ?, 'local', 'admin', 'admin', 'Administrator', ?, ?) ON CONFLICT(id) DO NOTHING;",
-      [adminId, now, now],
-    );
+    // Internal bootstrap record, not a login identity. No local platform identity
+    // is provisioned; user-facing admin authentication requires MuNET / Passkey.
   }
 
   // 2. Ensure default shop
