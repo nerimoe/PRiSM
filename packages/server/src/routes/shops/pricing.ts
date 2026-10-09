@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { z } from "zod";
+import { simulateBilling } from "@prism/application";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -14,6 +16,28 @@ pricingRouter.get("/", async (c) => {
   const deps = getShopDeps(c);
   const configs = await deps.staffPricingCommands.listPricingConfigs();
   return c.json({ pricingConfigs: configs.map(toPricingConfigManagementView) });
+});
+
+// Read-only quote of arbitrary overlapping sessions, using current shop pricing.
+pricingRouter.post("/simulate/preview", async (c) => {
+  const shop = getShop(c);
+  const principal = await staffPrincipal(c, shop);
+  if (principal.staffRole === "viewer") {
+    jsonError(403, "Write permission required.", "FORBIDDEN");
+  }
+  const body = z.object({
+    sessions: z.array(z.object({
+      startedAt: z.string(),
+      endedAt: z.string(),
+      pricingConfigId: z.string().min(1),
+    })).min(1).max(30),
+  }).parse(await c.req.json());
+  const configs = await getShopDeps(c).staffPricingCommands.listPricingConfigs();
+  return c.json(await simulateBilling({
+    sessions: body.sessions,
+    pricingConfigs: configs,
+    timeZone: shop.time_zone || "UTC",
+  }));
 });
 
 // Create Pricing Config
