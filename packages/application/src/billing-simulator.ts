@@ -90,7 +90,9 @@ export async function simulateBilling(input: {
     // across all their charge items. Keep that ordering and rounding behavior.
     const preview = await previewSessionSettlement({
       session,
-      pricingProviders: [createPricingProviderFromConfig(row.plan)],
+      pricingProviders: [createPricingProviderFromConfig(row.plan.kind === "time.priority"
+        ? { ...row.plan, provider: { ...row.plan.provider, paidHistory: {} } }
+        : row.plan)],
       assetHoldings: [],
       now: departure,
     });
