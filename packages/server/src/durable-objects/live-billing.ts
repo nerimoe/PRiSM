@@ -57,13 +57,25 @@ export class LiveBilling extends BaseDurableObject<Env> {
       terminal: terminal || previous?.terminal || false,
     };
     await this.ctx.storage.put("visit", visit);
-    // Business revisions (including minute-by-minute pricing) do not reset the
-    // alarm budget. Do not wake early only to discover the budget is exhausted.
+    // Every DO has exactly one alarm. Do not keep pushing it forward under
+    // frequent refreshes or override a deployment-maintenance backoff.
     const now = Date.now();
+    if (await this.ctx.storage.get<MaintenanceWait>("maintenance-wait")) {
+      // A maintenance alarm may still be scheduled long after the deployment
+      // has resumed. Wake promptly only once maintenance is confirmed over.
+      let maintenance = true;
+      try { maintenance = await isDeploymentMaintenance(this.env); } catch { /* fail closed */ }
+      if (maintenance) return;
+      await this.ctx.storage.delete("maintenance-wait");
+    }
     const gate = checkAlarmBudget(
       await this.ctx.storage.get<AlarmBudget>("alarm-budget"), now, !!visit.terminal,
     );
-    await this.ctx.storage.setAlarm(Math.max(now + 1000, gate.nextAllowedAt));
+    const target = Math.max(now + 1000, gate.nextAllowedAt);
+    const pending = await this.ctx.storage.getAlarm();
+    // Preserve any earlier alarm; every invocation checks the budget again.
+    if (pending !== null && pending > now && pending <= target) return;
+    await this.ctx.storage.setAlarm(target);
   }
 
   private async deferMaintenanceAlarm(): Promise<void> {
