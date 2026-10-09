@@ -493,13 +493,13 @@ export function toPricingEffectManagementView(
 }
 
 export function toPlayerManagementView(
-  player: { id: string; displayName: string; status: Player["status"]; createdAt?: Date },
+  player: Player,
 ): Record<string, unknown> {
   return {
     id: player.id,
     displayName: player.displayName,
     status: player.status,
-    ...(player.createdAt ? { createdAt: player.createdAt.toISOString() } : {}),
+    createdAt: player.createdAt.toISOString(),
   };
 }
 
