@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { isKnownLiveActivityBundle, type LiveActivityEnvironment } from "../../durable-objects/live-activity-push.js";
 import { Hono, type Context } from "hono";
 import { createD1Repositories } from "@prism/adapter-d1";
@@ -395,6 +396,7 @@ async function handleLiveActivityRoute(
     return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
   }
   if (path === "live-activity/register") {
+    await enforceRateLimits(c, [{ key: `live-activity:mutation:${user.id}`, limit: 5 }]);
     const parsed = z
       .object({
         activityId: z.string().min(1).max(200),
@@ -420,10 +422,21 @@ async function handleLiveActivityRoute(
     }
 
     const now = new Date().toISOString();
+    const attributes = JSON.stringify(input.attributes ?? {});
+    if (attributes.length > 4096) jsonError(413, "实时活动属性过大");
+    // Remove expired entries before enforcing the limit; the client can recover
+    // from an uninstalled app without needing an old token to be pushed first.
+    await c.env.DB.prepare(
+      "DELETE FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND created_at<?",
+    ).bind(shop.id, user.id, new Date(Date.now() - 8 * 3600_000).toISOString()).run();
+    // Atomic quota check and upsert: concurrent requests cannot exceed four
+    // activities even when they use different attacker-supplied activity IDs.
     await c.env.DB.prepare(
       `INSERT INTO live_activity_tokens
         (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?
+       WHERE EXISTS(SELECT 1 FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=?)
+          OR (SELECT COUNT(*) FROM live_activity_tokens WHERE shop_id=? AND user_id=?) < 4
        ON CONFLICT(shop_id, user_id, activity_id) DO UPDATE SET
          token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
          session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at`,
@@ -438,16 +451,26 @@ async function handleLiveActivityRoute(
         input.environment satisfies LiveActivityEnvironment,
         input.bundleId,
         input.sessionId ?? null,
-        JSON.stringify(input.attributes ?? {}),
+        attributes,
         now,
         now,
+        shop.id,
+        user.id,
+        input.activityId,
+        shop.id,
+        user.id,
       )
       .run();
+    const accepted = await c.env.DB.prepare(
+      "SELECT 1 FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=? AND token=?",
+    ).bind(shop.id, user.id, input.activityId, input.token.toLowerCase()).first();
+    if (!accepted) jsonError(429, "实时活动已达到每人最多 4 个的上限");
     await refreshActivityBill(c.env, shop.id, player.id);
     return c.json({ ok: true });
   }
 
   if (path === "live-activity/unregister") {
+    await enforceRateLimits(c, [{ key: `live-activity:mutation:${user.id}`, limit: 5 }]);
     const parsed = z
       .object({ activityId: z.string().min(1).max(200) })
       .safeParse(body);
