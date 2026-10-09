@@ -14,12 +14,20 @@ const banInput = z.object({
 });
 
 adminManagementRouter.post("/users/role", async (c) => {
-  requireAdmin(c);
+  const admin = requireAdmin(c);
   const body = roleInput.parse(await c.req.json());
+  if (body.role === "user" && body.userId === admin.id)
+    jsonError(409, "不能降级当前管理员账号", "CANNOT_DEMOTE_SELF");
   const existing = await c.env.DB.prepare("SELECT id FROM users WHERE id=?").bind(body.userId).first();
   if (!existing) jsonError(404, "没有找到这个用户", "USER_NOT_FOUND");
-  await c.env.DB.prepare("UPDATE users SET role=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-    .bind(body.role, body.userId).run();
+  // Check the active-admin count in the same UPDATE to avoid concurrent lockout.
+  const result = await c.env.DB.prepare(
+    `UPDATE users SET role=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+     AND (role!='admin' OR ?!='user' OR
+       (SELECT COUNT(*) FROM users WHERE role='admin' AND banned_at IS NULL)>1)`,
+  ).bind(body.role,body.userId,body.role).run();
+  if ((result as { meta?: { changes?: number } }).meta?.changes === 0)
+    jsonError(409, "必须保留至少一位有效管理员", "LAST_ADMIN_REQUIRED");
   return c.json({ ok: true });
 });
 
