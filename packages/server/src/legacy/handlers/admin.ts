@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { sha256Hex } from "../../crypto.js";
+import { enforceRateLimits } from "../../middleware/rate-limit.js";
+import { clientIp } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 
@@ -10,7 +12,11 @@ export const legacyAdminRouter = new Hono<AppBindings>();
 export const legacyPlayerAuthRouter = new Hono<AppBindings>();
 
 legacyAdminRouter.post("/login", async (c) => {
-  const body = z.object({ username: z.string(), password: z.string() }).parse(await c.req.json());
+  const body = z.object({ username: z.string().trim().min(1), password: z.string().min(1) }).parse(await c.req.json());
+  await enforceRateLimits(c, [
+    { key: `staff-login:ip:${clientIp(c.req.raw)}`, limit: 20, windowSeconds: 60 },
+    { key: `staff-login:user:${getShop(c).id}:${body.username.toLowerCase()}`, limit: 5, windowSeconds: 60 },
+  ]);
   const result = await getShopDeps(c).setupCommands.login(body);
   return c.json({ session: { token: result.token }, staff: result.staff });
 });
