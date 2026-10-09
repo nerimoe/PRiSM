@@ -83,7 +83,8 @@ legacyStaffRouter.post("/users/:staffUserId/password", async (c) => {
 });
 
 legacyStaffRouter.get("/settings", async (c) => {
-  await requireStandaloneStaff(c);
+  // This settings DTO contains HA / TTLock access tokens and Hinata passwords.
+  await requireStandaloneStaff(c, "owner");
   return c.json({ settings: await getShopDeps(c).staffSettingsCommands.getSettings() });
 });
 legacyStaffRouter.put("/settings", async (c) => {
