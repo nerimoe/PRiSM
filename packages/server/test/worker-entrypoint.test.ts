@@ -818,6 +818,29 @@ describe("Worker Entrypoint & Root Application Suite", () => {
       expect(mockStorage.alarm).toBeDefined();
     });
 
+    it("does not turn a high-frequency billing refresh into an early DO alarm", async () => {
+      const now = Date.now();
+      const state = new Map<string, unknown>([["alarm-budget", {
+        tokens: 0, updatedAt: now, lastRunAt: now, lastTerminalBypassAt: 0,
+      }]]);
+      let alarm: number | null = null;
+      const storage = {
+        async get<T>(key: string): Promise<T | null> {
+          return (state.get(key) as T) ?? null;
+        },
+        async put(key: string, value: unknown) { state.set(key, value); },
+        async setAlarm(at: number) { alarm = at; },
+      };
+      const object = new LiveBilling({ storage } as any, {} as any);
+      await object.refresh("test_shop", "test_player");
+      // An exhausted quota may not be bypassed by a fresh business revision.
+      expect(alarm).not.toBeNull();
+      expect(alarm!).toBeGreaterThanOrEqual(now + 299_000);
+      const priorAlarm = alarm;
+      await object.refresh("test_shop", "test_player");
+      expect(alarm).toBeGreaterThanOrEqual(priorAlarm! - 1000);
+    });
+
     it("does not intercept /health, /version, or /rpc when ASSETS is configured", async () => {
       let assetsFetched = false;
       const mockAssets = {
