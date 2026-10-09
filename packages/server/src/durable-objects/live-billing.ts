@@ -181,8 +181,16 @@ export class LiveBilling extends BaseDurableObject<Env> {
     const offset = cursor % valid.length;
     const ordered = [...valid.slice(offset), ...valid.slice(0, offset)];
     let attempted = 0;
+    let inspected = 0;
     let hasUnprocessed = false;
     for (const token of ordered) {
+      // Cap *storage reads* as well as APNs calls for legacy oversized token
+      // sets (which may predate the new four-activity registration quota).
+      if (attempted >= 4 || inspected >= 16) {
+        hasUnprocessed = true;
+        break;
+      }
+      inspected += 1;
       if (
         (await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision
       ) {
@@ -236,10 +244,6 @@ export class LiveBilling extends BaseDurableObject<Env> {
         nextRetryAt = Math.min(nextRetryAt, retry.nextAt);
         continue;
       }
-      if (attempted >= 4) {
-        hasUnprocessed = true;
-        continue;
-      }
       attempted += 1;
       const result = await pusher.send(
         {
@@ -272,8 +276,8 @@ export class LiveBilling extends BaseDurableObject<Env> {
         await this.ctx.storage.put(`sent:${token.id}`, signature);
       }
     }
-    if (attempted > 0) {
-      await this.ctx.storage.put("token-cursor", (offset + attempted) % valid.length);
+    if (inspected > 0 && valid.length > 1) {
+      await this.ctx.storage.put("token-cursor", (offset + inspected) % valid.length);
     }
     if ((await this.ctx.storage.get<Visit>("visit"))?.revision !== visit.revision) {
       return;
