@@ -44,7 +44,10 @@ export type RedeemService = {
 export function createRedeemService(dependencies: RedeemServiceDependencies): RedeemService {
   return {
     async redeemCode(input) {
-      return withOperationLease({ repository: dependencies.operationLocks, scope: "player.assets", resourceId: input.playerId, id: dependencies.id, now: dependencies.now }, async () => {
+      // Serialize each redeem code globally before acquiring a per-player lock:
+      // the global maxUseCount must never race across different players.
+      return withOperationLease({ repository: dependencies.operationLocks, scope: "redeem.code", resourceId: input.code, id: dependencies.id, now: dependencies.now }, () =>
+      withOperationLease({ repository: dependencies.operationLocks, scope: "player.assets", resourceId: input.playerId, id: dependencies.id, now: dependencies.now }, async () => {
       const code = await dependencies.redeems.findRedeemCodeByCode(input.code);
       if (!code) {
         throw new PrismDomainError("Redeem code not found.", "REDEEM_CODE_NOT_FOUND");
@@ -114,7 +117,7 @@ export function createRedeemService(dependencies: RedeemServiceDependencies): Re
         availableHoldings: available.map(toAvailableAssetView),
         grantedAssets,
       };
-      });
+      }));
     },
   };
 }
