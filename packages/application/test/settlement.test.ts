@@ -945,6 +945,36 @@ describe("createSettlementService", () => {
     expect(settlements.saved).toEqual(result.settlements);
   });
 
+  it("rejects negative or non-finite staff override totals without changing sessions or assets", async () => {
+    const sessions = new MemorySessionRepository({
+      id: "session-1",
+      playerId: "player-1",
+      startedAt: new Date("2026-06-07T10:00:00.000Z"),
+      status: "active",
+      pricingConfigIds: ["time"],
+      paymentStatus: "unpaid",
+    });
+    const assets = new MemoryAssetRepository([{
+      id: "holding-1",
+      assetType: "currency",
+      assetCode: "currency.paid",
+      quantity: centsOf(100),
+    }]);
+    const settlements = new MemorySettlementRepository();
+    const service = createSettlementService({
+      sessions, assets, settlements,
+      pricingProviders: [pricing], assetEffectProviders: [],
+      now: () => new Date("2026-06-07T11:00:00.000Z"),
+    });
+    for (const total of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(service.checkoutWithOverride({
+        playerId: "player-1", staffId: "staff-1", total, reason: "invalid",
+      })).rejects.toMatchObject({ code: "INVALID_OVERRIDE_TOTAL" });
+    }
+    expect(assets.savedHoldings).toEqual([]);
+    expect(settlements.saved).toEqual([]);
+  });
+
   it("separates unified checkout discounts from session and cap adjustments", async () => {
     const sessions = new MemorySessionRepository({
       id: "session-1",
