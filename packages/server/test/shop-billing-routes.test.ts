@@ -350,6 +350,41 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("preserves createdAt in player management create and status update responses", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const headers = {
+      authorization: `Bearer ${staffSessionToken}`,
+      "content-type": "application/json",
+    };
+    const url = `https://prism.test/api/v1/shops/${publicId}/staff/players`;
+    const created = await app.fetch(new Request(url, {
+      method: "POST", headers, body: JSON.stringify({ displayName: "API 契约测试" }),
+    }), env);
+    expect(created.status).toBe(201);
+    const payload = await created.json() as {
+      data: { player: { id: string; displayName: string; status: string; createdAt: string } };
+    };
+    expect(Object.keys(payload.data.player).sort()).toEqual(
+      ["id", "displayName", "status", "createdAt"].sort(),
+    );
+    expect(payload.data.player.displayName).toBe("API 契约测试");
+    expect(Number.isNaN(Date.parse(payload.data.player.createdAt))).toBe(false);
+
+    const updated = await app.fetch(new Request(
+      `${url}/${payload.data.player.id}/status`, {
+        method: "PATCH", headers, body: JSON.stringify({ status: "disabled" }),
+      },
+    ), env);
+    expect(updated.status).toBe(200);
+    const result = await updated.json() as { data: { player: typeof payload.data.player } };
+    expect(result.data.player).toEqual({
+      ...payload.data.player, status: "disabled",
+    });
+    sqlite.close();
+  });
+
   it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
