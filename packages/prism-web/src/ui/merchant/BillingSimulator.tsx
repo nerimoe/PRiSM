@@ -53,6 +53,7 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
   function changeSessions(next: DraftSession[]) {
     generation.current++;
     setSessions(next);
+    setBusy(false);
     setResult(null);
     setError("");
   }
