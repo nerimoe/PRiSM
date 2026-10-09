@@ -468,6 +468,57 @@ describe("Platform & System Routes", () => {
       otherCookie = await authenticatedTestUser(env, "other-user");
     });
 
+    it("requires shop-owner role to manage members and protects the last owner", async () => {
+      const ownerId = (await env.DB.prepare(
+        "SELECT user_id FROM auth_identities WHERE provider='munet' AND provider_subject='shop-owner'",
+      ).bind().first<{ user_id: string }>())!.user_id;
+      const staffId = (await env.DB.prepare(
+        "SELECT user_id FROM auth_identities WHERE provider='munet' AND provider_subject='other-user'",
+      ).bind().first<{ user_id: string }>())!.user_id;
+      const shopId = "security-shop";
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO shops (id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES (?,?,?,0,0,80,?)")
+          .bind(shopId,shopId,"Security Shop",ownerId),
+        env.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES (?,?,?,'owner')")
+          .bind("member-owner",shopId,ownerId),
+        env.DB.prepare("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES (?,?,?,'staff')")
+          .bind("member-staff",shopId,staffId),
+      ]);
+      const productionApp = createApp();
+      const post = (cookie: string, role: string) => productionApp.request(
+        "https://prism.test/api/v1/merchant/shop-members",
+        { method: "POST", headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ shopId, user: "other-user", role }) }, env,
+      );
+
+      expect((await post(otherCookie, "owner")).status).toBe(403);
+      expect((await productionApp.request(
+        "https://prism.test/api/v1/merchant/shop-members/member-owner",
+        { method: "DELETE", headers: { cookie: otherCookie } }, env,
+      )).status).toBe(403);
+
+      // Last owner cannot give up ownership by changing their own role.
+      const demote = await productionApp.request(
+        "https://prism.test/api/v1/merchant/shop-members",
+        { method: "POST", headers: { cookie: ownerCookie, "content-type": "application/json" },
+          body: JSON.stringify({ shopId, user: "shop-owner", role: "staff" }) }, env,
+      );
+      expect(demote.status).toBe(409);
+      expect((await post(ownerCookie, "owner")).status).toBe(200);
+    });
+
+    it("prevents platform admins from downgrading their own session", async () => {
+      const ownerId = (await env.DB.prepare(
+        "SELECT user_id FROM auth_identities WHERE provider='munet' AND provider_subject='shop-owner'",
+      ).bind().first<{ user_id: string }>())!.user_id;
+      await env.DB.prepare("UPDATE users SET role='admin' WHERE id=?").bind(ownerId).run();
+      const res = await createApp().request("https://prism.test/api/v1/admin/users/role", {
+        method: "POST", headers: { cookie: ownerCookie, "content-type": "application/json" },
+        body: JSON.stringify({ userId: ownerId, role: "user" }),
+      }, env);
+      expect(res.status).toBe(409);
+    });
+
     it("requires authentication to create a shop", async () => {
       const res = await app.request(
         "https://prism.test/api/v1/shops",
