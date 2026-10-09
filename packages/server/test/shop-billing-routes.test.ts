@@ -6,6 +6,7 @@ import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adap
 import type { AppBindings, Env } from "../src/bindings.js";
 import { attachUser } from "../src/middleware/auth.js";
 import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
+import { clearRateLimitMemory } from "../src/middleware/rate-limit.js";
 import { shopRouter } from "../src/routes/shops/index.js";
 import { createApp } from "../src/app.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
@@ -186,6 +187,7 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
 describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
   beforeEach(() => {
     clearShopDependenciesCache();
+    clearRateLimitMemory();
   });
 
   async function setupShopFixture(db: D1DatabaseLike, sqlite: Database) {
@@ -506,6 +508,33 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       body: JSON.stringify({ activityId: "no-user", token: "a".repeat(64), environment: "sandbox", bundleId: "moe.neri.hinatago" }),
     }), env);
     expect(denied.status).toBe(401);
+    sqlite.close();
+  });
+
+  it("caps Live Activity registration at four distinct activities per account", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken, shopId } = await setupShopFixture(db, sqlite);
+    sqlite.run(`CREATE TABLE IF NOT EXISTS live_activity_tokens (
+      id TEXT PRIMARY KEY, shop_id TEXT NOT NULL, user_id TEXT NOT NULL,
+      activity_id TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL,
+      bundle_id TEXT NOT NULL, session_id TEXT, attributes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      UNIQUE(shop_id, user_id, activity_id))`);
+    const app = createApp();
+    const url = `https://prism.test/api/v1/shops/${publicId}/player/live-activity/register`;
+    const headers = { authorization: `Bearer ${staffSessionToken}`, "content-type": "application/json" };
+    const register = (id: number) => app.fetch(new Request(url, {
+      method: "POST", headers, body: JSON.stringify({
+        activityId: `activity-${id}`, token: String(id).repeat(64),
+        environment: "sandbox", bundleId: "moe.neri.hinatago",
+      }),
+    }), env);
+    for (let index = 1; index <= 4; index++) {
+      expect((await register(index)).status).toBe(200);
+    }
+    expect((await register(5)).status).toBe(429);
+    expect((sqlite.query("SELECT COUNT(*) AS count FROM live_activity_tokens WHERE shop_id=?")
+      .get(shopId) as { count: number }).count).toBe(4);
     sqlite.close();
   });
 
