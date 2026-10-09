@@ -141,9 +141,15 @@ export class LiveBilling extends BaseDurableObject<Env> {
         .all<Token>()
     ).results;
     const now = Date.now();
-    const valid = tokens.filter(
-      (token) => new Date(token.created_at).getTime() + 8 * 3600_000 > now,
-    );
+    // Server-issued tokens are at most eight hours old. Reject malformed or
+    // far-future timestamps rather than scheduling alarms for months or years
+    // after restoring bad legacy data.
+    const valid = tokens.filter((token) => {
+      const createdAt = Date.parse(token.created_at);
+      return Number.isFinite(createdAt)
+        && createdAt <= now + 60_000
+        && createdAt + 8 * 3600_000 > now;
+    });
     const expired = tokens.filter((token) => !valid.includes(token));
     if (expired.length) {
       await this.env.DB.batch(
