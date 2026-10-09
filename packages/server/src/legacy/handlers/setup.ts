@@ -40,12 +40,17 @@ legacySetupRouter.post("/install", async (c) => {
     const publicId = "default";
     const now = new Date().toISOString();
 
-    await c.env.DB.prepare(
-      `INSERT INTO shops (id, public_id, name, latitude, longitude, radius_meters, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, 0, 0, 80, 'system', ?, ?)`,
-    )
-      .bind(shopId, publicId, body.storeName || "Default Shop", now, now)
-      .run();
+    // The bootstrap creator must exist before a shop can reference it.
+    // This is not a login identity and cannot authenticate as a platform user.
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO users(id,role,created_at,updated_at) VALUES ('system','user',?,?) ON CONFLICT(id) DO NOTHING",
+      ).bind(now,now),
+      c.env.DB.prepare(
+        `INSERT INTO shops (id, public_id, name, latitude, longitude, radius_meters, created_by, created_at, updated_at)
+         VALUES (?, ?, ?, 0, 0, 80, 'system', ?, ?)`,
+      ).bind(shopId, publicId, body.storeName || "Default Shop", now, now),
+    ]);
 
     const createdShop: TenantShop = {
       id: shopId,
