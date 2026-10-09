@@ -49,7 +49,7 @@ legacyRouter.onError((err, c) => {
     {
       error: {
         code: "INTERNAL_ERROR",
-        message: err.message || "An unexpected error occurred.",
+        message: "An unexpected error occurred.",
       },
     },
     500,
