@@ -38,6 +38,7 @@ export type EncryptHinataIoMessageInput = {
 };
 
 const keyCache = new Map<string, Promise<CryptoKey>>();
+const MAX_E2EE_CACHE_ENTRIES = 128;
 
 export function normalizeHinataUrl(targetUrl: string): string {
   let url = targetUrl.trim();
@@ -199,6 +200,7 @@ export async function decryptHinataIoMessage(
         ["encrypt", "decrypt"],
       );
     })();
+    if (keyCache.size >= MAX_E2EE_CACHE_ENTRIES) keyCache.clear();
     keyCache.set(cacheKey, keyPromise);
   }
   const key = await keyPromise;
