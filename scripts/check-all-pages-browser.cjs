@@ -89,7 +89,7 @@ function mock(request, role, unknown, mutations) {
   const base = "/api/v1/shops/demo/staff/";
   if (p.startsWith(base)) {
     const action = p.slice(base.length);
-    if (action === "me") return { staff: { canWrite: owner, role: owner ? "owner" : "viewer" } };
+    if (action === "me") return { staff: { id: "ci-staff", displayName: "CI 店员", role: owner ? "owner" : "viewer", canWrite: owner } };
     if (action === "live-players") return { players: [live], billingSnapshot: snapshot };
     if (action === "players") return { players: [
       {
@@ -193,6 +193,14 @@ const cases = [
               // DTO or fails to render real identity/passkey rows.
               await page.getByText("CI 绑定账号", { exact: true }).waitFor();
               await page.getByText("CI Passkey", { exact: true }).waitFor();
+            }
+            if (url.startsWith("/merchant/demo/") && testCase.role === "owner") {
+              await page.getByRole("navigation", { name: "店家导航" })
+                .getByRole("link", { name: "设置", exact: true }).waitFor({ state: "visible" });
+            }
+            if (url.startsWith("/merchant/demo/") && testCase.role === "viewer") {
+              assert.strictEqual(await page.getByRole("navigation", { name: "店家导航" })
+                .getByRole("link", { name: "设置", exact: true }).count(), 0);
             }
             if (url === "/merchant/demo/players") {
               // Keep both the funded and zero balance visible; undefined renders

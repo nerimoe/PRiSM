@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
+import { staffMeView } from "./staff-me-view.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { runPlayerOperation } from "./player-operation.js";
@@ -27,11 +28,11 @@ import {
 
 export const staffRouter = new Hono<AppBindings>();
 
-// Staff Info
+// Only serialize the historic staff API view, not the authentication principal.
 staffRouter.get("/me", async (c) => {
   const shop = getShop(c);
   const principal = await staffPrincipal(c, shop, true);
-  return c.json({ staff: principal });
+  return c.json({ staff: await staffMeView(c, shop, principal) });
 });
 
 // List Players

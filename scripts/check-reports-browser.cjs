@@ -29,7 +29,7 @@ const receipt = { playerSettlement: { total: 19, settledAt: record.settledAt }, 
       if (pathname === '/api/v1/me') data = { user: { id: 'owner', username: 'owner', displayName: '店员', role: 'user', hasShops: true } };
       else if (pathname === '/api/v1/merchant/shops') data = { shops: [shop] };
       else if (pathname === '/api/v1/shops/demo') data = { shop: { ...shop, billingEnabled: true, cashierEnabled: true } };
-      else if (pathname.endsWith('/staff/me')) data = { staff: { canWrite, role: canWrite ? 'manager' : 'viewer' } };
+      else if (pathname.endsWith('/staff/me')) data = { staff: { id: 'ci-staff', displayName: 'CI 店员', role: canWrite ? 'manager' : 'viewer', canWrite } };
       else if (pathname.endsWith('/reports/summary')) data = { summary: { revenueTotal: record.archived ? 0 : 19, sessionCount: 2, assetGrantTotal: 0, coinCommandCount: 0 } };
       else if (pathname.endsWith('/reports/checkouts')) {
         ranges.push({ from: url.searchParams.get('from'), to: url.searchParams.get('to') });

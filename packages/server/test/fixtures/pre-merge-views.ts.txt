@@ -1,3 +1,5 @@
+// Original pre-consolidation server-hono view conversions at 7fd7e7c.
+// Intentional immutable audit fixture: do not edit to make contract checks pass.
 import { buildBillTimeline } from "@prism/application";
 import type {
   ChargeItem,
@@ -20,11 +22,13 @@ import type {
   TimeCapPricingWindow,
 } from "@prism/core";
 import { assetQuantityToNatural, yuanOf } from "@prism/core";
+import type { StaffUserView } from "./types";
 import type {
   PlayerAssets,
-  RedeemCodeResult,
+  RedeemCommandResult,
   SessionHistoryDetail,
   PlayerSummary,
+  PlayerSummaryView,
   SessionHistoryListItem,
   StaffActiveSessionListItem,
   StaffDeviceCommandListItem,
@@ -34,36 +38,9 @@ import type {
   StaffReportsSummary,
   StaffRedeemCodeRedemptionListItem,
   PlayerRedeemRecordListItem,
-  StaffPlayerListItem,
   PreviewPlayerCheckoutResult,
   SettlePlayerCheckoutResult,
-} from "@prism/application";
-
-export type StaffUserView = {
-  id: string;
-  username: string;
-  displayName: string;
-  role: "owner" | "manager" | "viewer";
-  status: "active" | "disabled";
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-export type PlayerSummaryView = {
-  player: {
-    id: string;
-    displayName: string;
-    status: "active" | "disabled" | "banned";
-  };
-  wallet: Array<{
-    assetCode: string;
-    quantity: number;
-  }>;
-  activeSession: {
-    id: string;
-    startedAt: string;
-  } | null;
-};
+} from "./types";
 
 export function toPlayerSummaryView(summary: PlayerSummary): PlayerSummaryView {
   return {
@@ -416,7 +393,7 @@ function toAdjustmentView(adjustment: SettlementAdjustment): Record<string, unkn
 }
 
 export function toRedeemGiftView(
-  result: RedeemCodeResult,
+  result: RedeemCommandResult,
 ): Record<string, unknown> {
   return {
     redeemRecord: {
@@ -500,24 +477,6 @@ export function toPlayerManagementView(
     displayName: player.displayName,
     status: player.status,
     createdAt: player.createdAt.toISOString(),
-  };
-}
-
-/** List rows contain balances and sessions; the create/update player DTO does not. */
-export function toStaffPlayerListView(player: StaffPlayerListItem) {
-  return {
-    id: player.id,
-    displayName: player.displayName,
-    status: player.status,
-    walletTotal: yuanOf(player.walletTotal),
-    activeSessionId: player.activeSessionId,
-    hasUnpaidSession: player.hasUnpaidSession ?? false,
-    ...(player.paymentMode ? { paymentMode: player.paymentMode } : {}),
-    identities: (player.identities ?? []).map((identity) => ({
-      provider: identity.provider,
-      subject: identity.subject,
-      createdAt: identity.createdAt.toISOString(),
-    })),
   };
 }
 

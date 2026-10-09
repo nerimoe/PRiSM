@@ -27,6 +27,10 @@ jobs:
             esac
           done < <(git ls-files -z '*.test.ts' '*.test.tsx' '*.spec.ts' '*.spec.tsx')
           exit "$failed"
+      - name: Reject internal auth principals in public API responses
+        run: node scripts/check-public-api-dtos.cjs
+      - name: Compare all pre-merge response serializers
+        run: node scripts/check-api-view-compat.cjs
       - run: bun run typecheck
       - run: bun run check:platform
   browser:

@@ -29,6 +29,7 @@ import { SettingsPage } from "./merchant/Settings";
 import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup";
 import { DevicesPage } from "./merchant/Devices";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
+import type { StaffMeView } from "@prism/core";
 
 export function MerchantPage() {
   return (
@@ -130,7 +131,7 @@ function Workspace({
       api<{ shop: { billingEnabled: boolean; cashierEnabled: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
-      api<{ staff: { canWrite: boolean; role: string } }>(
+      api<{ staff: StaffMeView }>(
         shopApi(shop.publicId, "staff/me"),
       ),
     ]);

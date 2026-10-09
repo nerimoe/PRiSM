@@ -264,6 +264,127 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     return app;
   }
 
+  it("preserves staff/me role and canWrite for owner, manager, viewer and unauthenticated callers", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffUserId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const uri = `https://prism.test/api/v1/shops/${publicId}/staff/me`;
+    const access = async (token?: string) => {
+      const response = await app.fetch(new Request(uri, {
+        ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+      }), env);
+      return { status: response.status, body: await response.json() as any };
+    };
+
+    const owner = await access(staffSessionToken);
+    expect(owner.status).toBe(200);
+    expect(owner.body.data.staff).toEqual({
+      id: `account:${staffUserId}`,
+      displayName: "Staff Alice",
+      role: "owner",
+      canWrite: true,
+    });
+
+    // The authenticated account can also be a mapped shop staff user: only
+    // the shop-scoped role, not the internal principal discriminator, controls UI.
+    sqlite.run(
+      "INSERT INTO staff_users(shop_id,id,username,display_name,password_hash,password_salt,role,status,created_at,updated_at) VALUES (?, 'managed', 'managed', 'Managed', 'hash', 'salt', 'manager', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO shop_staff_accounts(shop_id,user_id,staff_id) VALUES (?, ?, 'managed')",
+      [shopId, staffUserId],
+    );
+    const manager = await access(staffSessionToken);
+    expect(manager.body.data.staff).toEqual({
+      id: "managed", displayName: "Managed", role: "manager", canWrite: true,
+    });
+
+    sqlite.run("UPDATE staff_users SET role='viewer' WHERE shop_id=? AND id='managed'", [shopId]);
+    const viewer = await access(staffSessionToken);
+    expect(viewer.status).toBe(200);
+    expect(viewer.body.data.staff).toEqual({
+      id: "managed", displayName: "Managed", role: "viewer", canWrite: false,
+    });
+
+    const anonymous = await access();
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.error.code).toBe("AUTHENTICATION_REQUIRED");
+    sqlite.close();
+  });
+
+  it("keeps staff management DTOs public and never exposes password or API token hashes", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const prefix = `https://prism.test/api/v1/shops/${publicId}/staff`;
+    const headers = { authorization: `Bearer ${staffSessionToken}` };
+
+    const usersResponse = await app.fetch(new Request(prefix + "/users", { headers }), env);
+    expect(usersResponse.status).toBe(200);
+    const users = await usersResponse.json() as {
+      data: { staffUsers: Array<Record<string, unknown>> };
+    };
+    expect(users.data.staffUsers.length).toBeGreaterThan(0);
+    for (const user of users.data.staffUsers) {
+      expect(Object.keys(user).sort()).toEqual(
+        ["id", "username", "displayName", "role", "status", "createdAt", "updatedAt"].sort(),
+      );
+      expect(user).not.toHaveProperty("passwordHash");
+      expect(user).not.toHaveProperty("passwordSalt");
+    }
+
+    const tokensResponse = await app.fetch(new Request(prefix + "/api-tokens", { headers }), env);
+    expect(tokensResponse.status).toBe(200);
+    const tokens = await tokensResponse.json() as {
+      data: { apiTokens: Array<Record<string, unknown>> };
+    };
+    expect(tokens.data.apiTokens.length).toBeGreaterThan(0);
+    for (const token of tokens.data.apiTokens) {
+      expect(Object.keys(token).sort()).toEqual(
+        ["id", "label", "role", "tokenPrefix", "status", "createdAt", "lastUsedAt", "revokedAt"].sort(),
+      );
+      expect(token).not.toHaveProperty("tokenHash");
+      expect(token).not.toHaveProperty("token");
+    }
+    sqlite.close();
+  });
+
+  it("preserves createdAt in player management create and status update responses", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createApp();
+    const headers = {
+      authorization: `Bearer ${staffSessionToken}`,
+      "content-type": "application/json",
+    };
+    const url = `https://prism.test/api/v1/shops/${publicId}/staff/players`;
+    const created = await app.fetch(new Request(url, {
+      method: "POST", headers, body: JSON.stringify({ displayName: "API 契约测试" }),
+    }), env);
+    expect(created.status).toBe(201);
+    const payload = await created.json() as {
+      data: { player: { id: string; displayName: string; status: string; createdAt: string } };
+    };
+    expect(Object.keys(payload.data.player).sort()).toEqual(
+      ["id", "displayName", "status", "createdAt"].sort(),
+    );
+    expect(payload.data.player.displayName).toBe("API 契约测试");
+    expect(Number.isNaN(Date.parse(payload.data.player.createdAt))).toBe(false);
+
+    const updated = await app.fetch(new Request(
+      `${url}/${payload.data.player.id}/status`, {
+        method: "PATCH", headers, body: JSON.stringify({ status: "disabled" }),
+      },
+    ), env);
+    expect(updated.status).toBe(200);
+    const result = await updated.json() as { data: { player: typeof payload.data.player } };
+    expect(result.data.player).toEqual({
+      ...payload.data.player, status: "disabled",
+    });
+    sqlite.close();
+  });
+
   it("preserves real wallet balances, identities and session flags in the production player list response", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);

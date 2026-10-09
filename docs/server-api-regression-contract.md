@@ -66,3 +66,56 @@ registration/retirement and APNs push fanout. The browser matrix runs Chromium
 and WebKit at mobile and desktop widths for player balances and full role
 navigation. WebKit is an approximation, not a substitute for real iPhone
 ActivityKit/APNs testing.
+
+## Staff identity and public DTO boundaries
+
+`GET /api/v1/shops/:shopCode/staff/me` and its historical standalone alias
+return exactly `{ staff: { id, displayName, role, canWrite } }` (inside the
+canonical API's `data` envelope). The public `staff.role` is one of
+`owner | manager | viewer` and never the internal authentication principal
+discriminator `"staff"`. `canWrite` is false for viewers, true for owners
+and managers. Display names come from the selected shop's staff record.
+
+The interface `StaffMeView` is shared by the browser and server through
+`@prism/core`. Never serialize a `StaffPrincipal` directly, and do not add
+`staffRole` or `principalRole` to public responses as a workaround.
+
+The `packages/server/test/shop-billing-routes.test.ts` production
+`createApp()` suite checks **exact field equality** for owner, manager, and
+viewer and verifies private password hashes/salts and API-token hashes are
+absent from public staff-management endpoints. Browser tests check that the
+owner settings tab exists, manager report quick archive works, and viewers
+cannot use either action.
+
+`node scripts/check-public-api-dtos.cjs` is a CI gate that scans the actual
+TypeScript server sources and rejects direct JSON serialization of internal
+auth principal objects or their `role` discriminator. It is intentionally a
+static anti-leak guard, **not** a proof that all historic API DTOs match; each
+consumer-specific contract must also have a runtime integration test.
+
+## Historical API audit gates (full path inventory and response views)
+
+Pre-consolidation commit `7fd7e7c` contains 150 explicitly declared
+`/api/v1/*` method/path combinations across `server-hono/src/index.ts` and
+`platform/src/index.ts`. The immutable
+`packages/server/test/fixtures/pre-merge-api-routes.ts` captures them;
+`pre-merge-api-routes.test.ts` asserts the **production**
+`createApp().routes` still registers all 150. It also checks more than
+100 historical tenant-scoped `player/staff/integration` endpoints and the
+three wildcard-based ActivityKit endpoints, which the baseline static list
+cannot detect by itself.
+
+The original 31 public response serializer bodies in
+`server-hono/src/views.ts` are frozen in
+`packages/server/test/fixtures/pre-merge-views.ts.txt`.
+`node scripts/check-api-view-compat.cjs` parses both original and current
+TypeScript ASTs and rejects deletion or alteration of their function bodies.
+In particular `toPlayerManagementView` must always output `createdAt`.
+
+**Do not mistake these gates for a full semantic equivalence proof.**
+Registration checks cannot detect returned 200s with wrong data. Serializer
+checks cannot catch changed repository behavior, request validation, auth,
+transaction side effects or controllers that bypass converters. Those require
+the existing `createApp()` end-to-end tests and new per-route contract
+fixtures for previously untested operations. CI should not be declared proof
+of every API's complete historical compatibility until that coverage exists.

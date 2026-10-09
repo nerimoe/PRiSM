@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppBindings } from "../../bindings.js";
 import { staffRouter } from "../../routes/shops/staff.js";
+import { staffMeView } from "../../routes/shops/staff-me-view.js";
 import { staffBusinessRouter } from "../../routes/shops/business.js";
 import { staffPricingCompatRouter } from "../../routes/shops/staff-compat.js";
 import { pricingRouter } from "../../routes/shops/pricing.js";
@@ -10,10 +11,8 @@ import { staffRedeemCompatRouter } from "../../routes/shops/redeem.js";
 export const legacyStaffRouter = new Hono<AppBindings>();
 
 legacyStaffRouter.get("/me", async (c) => {
-  const p = await requireStandaloneStaff(c);
-  return c.json({
-    staff: { id: p.staffId, displayName: p.staffId, role: p.staffRole, canWrite: p.staffRole !== "viewer" },
-  });
+  const principal = await requireStandaloneStaff(c);
+  return c.json({ staff: await staffMeView(c, getShop(c), principal) });
 });
 
 // Mount core staff router
