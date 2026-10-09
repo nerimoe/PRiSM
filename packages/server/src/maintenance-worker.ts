@@ -23,6 +23,10 @@ export class LiveBilling extends BaseDurableObject<Env> {
       playerId,
       revision: (previous?.revision ?? 0) + 1,
     });
+    // A refresh must not overwrite the maintenance alarm or accelerate the
+    // exponential backoff. The alarm handler is the sole retry scheduler.
+    const pending = await this.ctx.storage.getAlarm();
+    if (pending !== null && pending > Date.now()) return;
     await this.deferAlarm();
   }
 
