@@ -1114,5 +1114,17 @@
   "生成模拟账单": "Generate simulated bill",
   "请先启用至少一个计费方案。": "Enable at least one pricing plan first.",
   "模拟账单时间轴": "Simulated bill timeline",
-  "退场时间": "Departure time"
+  "退场时间": "Departure time",
+  "改价结账": "Override checkout",
+  "充值结账": "Top up and checkout",
+  "确认改价结账": "Confirm override checkout",
+  "确认充值并结账": "Confirm top-up and checkout",
+  "最终应收金额": "Final amount due",
+  "改价原因": "Reason for override",
+  "改价会记录在账单调整项中，结账时将按新金额扣费。": "The override is recorded as a bill adjustment. Checkout will debit the revised amount.",
+  "充值金额": "Top-up amount",
+  "当前可用余额": "Available balance",
+  "最低需充值": "Minimum required top-up",
+  "充值将进入充值余额，并与结账原子提交；实际账单及余额会在提交时重新校验。": "The top-up is added to the paid balance and committed atomically with checkout. The amount due and funds are checked again at confirmation.",
+  "充值金额不足以支付当前账单": "The top-up would leave insufficient balance for the current bill."
 }
