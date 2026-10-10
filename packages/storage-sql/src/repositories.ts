@@ -545,20 +545,44 @@ function createPricingEffectRepository(
   };
 }
 
+/**
+ * An older D1 installation may not have applied 0029_cashier.sql yet.
+ * That schema cannot contain cashier profiles, so plain player lookups are
+ * still safe. Retry only that precise missing-table failure; do not mask
+ * other SQL errors or alter cashier classification when the table exists.
+ * The production migration must still be applied before enabling cashier.
+ */
+async function withOptionalCashierProfiles<T>(query: (cashierTableExists: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await query(true);
+  } catch (error) {
+    if (!(error instanceof Error) || !/no such table:\s*(?:main\.)?cashier_profiles\b/i.test(error.message)) {
+      throw error;
+    }
+    return query(false);
+  }
+}
+
 function createPlayerRepository(executor: SqlExecutor): PlayerRepository {
   return {
     async findById(playerId) {
-      const row = await executor.first<PlayerRow>(
-        `SELECT id, display_name, status, created_at, EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id) AS cashier FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players WHERE id = ? LIMIT 1`,
+      const row = await withOptionalCashierProfiles(hasCashierTable => executor.first<PlayerRow>(
+        `SELECT id, display_name, status, created_at,
+           ${hasCashierTable ? `EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id)` : "0"} AS cashier
+         FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players
+         WHERE id = ? LIMIT 1`,
         [playerId],
-      );
+      ));
       return row ? toPlayer(row) : null;
     },
 
     async listPlayers() {
-      const rows = await executor.all<PlayerRow>(
-        `SELECT id, display_name, status, created_at, EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id) AS cashier FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players ORDER BY created_at DESC, id`,
-      );
+      const rows = await withOptionalCashierProfiles(hasCashierTable => executor.all<PlayerRow>(
+        `SELECT id, display_name, status, created_at,
+           ${hasCashierTable ? `EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = players.id)` : "0"} AS cashier
+         FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) players
+         ORDER BY created_at DESC, id`,
+      ));
       return rows.map(toPlayer);
     },
 
@@ -621,15 +645,15 @@ function createPlayerIdentityRepository(
     },
 
     async findPlayerByIdentity(provider, subject) {
-      const row = await executor.first<PlayerRow>(
+      const row = await withOptionalCashierProfiles(hasCashierTable => executor.first<PlayerRow>(
         `SELECT p.id, p.display_name, p.status, p.created_at,
-           EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = p.id) AS cashier
+           ${hasCashierTable ? `EXISTS(SELECT 1 FROM cashier_profiles cp WHERE cp.shop_id = ${sqlShop(executor)} AND cp.player_id = p.id)` : "0"} AS cashier
          FROM (SELECT * FROM player_identities WHERE shop_id = ${sqlShop(executor)}) i
          INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(executor)}) p ON p.id = i.player_id
          WHERE i.provider = ? AND i.subject = ?
          LIMIT 1`,
         [provider, subject],
-      );
+      ));
       return row ? toPlayer(row) : null;
     },
 
