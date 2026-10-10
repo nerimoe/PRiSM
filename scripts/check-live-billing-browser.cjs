@@ -92,6 +92,7 @@ function data(unitPrice, broken) {
     // server operations; cashier players remain on the separate cashier flow.
     await panel.getByRole('button', { name: '改价结账', exact: true }).click();
     const override = page.getByRole('dialog', { name: '改价结账', exact: true });
+    await override.getByRole('spinbutton', { name: '最终应收金额' }).waitFor();
     assert.equal(await override.locator('.bill-total, .bill-timeline, .account-row').count(), 0);
     assert.equal(await override.getByRole('spinbutton').count(), 1);
     await override.getByRole('spinbutton', { name: '最终应收金额' }).fill('8.50');
@@ -106,6 +107,7 @@ function data(unitPrice, broken) {
 
     await panel.getByRole('button', { name: '充值结账', exact: true }).click();
     const recharge = page.getByRole('dialog', { name: '充值结账', exact: true });
+    await recharge.getByRole('spinbutton', { name: '充值金额' }).waitFor();
     assert.equal(await recharge.locator('.bill-total, .bill-timeline, .account-row').count(), 0);
     assert.equal(await recharge.getByRole('spinbutton').count(), 1);
     await recharge.getByRole('spinbutton', { name: '充值金额' }).fill('88.50');
