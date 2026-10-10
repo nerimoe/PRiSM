@@ -92,6 +92,8 @@ function data(unitPrice, broken) {
     // server operations; cashier players remain on the separate cashier flow.
     await panel.getByRole('button', { name: '改价结账', exact: true }).click();
     const override = page.getByRole('dialog', { name: '改价结账', exact: true });
+    assert.equal(await override.locator('.bill-total, .bill-timeline, .account-row').count(), 0);
+    assert.equal(await override.getByRole('spinbutton').count(), 1);
     await override.getByRole('spinbutton', { name: '最终应收金额' }).fill('8.50');
     await override.getByRole('textbox', { name: '改价原因' }).fill('设备故障');
     await override.getByRole('button', { name: '确认改价结账', exact: true }).click();
@@ -104,6 +106,8 @@ function data(unitPrice, broken) {
 
     await panel.getByRole('button', { name: '充值结账', exact: true }).click();
     const recharge = page.getByRole('dialog', { name: '充值结账', exact: true });
+    assert.equal(await recharge.locator('.bill-total, .bill-timeline, .account-row').count(), 0);
+    assert.equal(await recharge.getByRole('spinbutton').count(), 1);
     await recharge.getByRole('spinbutton', { name: '充值金额' }).fill('88.50');
     await recharge.getByRole('button', { name: '确认充值并结账', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('dialog[open]'));
