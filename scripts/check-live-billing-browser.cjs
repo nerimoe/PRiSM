@@ -88,6 +88,30 @@ function data(unitPrice, broken) {
     assert.deepEqual(Object.keys(JSON.parse(confirmation.body)), ['operationId']);
     assert.match(JSON.parse(confirmation.body).operationId, /^[0-9a-f-]{36}$/);
     await panel.locator('dl dd').filter({ hasText: /^0\.00$/ }).waitFor();
+    // Both new actions reuse the existing browser preview and submit idempotent
+    // server operations; cashier players remain on the separate cashier flow.
+    await panel.getByRole('button', { name: '改价结账', exact: true }).click();
+    const override = page.getByRole('dialog', { name: '改价结账', exact: true });
+    await override.getByRole('spinbutton', { name: '最终应收金额' }).fill('8.50');
+    await override.getByRole('textbox', { name: '改价原因' }).fill('设备故障');
+    await override.getByRole('button', { name: '确认改价结账', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('dialog[open]'));
+    const overridden = requests.find(req => req.path.endsWith('/checkout/override'));
+    assert.ok(overridden, 'override checkout request');
+    assert.equal(JSON.parse(overridden.body).finalTotal, 8.5);
+    assert.equal(JSON.parse(overridden.body).reason, '设备故障');
+    assert.match(JSON.parse(overridden.body).operationId, /^[0-9a-f-]{36}$/);
+
+    await panel.getByRole('button', { name: '充值结账', exact: true }).click();
+    const recharge = page.getByRole('dialog', { name: '充值结账', exact: true });
+    await recharge.getByRole('spinbutton', { name: '充值金额' }).fill('88.50');
+    await recharge.getByRole('button', { name: '确认充值并结账', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('dialog[open]'));
+    const charged = requests.find(req => req.path.endsWith('/checkout/recharge'));
+    assert.ok(charged, 'recharge checkout request');
+    assert.equal(JSON.parse(charged.body).amount, 88.5);
+    assert.match(JSON.parse(charged.body).operationId, /^[0-9a-f-]{36}$/);
+    assert.equal(requests.filter(req => req.path.endsWith('/checkout/preview')).length, 0);
     await page.setViewportSize({ width: 390, height: 844 });
     await panel.screenshot({ path: path.join(output, 'live-billing-mobile.png') });
     const starts = await page.evaluate(() => window.workerStarts);
