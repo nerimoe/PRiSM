@@ -1142,6 +1142,82 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(Array.isArray(walletData.wallet)).toBe(true);
   });
 
+  it("runs Koishi's nested identity flow through real API routes and D1 (entry, table, leave, preview)", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, botToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const prefix = `https://prism.test/api/v1/shops/${publicId}/integration`;
+    const identity = { provider: "onebot", subject: "mahjong-guest-1" };
+    const secondIdentity = { provider: "telegram", subject: "mahjong-guest-2" };
+    const headers = { Authorization: `Bearer ${botToken}`, "Content-Type": "application/json" };
+    const post = (path: string, body: unknown, auth = headers) =>
+      app.fetch(new Request(prefix + path, { method: "POST", headers: auth, body: JSON.stringify(body) }), env);
+
+    try {
+      const unauthorized = await post("/players/by-identity/register", { identity }, { ...headers, Authorization: "Bearer wrong-token" });
+      expect(unauthorized.status).toBe(403);
+
+      const registered = await post("/players/by-identity/register", {
+        identity, displayName: "Koishi Guest", autoRegister: true,
+      });
+      expect(registered.status).toBe(200);
+      const registeredBody = await registered.json() as { player: { id: string; displayName: string } };
+      const playerId = registeredBody.player.id;
+      expect(registeredBody.player.displayName).toBe("Koishi Guest");
+
+      const entry = await post("/players/by-identity/session/start", {
+        identity, label: "音游区间",
+      });
+      expect(entry.status).toBe(200);
+      const entryBody = await entry.json() as { session: { id: string; playerId: string } };
+      expect(entryBody.session.playerId).toBe(playerId);
+
+      const table = await post("/players/by-identity/session/start", {
+        identity, label: "麻将 A 桌",
+      });
+      expect(table.status).toBe(200);
+      const tableBody = await table.json() as { session: { id: string; playerId: string } };
+      expect(tableBody.session.playerId).toBe(playerId);
+      expect(tableBody.session.id).not.toBe(entryBody.session.id);
+
+      const active = await app.fetch(new Request(prefix + "/sessions/active", { headers }), env);
+      expect(active.status).toBe(200);
+      const activeBody = await active.json() as {
+        sessions: Array<{ id: string; playerId: string; label?: string; identities?: Array<{ provider: string; subject: string }> }>;
+      };
+      expect(activeBody.sessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: entryBody.session.id, playerId, label: "音游区间" }),
+        expect.objectContaining({ id: tableBody.session.id, playerId, label: "麻将 A 桌" }),
+      ]));
+      expect(activeBody.sessions.some(s => s.playerId === playerId
+        && s.identities?.some(i => i.provider === "onebot" && i.subject === identity.subject))).toBe(true);
+
+      const guest2 = await post("/players/by-identity/register", { identity: secondIdentity, displayName: "Second Guest" });
+      expect(guest2.status).toBe(200);
+      const forbiddenStop = await post(`/players/by-identity/sessions/${tableBody.session.id}/stop`, { identity: secondIdentity });
+      expect([400, 404]).toContain(forbiddenStop.status);
+      expect((await forbiddenStop.json() as { error: { code: string } }).error.code).toBe("INTEGRATION_SESSION_NOT_FOUND");
+      expect((sqlite.query("SELECT status FROM sessions WHERE shop_id=? AND id=?").get(shopId, tableBody.session.id) as { status: string }).status).toBe("active");
+
+      const leave = await post(`/players/by-identity/sessions/${tableBody.session.id}/stop`, { identity });
+      expect(leave.status).toBe(200);
+      expect((sqlite.query("SELECT status,payment_status FROM sessions WHERE shop_id=? AND id=?")
+        .get(shopId, tableBody.session.id) as { status: string; payment_status: string })).toEqual({
+        status: "closed", payment_status: "unpaid",
+      });
+      expect((sqlite.query("SELECT status FROM sessions WHERE shop_id=? AND id=?")
+        .get(shopId, entryBody.session.id) as { status: string }).status).toBe("active");
+
+      const preview = await post("/players/by-identity/checkout/preview", { identity });
+      expect(preview.status).toBe(200);
+      const previewBody = await preview.json() as { settlementPreview?: { playerId: string }; sessionPreviews?: unknown[] };
+      expect(previewBody.settlementPreview?.playerId).toBe(playerId);
+      expect(previewBody.sessionPreviews?.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("handles platform-binding generation and confirmation via staff and integration", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken, botToken } = await setupShopFixture(db, sqlite);
