@@ -6,6 +6,10 @@ export type ExternalIdentity = {
 };
 
 export function normalizeExternalIdentity(input: ExternalIdentity): ExternalIdentity {
+  // Reject malformed external Bot payloads as client errors, not uncaught TypeErrors.
+  if (typeof input?.provider !== "string" || typeof input?.subject !== "string") {
+    throw invalidExternalIdentity();
+  }
   const provider = input.provider.trim().toLowerCase();
   const subject = input.subject.trim();
 
