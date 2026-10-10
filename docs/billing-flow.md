@@ -125,3 +125,13 @@
 返回 admissionAt、departureAt、subtotal、total（人民币元）和 timeline。最多 30 个 Session，总跨度不超过 31 天，各 Session 的结束时间必须晚于开始时间，且必须选择已启用的按时计费或固定收费方案。已启用的全局封顶自动参与计算。
 
 此接口纯计算：不新建玩家或 Session、不持久化账单、不扣资产。模拟使用当前已启用的计费方案，不还原旧 Session 锁定的规则版本，也不包含既往付费历史、优惠券、资产折扣、设备操作与人工改价，因此不代表特定玩家最终实收账单。
+
+## 在店后台：改价结账、充值结账
+
+仅对使用预存余额的在店玩家显示三个结账操作：普通结账、改价结账、充值结账。前台卡片档案仍通过「前台收款」流程结账，只读员工不显示结账操作。
+
+- **改价结账**：复用 Bot 的 `checkoutWithOverride`，输入非负最终应收金额及必填改价原因；结算重新计算全部未结 Session，最终金额的差额写入 `staff.override` 调整项，照新金额扣费并保留结账时间轴。经 `/api/v1/shops/:shopCode/staff/players/:playerId/checkout/override` 调用；优先在扣费前校验余额，不提前保存关闭的 Session。
+- **充值结账**：输入正数且最多两位小数的充值金额，归入 `currency/paid`。服务端在同一玩家资产锁内重新计算全部未结 Session，只有**当前可用钱包余额 + 充值金额 >= 重新计算的应收金额**时才允许结账，否则拒绝且不进行任何写入。充值与余额扣款、全部 Session 关闭、完整账单及计费历史通过现有 `commitCheckout` 原子提交；充值为 `staff.checkout.recharge` 资产流水，结账交易 metadata 同时记录充值金额与操作员工。
+- 只读接口之外的新操作入口为 `POST /api/v1/shops/:shopCode/staff/players/:playerId/checkout/recharge`，body 包含 `{ "operationId": "<UUID>", "amount": 50 }`（元）。与其他金额变更接口一样通过 operationId 进行请求去重；重复网络请求不会再次充值。
+
+不能为充值结账设置「先调用钱包充值再调用普通结账」的客户端流程：第二步失败会留下部分状态。若未配置原子结账提交或充值余额资产失效，此操作直接失败。前端预览仅供确认，最终应收及可用余额都以服务端提交时重新计算为准。
