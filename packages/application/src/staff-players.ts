@@ -11,7 +11,7 @@ import type {
   RedeemRepository,
 } from "@prism/core";
 import { diffAssetHoldings, grantAssets, isActiveInWindow, normalizeExternalIdentity, PrismDomainError } from "@prism/core";
-import { assertPresentGrantAssetDefinitionsActive } from "./redeem";
+import { assertPresentGrantAssetDefinitionsActive } from "./redeem-service";
 
 export type StaffCreatePlayerInput = {
   displayName: string;

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { encryptSecret, sha256Hex } from "../packages/platform/src/crypto.ts";
+import { encryptSecret, sha256Hex } from "../packages/server/src/crypto.ts";
 
 type LegacyDevice = {
   id?: unknown;

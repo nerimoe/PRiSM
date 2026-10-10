@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-This is a Bun/TypeScript monorepo for PRiSM Next. Core business rules live in `packages/core`, use-case services in `packages/application`, SQL schema and repositories in `packages/storage-sql`, and database adapters in `packages/adapter-sqlite` and `packages/adapter-d1`. API and composition layers are in `packages/server-hono` and `packages/runtime`.
+This is a Bun/TypeScript monorepo for PRiSM Next. Core business rules live in `packages/core`, use-case services in `packages/application`, SQL schema and repositories in `packages/storage-sql`, and database adapters in `packages/adapter-sqlite` and `packages/adapter-d1`. The unified API, multi-tenant routes, hardware drivers, and Worker & Bun entrypoints are in `packages/server`.
 
-The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`, with the unified Worker in `packages/platform`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
+The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
 
 ## Build, Test, and Development Commands
 
@@ -17,12 +17,12 @@ The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalon
 - `bun run db:migrate:local` / `bun run db:migrate:remote`: apply D1 migrations locally or remotely.
 - `bun run dev:all`: start the local platform Worker, React Vite server and optional AstrBot.
 - `bun run build:web`: build the React admin and player UI.
-- `bun run check:platform`: build React and check the Worker bundle without deploying.
+- `bun run check:server` / `bun run check:platform`: build React and check the Worker bundle without deploying.
 - `bun run deploy:beta`: build React, apply D1 migrations and deploy the unified platform.
 
 ## Coding Style & Naming Conventions
 
-Use ES modules, strict TypeScript, and package exports that point at `src/index.ts`. Keep domain logic pure in `core`; place orchestration in `application`; keep runtime-specific code in adapters or runtime packages. Use kebab-case file names such as `staff-pricing.ts`, PascalCase React components, and descriptive test names. Prefer two-space indentation and concise, typed functions.
+Use ES modules, strict TypeScript, and package exports that point at `src/index.ts`. Keep domain logic pure in `core`; place orchestration in `application`; keep runtime-specific code in adapters or server package. Use kebab-case file names such as `staff-pricing.ts`, PascalCase React components, and descriptive test names. Prefer two-space indentation and concise, typed functions.
 
 ## Testing Guidelines
 

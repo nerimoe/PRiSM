@@ -1,6 +1,6 @@
 import type { AssetDefinitionRepository, Present, PresentGrant, RedeemCode, RedeemRepository } from "@prism/core";
 import { PrismDomainError } from "@prism/core";
-import { assertPresentGrantAssetDefinitionsActive } from "./redeem";
+import { assertPresentGrantAssetDefinitionsActive } from "./redeem-service";
 
 export type StaffCreatePresentInput = {
   name: string;

@@ -1,6 +1,6 @@
 # 开发环境
 
-管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/platform` 的统一 Worker 提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
+管理与玩家前端统一位于 `packages/prism-web`，采用 React + Vite，后端由 `packages/server` 的统一服务提供。开发和发布均不再依赖 Flutter 后台或 Flutter SDK。
 
 当前工作区位于 `/workspace/PRiSM`，已安装 Bun 1.4.2。Koishi 和 AstrBot 子模块是可选机器人集成，不影响 React 后台开发。
 
@@ -19,7 +19,7 @@ bun run dev:all
 
 可通过 `PORT` 和 `WEB_PORT` 分别修改 API 和前端端口，代理与允许来源同步调整。平台登录需配置真实 OAuth 凭据；本地配置和数据库不提交到 Git。可用 `ASTRBOT_DIR` 指定可选 AstrBot 目录；Ctrl+C 或 SIGTERM 会停止开发进程。
 
-`bun run dev:local` 保留独立 SQLite 兼容 API，用于旧接口调试和回归。它不提供统一平台的 React API；其 `/admin` 页面提示启动 React 开发环境。
+`bun run dev:local` 提供基于 Bun 原生 `Bun.serve` + `bun:sqlite` 的本地独立服务端运行时（入口为 `packages/server/src/serve.ts` / `local-server.ts`），支持离线单店开发与接口调试，自动初始化 SQLite 表结构及默认店铺计费配置，并完整支持机台 WebSocket 协议（`/rpc/machine/ws`）。
 
 ## 检查与发布
 
@@ -67,3 +67,40 @@ React 商户工作台的「设置」按六个分类组织，分类写入 URL 的
 跨客户端时间检查：业务与 SQL 保持 UTC，事件响应输出店铺偏移 ISO 时间。商户／Bot 显示店铺时间，玩家个人时间显示设备时区。Swift 源码克隆于 `/workspace/hinata_go`，Foundation 时间回归可运行 `test/native/run-prism-time-check.sh`；完整 iOS 编译需 macOS／Xcode。详见 [客户端时间约定](client-time-contract.md)。
 
 测试 MuNET 首次注册流程可使用 React 平台管理员「管理 → 删除账号」入口，无需手改数据库。清理范围、重新注册行为与负责人接管规则见 [删除测试账号](admin-account-deletion.md)。
+
+## 账号页面与 CI 回归检查
+
+平台账号总览使用 `GET /api/v1/account`，成功时 API 响应体应为
+`{ "data": { "identities": [...], "passkeys": [...] } }`。
+`GET /api/v1/me` 则返回 `{ "data": { "user": ... } }`。
+顶层服务在 `/api/v1` 挂载 `userRouter` 以暴露账号总览；**不得**再把整个
+`userRouter` 挂载到 `/api/v1/account`，否则其根路由会抢先返回用户资料，
+导致 React 账号页面的列表无法渲染。
+
+GitHub Actions 的 `test` job 逐文件隔离运行 Bun 测试，其中
+`packages/server/test/platform-routes.test.ts` 还通过生产用
+`createApp()` 验证账号总览、用户资料与未登录行为及统一 `data` 包装，
+避免只测试单独挂载的子路由而漏掉顶层路径冲突。随后执行 TypeScript 检查、
+Web 构建和 Worker dry-run。
+
+`browser` job 首先执行原有流程检查，然后分别使用 Chromium 和 WebKit
+对访客／玩家／店员／店主／管理员执行移动端及桌面端路由矩阵。
+账号页面的模拟数据必须包含实际身份和 Passkey 条目，测试同时要求页面标题
+与具体条目渲染成功；禁止把未知 API 请求或 JS 错误当作成功。
+失败截图及扫描结果作为 `scan-first-paint` artifact 保存 7 天。
+WebKit 是对 iOS Safari 渲染行为的近似检查，不能替代真实 iPhone Safari 验收。
+
+## 玩家列表余额回归
+
+店铺管理的 `GET /api/v1/shops/:shopCode/staff/players` 返回
+`data.players[]`，每项必须包含 `walletTotal`（人民币元值，保留两位小数）、
+`activeSessionId`、`hasUnpaidSession` 与 `identities`；前台档案可带
+`paymentMode: "cashier"`。余额从 SQL 查询中的货币资产持有数据计算，
+后端在序列化边界把整数分值转换为元值。没有可用余额时返回数字 `0`，
+不能省略字段或返回 `null`（前端会将缺失值显示成 `—`）。
+玩家创建与状态更新使用较小的管理 DTO，不可复用它来缩减列表响应。
+
+`packages/server/test/shop-billing-routes.test.ts` 通过生产 `createApp()`
+检验有余额与零余额玩家、身份、当前会话和响应 `data` 包装。
+`scripts/check-all-pages-browser.cjs` 则验证桌面和移动端列表实际显示
+`125.95` 及 `0.00`；现有 CI 在 Chromium 与 WebKit 中运行该检查。

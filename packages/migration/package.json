@@ -16,7 +16,7 @@
   "dependencies": {
     "@prism/adapter-sqlite": "workspace:*",
     "@prism/core": "workspace:*",
-    "@prism/runtime": "workspace:*",
+    "@prism/server": "workspace:*",
     "@prism/storage-sql": "workspace:*"
   }
 }

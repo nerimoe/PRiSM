@@ -10,8 +10,8 @@ export * from "./player-auth";
 export * from "./player-commands";
 export * from "./pricing-extension-contracts";
 export * from "./query-contracts";
-export * from "./redeem";
-export * from "./settlement";
+export * from "./redeem-service";
+export * from "./settlement-service";
 export * from "./setup";
 export * from "./settings";
 export * from "./staff-api-tokens";
@@ -32,3 +32,5 @@ export * from "./bill-timeline";
 
 export * from "./versioned-pricing";
 export * from "./live-billing-snapshot";
+
+export * from "./billing-simulator";

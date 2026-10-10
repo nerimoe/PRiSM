@@ -27,11 +27,15 @@ jobs:
             esac
           done < <(git ls-files -z '*.test.ts' '*.test.tsx' '*.spec.ts' '*.spec.tsx')
           exit "$failed"
+      - name: Reject internal auth principals in public API responses
+        run: node scripts/check-public-api-dtos.cjs
+      - name: Compare all pre-merge response serializers
+        run: node scripts/check-api-view-compat.cjs
       - run: bun run typecheck
       - run: bun run check:platform
   browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -41,6 +45,7 @@ jobs:
       - run: bun run build:web
       - run: npm install --prefix "$RUNNER_TEMP/prism-browser" playwright@1.62.1
       - run: node "$RUNNER_TEMP/prism-browser/node_modules/playwright/cli.js" install --with-deps chromium --only-shell
+      - run: node "$RUNNER_TEMP/prism-browser/node_modules/playwright/cli.js" install --with-deps webkit
       - name: Check scan flows, shop data transfer, identities, billing previews and reports
         env:
           PRISM_PLAYWRIGHT_MODULE: ${{ runner.temp }}/prism-browser/node_modules/playwright
@@ -57,9 +62,12 @@ jobs:
           node scripts/check-live-billing-browser.cjs
           node scripts/check-billing-previews-browser.cjs
           node scripts/check-reports-browser.cjs
+          node scripts/check-all-pages-browser.cjs
+          PRISM_BROWSER_ENGINE=webkit node scripts/check-all-pages-browser.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: scan-first-paint
           path: .scan-check/*.png
           include-hidden-files: true
+          retention-days: 7

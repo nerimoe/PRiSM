@@ -18,7 +18,7 @@
       "path": "../adapter-sqlite"
     },
     {
-      "path": "../runtime"
+      "path": "../server"
     }
   ]
 }

@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { BillTotal, BillTimeline } from "../BillTimeline";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
-import { ActionForm, Modal, button, input, money, primary, segment, useMerchant, useStaffApi, type LivePlayer, type Preview } from "./shared";
+import { ActionForm, Field, Modal, button, input, money, primary, segment, useMerchant, useStaffApi, type LivePlayer, type Preview } from "./shared";
 import { shopApi } from "../BillingPages";
 import { liveBilling, stayDuration } from "./live-billing";
 import { useLiveBilling } from "./use-live-billing";
@@ -22,7 +22,7 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
   const [groupBy, setGroupBy] = useState("none");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [checkout, setCheckout] = useState<{ player: LivePlayer; preview: Preview } | null>(null);
+  const [checkout, setCheckout] = useState<{ player: LivePlayer; preview: Preview; mode: "normal" | "override" | "recharge" } | null>(null);
   const [stop, setStop] = useState<{ playerId: string; session: LivePlayer["sessions"][number] } | null>(null);
   const selectedPlayerId = basePlayers.find(player => visibleIds.has(player.playerId) && player.playerId === selectedId)?.playerId
     ?? basePlayers.find(player => visibleIds.has(player.playerId))?.playerId;
@@ -43,7 +43,7 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
   const clockAt = (value: string) => partsAt(value).time;
   const dayAt = (value: string) => partsAt(value).date.slice(5);
   const title = (session: LivePlayer["sessions"][number]) => !session.label || session.label === "entry" ? t("入场") : session.label;
-  async function previewCheckout() {
+  async function previewCheckout(mode: "normal" | "override" | "recharge" = "normal") {
     if (!selected || busy) return;
     setBusy(true); setError("");
     const controller = new AbortController();
@@ -51,7 +51,7 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
     try {
       const preview = await browserCheckoutPreview(shopApi(shopCode, `staff/players/${segment(selected.playerId)}/billing-inputs`), shopApi(shopCode, `staff/players/${segment(selected.playerId)}/checkout/preview`), controller.signal);
       if (controller.signal.aborted) return;
-      setCheckout({ player: selected, preview });
+      setCheckout({ player: selected, preview, mode });
     } catch (e) { if (!controller.signal.aborted) setError((e as Error).message); }
     finally { if (!controller.signal.aborted) setBusy(false); }
   }
@@ -105,18 +105,66 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
         </div>
         {(canWrite || error) && <footer className="p-4">
           {error && <p role="alert" className="mb-3 text-sm text-coral">{error}</p>}
-          {canWrite && selected.paymentMode === "cashier" ? cashierEnabled && <Link className={`${primary} w-full`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(selected.playerId)}`}>{t("前台收款")}</Link> : canWrite && <button className={`${primary} w-full`} disabled={busy} onClick={previewCheckout}>{t(busy ? "正在加载" : "结账")}</button>}
+          {canWrite && selected.paymentMode === "cashier"
+            ? cashierEnabled && <Link className={`${primary} w-full`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(selected.playerId)}`}>{t("前台收款")}</Link>
+            : canWrite && <div className="grid gap-2 sm:grid-cols-3">
+                <button className={primary} disabled={busy} onClick={() => void previewCheckout("normal")}>{t("结账")}</button>
+                <button className={button} disabled={busy} onClick={() => void previewCheckout("override")}>{t("改价结账")}</button>
+                <button className={button} disabled={busy} onClick={() => void previewCheckout("recharge")}>{t("充值结账")}</button>
+              </div>}
         </footer>}
       </section>}
     </div>
     {stop && <Modal title="停止计费" close={() => setStop(null)}><ActionForm label="确认停止" done={() => { setStop(null); refresh(); }} submit={() => request(`players/${segment(stop.playerId)}/sessions/${segment(stop.session.id)}/stop`, "POST", {})}>
       <p className="text-sm">{title(stop.session)} · {t("停止后仍需结账")}</p>
     </ActionForm></Modal>}
-    {checkout && <Modal title="结账" close={() => setCheckout(null)}><ActionForm label="确认结账" done={() => { setCheckout(null); refresh(); }} submit={() => request(`players/${segment(checkout.player.playerId)}/checkout/confirm`, "POST", {})}>
+    {checkout && <Modal
+      title={checkout.mode === "normal" ? "结账" : checkout.mode === "override" ? "改价结账" : "充值结账"}
+      close={() => setCheckout(null)}
+    ><ActionForm
+      label={checkout.mode === "normal" ? "确认结账" : checkout.mode === "override" ? "确认改价结账" : "确认充值并结账"}
+      done={() => { setCheckout(null); refresh(); }}
+      submit={form => {
+        const base = `players/${segment(checkout.player.playerId)}/checkout`;
+        if (checkout.mode === "override") {
+          return request(`${base}/override`, "POST", {
+            finalTotal: Number(form.get("amount")),
+            reason: String(form.get("reason") ?? "").trim(),
+          });
+        }
+        if (checkout.mode === "recharge") {
+          const amount = Number(form.get("amount"));
+          const minimum = Math.max(0, Math.round((checkout.preview.settlementPreview.total - checkout.preview.wallet.balanceBefore) * 100) / 100);
+          if (!Number.isFinite(amount) || amount <= 0 || Math.round(amount * 100) / 100 !== amount || amount < minimum) {
+            return Promise.reject(new Error(t("充值金额不足以支付当前账单")));
+          }
+          return request(`${base}/recharge`, "POST", { amount });
+        }
+        return request(`${base}/confirm`, "POST", {});
+      }}
+    >
       <p className="font-semibold">{checkout.player.displayName}</p>
       <BillTotal preview={checkout.preview} />
       <BillTimeline preview={checkout.preview} timeZone={timeZone || undefined} />
-      <p className="text-sm text-ink/60">{t("结账后余额")} {money(checkout.preview.wallet.balanceAfter)}</p>
+      {checkout.mode === "override" && <>
+        <Field label="最终应收金额">
+          <input className={input} name="amount" type="number" required min="0" step="0.01"
+            defaultValue={checkout.preview.settlementPreview.total.toFixed(2)} />
+        </Field>
+        <Field label="改价原因">
+          <input className={input} name="reason" required maxLength={200} />
+        </Field>
+        <p className="text-sm text-ink/60">{t("改价会记录在账单调整项中，结账时将按新金额扣费。")}</p>
+      </>}
+      {checkout.mode === "recharge" && <>
+        <Field label="充值金额">
+          <input className={input} name="amount" type="number" required min="0.01" step="0.01"
+            defaultValue={Math.max(0.01, Math.ceil((checkout.preview.settlementPreview.total - checkout.preview.wallet.balanceBefore) * 100) / 100).toFixed(2)} />
+        </Field>
+        <p className="text-sm text-ink/60">{t("当前可用余额")} {money(checkout.preview.wallet.balanceBefore)} · {t("最低需充值")} {money(Math.max(0, checkout.preview.settlementPreview.total - checkout.preview.wallet.balanceBefore))}</p>
+        <p className="text-sm text-ink/60">{t("充值将进入充值余额，并与结账原子提交；实际账单及余额会在提交时重新校验。")}</p>
+      </>}
+      {checkout.mode === "normal" && <p className="text-sm text-ink/60">{t("结账后余额")} {money(checkout.preview.wallet.balanceAfter)}</p>}
     </ActionForm></Modal>}
   </>;
 }

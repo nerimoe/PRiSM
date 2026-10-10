@@ -3,7 +3,7 @@ import { centsOf, yuanOf } from "@prism/core";
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createBunSqliteExecutor, createSqliteRepositories } from "@prism/adapter-sqlite";
-import { initializeSqliteSchema, createRuntimeQueries } from "@prism/runtime";
+import { initializeSqliteSchema, createRuntimeQueries } from "@prism/server";
 import { createPrismNeoMigrationPlan, importPrismNeoMigrationPlan, type PrismNeoMigrationPlan } from "../src";
 
 describe("importPrismNeoMigrationPlan", () => {

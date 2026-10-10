@@ -128,7 +128,7 @@ Build variables 只用于生成本次构建的 `wrangler.generated.jsonc`，不�
 
 ```bash
 bun run build:web
-bun run check:platform
+bun run check:server # (亦可使用兼容别名 check:platform)
 bun run deploy:beta
 ```
 
@@ -155,7 +155,7 @@ Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及
 
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
-Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成 `--platform` 配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。上一节的 `deploy:worker` 配置只部署独立兼容 API。
+Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成统一配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。日常亦可使用统一指令 `bun run deploy:worker` 构建前端并发布统一 Worker。
 
 ### 登录与配置
 
@@ -336,7 +336,7 @@ bun test            # 运行所有的单元测试和集成测试
 
 发布此版前应用 `migrations/0030_platform_identity_bindings.sql`，新版 React 与 Koishi 插件使用 `platform-binding` API。迁移保留原标识及玩家绑定，店主决定是否批量转换，例如 `qq → onebot`；转换不会调整余额或账单。强制绑定开关位于 React「设置 → 玩家与身份」，默认开启。新 API 与适配器来源的具体约定见 [API 文档](api.md#店铺绑定要求与身份转换)。
 
-限流由 `wrangler.platform.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
+限流由 `wrangler.jsonc` 的 Workers Rate Limiting bindings 提供，无需新建限流 KV。发布包含 `0031_platform_retention.sql` 过期索引和小时 Cron；live phase 静态 Assets 绕过 D1 gate，API/DO 仍受维护保护。namespace_id 预留、CPU 预算和 retention 运维约定见 [扫码性能与请求预算](scan-performance.md)。
 
 ### Workers Builds 上传占位 D1 配置的排查
 
@@ -359,3 +359,14 @@ Wrangler 报告上传/发布成功后，部署脚本会使用本次随机令牌�
 `Deployment begin failed (404)` 表示控制请求在认证处被拒绝（或尚未到达预期 Worker），发生于本次数据库迁移之前；不能把它等同于 D1 UUID 错误。检查域名路由与部署绑定是否指向预期 Worker。`resume` 对已验证、同一部署所有者的重复请求返回成功，避免首次成功但响应丢失后重新关闭业务。上述改动仍保留维护期间的写入保护，不自动关闭未知部署的维护状态。
 
 恢复请求的 409 会区分阶段未就绪（可重试）、部署所有者变化、缺少验证和维护状态不符（立即失败）。部署日志只输出固定错误码，不丢弃可诊断的原因，也不打印任意响应体。并行构建或重试旧提交可能覆盖正在执行的发布；恢复时使用最新修复提交，且同一 Worker 只运行一个完整部署任务。
+
+### 首次安装凭据与机器 WebSocket 令牌
+
+统一服务端的旧版单店初始化入口 `POST /rpc/setup/install`（以及 `/api/v1/setup/install`）现在必须提供一次性部署级安装令牌，避免未认证的外部请求抢占空白数据库。
+
+- 部署变量 `PRISM_BOOTSTRAP_TOKEN_HASH`：安装令牌原文的 SHA-256 十六进制摘要。未配置时初始化接口返回 HTTP 503。
+- 请求头 `X-PRiSM-Bootstrap-Token`：部署时生成的高强度随机令牌原文；摘要不应与令牌原文放在同一配置文件中。
+- 初始化完成后应移除该部署变量，并保证旧安装接口不能再次创建 owner。
+- 云端环境请使用 Cloudflare Secrets 配置此变量，不要将原文或摘要提交到 Git 仓库。
+
+机器 WebSocket `/rpc/machine/ws` 不再接受通用的 machine token 或其他店铺的 token。现有机器需要在对应店铺创建机器记录后，由有写权限的店员调用 `POST /rpc/staff/api-tokens`，传递 `{"label":"Machine 1","role":"machine","machineId":"<该店铺机器 ID 或 public_id>"}` 重新签发令牌。服务端会把新令牌绑定到一台机器；WebSocket 的 `hello.machineId` 必须使用该机器的内部 ID。旧初始化自动生成的通用机器 token 不再有效。
