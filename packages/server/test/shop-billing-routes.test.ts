@@ -1190,7 +1190,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
         sessions: Array<{ id: string; playerId: string; label?: string; identities?: Array<{ provider: string; subject: string }> }>;
       };
       expect(activeBody.sessions).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: entryBody.session.id, playerId, label: "音游区间" }),
+        expect.objectContaining({ id: entryBody.session.id, playerId, label: "entry" }),
         expect.objectContaining({ id: tableBody.session.id, playerId, label: "麻将 A 桌" }),
       ]));
       expect(activeBody.sessions.some(s => s.playerId === playerId
