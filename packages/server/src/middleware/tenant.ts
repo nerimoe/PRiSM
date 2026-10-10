@@ -459,17 +459,28 @@ export function createShopDependencies(input: {
       } catch {
         rules = [];
       }
+      // Mahjong and other named activity sessions must never be swallowed by
+      // admission deduplication, even if they use the same pricing rule IDs.
+      // Legacy Bot admission labels remain recognised; newer Bots set entry
+      // explicitly so a custom admission label also works.
+      const admission =
+        startInput.entry === true ||
+        (startInput.entry !== false &&
+          (!startInput.label || ["entry", "音游区间"].includes(startInput.label.trim())));
+      const authorizedInput = {
+        ...startInput,
+        // The Bot caller cannot bypass the shop-level registration switch.
+        autoRegister: !!input.shop.auto_register,
+      };
       if (
-        rules.length > 0 &&
-        startInput.pricingConfigIds?.some((item) => !rules.includes(item))
+        !admission ||
+        (rules.length > 0 &&
+          startInput.pricingConfigIds?.some((item) => !rules.includes(item)))
       ) {
-        return origStartByIdentity(startInput);
+        return origStartByIdentity(authorizedInput);
       }
       const player =
-        await integrationCommands.resolveOrRegisterPlayerByIdentity({
-          ...startInput,
-          autoRegister: !!input.shop.auto_register,
-        });
+        await integrationCommands.resolveOrRegisterPlayerByIdentity(authorizedInput);
       return startEntry({
         ...startInput,
         playerId: player.id,
