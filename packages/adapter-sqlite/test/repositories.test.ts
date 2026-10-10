@@ -1507,3 +1507,25 @@ it("resolves cashier external identities with the original payment mode", async 
       .toMatchObject({ id: "player-1", paymentMode: "cashier" });
   } finally { db.close(); }
 });
+
+it("resolves ordinary bot identities on a pre-cashier database without losing player access", async () => {
+  const db = createDb();
+  try {
+    // Existing production identities predate migration 0029. Only the
+    // cashier table is missing; legacy player and identity rows remain.
+    db.run("INSERT INTO player_identities (player_id, provider, subject, created_at) VALUES ('player-1','onebot','114514','2026-01-01')");
+    db.run("DROP TABLE cashier_profiles");
+    const repos = createSqliteRepositories({ db, id: () => "unused", now: () => new Date() });
+
+    const player = await repos.playerIdentities.findPlayerByIdentity("onebot", "114514");
+    expect(player).toMatchObject({ id: "player-1", displayName: "Neri", status: "active" });
+    expect(player?.paymentMode).toBeUndefined();
+    expect(await repos.players.findById("player-1")).toMatchObject({ id: "player-1", status: "active" });
+    expect((await repos.players.listPlayers()).map(player => player.id)).toContain("player-1");
+
+    // Do not turn all SQL exceptions into "missing cashier" fallbacks.
+    db.run("DROP TABLE player_identities");
+    await expect(repos.playerIdentities.findPlayerByIdentity("onebot", "114514"))
+      .rejects.toThrow(/no such table: player_identities/i);
+  } finally { db.close(); }
+});
