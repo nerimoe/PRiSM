@@ -258,6 +258,26 @@ staffRouter.post("/players/:playerId/checkout/override", async (c) => {
       playerId: c.req.param("playerId"),
       total: body.finalTotal,
       reason: body.reason,
+      closeSessionsBeforeBalanceCheck: false,
+    });
+    return c.json(toPlayerCheckoutResultView(result));
+  });
+});
+
+// Recharge the paid wallet and settle in one atomic checkout transaction.
+staffRouter.post("/players/:playerId/checkout/recharge", async (c) => {
+  const shop = getShop(c);
+  const staff = await staffPrincipal(c, shop);
+  const deps = getShopDeps(c);
+  const body = z.object({
+    amount: z.number().finite().positive(),
+    operationId: z.string().uuid(),
+  }).parse(await c.req.json());
+  return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/checkout/recharge`, body, async () => {
+    const result = await deps.staffCheckoutCommands.checkoutWithRecharge({
+      staffId: staff.staffId,
+      playerId: c.req.param("playerId"),
+      amount: body.amount,
     });
     return c.json(toPlayerCheckoutResultView(result));
   });
