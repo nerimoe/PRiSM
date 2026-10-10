@@ -1603,4 +1603,130 @@ describe("createSettlementService", () => {
     const result = await service.previewCheckout({ playerId: "player-1" });
     expect(yuanOf(result.settlementPreview.total)).toBe(0);
   });
+
+  it("atomically recharges paid currency and settles all open sessions with one checkout commit", async () => {
+    const sessions = new MemorySessionRepository([
+      { id: "s1", playerId: "player-1", startedAt: new Date("2026-07-09T01:00:00Z"), status: "active", paymentStatus: "unpaid" },
+      { id: "s2", playerId: "player-1", startedAt: new Date("2026-07-09T02:00:00Z"), status: "active", paymentStatus: "unpaid" },
+    ]);
+    const assets = new MemoryAssetRepository([
+      { id: "paid-1", assetType: "currency", assetCode: "paid", quantity: centsOf(5) },
+    ]);
+    const definitions = new MemoryAssetDefinitionRepository([
+      { type: "currency", code: "paid", name: "充值余额", stackable: true, status: "active", metadata: null },
+    ]);
+    const settlements = new MemorySettlementRepository();
+    const commits: Array<import("@prism/core").CheckoutCommit> = [];
+    const service = createSettlementService({
+      sessions, assets, settlements,
+      assetDefinitions: definitions,
+      availableAssets: createAvailableAssetReader({
+        assets, assetDefinitions: definitions, now: () => new Date("2026-07-09T03:00:00Z"),
+      }),
+      commitCheckout: async data => {
+        commits.push(data);
+        await assets.commitAssetTransaction(data.assets!);
+        await settlements.saveCheckout(data.checkout, data.settlements);
+        for (const session of data.sessions) await sessions.save(session);
+      },
+      pricingProviders: [pricing],
+      assetEffectProviders: [],
+      now: () => new Date("2026-07-09T03:00:00Z"),
+      id: () => "generated-recharge-id",
+    });
+    const result = await service.checkoutWithRecharge({
+      playerId: "player-1", staffId: "staff-1", amount: 50,
+    });
+    expect(result.playerSettlement.sessionIds).toEqual(["s1", "s2"]);
+    expect(yuanOf(result.playerSettlement.total)).toBe(40);
+    expect(yuanOf(result.wallet.balanceBefore)).toBe(55);
+    expect(yuanOf(result.wallet.balanceAfter)).toBe(15);
+    expect(commits).toHaveLength(1);
+    expect(assets.assetTransactions).toHaveLength(1);
+    expect(assets.assetTransactions[0]?.metadata).toMatchObject({
+      rechargeAmount: centsOf(50),
+      rechargeStaffId: "staff-1",
+      walletBalanceAfter: centsOf(15),
+    });
+    expect(assets.ledgerEntries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        assetType: "currency", assetCode: "paid",
+        delta: centsOf(50), reason: "staff.checkout.recharge",
+        transactionId: "asset-tx:session.settlement:s2",
+      }),
+      expect.objectContaining({
+        assetType: "currency", assetCode: "paid",
+        delta: centsOf(-40), reason: "session.settlement",
+        transactionId: "asset-tx:session.settlement:s2",
+      }),
+    ]));
+    expect(sessions.saved.every(session => session.status === "closed" && session.paymentStatus === "paid")).toBe(true);
+  });
+
+  it("does not recharge or close sessions when the freshly calculated bill is not covered", async () => {
+    const sessions = new MemorySessionRepository([
+      { id: "s1", playerId: "player-1", startedAt: new Date("2026-07-09T01:00:00Z"), status: "active", paymentStatus: "unpaid" },
+      { id: "s2", playerId: "player-1", startedAt: new Date("2026-07-09T02:00:00Z"), status: "active", paymentStatus: "unpaid" },
+    ]);
+    const assets = new MemoryAssetRepository([
+      { id: "paid-1", assetType: "currency", assetCode: "paid", quantity: centsOf(5) },
+    ]);
+    const definitions = new MemoryAssetDefinitionRepository([
+      { type: "currency", code: "paid", name: "充值余额", stackable: true, status: "active", metadata: null },
+    ]);
+    const settlements = new MemorySettlementRepository();
+    let commits = 0;
+    const service = createSettlementService({
+      sessions, assets, settlements, assetDefinitions: definitions,
+      availableAssets: createAvailableAssetReader({
+        assets, assetDefinitions: definitions, now: () => new Date("2026-07-09T03:00:00Z"),
+      }),
+      commitCheckout: async () => { commits++; },
+      pricingProviders: [pricing], assetEffectProviders: [],
+      now: () => new Date("2026-07-09T03:00:00Z"),
+      id: () => "generated-recharge-id",
+    });
+    await expect(service.checkoutWithRecharge({
+      playerId: "player-1", staffId: "staff-1", amount: 34.99,
+    })).rejects.toMatchObject({ code: "INSUFFICIENT_RECHARGE_BALANCE" });
+    expect(commits).toBe(0);
+    expect(assets.savedHoldings).toHaveLength(0);
+    expect(assets.assetTransactions).toHaveLength(0);
+    expect(settlements.saved).toHaveLength(0);
+    expect(sessions.saved.every(session => session.status === "active")).toBe(true);
+    for (const amount of [0, -1, NaN, Infinity, 0.001]) {
+      await expect(service.checkoutWithRecharge({
+        playerId: "player-1", staffId: "staff-1", amount,
+      })).rejects.toMatchObject({ code: "INVALID_CHECKOUT_RECHARGE_AMOUNT" });
+    }
+    expect(commits).toBe(0);
+  });
+
+  it("fails closed if atomic checkout or the paid currency definition is unavailable", async () => {
+    const sessions = new MemorySessionRepository({
+      id: "s1", playerId: "player-1", startedAt: new Date("2026-07-09T01:00:00Z"),
+      status: "active", paymentStatus: "unpaid",
+    });
+    const assets = new MemoryAssetRepository([]);
+    const definitions = new MemoryAssetDefinitionRepository([
+      { type: "currency", code: "paid", name: "充值余额", stackable: true, status: "archived", metadata: null },
+    ]);
+    const common = {
+      sessions, assets, assetDefinitions: definitions, settlements: new MemorySettlementRepository(),
+      pricingProviders: [pricing], assetEffectProviders: [],
+      now: () => new Date("2026-07-09T03:00:00Z"),
+    };
+    await expect(createSettlementService({
+      ...common,
+      commitCheckout: async () => {},
+    }).checkoutWithRecharge({
+      playerId: "player-1", staffId: "staff-1", amount: 20,
+    })).rejects.toMatchObject({ code: "RECHARGE_ASSET_UNAVAILABLE" });
+    await expect(createSettlementService(common).checkoutWithRecharge({
+      playerId: "player-1", staffId: "staff-1", amount: 20,
+    })).rejects.toMatchObject({ code: "RECHARGE_CHECKOUT_NOT_CONFIGURED" });
+    expect(assets.assetTransactions).toHaveLength(0);
+    expect(sessions.saved[0]?.status).toBe("active");
+  });
+
 });
