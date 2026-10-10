@@ -47,6 +47,7 @@ import {
   subCents,
   deductCurrency,
   diffAssetHoldings,
+  grantAssets,
   explainTimeCapPricing,
   isActiveInWindow,
   previewSessionSettlement,
@@ -112,6 +113,12 @@ export type StaffCheckoutOverrideInput = {
   total: number;
   reason: string;
   closeSessionsBeforeBalanceCheck?: boolean;
+};
+
+export type StaffRechargeCheckoutInput = {
+  playerId: string;
+  staffId: string;
+  amount: number;
 };
 
 export type CheckoutWallet = {
@@ -183,6 +190,7 @@ export type SettlementService = {
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   stopSession(input: { playerId: string; sessionId: string }): Promise<Session & { status: "closed"; endedAt: Date }>;
   checkoutWithOverride(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;
+  checkoutWithRecharge(input: StaffRechargeCheckoutInput): Promise<SettlePlayerCheckoutResult>;
 };
 
 const playerLocks = new Map<string, Promise<any>>();
@@ -287,6 +295,75 @@ export function createSettlementService(dependencies: SettlementServiceDependenc
         closedSession.paymentStatus = "unpaid";
         await dependencies.sessions.save(closedSession);
         return closedSession;
+      });
+    },
+
+
+    async checkoutWithRecharge(input) {
+      // Validate the requested recharge before acquiring the player-wide asset lock.
+      const cents = Math.round(input.amount * 100);
+      if (!Number.isFinite(input.amount) || input.amount <= 0 ||
+          !Number.isSafeInteger(cents) || cents / 100 !== input.amount) {
+        throw new PrismDomainError("Recharge amount must be positive with at most two decimal places.", "INVALID_CHECKOUT_RECHARGE_AMOUNT");
+      }
+      return acquireCheckoutLock(dependencies, input.playerId, async () => {
+        await assertWalletPlayer(dependencies, input.playerId);
+        // A two-operation top-up followed by checkout can leave money behind if
+        // checkout fails. Require the atomic checkout writer for this flow.
+        if (!dependencies.commitCheckout || !dependencies.assetDefinitions) {
+          throw new PrismDomainError("Atomic recharge checkout is not configured.", "RECHARGE_CHECKOUT_NOT_CONFIGURED");
+        }
+        const now = dependencies.now();
+        const paid = await dependencies.assetDefinitions.findByCode("currency", "paid");
+        if (!paid || paid.status === "archived" || !isActiveInWindow(paid, now)) {
+          throw new PrismDomainError("Recharge balance asset is unavailable.", "RECHARGE_ASSET_UNAVAILABLE");
+        }
+        const [active, unpaid, originalHoldings] = await Promise.all([
+          dependencies.sessions.findActiveByPlayerId(input.playerId),
+          dependencies.sessions.findUnpaidClosedByPlayerId(input.playerId),
+          dependencies.assets.listAssetHoldings(input.playerId),
+        ]);
+        const sessions = uniqueSessionsById([
+          ...unpaid.map(session => ({
+            ...session, status: "closed" as const,
+            endedAt: session.endedAt ?? now,
+            paymentStatus: session.paymentStatus ?? "unpaid",
+          })),
+          ...active.map(session => ({ ...closeSession({ session, now }), paymentStatus: "unpaid" as const })),
+        ]);
+        // The grant is only in memory until commitCheckout performs the whole
+        // checkout (grant + debit + session close + settlement) in one transaction.
+        const recharged = grantAssets({
+          playerId: input.playerId,
+          existingHoldings: originalHoldings,
+          grants: [{
+            assetType: "currency",
+            assetCode: "paid",
+            amount: input.amount,
+            mergeStrategy: "stack",
+            activeAt: null,
+            expiresAt: null,
+            reason: "staff.checkout.recharge",
+            refId: input.staffId,
+          }],
+          idFactory: dependencies.id ?? (() => crypto.randomUUID()),
+          now,
+        });
+        const details = await calculateUnifiedCheckoutDetails(
+          dependencies, input.playerId, sessions, recharged.holdings, now,
+        );
+        // Re-evaluate pricing at checkout time under the same player lock.
+        // Insufficient funds must fail before any asset/session write.
+        if (compareCents(details.walletBalanceBefore, details.total) < 0) {
+          throw new PrismDomainError("充值后的可用余额不足以支付当前账单。", "INSUFFICIENT_RECHARGE_BALANCE");
+        }
+        assertCheckoutBalance(details.availableHoldings, details.total, now);
+        details.originalHoldings = originalHoldings;
+        return persistUnifiedPlayerCheckout(dependencies, input.playerId, details, now, undefined, undefined, {
+          staffId: input.staffId,
+          amount: centsOf(input.amount),
+          ledgerEntries: recharged.assetLedgerEntries,
+        });
       });
     },
 
@@ -716,12 +793,14 @@ async function persistUnifiedPlayerCheckout(
     label: string;
   },
   externalPayment?: PlayerCheckout["externalPayment"],
+  recharge?: { staffId: string; amount: Cents; ledgerEntries: AssetLedgerEntry[] },
 ): Promise<SettlePlayerCheckoutResult> {
   const anchorSession = details.anchorSession;
   const sessionIds = details.sessionResults.map((result) => result.session.id);
   const extraLedgerEntries = [
     ...details.sessionResults.flatMap((result) => result.extraLedgerEntries),
     ...details.unifiedLedgerEntries,
+    ...(recharge?.ledgerEntries ?? []),
   ];
 
   let finalTotal = details.total;
@@ -766,6 +845,7 @@ async function persistUnifiedPlayerCheckout(
         sessions: sessionIds,
         total: finalTotal,
         walletBalanceAfter,
+        ...(recharge ? { rechargeAmount: recharge.amount, rechargeStaffId: recharge.staffId } : {}),
       },
     },
     holdingChanges: diffAssetHoldings(details.originalHoldings, nextHoldings),
