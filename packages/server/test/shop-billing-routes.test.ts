@@ -1166,14 +1166,18 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       expect(registeredBody.player.displayName).toBe("Koishi Guest");
 
       const entry = await post("/players/by-identity/session/start", {
-        identity, label: "音游区间",
+        identity, label: "音游区间", entry: true,
       });
       expect(entry.status).toBe(200);
       const entryBody = await entry.json() as { session: { id: string; playerId: string } };
       expect(entryBody.session.playerId).toBe(playerId);
 
       const table = await post("/players/by-identity/session/start", {
-        identity, label: "麻将 A 桌",
+        identity, label: "麻将 A 桌", entry: false,
+        // Even overlapping admission pricing must not hijack the table session.
+        pricingConfigIds: JSON.parse((sqlite.query(
+          "SELECT entry_pricing_ids_json AS ids FROM shop_billing_settings WHERE shop_id=?",
+        ).get(shopId) as { ids: string }).ids),
       });
       expect(table.status).toBe(200);
       const tableBody = await table.json() as { session: { id: string; playerId: string } };
@@ -1207,6 +1211,15 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       });
       expect((sqlite.query("SELECT status FROM sessions WHERE shop_id=? AND id=?")
         .get(shopId, entryBody.session.id) as { status: string }).status).toBe("active");
+
+      sqlite.run("UPDATE shop_billing_settings SET auto_register=0 WHERE shop_id=?", [shopId]);
+      const blockedRegistration = await post("/players/by-identity/session/start", {
+        identity: { provider: "onebot", subject: "unknown-new-player" },
+        autoRegister: true, label: "麻将 A 桌", entry: false,
+      });
+      expect([400, 404]).toContain(blockedRegistration.status);
+      expect((await blockedRegistration.json() as { error: { code: string } }).error.code)
+        .toBe("PLAYER_IDENTITY_NOT_FOUND");
 
       const preview = await post("/players/by-identity/checkout/preview", { identity });
       expect(preview.status).toBe(200);
