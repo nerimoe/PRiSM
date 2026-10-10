@@ -1082,6 +1082,48 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(botData.player).toBeDefined();
     expect(botData.player.displayName).toBe("QQ Player");
 
+    // Koishi sends nested identity envelopes to both register and resolve.
+    // This used to throw on undefined provider in normalizeExternalIdentity,
+    // turning every Mahjong join/leave into HTTP 500.
+    const koishiRegister = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/register`, {
+        method: "POST",
+        headers: botHeaders,
+        body: JSON.stringify({
+          identity: { provider: " QQ ", subject: " 99998888 " },
+          autoRegister: true,
+          displayName: "Koishi Mahjong Player",
+        }),
+      }),
+      env,
+    );
+    expect(koishiRegister.status).toBe(200);
+    const koishiData = (await koishiRegister.json()) as any;
+    expect(koishiData.player.displayName).toBe("Koishi Mahjong Player");
+
+    const koishiResolve = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/resolve`, {
+        method: "POST",
+        headers: botHeaders,
+        body: JSON.stringify({ identity: { provider: "qq", subject: "99998888" } }),
+      }),
+      env,
+    );
+    expect(koishiResolve.status).toBe(200);
+    expect(((await koishiResolve.json()) as any).player.id).toBe(koishiData.player.id);
+
+    // Unexpected input is a domain validation error, never a 500.
+    const malformed = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/register`, {
+        method: "POST",
+        headers: botHeaders,
+        body: JSON.stringify({ identity: { subject: "99998888" } }),
+      }),
+      env,
+    );
+    expect(malformed.status).toBe(400);
+    expect(((await malformed.json()) as any).error.code).toBe("INVALID_EXTERNAL_IDENTITY");
+
     // 2. Query wallet by identity
     const walletRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/wallet`, {
