@@ -52,23 +52,42 @@ integrationRouter.use("*", async (c, next) => {
   await next();
 });
 
+// Accept the nested { identity: { provider, subject } } envelope used by
+// koishi-plugin-prism as well as the historical flat { provider, subject }
+// format. Other integration routes already accept both forms.
+type BotIdentityBody = {
+  identity?: { provider: string; subject: string };
+  identityKey?: string;
+  provider?: string;
+  subject?: string;
+  displayName?: string;
+};
+
+function botIdentity(body: BotIdentityBody) {
+  return {
+    identity: body.identity ?? (body.provider != null && body.subject != null
+      ? { provider: body.provider, subject: body.subject }
+      : undefined),
+    identityKey: body.identityKey,
+  };
+}
+
 // Resolve player by identity
 integrationRouter.post("/players/by-identity/resolve", async (c) => {
   const deps = getShopDeps(c);
-  const body = await c.req.json<{ provider: string; subject: string }>();
-  const player = await deps.integrationCommands.resolvePlayerByIdentity({
-    identity: { provider: body.provider, subject: body.subject },
-  });
+  const body = await c.req.json<BotIdentityBody>();
+  const player = await deps.integrationCommands.resolvePlayerByIdentity(botIdentity(body));
   return c.json({ player: toPlayerManagementView(player) });
 });
 
 // Register player by identity
 integrationRouter.post("/players/by-identity/register", async (c) => {
   const deps = getShopDeps(c);
-  const body = await c.req.json<{ provider: string; subject: string; displayName?: string }>();
+  const body = await c.req.json<BotIdentityBody>();
   const player = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity({
-    identity: { provider: body.provider, subject: body.subject },
+    ...botIdentity(body),
     displayName: body.displayName,
+    // Auto registration remains controlled by the shop, never the Bot request.
     autoRegister: !!getShop(c).auto_register,
   });
   return c.json({ player: toPlayerManagementView(player) });
