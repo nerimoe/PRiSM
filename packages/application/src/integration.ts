@@ -32,7 +32,10 @@ export type IntegrationIdentityInput = {
 };
 
 export type IntegrationStartSessionInput = IntegrationIdentityInput &
-  Omit<StartPlayerSessionCommand, "playerId">;
+  Omit<StartPlayerSessionCommand, "playerId"> & {
+    /** True for shared venue entry; false for an independently billed activity/seat. */
+    entry?: boolean;
+  };
 
 export type IntegrationCheckoutInput = IntegrationIdentityInput &
   Omit<PlayerCheckoutInput, "playerId">;

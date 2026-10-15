@@ -79,9 +79,12 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/sessi
     "autoRegister": true,
     "displayName": "onebot:123456",
     "pricingConfigIds": ["music-standard"],
-    "label": "音游区间"
+    "label": "音游区间",
+    "entry": true
   }'
 ```
+
+Bot 调用应明确区分会话类型：普通入场传 `"entry": true`（服务端按店铺入场规则去重，保存为规范标签 `entry`）；麻将上桌、包间等另开的独立计费会话传 `"entry": false`，并提交自己的 `label` 和 `pricingConfigIds`，即使与入场规则重叠也不会折叠为原入场 session。没有 `entry` 字段的旧客户端只会按空标签、`entry`、`音游区间` 识别为入场；使用自定义入场标签的 Bot 必须升级到显式字段。无论请求里的 `autoRegister` 如何设置，服务端都以店铺是否允许自动注册为准。
 
 机器人或自助入口应该在配置中明确指定普通 `/login`、`/入场` 使用的标准计费方案，并把它作为 `pricingConfigIds` 传给 `/session/start`。不要依赖“空请求体使用后端默认方案”的行为；当店内同时启用了音游、麻将叠加、包间或固定收费方案时，空请求可能会让普通入场错误套用所有启用方案。麻将、包间等附加服务应另开平级 session，并为那条 session 传对应的附加计费方案。
 

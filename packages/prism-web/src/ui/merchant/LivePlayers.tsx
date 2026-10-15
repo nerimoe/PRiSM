@@ -144,8 +144,14 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
       }}
     >
       <p className="font-semibold">{checkout.player.displayName}</p>
-      <BillTotal preview={checkout.preview} />
-      <BillTimeline preview={checkout.preview} timeZone={timeZone || undefined} />
+      {checkout.mode === "normal" ? <>
+        <BillTotal preview={checkout.preview} />
+        <BillTimeline preview={checkout.preview} timeZone={timeZone || undefined} />
+        <p className="text-sm text-ink/60">{t("结账后余额")} {money(checkout.preview.wallet.balanceAfter)}</p>
+      </> : <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-ink/60">{t("应付")}</span>
+        <strong className="font-semibold tabular-nums">{money(checkout.preview.settlementPreview.total)}</strong>
+      </div>}
       {checkout.mode === "override" && <>
         <Field label="最终应收金额">
           <input className={input} name="amount" type="number" required min="0" step="0.01"
@@ -154,7 +160,6 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
         <Field label="改价原因">
           <input className={input} name="reason" required maxLength={200} />
         </Field>
-        <p className="text-sm text-ink/60">{t("改价会记录在账单调整项中，结账时将按新金额扣费。")}</p>
       </>}
       {checkout.mode === "recharge" && <>
         <Field label="充值金额">
@@ -162,9 +167,7 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
             defaultValue={Math.max(0.01, Math.ceil((checkout.preview.settlementPreview.total - checkout.preview.wallet.balanceBefore) * 100) / 100).toFixed(2)} />
         </Field>
         <p className="text-sm text-ink/60">{t("当前可用余额")} {money(checkout.preview.wallet.balanceBefore)} · {t("最低需充值")} {money(Math.max(0, checkout.preview.settlementPreview.total - checkout.preview.wallet.balanceBefore))}</p>
-        <p className="text-sm text-ink/60">{t("充值将进入充值余额，并与结账原子提交；实际账单及余额会在提交时重新校验。")}</p>
       </>}
-      {checkout.mode === "normal" && <p className="text-sm text-ink/60">{t("结账后余额")} {money(checkout.preview.wallet.balanceAfter)}</p>}
     </ActionForm></Modal>}
   </>;
 }
