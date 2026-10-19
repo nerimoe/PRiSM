@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { withOperationLease } from "@prism/application";
-import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer, requireActiveEntry } from "./machine-login.js";
+import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer } from "./machine-login.js";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { canStartPriorityTimePricingSession } from "@prism/core";
 import { requireUser } from "../../middleware/auth.js";
@@ -11,11 +11,13 @@ import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings } from "../../bindings.js";
 import type { Machine as MachineRow } from "./machine-session.js";
+import { loadDevice, mahjongConfigOf } from "../../devices/device.js";
 
 type C = Context<AppBindings, any, any>;
-export type MahjongConfig = { capacity: number; pricingConfigIds: string[] };
-export function mahjongConfig(machine: MachineRow): MahjongConfig | null {
-  return machine.mahjong_config_json ? JSON.parse(machine.mahjong_config_json) : null;
+export type { MahjongConfig } from "../../devices/capabilities.js";
+async function mahjongConfig(c: C, machine: MachineRow) {
+  const device = await loadDevice(c.env.DB, machine.shop_id, machine.id);
+  return device ? mahjongConfigOf(device) : null;
 }
 // Stale seats never occupy capacity after checkout or a staff session closure.
 const liveSeats = `SELECT ms.* FROM mahjong_seats ms
@@ -24,9 +26,9 @@ const liveSeats = `SELECT ms.* FROM mahjong_seats ms
  AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.shop_id=ms.shop_id AND s.id=ms.session_id AND s.status='closed')`;
 
 export async function mahjongState(c: C, machine: MachineRow) {
-  const config = mahjongConfig(machine);
+  const config = await mahjongConfig(c, machine);
   if (!config) return null;
-  const result = await c.env.DB.prepare(`SELECT p.display_name AS name,
+  const result = await c.env.DB.prepare(`SELECT p.id AS playerId, p.display_name AS name,
     CASE WHEN a.user_id=? THEN 1 ELSE 0 END AS mine,
     CASE WHEN s.status='active' THEN 1 ELSE 0 END AS playing
     FROM (${liveSeats}) ms
@@ -34,23 +36,47 @@ export async function mahjongState(c: C, machine: MachineRow) {
     LEFT JOIN shop_player_accounts a ON a.shop_id=ms.shop_id AND a.player_id=ms.player_id
     LEFT JOIN sessions s ON s.shop_id=ms.shop_id AND s.id=ms.session_id
     WHERE ms.machine_id=? ORDER BY ms.joined_at,ms.player_id`)
-    .bind(requireUser(c).id,machine.id).all<{name:string;mine:number;playing:number}>();
-  return { capacity: config.capacity, seats: result.results.map(s => ({ name:s.name, mine:!!s.mine, playing:!!s.playing })) };
+    .bind(requireUser(c).id,machine.id).all<{playerId:string;name:string;mine:number;playing:number}>();
+  return { capacity: config.capacity, seats: result.results.map(s => ({ playerId:s.playerId, name:s.name, mine:!!s.mine, playing:!!s.playing })) };
 }
 
-export async function operateMahjong(c:C, machine:MachineRow, body:Record<string,unknown>) {
-  const config = mahjongConfig(machine);
+/** A staff member seats a chosen player instead of themselves. */
+async function staffTargetPlayer(c: C, shopId: string, playerId: string) {
+  const player = await c.env.DB.prepare(
+    "SELECT id,status FROM players WHERE shop_id=? AND id=?",
+  ).bind(shopId, playerId).first<{id:string;status:string}>();
+  if (!player) jsonError(404, "没有找到这个玩家", "PLAYER_NOT_FOUND");
+  if (player.status !== "active")
+    jsonError(409, "该玩家已停用", "PLAYER_DISABLED");
+  return player;
+}
+
+export async function operateMahjong(
+  c: C,
+  machine: MachineRow,
+  body: Record<string, unknown>,
+  options: { staff?: boolean } = {},
+) {
+  const config = await mahjongConfig(c, machine);
   if (!config) jsonError(409,"设备不支持此操作","DEVICE_ACTION_UNSUPPORTED");
   await assertNotBanned(c, [["user",requireUser(c).id],["machine",machine.id]]);
   const shop = await getBillingShop(c,machine.shop_public_id);
-  checkShopLocation(shop,"machine",body.location);
-  const player = await requireShopPlayer(c,shop,true);
-  const joining = body.action === "mahjong.join";
+  if (!options.staff) checkShopLocation(shop,"machine",body.location);
+  const targetPlayerId = typeof body.playerId === "string" ? body.playerId : "";
+  if (options.staff && !targetPlayerId)
+    jsonError(400, "请选择玩家", "PLAYER_REQUIRED");
+  const player = options.staff
+    ? await staffTargetPlayer(c, shop.id, targetPlayerId)
+    : await requireShopPlayer(c,shop,true);
+  const joining = body.action === "mahjong.join" || body.action === "mahjong.seat";
   const repos = createD1Repositories({db:c.env.DB,shopId:shop.id,id:()=>crypto.randomUUID(),now:()=>new Date()});
   let entryId:string|null = null;
   if (joining && shop.billing_enabled) {
-    await requireActiveEntry(c,shop);
-    entryId = (await repos.sessions.findActiveByPlayerId(player.id)).find(s => isEntry(s,shop))!.id;
+    // The seated player needs an entry, whether they seated themselves or staff
+    // seated them.
+    const entry = (await repos.sessions.findActiveByPlayerId(player.id)).find(s => isEntry(s,shop));
+    if (!entry) jsonError(403,"请先确认入场","CHECKIN_REQUIRED");
+    entryId = entry.id;
     const rules = (await repos.pricingConfigs.listEnabled()).filter(r => config.pricingConfigIds.includes(r.id));
     if (!rules.length || rules.length !== config.pricingConfigIds.length)
       jsonError(409,"请店家配置麻将计费规则","DEVICE_CONFIGURATION_REQUIRED");
@@ -98,7 +124,7 @@ export async function operateMahjong(c:C, machine:MachineRow, body:Record<string
         db.prepare("DELETE FROM mahjong_seats WHERE shop_id=? AND player_id=? AND machine_id=?").bind(shop.id,player.id,machine.id),
       ]);
     }
-    const sync = Promise.all(ids.map(id => refreshActivityBill(c.env, shop.id, id)))
+    const sync = Promise.all(ids.map(id => refreshActivityBill(c.env, shop.id, id, false, true)))
       .catch(error => console.error("Mahjong live bill sync failed", error));
     try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     return c.json({mahjong:await mahjongState(c,machine)});
@@ -110,18 +136,4 @@ export async function operateMahjong(c:C, machine:MachineRow, body:Record<string
       jsonError(409,"其他操作正在进行，请重试","OPERATION_IN_PROGRESS");
     throw error;
   }));
-}
-
-export async function mahjongRoster(c:C, shopId:string) {
-  const rows=await c.env.DB.prepare(`SELECT m.id,m.name,m.mahjong_config_json,ms.player_id,p.display_name
-    FROM machines m JOIN (${liveSeats}) ms ON ms.machine_id=m.id
-    JOIN players p ON p.shop_id=ms.shop_id AND p.id=ms.player_id
-    WHERE m.shop_id=? AND m.mahjong_config_json IS NOT NULL ORDER BY m.name,ms.joined_at`)
-    .bind(shopId).all<{id:string;name:string;mahjong_config_json:string;player_id:string;display_name:string}>();
-  const tables=new Map<string,{id:string;name:string;capacity:number;players:{id:string;name:string}[]}>();
-  for(const row of rows.results) {
-    if(!tables.has(row.id)) tables.set(row.id,{id:row.id,name:row.name,capacity:(JSON.parse(row.mahjong_config_json) as MahjongConfig).capacity,players:[]});
-    tables.get(row.id)!.players.push({id:row.player_id,name:row.display_name});
-  }
-  return [...tables.values()];
 }

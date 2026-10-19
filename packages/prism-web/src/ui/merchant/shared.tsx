@@ -26,7 +26,10 @@ export const MerchantContext = createContext({
 export const useMerchant = () => useContext(MerchantContext);
 export const button =
   "focus-ring inline-flex whitespace-nowrap min-h-11 items-center justify-center gap-2 rounded-xl border border-ink/20 px-4 py-2 text-sm font-medium transition-colors hover:bg-ink/5 disabled:opacity-50";
-export const primary = `${button} border-transparent bg-mint text-white hover:opacity-90`;
+/** A borderless button for dense rows, where a full outline reads as a primary action. */
+export const buttonQuiet =
+  "focus-ring inline-flex whitespace-nowrap items-center gap-1.5 rounded-lg border border-transparent text-sm text-ink/65 transition-colors hover:bg-ink/5 hover:text-ink disabled:opacity-50";
+export const primary = `${button} border-transparent bg-primary text-primary-foreground hover:opacity-90`;
 export const input =
   "focus-ring min-h-11 w-full rounded-lg border border-ink/20 bg-panel px-3 py-2 text-sm font-normal disabled:opacity-60";
 export const money = (value: number | null | undefined) =>
@@ -42,31 +45,55 @@ export const segment = (value: string) => encodeURIComponent(value);
 export function useStaffApi() {
   const { shopCode } = useMerchant();
   return useCallback(
-    <T,>(path: string, method = "GET", body?: unknown): Promise<T> =>
-      method === "POST" && !path.endsWith("/preview")
-        ? playerOperation<T>(
-            shopApi(shopCode, `staff/${path}`),
-            (body ?? {}) as Record<string, unknown>,
-          )
-        : api<T>(shopApi(shopCode, `staff/${path}`), {
-            method,
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-          }),
+    <T,>(path: string, method = "GET", body?: unknown): Promise<T> => {
+      const write = method !== "GET";
+      const result =
+        method === "POST" && !path.endsWith("/preview")
+          ? playerOperation<T>(
+              shopApi(shopCode, `staff/${path}`),
+              (body ?? {}) as Record<string, unknown>,
+            )
+          : api<T>(shopApi(shopCode, `staff/${path}`), {
+              method,
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+            });
+      // A write invalidates every cached read for this merchant session; the
+      // pages reload what they need right after a successful mutation.
+      return write ? result.finally(() => resourceCache.clear()) : result;
+    },
     [shopCode],
   );
 }
+
+/**
+ * Reads are cached per shop and path so switching tabs shows the last known
+ * data instead of blanking the panel behind a "loading" line while the request
+ * runs. Every mount still refetches, so the cache only removes the flash.
+ */
+const resourceCache = new Map<string, unknown>();
+
 export function useResource<T>(path: string | null) {
   const request = useStaffApi();
-  const [data, setData] = useState<T | null>(null);
+  const { shopCode } = useMerchant();
+  const key = path === null ? null : `${shopCode}:${path}`;
+  const [data, setData] = useState<T | null>(() =>
+    key ? ((resourceCache.get(key) as T | undefined) ?? null) : null,
+  );
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const reload = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
     let current = true;
     setError("");
-    if (path === null) { setData(null); return; }
+    if (path === null || key === null) {
+      setData(null);
+      return;
+    }
+    const cached = resourceCache.get(key) as T | undefined;
+    if (cached !== undefined) setData(cached);
     request<T>(path)
       .then((result) => {
+        resourceCache.set(key, result);
         if (current) setData(result);
       })
       .catch((error) => {
@@ -75,7 +102,9 @@ export function useResource<T>(path: string | null) {
     return () => {
       current = false;
     };
-  }, [request, path, revision]);
+    // `key` covers path and shop; depending on the request itself would refetch
+    // whenever the merchant context re-renders.
+  }, [request, path, key, revision]);
   return { data, error, reload };
 }
 export function Field({
@@ -115,11 +144,17 @@ export function Modal({
   children,
   close,
   dismissDisabled = false,
+  wide = false,
+  xl = false,
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
   dismissDisabled?: boolean;
+  /** Room for a multi-section form rather than a single short confirmation. */
+  wide?: boolean;
+  /** A two-column layout: side content plus the form it controls. */
+  xl?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
@@ -132,7 +167,7 @@ export function Modal({
     <dialog
       ref={ref}
       onCancel={event => { if (dismissDisabled) event.preventDefault(); else close(); }}
-      className="m-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35"
+      className={`m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35 ${xl ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-xl"}`}
       aria-label={t(title)}
     >
       <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-ink/10 bg-panel px-5 py-4">
@@ -156,11 +191,31 @@ export function ActionForm({
   submit,
   label = "保存",
   done,
+  onResult,
+  sticky = false,
+  noValidate = false,
 }: {
   children: ReactNode;
   submit: (form: FormData) => Promise<unknown>;
   label?: string;
   done: () => void;
+  /**
+   * Return `true` to keep the form open after a successful submit. Used where
+   * the response carries something that can only be shown once, such as a
+   * freshly minted device token.
+   */
+  onResult?: (result: unknown) => boolean;
+  /**
+   * Keep the submit button in view while the form is longer than the dialog.
+   * A long form whose only button sits past the fold looks unsaveable.
+   */
+  sticky?: boolean;
+  /**
+   * Let the caller validate instead of the browser. Required when part of the
+   * form lives in a collapsed container: the browser cannot focus a hidden
+   * field, so it would block submit with no visible message.
+   */
+  noValidate?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -168,12 +223,19 @@ export function ActionForm({
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    const form = new FormData(event.currentTarget);
+    // `new FormData(form)` drops the button that submitted the form, so a
+    // second submit button cannot tell the handler what it was asked to do.
+    // Passing the submitter keeps that intent in the payload.
+    const submitter =
+      event.nativeEvent instanceof SubmitEvent
+        ? event.nativeEvent.submitter
+        : null;
+    const form = new FormData(event.currentTarget, submitter);
     setBusy(true);
     setError("");
     try {
-      await submit(form);
-      done();
+      const result = await submit(form);
+      if (!onResult?.(result)) done();
     } catch (error) {
       setError(error instanceof Error ? error.message : t("操作失败"));
     } finally {
@@ -181,15 +243,30 @@ export function ActionForm({
     }
   }
   return (
-    <form onSubmit={save}>
+    <form onSubmit={save} noValidate={noValidate || undefined}>
       <fieldset disabled={busy} className="grid gap-4">
         {children}
-        {error && (
+        {!sticky && error && (
           <p role="alert" className="text-sm text-coral">
             {error}
           </p>
         )}
-        <button className={`${primary} justify-self-start`}>{t(busy ? "处理中…" : label)}</button>
+        <div
+          className={
+            sticky
+              ? "sticky bottom-0 -mx-5 -mb-5 mt-1 border-t border-ink/10 bg-panel px-5 py-4"
+              : undefined
+          }
+        >
+          {/* A sticky submit button stays visible past the fold; its error has
+              to travel with it, or the user presses Save and sees nothing. */}
+          {sticky && error && (
+            <p role="alert" className="mb-3 text-sm text-coral">
+              {error}
+            </p>
+          )}
+          <button className={`${primary} justify-self-start`}>{t(busy ? "处理中…" : label)}</button>
+        </div>
       </fieldset>
     </form>
   );

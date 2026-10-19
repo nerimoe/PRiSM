@@ -1,4 +1,5 @@
 import { api, ApiError } from "./api";
+import { convertPrismNeoSnapshot } from "./prism-neo-convert";
 
 type Row = Record<string, string | number | null>;
 type Header = Record<string, unknown>;
@@ -182,39 +183,98 @@ export async function readShopBackup(
   }
 }
 
-export async function uploadShopBackup(path: string, file: Blob, progress: (count: number) => void) {
-  let jobId = "",
-    tables: string[] = [],
-    part = 0,
+export type ShopBackupDigest = {
+  header: Header;
+  counts: Record<string, number>;
+  /** The whole backup, already parsed client-side; upload just re-streams it. */
+  file: Blob;
+};
+
+/**
+ * Phase one, entirely client-side: parse the whole backup before the first
+ * request. A structurally invalid file never creates a job and never sends a
+ * part, so a bad file cannot consume Worker requests or import quota.
+ */
+export async function verifyShopBackup(
+  file: Blob,
+  progress: (count: number) => void,
+): Promise<ShopBackupDigest> {
+  const counts: Record<string, number> = {};
+  let header: Header | undefined;
+  let total = 0;
+  await readShopBackup(file.stream(), {
+    async header(value) {
+      header = value;
+    },
+    async row(table) {
+      counts[table] = (counts[table] ?? 0) + 1;
+      total++;
+    },
+    async tableEnd(table) {
+      counts[table] = counts[table] ?? 0;
+    },
+  });
+  if (!header) throw invalid();
+  progress(total);
+  return { header, counts, file };
+}
+
+/**
+ * Phase two: create the job once and send its parts. The table keys are
+ * checked against the server contract before any part is sent, so a file the
+ * importer would reject is abandoned after one small request.
+ */
+export async function uploadShopBackup(
+  path: string,
+  digest: ShopBackupDigest,
+  progress: (count: number) => void,
+): Promise<{ jobId: string; counts: Record<string, number>; parts: number }> {
+  const job = await api<{ jobId: string; tables: string[] }>(`${path}/imports`, {
+    method: "POST",
+    body: JSON.stringify(digest.header),
+  });
+  const jobId = job.jobId;
+  const tables = job.tables;
+  const counts = { ...digest.counts };
+  // v2 business backups created before report archiving have no metadata table.
+  if (
+    digest.header.version === 2 &&
+    digest.header.scope === "business" &&
+    tables.includes("checkout_report_states") &&
+    !Object.hasOwn(counts, "checkout_report_states")
+  )
+    counts.checkout_report_states = 0;
+  if (Object.keys(counts).sort().join(",") !== [...tables].sort().join(",")) {
+    await api(`${path}/imports/${jobId}`, { method: "DELETE" }).catch(() => {});
+    throw invalid();
+  }
+  let part = 0,
     total = 0,
     activeTable = "",
     rows: Row[] = [],
-    bytes = 2,
-    legacyV2Business = false;
+    bytes = 2;
   const flush = async () => {
     if (!rows.length) return;
     const body = JSON.stringify({ table: activeTable, part, rows });
     // One unusually large row still fits D1's per-value limit; all ordinary parts are small.
     if (encoder.encode(body).length > 2 * 1024 * 1024) throw new Error("单条记录超过数据库可支持的大小");
-    await api(`${path}/imports/${jobId}/parts`, { method: "POST", body });
+    // Mobile networks occasionally mangle a request body; the server accepts
+    // an identical part replay for free, so retry once before giving up.
+    try {
+      await api(`${path}/imports/${jobId}/parts`, { method: "POST", body });
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 400) throw error;
+      await api(`${path}/imports/${jobId}/parts`, { method: "POST", body });
+    }
     part++;
     rows = [];
     bytes = 2;
     progress(total);
   };
   try {
-    const counts = await readShopBackup(file.stream(), {
-      async header(header) {
-        legacyV2Business = header.version === 2 && header.scope === "business";
-        const job = await api<{ jobId: string; tables: string[] }>(`${path}/imports`, {
-          method: "POST",
-          body: JSON.stringify(header),
-        });
-        jobId = job.jobId;
-        tables = job.tables;
-      },
+    await readShopBackup(digest.file.stream(), {
+      async header() {},
       async row(table, row) {
-        if (!tables.includes(table)) throw invalid();
         if (activeTable !== table) {
           await flush();
           activeTable = table;
@@ -225,24 +285,153 @@ export async function uploadShopBackup(path: string, file: Blob, progress: (coun
         bytes += size;
         total++;
       },
-      async tableEnd(table) {
-        if (!tables.includes(table)) throw invalid();
+      async tableEnd() {
         await flush();
       },
     });
-    if (legacyV2Business && tables.includes("checkout_report_states") &&
-        !Object.hasOwn(counts, "checkout_report_states")) counts.checkout_report_states = 0;
-    if (Object.keys(counts).sort().join(",") !== [...tables].sort().join(",")) throw invalid();
     return { jobId, counts, parts: part };
   } catch (error) {
-    if (jobId) await api(`${path}/imports/${jobId}`, { method: "DELETE" }).catch(() => {});
+    await api(`${path}/imports/${jobId}`, { method: "DELETE" }).catch(() => {});
     throw error;
   }
 }
 
+/**
+ * A prism-neo export is either the CLI's JSON snapshot or a pg_dump text file
+ * with COPY blocks. Both are parsed in the browser and converted into a PRiSM
+ * v3 backup Blob so the import stays on the staged, quota-counted path.
+ */
+export async function convertPrismNeoFile(file: File, timeZone: string): Promise<File> {
+  const text = await file.text();
+  // The picker does not restrict extensions (iOS hides .sql otherwise), so
+  // sniff the content: JSON snapshot or pg_dump COPY block, nothing else.
+  // CREATE TABLE preambles push the first COPY block well past 4 KB, so scan
+  // the first 512 KiB.
+  const trimmed = text.trimStart();
+  const looksLikeJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+  const looksLikeDump = /^COPY\s/m.test(text.slice(0, 512 * 1024));
+  if (!looksLikeJson && !looksLikeDump) {
+    throw new Error("数据损坏");
+  }
+  const snapshot = looksLikeJson ? JSON.parse(text) : snapshotFromPgDump(text);
+  const backup = convertPrismNeoSnapshot(snapshot, {
+    shopName: file.name.replace(/\.(sql|txt|json)$/i, ""),
+    timeZone,
+  });
+  // `counts` is a client-side summary; the wire header carries only schema keys.
+  const { counts, tables, ...header } = backup;
+  const json = JSON.stringify({ ...header, tables });
+  return new File([json], `prism-${backup.source.publicId}-${backup.exportedAt.slice(0, 10)}.json`, {
+    type: "application/json",
+  });
+}
+
+type CopyTables = Map<string, { columns: string[]; rows: string[][] }>;
+
+function snapshotFromPgDump(sql: string): Record<string, unknown> {
+  const tables: CopyTables = new Map();
+  const lines = sql.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const copy = parseCopyHeader(lines[index]!);
+    if (!copy) continue;
+    const rows: string[][] = [];
+    for (index += 1; index < lines.length; index += 1) {
+      const line = lines[index]!;
+      if (line === "\\.") break;
+      rows.push(line.split("\t"));
+    }
+    tables.set(copy.tableName, { columns: copy.columns, rows });
+  }
+  const read = (table: string): Record<string, unknown>[] =>
+    (tables.get(table)?.rows ?? []).filter((fields) => fields.length > 1 || fields[0] !== "").map((fields) => {
+      const columns = tables.get(table)!.columns;
+      if (fields.length !== columns.length) {
+        // The file is cut short mid-row; the snapshot cannot be complete.
+        throw new Error("数据损坏");
+      }
+      return Object.fromEntries(columns.map((column, index) => [column, decodeCopyField(fields[index]!)]));
+    });
+  return {
+    exportedAt: new Date().toISOString(),
+    users: read("User"),
+    binds: read("Bind"),
+    assetDefinitions: read("Asset"),
+    userAssets: read("UserAsset"),
+    userAssetLogs: read("UserAssetLog"),
+    sessions: read("Session"),
+    billingRules: read("BillingRule"),
+    billingRecords: read("BillingRecord"),
+    presents: read("Present"),
+    redeems: read("Redeem"),
+    redeemRecords: read("RedeemRecord"),
+    coinRecords: read("CoinRecord"),
+  };
+}
+
+function parseCopyHeader(line: string): { tableName: string; columns: string[] } | null {
+  const match = /^COPY (?:public\.)?"?([A-Za-z_][A-Za-z0-9_]*)"?\s*\((.*)\)\s*FROM stdin;\s*$/.exec(line);
+  if (!match) return null;
+  return { tableName: match[1]!, columns: splitIdentifierList(match[2]!) };
+}
+
+function splitIdentifierList(input: string): string[] {
+  const columns: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (const char of input) {
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (char === "," && !quoted) {
+      columns.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim()) columns.push(current.trim());
+  return columns;
+}
+
+function decodeCopyField(field: string): string | null {
+  if (field === "\\N") return null;
+  let decoded = "";
+  for (let index = 0; index < field.length; index += 1) {
+    const char = field[index]!;
+    if (char !== "\\") {
+      decoded += char;
+      continue;
+    }
+    const next = field[index + 1];
+    if (next === undefined) {
+      decoded += "\\";
+      continue;
+    }
+    index += 1;
+    if (next === "b") decoded += "\b";
+    else if (next === "f") decoded += "\f";
+    else if (next === "n") decoded += "\n";
+    else if (next === "r") decoded += "\r";
+    else if (next === "t") decoded += "\t";
+    else if (next >= "0" && next <= "7") {
+      let octal = next;
+      let endIndex = index;
+      for (let offset = 1; offset < 3; offset += 1) {
+        const digit = field[index + offset];
+        if (digit === undefined || digit < "0" || digit > "7") break;
+        octal += digit;
+        endIndex = index + offset;
+      }
+      decoded += String.fromCharCode(Number.parseInt(octal, 8));
+      index = endIndex;
+    } else decoded += next;
+  }
+  return decoded;
+}
+
 /** Each page request has bounded Worker memory and an independent subrequest budget. */
-const exportStorageKey = (path: string) => `prism.export:${path}`;
-export async function cancelShopExport(path: string, jobId: string) {
+const exportStorageKey = (path: string) => `prism.export:${path}`;export async function cancelShopExport(path: string, jobId: string) {
   try {
     await api(`${path}/exports/${encodeURIComponent(jobId)}`, { method: "DELETE", keepalive: true });
   } catch (error) {

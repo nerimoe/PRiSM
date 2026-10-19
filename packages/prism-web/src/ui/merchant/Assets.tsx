@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { displayDateTime } from "../bill-time";
+import { useScrollFade } from "../use-scroll-fade";
 import {
   AssetDetails,
   EffectDetails,
@@ -41,6 +42,7 @@ export function AssetsPage() {
   const presents = useResource<{ presents: Present[] }>("presents");
   const codes = useResource<{ redeemCodes: RedeemCode[] }>("redeem-codes");
   const [tab, setTab] = useState("assets");
+  const tabRef = useScrollFade<HTMLElement>();
   const [creatingAsset, setCreatingAsset] = useState(false);
   const [editing, setEditing] = useState<Asset | null>(null);
   const [effect, setEffect] = useState<Effect | null>(null);
@@ -66,9 +68,30 @@ export function AssetsPage() {
     presents.reload();
     codes.reload();
   };
+  const visibleAssets =
+    assets.data?.assetDefinitions.filter(
+      (a) => showArchived || a.status !== "archived",
+    ) ?? [];
+  const visibleEffects =
+    effects.data?.pricingEffects.filter(
+      (e) => showArchived || e.status !== "archived",
+    ) ?? [];
+  const visiblePresents =
+    presents.data?.presents.filter(
+      (p) => showArchived || p.status !== "archived",
+    ) ?? [];
+  const visibleCodes = codes.data?.redeemCodes ?? [];
+  const createLabel =
+    tab === "assets"
+      ? "新建资产"
+      : tab === "effects"
+        ? "新建优惠"
+        : tab === "gifts"
+          ? "新建礼物"
+          : "生成兑换码";
   return (
     <div className="grid gap-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="text-xl font-semibold">{t("资产与兑换")}</h2>
         {canWrite && (
           <button
@@ -102,50 +125,55 @@ export function AssetsPage() {
             }}
           >
             <Plus size={16} />
-            {t("添加")}
+            {t(createLabel)}
           </button>
         )}
-      </div>
-      <nav
-        className="flex gap-1 overflow-x-auto border-b border-ink/10"
-        aria-label={t("资产分类")}
-      >
-        {[
-          ["assets", "资产"],
-          ["effects", "优惠"],
-          ["gifts", "礼物"],
-          ["codes", "兑换码"],
-        ].map(([key, label]) => (
-          <button
-            key={key}
-            className={`focus-ring whitespace-nowrap border-b-2 px-4 py-3 text-sm ${tab === key ? "border-ink font-semibold" : "border-transparent text-ink/60"}`}
-            onClick={() => setTab(key!)}
-            aria-current={tab === key ? "page" : undefined}
+      </header>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="scroll-fade min-w-0 flex-1">
+          <nav
+            ref={tabRef}
+            className="flex gap-1 overflow-x-auto border-b border-ink/10"
+            aria-label={t("资产分类")}
           >
-            {t(label!)}
-          </button>
-        ))}
-      </nav>
-      {tab !== "codes" && (
-        <label className="flex gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
-          />
-          {t("显示已归档")}
-        </label>
-      )}
+            {[
+              ["assets", "资产"],
+              ["effects", "优惠"],
+              ["gifts", "礼物"],
+              ["codes", "兑换码"],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                className={`focus-ring whitespace-nowrap border-b-2 px-4 py-3 text-sm ${tab === key ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"}`}
+                onClick={() => setTab(key!)}
+                aria-current={tab === key ? "page" : undefined}
+              >
+                {t(label!)}
+              </button>
+            ))}
+          </nav>
+        </div>
+        {tab !== "codes" && (
+          <label className="flex shrink-0 items-center gap-2 pb-1 text-sm">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            />
+            {t("显示已归档")}
+          </label>
+        )}
+      </div>
       {tab === "assets" &&
         (!assets.data ? (
           <State error={assets.error} />
+        ) : !visibleAssets.length ? (
+          <Empty title="还没有资产" />
         ) : (
           <Table
             headers={["名称", "类型", "关联优惠", "有效期", "状态", "操作"]}
           >
-            {assets.data.assetDefinitions
-              .filter((a) => showArchived || a.status !== "archived")
-              .map((a) => (
+            {visibleAssets.map((a) => (
                 <tr key={`${a.type}:${a.code}`}>
                   <td className={cell}>
                     <p className="font-medium">{a.name}</p>
@@ -217,11 +245,11 @@ export function AssetsPage() {
       {tab === "effects" &&
         (!effects.data ? (
           <State error={effects.error} />
+        ) : !visibleEffects.length ? (
+          <Empty title="还没有优惠" />
         ) : (
           <Table headers={["名称", "优惠方式", "使用限制", "状态", "操作"]}>
-            {effects.data.pricingEffects
-              .filter((e) => showArchived || e.status !== "archived")
-              .map((e) => (
+            {visibleEffects.map((e) => (
                 <tr key={e.id}>
                   <td className={`${cell} font-medium`}>{e.name}</td>
                   <td className={cell}>
@@ -279,11 +307,11 @@ export function AssetsPage() {
       {tab === "gifts" &&
         (!presents.data ? (
           <State error={presents.error} />
+        ) : !visiblePresents.length ? (
+          <Empty title="还没有礼物" />
         ) : (
           <Table headers={["礼物", "内容", "领取限制", "状态", "操作"]}>
-            {presents.data.presents
-              .filter((p) => showArchived || p.status !== "archived")
-              .map((p) => (
+            {visiblePresents.map((p) => (
                 <tr key={p.id}>
                   <td className={`${cell} font-medium`}>{p.name}</td>
                   <td className={cell}>
@@ -331,9 +359,11 @@ export function AssetsPage() {
       {tab === "codes" &&
         (!codes.data ? (
           <State error={codes.error} />
+        ) : !visibleCodes.length ? (
+          <Empty title="还没有兑换码" />
         ) : (
           <Table headers={["兑换码", "礼物", "使用次数", "到期", "操作"]}>
-            {codes.data.redeemCodes.map((c) => (
+            {visibleCodes.map((c) => (
               <tr key={c.id}>
                 <td className={cell}>
                   <code className="select-all">{c.code}</code>
@@ -422,7 +452,11 @@ export function AssetsPage() {
         </Modal>
       )}
       {editing && (
-        <Modal title="资产" close={() => setEditing(null)}>
+        <Modal
+          title={creatingAsset ? "新建资产" : "编辑资产"}
+          close={() => setEditing(null)}
+          wide
+        >
           <ActionForm
             done={() => {
               setEditing(null);
@@ -448,76 +482,94 @@ export function AssetsPage() {
               );
             }}
           >
-            <Field label="名称">
-              <input
-                className={input}
-                name="name"
-                required
-                defaultValue={editing.name}
-              />
-            </Field>
-            {creatingAsset && (
-              <>
-                <Field label="类型">
-                  <select
-                    className={input}
-                    value={editing.type}
-                    onChange={(e) =>
-                      setEditing({
-                        ...editing,
-                        type: e.target.value,
-                        code:
-                          e.target.value === "currency"
-                            ? "paid"
-                            : crypto.randomUUID(),
-                      })
-                    }
-                  >
-                    <option value="currency">{t("余额")}</option>
-                    <option value="coupon">{t("权益")}</option>
-                  </select>
-                </Field>
-                <Field label="资产编号">
-                  <input
-                    className={input}
-                    required
-                    value={editing.code}
-                    onChange={(e) =>
-                      setEditing({ ...editing, code: e.target.value })
-                    }
-                  />
-                </Field>
-              </>
-            )}
-            <Field label="优惠">
-              <select
-                className={input}
-                name="effect"
-                defaultValue={editing.pricingEffectId ?? ""}
-              >
-                <option value="">{t("无")}</option>
-                {effects.data?.pricingEffects
-                  .filter(
-                    (e) =>
-                      e.status !== "archived" ||
-                      e.id === editing.pricingEffectId,
-                  )
-                  .map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                      {e.status === "archived" ? ` · ${t("已归档")}` : ""}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <label className="flex gap-2 text-sm">
-              <input
-                name="stackable"
-                type="checkbox"
-                defaultChecked={editing.stackable}
-              />
-              {t("数量可叠加")}
-            </label>
+            <section className="grid gap-3">
+              <h3 className="text-sm font-semibold">{t("基本信息")}</h3>
+              <Field label="名称">
+                <input
+                  className={input}
+                  name="name"
+                  required
+                  defaultValue={editing.name}
+                />
+              </Field>
+              {creatingAsset && (
+                <fieldset className="grid gap-2">
+                  <legend className="mb-1 text-sm font-medium">{t("类型")}</legend>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(
+                      [
+                        ["currency", "余额", "玩家充值得到的钱，结账时扣除"],
+                        ["coupon", "权益", "券或次数，按用途发放"],
+                      ] as const
+                    ).map(([value, label, hint]) => (
+                      <label
+                        key={value}
+                        className={`flex cursor-pointer gap-2 rounded-lg border p-3 text-sm ${
+                          editing.type === value
+                            ? "border-mint/50 bg-mint/[0.04]"
+                            : "border-ink/15"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="assetType"
+                          className="mt-0.5"
+                          checked={editing.type === value}
+                          onChange={() =>
+                            setEditing({
+                              ...editing,
+                              type: value,
+                              code:
+                                value === "currency"
+                                  ? "paid"
+                                  : crypto.randomUUID(),
+                            })
+                          }
+                        />
+                        <span className="min-w-0">
+                          <strong className="block font-medium">{t(label)}</strong>
+                          <span className="mt-0.5 block text-xs text-ink/55">
+                            {t(hint)}
+                          </span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+            </section>
+            <section className="grid gap-3">
+              <h3 className="text-sm font-semibold">{t("计价与叠加")}</h3>
+              <Field label="优惠">
+                <select
+                  className={input}
+                  name="effect"
+                  defaultValue={editing.pricingEffectId ?? ""}
+                >
+                  <option value="">{t("无")}</option>
+                  {effects.data?.pricingEffects
+                    .filter(
+                      (e) =>
+                        e.status !== "archived" ||
+                        e.id === editing.pricingEffectId,
+                    )
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.name}
+                        {e.status === "archived" ? ` · ${t("已归档")}` : ""}
+                      </option>
+                    ))}
+                </select>
+              </Field>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  name="stackable"
+                  type="checkbox"
+                  defaultChecked={editing.stackable}
+                />
+                {t("数量可叠加（同一玩家可以持有多份）")}
+              </label>
+            </section>
           </ActionForm>
         </Modal>
       )}
@@ -709,6 +761,15 @@ export function AssetsPage() {
     </div>
   );
 }
+function Empty({ title }: { title: string }) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-xl border border-dashed border-ink/20 px-6 py-14 text-center">
+      <p className="font-medium">{t(title)}</p>
+    </div>
+  );
+}
+
 function GiftForm({ assets, done }: { assets: Asset[]; done: () => void }) {
   const { t } = useI18n();
   const request = useStaffApi();

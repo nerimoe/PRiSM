@@ -5,7 +5,10 @@ import {
   cancelShopExport,
   recoverInterruptedShopExport,
   uploadShopBackup,
+  verifyShopBackup,
+  convertPrismNeoFile,
   type ExportInfo,
+  type ShopBackupDigest,
 } from "../../shop-data-transfer";
 import { useI18n } from "../../i18n";
 import { button, primary, input, Field, Modal, useMerchant } from "./shared";
@@ -54,28 +57,35 @@ const labels: Record<string, string> = {
   shop_billing_settings: "计费设置",
   api_tokens: "接入凭据",
   machines: "设备",
+  device_capabilities: "设备能力与连接",
   mahjong_seats: "麻将座位",
+  device_operations: "设备操作记录",
+  device_events: "设备事件",
+  device_state: "设备状态",
+  // Tables of v2 backups, converted on import.
   device_commands: "设备操作记录",
   device_states: "设备状态记录",
   machine_connections: "设备连接记录",
   account_links: "账号关联",
 };
 export function ShopDataTransfer() {
-  const { shopCode } = useMerchant();
+  const { shopCode, timeZone } = useMerchant();
   const { t, errorText } = useI18n();
   const [scope, setScope] = useState<"business" | "configuration">("business");
+  const [importSource, setImportSource] = useState<"prism" | "prism-neo">("prism");
   const [file, setFile] = useState<File>();
   const [jobId, setJobId] = useState("");
   const stagedImport = useRef<Awaited<
     ReturnType<typeof uploadShopBackup>
   > | null>(null);
+  const [pending, setPending] = useState<ShopBackupDigest | null>(null);
   const [overwriteConfirmed, setOverwriteConfirmed] = useState(false);
   const [progress, setProgress] = useState<number>();
   const [exported, setExported] = useState<ExportInfo>();
   const [exporting, setExporting] = useState(false);
   const exportController = useRef<AbortController | null>(null);
   const [filename, setFilename] = useState("");
-  const [preview, setPreview] = useState<Preview>();
+  const [serverErrors, setServerErrors] = useState<string[]>([]);
   const [operationId, setOperationId] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
@@ -210,56 +220,68 @@ export function ShopDataTransfer() {
     setFile(selected);
     setJobId("");
     stagedImport.current = null;
+    setPending(null);
     setOverwriteConfirmed(false);
-    setPreview(undefined);
+    setServerErrors([]);
     setFilename(selected?.name ?? "");
     setError("");
     setSuccess(false);
     setOperationId(crypto.randomUUID());
   }
-  async function preflight() {
+  /** 浏览器内校验整份文件；通过后弹出确认，取消不会发出任何请求。 */
+  async function startImport() {
     setBusy(true);
     setError("");
-    setPreview(undefined);
+    setServerErrors([]);
     try {
       if (!file) return;
-      setProgress(0);
-      const upload =
-        stagedImport.current ??
-        (await uploadShopBackup(path, file, setProgress));
-      stagedImport.current = upload;
-      setOverwriteConfirmed(false);
-      setJobId(upload.jobId);
-      setPreview(
-        await api<Preview>(`${path}/imports/${upload.jobId}/preview`, {
-          method: "POST",
-          body: JSON.stringify({ counts: upload.counts, parts: upload.parts }),
-        }),
-      );
-    } catch (value) {
-      if (value instanceof ApiError && value.code === "TRANSFER_NOT_FOUND") {
-        stagedImport.current = null;
-        setJobId("");
+      if (!pending) {
+        setProgress(0);
+        const digest = await verifyShopBackup(
+          importSource === "prism-neo"
+            ? await convertPrismNeoFile(file, timeZone)
+            : file,
+          setProgress,
+        );
+        setPending(digest);
       }
+      setOverwriteConfirmed(false);
+      setConfirm(true);
+    } catch (value) {
       failed(value);
     } finally {
       setBusy(false);
       setProgress(undefined);
-      await loadAllowance().catch(failed);
     }
   }
+  /** 用户确认后才上传；服务端检查通过即导入，失败时保留已上传任务供重试。 */
   async function apply() {
-    if (
-      !preview?.canImport ||
-      (preview.scope === "business" &&
-        (preview.target?.records ?? 0) > 0 &&
-        !overwriteConfirmed)
-    )
-      return;
+    if (!pending) return;
+    const scope = pending.header.scope as "business" | "configuration";
+    if (scope === "business" && !overwriteConfirmed) return;
     setBusy(true);
     setError("");
+    setServerErrors([]);
     try {
-      await api(`${path}/imports/${jobId}/apply`, {
+      setProgress(0);
+      const upload =
+        stagedImport.current ??
+        (await uploadShopBackup(path, pending, setProgress));
+      stagedImport.current = upload;
+      setJobId(upload.jobId);
+      const preview = await api<Preview>(
+        `${path}/imports/${upload.jobId}/preview`,
+        {
+          method: "POST",
+          body: JSON.stringify({ counts: upload.counts, parts: upload.parts }),
+        },
+      );
+      if (!preview.canImport) {
+        setConfirm(false);
+        setServerErrors(preview.errors);
+        return;
+      }
+      await api(`${path}/imports/${upload.jobId}/apply`, {
         method: "POST",
         body: JSON.stringify({
           fingerprint: preview.fingerprint,
@@ -271,19 +293,19 @@ export function ShopDataTransfer() {
       setSuccess(true);
       setFile(undefined);
       stagedImport.current = null;
-      setPreview(undefined);
+      setPending(null);
       window.dispatchEvent(new Event("prism-shop-settings"));
     } catch (value) {
       setConfirm(false);
-      if (
-        value instanceof ApiError &&
-        ["IMPORT_TARGET_CHANGED", "IMPORT_NOT_READY"].includes(value.code ?? "")
-      )
-        setPreview(undefined);
+      if (value instanceof ApiError && value.code === "TRANSFER_NOT_FOUND") {
+        stagedImport.current = null;
+        setJobId("");
+      }
       failed(value);
     } finally {
       setBusy(false);
       setProgress(undefined);
+      await loadAllowance().catch(failed);
     }
   }
   return (
@@ -416,7 +438,7 @@ export function ShopDataTransfer() {
         )}
         <p className="text-sm leading-relaxed text-ink/60">
           {t(
-            "先预检再确认。业务备份覆盖现有数据；仅配置备份保留玩家和账单。目标店铺编号和当前管理员保留。",
+            "业务备份覆盖现有数据；仅配置备份保留玩家和账单。目标店铺编号和当前管理员保留。",
           )}
         </p>
         <p className="text-sm leading-relaxed text-ink/60">
@@ -424,17 +446,44 @@ export function ShopDataTransfer() {
             "备份包含设备连接密钥、玩家身份和财务数据，请妥善保管。跨环境账号通过已验证的登录身份恢复关联，不复制 Passkey、OAuth 密钥或登录会话。",
           )}
         </p>
-        <Field label="JSON 备份文件">
+        <Field label={t("备份来源")}>
+          <select
+            className={input}
+            value={importSource}
+            disabled={busy}
+            onChange={(event) => {
+              setImportSource(event.target.value as typeof importSource);
+              setFile(undefined);
+              setJobId("");
+              stagedImport.current = null;
+              setPending(null);
+              setServerErrors([]);
+              setFilename("");
+              setError("");
+              setSuccess(false);
+            }}
+          >
+            <option value="prism">{t("PRiSM 备份（v1／v2／v3 JSON）")}</option>
+            <option value="prism-neo">{t("prism-neo 导出（pg_dump 文本或 JSON 快照）")}</option>
+          </select>
+        </Field>
+        <Field label={importSource === "prism-neo" ? "备份文件（.sql 或 .json）" : "JSON 备份文件"}>
           <input
             className={input}
             type="file"
-            accept=".json,application/json"
+            // iOS filters unknown extensions like .sql out of the picker even
+            // with an explicit text/plain accept; only restrict PRiSM JSON.
+            accept={importSource === "prism-neo" ? undefined : ".json,application/json"}
             disabled={busy}
             onChange={selectFile}
           />
         </Field>
         <p className="text-xs text-ink/60">
-          {t("支持 PRiSM v1／v2 JSON 备份，分片传输，无 10 MiB 文件大小限制。")}
+          {t(
+            importSource === "prism-neo"
+              ? "支持 prism-neo 的 pg_dump 备份（.sql）或 CLI 导出的 JSON 快照，上传前在浏览器转换为 PRiSM 备份；旧计费规则将以停用状态导入，请先在计费设置中核对时区再启用。"
+              : "支持 PRiSM v1／v2 JSON 备份，分片传输，无 10 MiB 文件大小限制。",
+          )}
         </p>
         <button
           className={`${button} justify-self-start`}
@@ -446,66 +495,14 @@ export function ShopDataTransfer() {
             (allowance.importRemaining === 0 && !jobId) ||
             allowance.locked
           }
-          onClick={preflight}
+          onClick={startImport}
         >
-          {t(busy ? "处理中…" : "预检导入")}
+          {t(busy ? "处理中…" : "开始导入")}
         </button>
-        {preview && (
-          <div className="grid gap-3 rounded-lg border border-ink/10 p-4">
-            <p className="font-medium">
-              {t("来源店铺")}: {preview.source.name} · {preview.source.publicId}
-            </p>
-            {preview.source.origin && (
-              <p className="break-all text-xs text-ink/60">
-                {t("来源环境")}: {preview.source.origin}
-              </p>
-            )}
-            <p className="break-all text-xs text-ink/60">{filename}</p>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
-              {Object.entries(preview.counts)
-                .filter(([, count]) => count > 0)
-                .map(([table, count]) => (
-                  <div key={table} className="flex justify-between gap-2">
-                    <dt>{t(labels[table] ?? table)}</dt>
-                    <dd className="tabular-nums">{count}</dd>
-                  </div>
-                ))}
-            </dl>
-            {preview.errors.length > 0 && (
-              <ul
-                role="alert"
-                className="list-disc space-y-1 pl-5 text-sm text-rose-600"
-              >
-                {preview.errors.map((message, index) => (
-                  <li key={index}>{t(message)}</li>
-                ))}
-              </ul>
-            )}
-            <p role="status" className="text-sm">
-              {t(
-                preview.canImport
-                  ? "预检通过，可以确认导入。"
-                  : "预检未通过，请处理上述问题后重试。",
-              )}
-            </p>
-            {preview.canImport && (
-              <button
-                className={`${primary} justify-self-start`}
-                disabled={busy}
-                onClick={() => {
-                  setOverwriteConfirmed(false);
-                  setConfirm(true);
-                }}
-              >
-                {t("确认导入")}
-              </button>
-            )}
-          </div>
-        )}
       </section>
       {!exporting && progress !== undefined && (
         <p role="status" className="text-sm text-ink/60">
-          {t("已传输记录")}: {progress}
+          {t("已处理记录")}: {progress}
         </p>
       )}
       {error && (
@@ -513,40 +510,57 @@ export function ShopDataTransfer() {
           {error}
         </p>
       )}
+      {serverErrors.length > 0 && (
+        <ul
+          role="alert"
+          className="list-disc space-y-1 pl-5 text-sm text-rose-600"
+        >
+          {serverErrors.map((message, index) => (
+            <li key={index}>{t(message)}</li>
+          ))}
+        </ul>
+      )}
       {success && (
         <p role="status" className="text-sm text-mint">
           {t("导入完成，请核对玩家、余额、账单及设备设置后再营业。")}
         </p>
       )}
-      {confirm && preview && (
-        <Modal
-          title="确认导入店铺数据"
-          close={() => setConfirm(false)}
-          dismissDisabled={busy}
-        >
-          <div className="grid gap-4 p-5">
-            <p>
-              {t(
-                preview.scope === "business"
-                  ? "业务备份将覆盖目标店铺现有数据，而不是追加。"
-                  : "将覆盖同编号配置并补充新配置，保留玩家和账单。",
-              )}
-            </p>
-            {!!preview.target?.records && (
+      {confirm && pending && (() => {
+        const scope = pending.header.scope as "business" | "configuration";
+        const source = (pending.header.source ?? {}) as {
+          name?: string;
+          publicId?: string;
+        };
+        return (
+          <Modal
+            title="确认导入店铺数据"
+            close={() => setConfirm(false)}
+            dismissDisabled={busy}
+          >
+            <div className="grid gap-4 p-5">
               <p>
-                {t("目标店铺现有记录")}: {preview.target.records}
+                {t(
+                  scope === "business"
+                    ? "业务备份将覆盖目标店铺现有数据，而不是追加。"
+                    : "将覆盖同编号配置并补充新配置，保留玩家和账单。",
+                )}
               </p>
-            )}
-            <p className="font-medium">
-              {preview.source.name} · {preview.source.publicId}
-            </p>
-            <ul className="list-disc space-y-2 pl-5 text-sm text-ink/60">
-              {preview.warnings.map((message) => (
-                <li key={message}>{t(message)}</li>
-              ))}
-            </ul>
-            {preview.scope === "business" &&
-              (preview.target?.records ?? 0) > 0 && (
+              <p className="font-medium">
+                {source.name ?? "prism-neo"}
+                {source.publicId ? ` · ${source.publicId}` : ""}
+              </p>
+              <p className="break-all text-xs text-ink/60">{filename}</p>
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm sm:grid-cols-3">
+                {Object.entries(pending.counts)
+                  .filter(([, count]) => count > 0)
+                  .map(([table, count]) => (
+                    <div key={table} className="flex justify-between gap-2">
+                      <dt>{t(labels[table] ?? table)}</dt>
+                      <dd className="tabular-nums">{count}</dd>
+                    </div>
+                  ))}
+              </dl>
+              {scope === "business" && (
                 <label className="flex items-start gap-2 text-sm text-rose-600">
                   <input
                     type="checkbox"
@@ -559,21 +573,19 @@ export function ShopDataTransfer() {
                   {t("我确认覆盖目标店铺现有数据，并已保留所需备份")}
                 </label>
               )}
-            <button
-              className={primary}
-              disabled={
-                busy ||
-                (preview.scope === "business" &&
-                  (preview.target?.records ?? 0) > 0 &&
-                  !overwriteConfirmed)
-              }
-              onClick={apply}
-            >
-              {t(busy ? "处理中…" : "开始导入")}
-            </button>
-          </div>
-        </Modal>
-      )}
+              <button
+                className={primary}
+                disabled={
+                  busy || (scope === "business" && !overwriteConfirmed)
+                }
+                onClick={apply}
+              >
+                {t(busy ? "正在导入…" : "确认导入")}
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }
