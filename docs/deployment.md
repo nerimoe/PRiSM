@@ -134,7 +134,7 @@ bun run deploy:beta
 
 构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，注入根 SemVer 和 Git 提交号。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
 
-`wrangler.jsonc` 把 Worker 固定放在东京（`placement.region: "aws:ap-northeast-1"`），也就是 D1（APAC）附近，而不是访客最近的边缘节点。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到东京执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
+`wrangler.jsonc` 把 Worker 固定放在台湾（`placement.region: "gcp:asia-east1"`），而不是访客最近的边缘节点。选它是因为要离中国比东京更近，并且这个值是 Cloudflare 文档里明确给出的示例；香港等区域的标识文档没有列出，没有使用。之前固定在东京（`aws:ap-northeast-1`，D1 的 APAC 附近），代价是东京不是离中国最近的位置；改到台湾后 Worker 和 D1 之间多了一段距离，每次查询的往返可能变长，部署后请用响应头 `cf-placement` 和 `x-response-time` 对比，必要时再调整。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到所选区域执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
 
 ### 自动维护部署
 
