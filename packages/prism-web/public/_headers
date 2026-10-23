@@ -1,2 +1,8 @@
 /*
   Referrer-Policy: no-referrer
+
+# Vite puts a content hash in every file name under /assets, so a given URL never changes its content.
+# Without this the default is `max-age=0, must-revalidate`, and a returning visitor spends a round trip
+# to the edge on every file just to be told "not modified".
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

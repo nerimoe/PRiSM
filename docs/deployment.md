@@ -136,6 +136,8 @@ bun run deploy:beta
 
 `wrangler.jsonc` 把 Worker 固定放在东京（`placement.region: "aws:ap-northeast-1"`），也就是 D1（APAC）附近，而不是访客最近的边缘节点。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到东京执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
 
+`packages/prism-web/public/_headers` 让 `/assets/*` 返回 `Cache-Control: public, max-age=31536000, immutable`。Vite 给这个目录下的每个文件名都加了内容哈希，同一个地址的内容永远不变；不设置时 Workers 静态资源的默认值是 `max-age=0, must-revalidate`，回访用户每打开一次页面，每个文件都要先向边缘发一次确认请求（返回 304），文件越多、访客离边缘越远，浪费的往返越多。首页和前端路由（`/`、`/merchant/…`）以及没有哈希的文件（`/munet-logo.png`）保持原来的每次确认，这样新部署的首页能立刻生效。一个副作用：请求一个不存在的哈希文件时，SPA 回退返回的是首页 HTML，也会带上这个头，浏览器会把它按该地址缓存一年。旧哈希不会再出现，所以平时无害；但如果回滚到旧构建、同一个哈希重新出现，缓存过回退页面的浏览器会继续读到错的内容，需要清缓存。这也是回滚不能只回滚 Worker、要连同前端产物一起处理的又一个原因。
+
 ### 自动维护部署
 
 脚本先编译三个部署阶段，再开始改变线上服务；也可在生成生产平台配置后运行 `bun run scripts/deploy-platform.ts --dry-run`，仅编译三个阶段，不请求线上接口或执行迁移。
