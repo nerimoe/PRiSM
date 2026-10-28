@@ -562,11 +562,17 @@ export class ShopHub extends BaseDurableObject<Env> {
   private async addCandidate(candidate: Candidate): Promise<void> {
     const candidates = await this.load<Candidates>("candidates", {});
     const key = candidate.machineId;
-    candidates[key] = { ...candidate, since: candidates[key]?.since ?? candidate.since };
+    const known = candidates[key];
+    candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
     await this.ctx.storage.put("candidates", candidates);
-    // A reconnecting client lost its assignment with the old connection.
+    // A reconnecting client lost its assignment with the old connection, so its
+    // watch has to be handed out again. One that is already here on the same
+    // connection has not lost anything, and taking its watch away would cost a
+    // fresh subscription for no reason.
     const watchers = await this.load<Watchers>("watchers", {});
-    if (watchers[key]) {
+    const watcher = watchers[key];
+    if (watcher && known && watcher.channel === candidate.channel) return;
+    if (watcher) {
       delete watchers[key];
       await this.ctx.storage.put("watchers", watchers);
     }

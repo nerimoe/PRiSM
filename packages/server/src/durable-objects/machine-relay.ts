@@ -393,9 +393,10 @@ export class MachineRelay extends BaseDurableObject<Env> {
     if (heartbeat) {
       const channel = await this.channel();
       if (channel?.channel && heartbeat.ha.length) {
-        await shopHub(this.env, channel.shopId)
-          ?.relayOnline(channel.shopId, channel.machineId, channel.channel)
-          .catch((error) => console.error("Shop hub relayOnline failed", error));
+        // A beat says the client is alive; it does not say the client is new. The
+        // candidate was registered when the socket said hello, and calling that
+        // again here would drop the assignment it already holds and rebuild it
+        // under a new term — a fresh subscription every beat.
         for (const health of heartbeat.ha) {
           await shopHub(this.env, channel.shopId)
             ?.haReport(channel.shopId, channel.machineId, { method: "ha.status", params: health })
