@@ -100,8 +100,12 @@ type Watcher = {
    * Its assignment is untouched — no `HA_UNWATCH`, no closed socket, no new
    * term — but until a report arrives that could only have come after the
    * power-off, what it says is not treated as evidence of the present.
+   *
+   * The value is the number of the report that placed the hold. Anything at or
+   * before that number — including the rest of the very report that revealed the
+   * power-off — cannot lift it; only a later report can.
    */
-  held?: boolean;
+  held?: number;
 };
 type Watchers = Record<string, Watcher>;
 type Candidates = Record<string, Candidate>;
@@ -712,7 +716,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.ctx.storage.put("observations", observations);
     // Its assignment stays exactly as it is; only its word stops being taken for
     // the present until it reports again, which a dead IO cannot do.
-    watchers[machineId] = { ...watcher, held: true };
+    watchers[machineId] = { ...watcher, held: Date.now() };
     await this.ctx.storage.put("watchers", watchers);
     await this.publish(watchers);
     await this.fill();
@@ -877,22 +881,34 @@ export class ShopHub extends BaseDurableObject<Env> {
    */
   private reports: Promise<unknown> = Promise.resolve();
 
+
   async haReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
-    const turn = this.reports.then(() => this.takeReport(shopId, machineId, report));
+    // When the report reached the hub, before it queued behind others: a hold
+    // placed after this moment cannot be lifted by this report.
+    // When it was handed to us, not when it got its turn: a hold placed while
+    // this report waits its turn belongs after it, and must not be lifted by it.
+    const arrivedAt = Date.now();
+    const turn = this.reports.then(() => this.takeReport(shopId, machineId, report, arrivedAt));
     this.reports = turn.catch(() => undefined);
     return turn;
   }
 
-  private async takeReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
+  private async takeReport(shopId: string, machineId: string, report: HaReport, arrivedAt: number): Promise<void> {
     await this.rememberShop(shopId);
     const current = (await this.load<Watchers>("watchers", {}))[machineId];
     // An earlier assignment, or a client that is not a watcher: not ours to trust.
     if (!current || current.term !== report.params.term) return;
     const { term } = current;
     const connection = report.params.connection;
-    // Held before this report arrived: whatever it carries is proof the IO is
-    // still there, because a machine that lost power cannot send it.
-    const wasHeld = !!current.held;
+    // Held before this report started arriving. The rest of the batch that
+    // revealed the power-off is not evidence: it was written before the hold.
+    // A beat is the IO speaking for itself: it is sent on its own schedule, so one
+    // arriving while held can only have been sent after the power-off. A state
+    // report cannot say that — the one that revealed the power-off is itself a
+    // state report, and would vouch for itself.
+    const wasHeld = current.held !== undefined
+      && report.method === "ha.status"
+      && report.params.connected;
 
     if (report.method === "ha.states") {
       // The facts are stored before the connection can be announced as watched.

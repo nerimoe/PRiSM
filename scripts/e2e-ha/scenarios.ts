@@ -499,27 +499,32 @@ scenarios.handover = async () => {
 };
 
 scenarios.poweroff = async () => {
-  section("10 平台把机台断电：这台 IO 的监听立刻让出，不等租约");
+  section("10 平台把机台断电：连接暂时非实时，但订阅保留，IO 一说它还在就回来");
   const board = new Board();
   await board.opened;
   check("只有机台A 的 IO 在线 → 实时", !!(await goLive(board, ioA)));
   let m = board.mark();
   let at = Date.now();
+  const assignmentsBefore = (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length;
   const off = await act("a", "power.off");
   check("平台 power.off 成功", off.status === 200, off);
   const down = await board.wait(watchingFrame(A, false), m, 8000);
   check("唯一的监听器被断电：立刻变成非实时", !!down);
-  if (down) info(`power.off → 看板收到非实时帧 ${down.at - at} ms（租约要 ${LEASE_MS / 1000}s）`);
+  if (down) info(`power.off → 看板收到非实时帧 ${down.at - at} ms`);
   check("D1 的实时连接被撤销", liveConnections().length === 0, liveConnections());
-  check("断电的 IO 进程虽然还连着，也不再监听（日志里没有被重新分配）", ioA.alive);
-  m = board.mark();
-  await haCall("switch", "turn_on", { entity_id: "switch.decorative_lights" });
-  check("之后 HA 的变化不推送", await board.quiet(aboutDevice(A), m, 3000));
-  check("断电的 IO 不会被立刻重新选中", liveConnections().length === 0, liveConnections());
+  // The whole point of the change: nothing was taken away from the IO.
+  check("订阅没有被撤掉：IO 既没收到 HA_UNWATCH，也没被重新下发", (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length === assignmentsBefore);
+  // It keeps reporting, so it proves it did not die with the machine and is taken at its word again.
+  const back = await board.wait(watchingFrame(A, true), board.mark(), 90_000);
+  check("IO 继续上报后自动回到实时", !!back);
+  if (back) info(`回到实时用了 ${back.at - at} ms`);
+  check("回来之后订阅仍然是原来那一次", (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length === assignmentsBefore);
 
   m = board.mark();
   await ioA.kill();
   at = Date.now();
+  // The machine is switched back on before its IO starts again.
+  await haCall("switch", "turn_on", { entity_id: "switch.decorative_lights" });
   check("机台重新上电（IO 重新启动并连接）→ 又变成实时", !!(await goLive(board, ioA)));
   check("重新实时后快照是当前值", board.seen(A).power === "on", board.seen(A));
 
@@ -529,7 +534,7 @@ scenarios.poweroff = async () => {
   await Bun.sleep(2000);
   m = board.mark();
   await act("a", "power.off");
-  check("A 被断电：连接仍然实时（B 在监听）", await board.quiet(watchingFrame(A, false), m, 3500));
+  check("A 被断电：B 还在听同一条连接，所以仍然实时", await board.quiet(watchingFrame(A, false), m, 3500));
   m = board.mark();
   await haCall("switch", "turn_on", { entity_id: "switch.ac" });
   check("B 继续推送", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m)));
@@ -537,8 +542,13 @@ scenarios.poweroff = async () => {
   at = Date.now();
   await act("b", "power.off");
   const both = await board.wait(watchingFrame(A, false), m, 8000);
-  check("再断 B 的电：立刻变成非实时", !!both);
+  check("两台都断电：短暂变成非实时", !!both);
   if (both) info(`power.off → 看板收到非实时帧 ${both.at - at} ms`);
+  // Both IO processes are still running here, so both go on reporting and are
+  // taken at their word again — which is the design: an IO that keeps talking is
+  // an IO that is still there, whatever happened to its machine.
+  const recovered = await board.wait(watchingFrame(A, true), board.mark(), 90_000);
+  check("两个 IO 都还在上报 → 又回到实时", !!recovered);
   board.close();
 };
 
