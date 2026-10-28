@@ -683,8 +683,17 @@ export class ShopHub extends BaseDurableObject<Env> {
 
     const observations = await this.load<Observations>("observations", {});
     const open = observations[machineId];
-    // Absent, or still running: this power-off is already being watched.
-    if (open && open.result === undefined) {
+    // The same power-off, arriving a second time: the platform's command and Home
+    // Assistant's report of it are one event, and counting them twice would make
+    // one power-off look like two failures.
+    //
+    // "The same" means the same assignment — a watcher that has been given a new
+    // term since is on a new run, and its machine going off again is a new
+    // power-off even if the last one never settled. Without that check a machine
+    // switched off twice in three minutes would have its second power-off
+    // ignored, and its watch would never be held back.
+    const sameRun = !!open && open.result === undefined && open.term === watcher.term;
+    if (sameRun) {
       // The second arrival of the same power-off only adds what it knows.
       if (options.confirmed && !open.confirmed) {
         observations[machineId] = { ...open, confirmed: true };
@@ -881,6 +890,9 @@ export class ShopHub extends BaseDurableObject<Env> {
     if (!current || current.term !== report.params.term) return;
     const { term } = current;
     const connection = report.params.connection;
+    // Held before this report arrived: whatever it carries is proof the IO is
+    // still there, because a machine that lost power cannot send it.
+    const wasHeld = !!current.held;
 
     if (report.method === "ha.states") {
       // The facts are stored before the connection can be announced as watched.
@@ -908,15 +920,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     const watcher = watchers[machineId];
     if (!watcher || watcher.term !== term) return;
     watcher.leaseUntil = Date.now() + LEASE_MS;
-    // A report that arrived while the machine is dark, on the assignment the IO
-    // already had, is the IO showing it is still there: it is taken at its word
-    // again. The report that announced the power-off cannot vouch for itself.
-    // `ha.states` marks the watcher held and then returns here, so an `ha.status`
-    // beat — which is the IO speaking after the fact — is what lifts it.
-    // A connected status beat is the IO speaking on its own account, which is
-    // what lifts the hold. A state report cannot lift it: the one that announces
-    // the power-off is itself a state report, and would vouch for itself.
-    if (report.method === "ha.status" && report.params.connected) delete watcher.held;
+    // It spoke on the assignment it already had, after the machine went dark:
+    // that is the IO showing it is still there. The report that announced the
+    // power-off cannot count — it was not held when it arrived, so `wasHeld`
+    // was false and this line never ran for it.
+    if (wasHeld) delete watcher.held;
     const link = (watcher.links[connection] ??= { connected: false, snapshot: false });
     if (report.method === "ha.status") {
       link.connected = report.params.connected;

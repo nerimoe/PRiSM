@@ -93,7 +93,11 @@ async function openBoard(browser, viewport) {
   });
   page.on("websocket", (ws) => {
     board.sockets.push(ws.url());
-    ws.on("framereceived", ({ payload }) => board.frames.push(JSON.parse(String(payload))));
+    // A keepalive comes through as plain "pong", not JSON; the board's own
+    // protocol frames are the interesting ones.
+    ws.on("framereceived", ({ payload }) => {
+      try { board.frames.push(JSON.parse(String(payload))); } catch { /* keepalive */ }
+    });
   });
   await page.goto(`${BASE}/merchant/${shop.publicId}/devices`);
   await page.getByRole("heading", { name: "机台A", exact: true }).waitFor();
@@ -152,15 +156,27 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       await page.screenshot({ path: `${output}/board-2-live-${label}.png`, fullPage: true });
 
       // 3. Home Assistant changes: the live devices follow at once, over the WebSocket only.
+      //    The changes are to B and to A's air conditioner, not to A's own power: switching
+      //    off the machine the watcher runs on is a power-off, which is step 3b's subject.
       const marker = board.requests.length;
-      await haCall("switch", "turn_off", { entity_id: "switch.decorative_lights" });
-      await A.getByText("已关机").waitFor({ timeout: 3000 });
-      await haCall("climate", "set_temperature", { entity_id: "climate.hvac", temperature: 24 });
-      await A.getByText(/空调：.*24°/).waitFor({ timeout: 3000 });
       await haCall("switch", "turn_on", { entity_id: "switch.ac" });
       await B.getByText("已开机").waitFor({ timeout: 3000 });
+      await haCall("climate", "set_temperature", { entity_id: "climate.hvac", temperature: 24 });
+      await A.getByText(/空调：.*24°/).waitFor({ timeout: 3000 });
       assert.equal(board.requests.length, marker, "live changes cause no request");
       step("HA 里改电源/空调温度：A、B 的卡片立刻更新，页面没有发请求");
+
+      // 3b. The machine the only watcher runs on goes dark. Its assignment is kept and its
+      //     word stops being taken for the present, so the shop falls back to reading Home
+      //     Assistant until that IO reports again.
+      await haCall("switch", "turn_off", { entity_id: "switch.decorative_lights" });
+      await A.getByText("已关机").waitFor({ timeout: 3000 });
+      // The page is what the shop sees: A goes 非实时 and comes back by itself, and
+      // neither move costs a new subscription (checked from the IO's own log after).
+      await A.getByText("非实时", { exact: true }).waitFor({ timeout: 15000 });
+      step("关机台A：卡片变成「非实时」，订阅没有被撤掉");
+      await A.getByText("实时", { exact: true }).waitFor({ timeout: 90000 });
+      step("IO 继续上报：自动回到「实时」，用的是原来的订阅（没有重新下发）");
 
       // A device with no state of its own does not move on its own.
       await haCall("input_boolean", "turn_on", { entity_id: "input_boolean.lounge_power" });
@@ -175,7 +191,9 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       await refresh.click();
       await L.getByText("已开机").waitFor({ timeout: 8000 });
       await pause(500);
-      assert.equal(states(board).length, 2, "the refresh is the second read of the shop");
+      // The board reads the shop when it opens, once after A dropped out of live
+      // mode (step 3b), and now when the button is pressed.
+      assert.equal(states(board).length, 3, "the refresh is the third read of the shop");
       assert.deepEqual(platformReads(t0), ["climate.heatpump", "input_boolean.lounge_power"]);
       assert.equal(await A.getByText("实时", { exact: true }).count(), 1);
       step("点「刷新设备状态」：休息室变成「已开机」；HA 只收到休息室两个实体的读取，A、B 一个都没读");
