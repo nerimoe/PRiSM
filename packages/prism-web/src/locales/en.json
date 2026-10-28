@@ -1821,7 +1821,6 @@
   "确认轮换设备令牌": "Rotate the device token",
   "轮换后旧凭据立即失效，正在用它的 Koishi 会断线，需要把新凭据重新填进去才能连上。": "The old credential stops working at once: the Koishi instance using it drops offline and reconnects only after the new credential is entered.",
   "轮换后机台上的旧令牌立即失效，机台会掉线，需要把新令牌重新写进 INI 并重启才能连上。": "The machine's old token stops working at once: the machine drops offline and reconnects only after the new token is written into its INI and it is restarted.",
-  "关机时断开 IO 连接": "Drop the IO connection when the machine is switched off",
   "播报与提醒": "Announcements and reminders",
   "播报这些": "Announce",
   "设备闲置（关机前提醒）": "A device going idle (warned before it is switched off)",

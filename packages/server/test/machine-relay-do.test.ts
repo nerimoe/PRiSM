@@ -488,32 +488,3 @@ describe("MachineRelay capabilities", () => {
     expect((await relay.getCapabilities()).online).toBe(true);
   });
 });
-
-describe("MachineRelay disconnect", () => {
-  it("closes the IO's sockets and records the link as offline", async () => {
-    const { relay, sockets, link } = fixture();
-    await relay.fetch(upgradeRequest());
-    const agent = sockets.at(-1)!;
-    attachAgent(sockets);
-    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 2 });
-    // An ordinary close: the IO reconnects when the machine next starts.
-    expect(agent.closed?.code).toBe(1000);
-    // The upgrade said online; the power-off is what says offline, last.
-    expect(link().at(-1)).toBe("offline");
-  });
-
-  it("does nothing and says nothing when no IO is connected", async () => {
-    const { relay, link } = fixture();
-    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 0 });
-    expect(link()).toEqual([]);
-  });
-
-  it("leaves a controller socket alone", async () => {
-    const { relay, sockets } = fixture();
-    const controller = new FakeSocket();
-    controller.serializeAttachment({ cardProtocol: 2, clientVersion: "1.2.0", role: "controller" });
-    sockets.push(controller);
-    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 0 });
-    expect(controller.closed).toBeNull();
-  });
-});

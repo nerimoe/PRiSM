@@ -4,7 +4,6 @@
  */
 import type { Env } from "../bindings.js";
 import type { HaReport } from "../hardware/aimeio-relay.js";
-import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
 
 type ShopHubNamespace = {
   getByName(name: string): {
@@ -42,21 +41,6 @@ export async function refreshShopHub(env: Env, shopId: string): Promise<void> {
     await shopHub(env, shopId)?.refresh(shopId);
   } catch (error) {
     console.error("Shop hub refresh failed", error);
-  }
-}
-
-/**
- * The platform switched a directly-connected machine off, and its IO runs on
- * that machine: close the relay connection rather than hold one to a machine
- * that cannot answer. Never throws.
- */
-export async function disconnectMachineRelay(env: Env, machineId: string, channel: string | undefined, why: string): Promise<void> {
-  const relay = machineRelayNamespace(env);
-  if (!relay || !channel) return;
-  try {
-    await relay.getByName(channel).disconnect(why);
-  } catch (error) {
-    console.error("Machine relay disconnect failed", { machineId, error });
   }
 }
 

@@ -58,12 +58,7 @@ async function fixture(settings: unknown, options: { watched?: boolean } = {}) {
     },
     getWebSockets() { return []; },
   };
-  const disconnects: Array<[string, string]> = [];
-  const hub = new ShopHub(ctx as any, {
-    DB: db,
-    URL_ENCRYPTION_KEY: KEY,
-    MACHINE_RELAY: { getByName: (name: string) => ({ async disconnect(why: string) { disconnects.push([name, why]); } }) },
-  } as any);
+  const hub = new ShopHub(ctx as any, { DB: db, URL_ENCRYPTION_KEY: KEY } as any);
   const run = async () => {
     await hub.touch("shop");
     state.set("touchAt", Date.now() - 1);
@@ -75,7 +70,7 @@ async function fixture(settings: unknown, options: { watched?: boolean } = {}) {
     ).all();
   const idle = () =>
     (sqlite.query("SELECT value_json FROM device_state WHERE key='idle'").get() as { value_json: string } | null)?.value_json ?? null;
-  return { sqlite, run, offs, idle, state, disconnects, alarm: () => alarm };
+  return { sqlite, run, offs, idle, state, alarm: () => alarm };
 }
 
 const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request) => {
@@ -103,40 +98,7 @@ describe("idle check in the shop hub", () => {
     } finally { spy.mockRestore(); sqlite.close(); }
   });
 
-  it("closes the IO connection of a machine it switches off", async () => {
-    // The IO runs on the machine, so this power-off ends it too; waiting for the
-    // runtime to notice would leave the board saying online.
-    const { run, offs, disconnects, sqlite } = await fixture({ shopEmpty: { enabled: true, minutes: 15 } });
-    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
-      VALUES ('shop','m1','hinata_io',?,'{}','2026-01-01','2026-01-01')`,
-      [JSON.stringify({ transport: "embedded", channel: "m_m1", coinKey: 32 })]);
-    sqlite.run(
-      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z',?,'closed')",
-      [new Date(Date.now() - 20 * MIN).toISOString()],
-    );
-    const spy = haCalls();
-    try {
-      await run();
-      expect(offs()).toHaveLength(1);
-      expect(disconnects).toEqual([["m_m1", "machine powered off by the idle rule"]]);
-    } finally { spy.mockRestore(); sqlite.close(); }
-  });
 
-  it("leaves the IO connection when the store gave the IO its own power", async () => {
-    const { run, disconnects, sqlite } = await fixture({ shopEmpty: { enabled: true, minutes: 15 } });
-    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
-      VALUES ('shop','m1','hinata_io',?,'{}','2026-01-01','2026-01-01')`,
-      [JSON.stringify({ transport: "embedded", channel: "m_m1", coinKey: 32, disconnectOnPowerOff: false })]);
-    sqlite.run(
-      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z',?,'closed')",
-      [new Date(Date.now() - 20 * MIN).toISOString()],
-    );
-    const spy = haCalls();
-    try {
-      await run();
-      expect(disconnects).toEqual([]);
-    } finally { spy.mockRestore(); sqlite.close(); }
-  });
 
   it("waits while the shop has players, and marks an idle machine when the owner chose only that", async () => {
     const { run, offs, idle, sqlite, state } = await fixture({ shopEmpty: { enabled: true, minutes: 15 }, device: { enabled: true, whileOccupied: "mark" } });

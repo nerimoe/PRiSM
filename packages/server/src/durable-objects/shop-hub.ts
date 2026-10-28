@@ -73,8 +73,6 @@ type Candidate = {
   label?: string;
   /** Ranked after the others for this long after it failed to take the watch. */
   benchedUntil?: number;
-  /** Not chosen at all: the platform switched it off. Its next hello clears this. */
-  downUntil?: number;
 };
 /** What one watcher said about one Home Assistant connection. */
 type Link = {
@@ -320,7 +318,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           ? { id: watcher.machineId, kind: "bot", name: watcher.label ?? DEFAULT_BOT_NAME, state }
           : { id: watcher.machineId, kind: "device", deviceId: watcher.machineId, state };
       });
-    const standby = Object.values(candidates).filter((candidate) => !watchers[candidate.machineId] && (candidate.downUntil ?? 0) <= now).length;
+    const standby = Object.values(candidates).filter((candidate) => !watchers[candidate.machineId]).length;
     return { type: "watchers", limit: await this.limit(), max: MAX_WATCHERS, watchers: list, standby };
   }
 
@@ -582,12 +580,17 @@ export class ShopHub extends BaseDurableObject<Env> {
    * The platform switched this IO off. It will not report again, so there is no
    * point waiting out its lease: its watch moves now, and it is not chosen again
    * until it says hello.
+   *
+   * It leaves the candidate pool entirely rather than being benched for a while:
+   * an IO on the machine dies with it, so a timer would only be waiting for a
+   * process that is not coming back. Whatever starts again says hello, and
+   * `relayOnline` puts it back in the pool.
    */
   async markDown(shopId: string, machineId: string): Promise<void> {
     await this.rememberShop(shopId);
     const candidates = await this.load<Candidates>("candidates", {});
     if (candidates[machineId]) {
-      candidates[machineId] = { ...candidates[machineId]!, downUntil: Date.now() + BENCH_MS };
+      delete candidates[machineId];
       await this.ctx.storage.put("candidates", candidates);
     }
     await this.drop(machineId);
@@ -712,7 +715,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         // This client cannot reach Home Assistant; another one that is not watching yet may.
         const now = Date.now();
         const spare = Object.values(await this.load<Candidates>("candidates", {}))
-          .some((candidate) => !watchers[candidate.machineId] && (candidate.downUntil ?? 0) <= now);
+          .some((candidate) => !watchers[candidate.machineId]);
         if (spare) {
           await this.bench(machineId);
           delete watchers[machineId];
@@ -791,11 +794,12 @@ export class ShopHub extends BaseDurableObject<Env> {
         reminderLeadMs: await this.reminderLead(),
       });
       await this.ctx.storage.put("idle", result.memory);
-      // An IO the idle rule switched off will not report again.
+      // An IO the idle rule switched off will not report again: it leaves the
+      // pool until it says hello again, rather than on a timer it cannot beat.
       const candidates = await this.load<Candidates>("candidates", {});
       for (const id of result.poweredOff) {
         if (!candidates[id]) continue;
-        candidates[id] = { ...candidates[id]!, downUntil: Date.now() + BENCH_MS };
+        delete candidates[id];
         await this.ctx.storage.put("candidates", candidates);
         await this.drop(id);
       }
@@ -851,7 +855,6 @@ export class ShopHub extends BaseDurableObject<Env> {
       (candidate.benchedUntil ?? 0) > now &&
       !Object.values(watchers[candidate.machineId]?.links ?? {}).some((link) => link.connected);
     return Object.values(candidates)
-      .filter((candidate) => (candidate.downUntil ?? 0) <= now)
       .sort(
         (a, b) =>
           Number(benched(a)) - Number(benched(b)) ||
@@ -1174,11 +1177,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     const touchAt = await this.ctx.storage.get<number>("touchAt");
     const idle = await this.ctx.storage.get<IdleMemory>("idle");
     const candidates = await this.load<Candidates>("candidates", {});
-    // An open slot is retried when a benched or switched-off candidate becomes eligible again.
+    // An open slot is retried when a benched candidate becomes eligible again.
     const retry = Object.keys(watchers).length < (await this.limit())
       ? Object.values(candidates)
           .filter((candidate) => !watchers[candidate.machineId])
-          .flatMap((candidate) => [candidate.benchedUntil, candidate.downUntil])
+          .map((candidate) => candidate.benchedUntil)
           .filter((at): at is number => typeof at === "number" && at > now)
       : [];
     const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry]

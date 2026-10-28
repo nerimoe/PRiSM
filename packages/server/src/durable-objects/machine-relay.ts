@@ -200,36 +200,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
   }
 
   /**
-   * The platform switched this machine off and its IO runs on that machine, so
-   * the process is gone and this connection has nothing left to carry.
-   *
-   * Closing it is tidier than waiting for the runtime to notice, and it lets the
-   * shop hub hand the Home Assistant watch on without waiting out the lease.
-   * The IO reconnects when it next starts, which is when the machine is switched
-   * back on. Returns how many sockets it closed.
-   */
-  async disconnect(why: string): Promise<{ closed: number }> {
-    const agents = this.agents();
-    for (const ws of agents) {
-      try {
-        ws.close(1000, why.slice(0, 100));
-      } catch {
-        // Already closed; the rest still get their turn.
-      }
-    }
-    if (agents.length) {
-      await this.setLink(false);
-      const channel = await this.channel();
-      if (channel) {
-        await shopHub(this.env, channel.shopId)
-          ?.relayOffline(channel.shopId, channel.machineId)
-          .catch((error) => console.error("Shop hub relayOffline failed", error));
-      }
-    }
-    return { closed: agents.length };
-  }
-
-  /**
    * What the connected IO reported about itself, for the device board.
    *
    * "Online" means a socket *and* a recent beat. A machine switched off at the

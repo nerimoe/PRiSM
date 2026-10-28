@@ -127,9 +127,6 @@ export function ResourceEditor({
   const [coinAfterSwipe, setCoinAfterSwipe] = useState(
     value?.coinAfterSwipe ?? false,
   );
-  const [disconnectOnPowerOff, setDisconnectOnPowerOff] = useState(
-    value?.disconnectOnPowerOff ?? true,
-  );
 
   const [lockId, setLockId] = useState(
     value?.ttlockLockId ? String(value.ttlockLockId) : "",
@@ -409,7 +406,6 @@ export function ResourceEditor({
               canCoin &&
               Number(coinKey) > 0 &&
               coinAfterSwipe,
-            disconnectOnPowerOff,
             ttlockLockId: caps.door ? Number(lockId) : null,
           }),
         });
@@ -679,16 +675,6 @@ export function ResourceEditor({
                   />
                   {t("刷卡后自动投一币")}
                 </label>
-                {embedded && (
-                  <label className="flex items-end gap-2 pb-3 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={disconnectOnPowerOff}
-                      onChange={(e) => setDisconnectOnPowerOff(e.target.checked)}
-                    />
-                    {t("关机时断开 IO 连接")}
-                  </label>
-                )}
               </div>
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>

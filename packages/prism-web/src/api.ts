@@ -130,8 +130,6 @@ export type Resource = {
   /** Actions this device can perform now, tagged with their capability. */
   actions?: { name: string; capability: string }[];
   coinAfterSwipe: boolean;
-  /** Whether switching the machine off also drops its IO connection. */
-  disconnectOnPowerOff: boolean;
   hasHinata: boolean;
   kind: "machine" | "door";
   hinataUrl: string | null;
