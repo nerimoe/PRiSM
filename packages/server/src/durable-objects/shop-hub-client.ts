@@ -45,14 +45,14 @@ export async function refreshShopHub(env: Env, shopId: string): Promise<void> {
 }
 
 /**
- * A machine lost power: the hub releases its watch now instead of waiting out
- * the lease. Never throws.
+ * A machine lost power: the hub starts watching what its IO does about it.
+ * Never throws.
  */
 export async function machinePoweredOff(env: Env, shopId: string, machineId: string): Promise<void> {
   try {
     await shopHub(env, shopId)?.poweredOff(shopId, machineId);
   } catch (error) {
-    console.error("Shop hub power-off release failed", error);
+    console.error("Shop hub power-off observation failed", error);
   }
 }
 

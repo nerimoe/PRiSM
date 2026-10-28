@@ -207,6 +207,27 @@ export function ResourcesPage() {
     if (states === null || askedRef.current || !hasUnwatched(states)) return;
     void readStates();
   }, [states, readStates]);
+  /**
+   * A device that stops being watched is only marked not-live; its last known
+   * value would otherwise stay on screen and read as if it were current. Read
+   * once per change, so a device dropping out of live mode is followed by a
+   * fresh look rather than by a label change alone.
+   */
+  const unwatchedKey = states === null ? "" : Object.entries(states)
+    .filter(([, view]) => !view.watching)
+    .map(([id]) => id)
+    .sort()
+    .join(",");
+  const knownUnwatched = useRef<string | null>(null);
+  useEffect(() => {
+    if (states === null) { knownUnwatched.current = null; return; }
+    const first = knownUnwatched.current === null;
+    const previous = knownUnwatched.current ?? "";
+    knownUnwatched.current = unwatchedKey;
+    // The first sight of the board is handled above; this is only about a change.
+    if (first || previous === unwatchedKey || !unwatchedKey) return;
+    void readStates();
+  }, [unwatchedKey, states, readStates]);
   // If the hub gives the board no state (it cannot connect, or says nothing), read it over HTTP.
   const unread = states === null;
   useEffect(() => {

@@ -391,8 +391,9 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
         // The hub's own idle power-off (notifyHub false) is announced by the hub.
         if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
       }
-      // A machine that just lost power cannot watch or be watched: its watch
-      // moves now rather than at the end of its lease.
+      // The command was accepted, which is all this can know: Home Assistant
+      // answers the same whether or not the machine actually went dark. The hub
+      // starts an observation and waits for the state to confirm it.
       if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
         && input.device.capabilities.has("hinata_io")) {
         await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
