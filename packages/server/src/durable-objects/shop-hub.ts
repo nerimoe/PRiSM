@@ -42,10 +42,11 @@ try {
 /**
  * A watcher that has not reported for this long is presumed gone.
  *
- * Two of the IO's beats (60 s each): one late or lost beat must not cost a
- * watcher its watch, which a single-beat lease would do.
+ * Two beats (60 s each, the same cadence for bots and machines) plus a little
+ * slack, so one late or lost beat does not cost a watcher its watch. Equal to
+ * `BEAT_TIMEOUT_MS`, which asks the same question of a machine's liveness.
  */
-export const LEASE_MS = 180_000;
+export const LEASE_MS = 150_000;
 /** A watcher that failed is not chosen again for this long, while others exist. */
 const BENCH_MS = 5 * 60_000;
 /** Bursts of activity are folded into one idle check this long after the first. */

@@ -27,8 +27,10 @@ const CAPTURE_KEY = "card-capture";
 /**
  * How long a silent machine is still believed alive.
  *
- * The IO beats every 60 s, so one late beat must not condemn it: this is two
- * beats plus a margin for a slow round trip.
+ * The IO beats every 60 s, so one late beat must not condemn it: two beats plus
+ * a margin for a slow round trip. Kept equal to `LEASE_MS` on purpose — how long
+ * a watcher is believed, and how long a machine is believed, are the same
+ * question asked about the same beat.
  */
 const BEAT_TIMEOUT_MS = 150_000;
 

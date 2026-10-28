@@ -26,7 +26,7 @@ const { origin, shop, owner, admin, ha, devices } = cfg as {
   devices: Record<"a" | "b" | "lounge", { id: string; relayToken?: string }>;
 };
 const IO_BIN = process.env.IO_SIM ?? "/Users/neri/Projects/hinata-aimeio-rs/tools/mac-test/target/debug/io_sim";
-const LEASE_MS = 180_000;
+const LEASE_MS = 150_000;
 
 // ---------------------------------------------------------------- reporting
 
