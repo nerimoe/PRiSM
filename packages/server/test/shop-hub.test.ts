@@ -334,22 +334,53 @@ describe("ShopHub watchers", () => {
     expect(watched()).toEqual([connectionId]);
   });
 
-  it("moves the watch off an IO the platform switched off, without waiting for its lease", async () => {
-    const { hub, assigned, watched, connectionId } = await fixture();
+  it("moves the watch off a machine that lost power, without waiting for its lease", async () => {
+    // The power-off does not say anything about the IO, so the machine stays a
+    // candidate: what leaves the pool is an IO that stops beating, not one whose
+    // machine went quiet.
+    const { hub, watches, watched, connectionId } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.relayOnline(SHOP, "b", "chan-b");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
-    await hub.markDown(SHOP, "a");
-    expect((await hub.watching()).map((entry) => entry.machineId)).toEqual(["b"]);
-    // Only b is left and it has not delivered its state.
-    expect(watched()).toEqual([]);
-    // a is not handed the watch again while it is down, even with a free slot...
-    await hub.relayOnline(SHOP, "c", "chan-c");
-    expect(assigned().map(([channel]) => channel)).toEqual(["chan-a", "chan-b", "chan-c"]);
-    // ...until it says hello again.
-    await hub.relayOffline(SHOP, "c");
-    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.poweredOff(SHOP, "a");
+    // Its watch was taken away and told so, and then handed back: with a slot
+    // free and its IO still connected, nothing says it cannot watch. What the
+    // release buys is the choice, not a permanent exclusion.
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null)).toHaveLength(1);
     expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b"]);
+    // Only b has delivered its state.
+    expect(watched()).toEqual([]);
+  });
+
+  it("releases the watch when Home Assistant reports the power off, the same as a platform power-off", async () => {
+    // The same event, whichever path noticed it: a machine with no power cannot
+    // watch. m1 and m2 own the switches; m1 and m3 are the watching IOs.
+    const { hub, watches, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m3", "chan-b");
+    await hub.relayOnline(SHOP, "m2", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"]], false));
+    // m1 was told to stop. It is handed the watch back straight away because its
+    // IO never left and the shop has slots to fill — the release is the same
+    // whether the platform, the idle rule or Home Assistant noticed the power go.
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null)).toHaveLength(1);
+  });
+
+  it("does not release the watch for unavailable, or for a machine that was already off", async () => {
+    const { hub, watches, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m3", "chan-b");
+    await hub.relayOnline(SHOP, "m2", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    // A Home Assistant hiccup is not a power-off.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "unavailable", "2026-10-21T10:00:00.000Z"]], false));
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null)).toHaveLength(0);
+    // Off, then off again: only the transition counts.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:10:00.000Z"]], false));
+    const released = watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null).length;
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:20:00.000Z"]], false));
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null).length).toBe(released);
   });
 
   it("skips an IO that could not be told and tries the next", async () => {

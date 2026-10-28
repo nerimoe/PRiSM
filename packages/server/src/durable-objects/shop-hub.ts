@@ -583,23 +583,31 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * The platform switched this IO off. It will not report again, so there is no
-   * point waiting out its lease: its watch moves now, and it is not chosen again
-   * until it says hello.
+   * A machine has lost power, and its watch goes now instead of at the end of
+   * its lease.
    *
-   * It leaves the candidate pool entirely rather than being benched for a while:
-   * an IO on the machine dies with it, so a timer would only be waiting for a
-   * process that is not coming back. Whatever starts again says hello, and
-   * `relayOnline` puts it back in the pool.
+   * It does not matter who switched it off — the platform, the idle rule, a
+   * hand on the switch, Home Assistant — because the watch is released for the
+   * same reason every time: a machine with no power cannot read a card or take a
+   * coin, so holding its place only leaves the shop's Home Assistant unread
+   * while another IO could be reading it.
+   *
+   * What happened to the machine says nothing about its IO, so the candidate
+   * pool is left alone: an IO that is still connected stays a candidate and may
+   * take the watch straight back, and one that died leaves the pool through its
+   * heartbeat going quiet. That is the only evidence of an IO's absence
+   * (`relayOffline`), and the only reason to stop considering it.
    */
-  async markDown(shopId: string, machineId: string): Promise<void> {
+  async poweredOff(shopId: string, machineId: string): Promise<void> {
     await this.rememberShop(shopId);
-    const candidates = await this.load<Candidates>("candidates", {});
-    if (candidates[machineId]) {
-      delete candidates[machineId];
-      await this.ctx.storage.put("candidates", candidates);
-    }
-    await this.drop(machineId);
+    const watchers = await this.load<Watchers>("watchers", {});
+    if (!watchers[machineId]) return;
+    // Tell it to stop before forgetting it here: a watcher left unwarned would
+    // keep reporting a term nobody holds any more.
+    await this.tell(watchers[machineId]!, null);
+    delete watchers[machineId];
+    await this.ctx.storage.put("watchers", watchers);
+    await this.fill();
   }
 
   private async drop(machineId: string) {
@@ -800,15 +808,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         reminderLeadMs: await this.reminderLead(),
       });
       await this.ctx.storage.put("idle", result.memory);
-      // An IO the idle rule switched off will not report again: it leaves the
-      // pool until it says hello again, rather than on a timer it cannot beat.
-      const candidates = await this.load<Candidates>("candidates", {});
-      for (const id of result.poweredOff) {
-        if (!candidates[id]) continue;
-        delete candidates[id];
-        await this.ctx.storage.put("candidates", candidates);
-        await this.drop(id);
-      }
+      // A machine the idle rule switched off is released the same way as any
+      // other power-off: same reason, same effect on its watch and its standing.
+      for (const id of result.poweredOff) await this.poweredOff(shopId, id);
       if (result.notices.length) await this.notify(result.notices);
       // The idle rule's own power-offs: the device bus left them to the hub to tell.
       for (const id of result.poweredOff) {
@@ -1088,6 +1090,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
     let powerMoved = false;
+    /** Machines this report says lost power: their watch is released, as on any power-off. */
+    const lostPower: string[] = [];
     for (const item of reported) {
       const key = entityKey(connectionId, item.entity_id);
       const previous = applied[key] ?? states[key];
@@ -1105,6 +1109,9 @@ export class ShopHub extends BaseDurableObject<Env> {
           writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
           pushes.push([target.deviceId, { type: "state", power }]);
           if (previous) powerMoved = true;
+          // Only a real on-to-off move: `unavailable` reads as null, and a Home
+          // Assistant hiccup must not release a working watch.
+          if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
         } else {
           const known = next.state !== "unavailable" && next.state !== "unknown";
           const view = known ? climateState(next.state, next.attributes) : null;
@@ -1141,6 +1148,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     // Switched on starts an idle countdown; switched off may end one.
     if (powerMoved) await this.touch(shopId);
+    // A power-off the platform did not perform: same release as the ones it does.
+    for (const deviceId of lostPower) await this.poweredOff(shopId, deviceId);
     return true;
   }
 

@@ -54,7 +54,7 @@ async function fixture() {
   bind("io", "hinata_io", { transport: "embedded", channel: "m_io", coinKey: 32 });
 
   const hub = {
-    markDown: [] as Array<[string, string]>,
+    poweredOff: [] as Array<[string, string]>,
     /** What the hub was asked to tell the shop's bots. */
     events: [] as Array<Record<string, unknown>>,
     /** What the route handed the hub when a board connected. */
@@ -67,7 +67,7 @@ async function fixture() {
     RATE_LIMIT_10: { limit: async () => ({ success: true }) },
     SHOP_HUB: {
       getByName: (name: string) => ({
-        async markDown(shop: string, machine: string) { hub.markDown.push([shop, machine]); },
+        async poweredOff(shop: string, machine: string) { hub.poweredOff.push([shop, machine]); },
         async shopEvent(event: Record<string, unknown>) { hub.events.push(event); },
         async fetch(request: Request) {
           const read = (header: string) => request.headers.get(header);
@@ -414,17 +414,17 @@ describe("switching a HINATA IO off", () => {
       const device = (await loadResource(db, "shop-id", machine))!;
       const bus = createRuntimeBus({ db, env, shopId: "shop-id", ...runtime });
       const done = await bus.perform({ device, action: "power.off", actor: { type: "system" } });
-      return { status: done.operation.status, markDown: hub.markDown };
+      return { status: done.operation.status, poweredOff: hub.poweredOff };
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   };
 
   it("tells the shop hub, so the watch moves without waiting out the lease", async () => {
-    expect(await off("io")).toEqual({ status: "succeeded", markDown: [["shop-id", "io"]] });
+    expect(await off("io")).toEqual({ status: "succeeded", poweredOff: [["shop-id", "io"]] });
   });
 
   it("says nothing for a device that is not an IO, or when the hub switched it off itself", async () => {
-    expect((await off("cab")).markDown).toEqual([]);
-    expect((await off("io", { notifyHub: false })).markDown).toEqual([]);
+    expect((await off("cab")).poweredOff).toEqual([]);
+    expect((await off("io", { notifyHub: false })).poweredOff).toEqual([]);
   });
 
 
