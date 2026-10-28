@@ -92,6 +92,15 @@ const hinataConfig = z.object({
   coinAfterSwipe: z.boolean().default(false),
   /** Durable Object name for the embedded relay. Stable across token rotation. */
   channel: z.string().min(1).optional(),
+  /**
+   * Whether switching this machine off also drops its IO connection.
+   *
+   * On by default, because the IO runs on the machine: cutting the power ends
+   * the process, so the platform should stop expecting an answer. A store that
+   * later runs the IO on its own power turns this off, and the machine's
+   * connection then survives the power-off and is judged on its heartbeats.
+   */
+  disconnectOnPowerOff: z.boolean().default(true),
 });
 export type HinataConfig = z.infer<typeof hinataConfig>;
 

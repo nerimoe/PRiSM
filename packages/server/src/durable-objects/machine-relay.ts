@@ -12,7 +12,8 @@ import {
   capabilitiesFromRequest,
   ioEventSource,
   parseClientHello,
-  parseHaReport,
+  parseHaStates,
+  parseHeartbeat,
   parseIoEvent,
   prepareMessageForClient,
   type ClientCapabilities,
@@ -23,6 +24,13 @@ import {
 const STATE_KEY = "state-message";
 const CHANNEL_KEY = "channel";
 const CAPTURE_KEY = "card-capture";
+/**
+ * How long a silent machine is still believed alive.
+ *
+ * The IO beats every 60 s, so one late beat must not condemn it: this is two
+ * beats plus a margin for a slow round trip.
+ */
+const BEAT_TIMEOUT_MS = 150_000;
 
 /** The IO forgets a remote card this long after receiving it unless told otherwise. */
 const CARD_LIFETIME_MS = 3000;
@@ -41,7 +49,7 @@ type Channel = { shopId: string; machineId: string; channel?: string };
  * object, because a hibernated object wakes with its fields reset while its
  * sockets and their attachments survive.
  */
-type Attachment = ClientCapabilities & { e2ee?: boolean; ha?: boolean };
+type Attachment = ClientCapabilities & { e2ee?: boolean; ha?: boolean; /** Last time this socket said anything, ms. */ seenAt?: number };
 
 /**
  * What the IO assigned to watch the shop's Home Assistants should subscribe to.
@@ -191,7 +199,45 @@ export class MachineRelay extends BaseDurableObject<Env> {
     return stored as StoredCard;
   }
 
-  /** What the connected IO reported about itself, for the device board. */
+  /**
+   * The platform switched this machine off and its IO runs on that machine, so
+   * the process is gone and this connection has nothing left to carry.
+   *
+   * Closing it is tidier than waiting for the runtime to notice, and it lets the
+   * shop hub hand the Home Assistant watch on without waiting out the lease.
+   * The IO reconnects when it next starts, which is when the machine is switched
+   * back on. Returns how many sockets it closed.
+   */
+  async disconnect(why: string): Promise<{ closed: number }> {
+    const agents = this.agents();
+    for (const ws of agents) {
+      try {
+        ws.close(1000, why.slice(0, 100));
+      } catch {
+        // Already closed; the rest still get their turn.
+      }
+    }
+    if (agents.length) {
+      await this.setLink(false);
+      const channel = await this.channel();
+      if (channel) {
+        await shopHub(this.env, channel.shopId)
+          ?.relayOffline(channel.shopId, channel.machineId)
+          .catch((error) => console.error("Shop hub relayOffline failed", error));
+      }
+    }
+    return { closed: agents.length };
+  }
+
+  /**
+   * What the connected IO reported about itself, for the device board.
+   *
+   * "Online" means a socket *and* a recent beat. A machine switched off at the
+   * wall leaves its socket in this object — nothing closes it, because the
+   * process that would have closed it is the one that stopped — and the runtime
+   * takes its time to notice. The IO beats every 60 s; two missed beats is what
+   * it takes to call the machine gone.
+   */
   async getCapabilities(): Promise<{
     online: boolean;
     e2ee: boolean;
@@ -201,7 +247,28 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const { cardProtocol, clientVersion } = this.socketCapabilities(ws);
       return { cardProtocol, clientVersion };
     });
-    return { online: agents.length > 0, e2ee: this.agents().some((ws) => this.socketE2ee(ws)), agents };
+    const live = this.agents().filter((ws) => this.beatIsRecent(ws));
+    return {
+      online: live.length > 0,
+      e2ee: live.some((ws) => this.socketE2ee(ws)),
+      agents,
+    };
+  }
+
+  /** Whether this socket has beaten within the last two beats. */
+  private beatIsRecent(ws: WebSocket): boolean {
+    // A socket that connected after the last beat is given the benefit of the
+    // doubt: it has only just arrived and has not had its turn yet.
+    const seen = (ws.deserializeAttachment() as Attachment | null)?.seenAt;
+    if (typeof seen !== "number") return true;
+    return Date.now() - seen <= BEAT_TIMEOUT_MS;
+  }
+
+  /** Record that this socket is alive; every message counts, not just the beat. */
+  private async markSeen(ws: WebSocket): Promise<void> {
+    const attachment = (ws.deserializeAttachment() ?? {}) as Attachment;
+    if (typeof attachment.seenAt === "number" && Date.now() - attachment.seenAt < BEAT_TIMEOUT_MS / 2) return;
+    ws.serializeAttachment({ ...attachment, seenAt: Date.now() } satisfies Attachment);
   }
 
   /**
@@ -323,6 +390,9 @@ export class MachineRelay extends BaseDurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string") return;
+    // Anything at all is proof of life: the beat is the reliable case, but a
+    // card or a state report is just as good.
+    await this.markSeen(ws);
 
     let parsed: unknown;
     try {
@@ -334,7 +404,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const hello = parseClientHello(parsed);
     if (hello) {
       const ha = hello.features.includes("ha.watch");
-      ws.serializeAttachment({ ...this.socketCapabilities(ws), e2ee: hello.e2ee, ha } satisfies Attachment);
+      ws.serializeAttachment({ ...this.socketCapabilities(ws), e2ee: hello.e2ee, ha, seenAt: Date.now() } satisfies Attachment);
       const channel = await this.channel();
       if (ha && channel?.channel) {
         await shopHub(this.env, channel.shopId)
@@ -344,7 +414,26 @@ export class MachineRelay extends BaseDurableObject<Env> {
       return;
     }
 
-    const report = parseHaReport(parsed);
+    // The beat says the IO is alive and, when it holds an assignment, what it
+    // knows about each Home Assistant. That health is handed on under the same
+    // method the hub already reasons about.
+    const heartbeat = parseHeartbeat(parsed);
+    if (heartbeat) {
+      const channel = await this.channel();
+      if (channel?.channel && heartbeat.ha.length) {
+        await shopHub(this.env, channel.shopId)
+          ?.relayOnline(channel.shopId, channel.machineId, channel.channel)
+          .catch((error) => console.error("Shop hub relayOnline failed", error));
+        for (const health of heartbeat.ha) {
+          await shopHub(this.env, channel.shopId)
+            ?.haReport(channel.shopId, channel.machineId, { method: "ha.status", params: health })
+            .catch((error) => console.error("Shop hub haReport failed", error));
+        }
+      }
+      return;
+    }
+
+    const report = parseHaStates(parsed);
     if (report) {
       const channel = await this.channel();
       if (channel) {

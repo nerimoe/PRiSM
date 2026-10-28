@@ -55,6 +55,8 @@ async function fixture() {
 
   const hub = {
     markDown: [] as Array<[string, string]>,
+    /** Relay connections closed by a power-off, by channel. */
+    disconnects: [] as Array<[string, string]>,
     /** What the hub was asked to tell the shop's bots. */
     events: [] as Array<Record<string, unknown>>,
     /** What the route handed the hub when a board connected. */
@@ -65,6 +67,12 @@ async function fixture() {
     URL_ENCRYPTION_KEY: KEY,
     SESSION_SECRET: "session-test-secret",
     RATE_LIMIT_10: { limit: async () => ({ success: true }) },
+    MACHINE_RELAY: {
+      getByName: (name: string) => ({
+        async disconnect(why: string) { hub.disconnects.push([name, why]); },
+        async getCapabilities() { return { online: false, e2ee: false, agents: [] }; },
+      }),
+    },
     SHOP_HUB: {
       getByName: (name: string) => ({
         async markDown(shop: string, machine: string) { hub.markDown.push([shop, machine]); },
@@ -425,5 +433,33 @@ describe("switching a HINATA IO off", () => {
   it("says nothing for a device that is not an IO, or when the hub switched it off itself", async () => {
     expect((await off("cab")).markDown).toEqual([]);
     expect((await off("io", { notifyHub: false })).markDown).toEqual([]);
+  });
+
+  it("closes the IO connection, because the IO runs on the machine it is powering", async () => {
+    const { db, env, hub, sqlite } = await fixture();
+    const ha = homeAssistant();
+    try {
+      const device = (await loadResource(db, "shop-id", "io"))!;
+      await createRuntimeBus({ db, env, shopId: "shop-id" })
+        .perform({ device, action: "power.off", actor: { type: "system" } });
+      expect(hub.disconnects).toEqual([["m_io", "machine powered off"]]);
+    } finally { ha.spy.mockRestore(); sqlite.close(); }
+  });
+
+  it("leaves the connection when the store says the IO has its own power", async () => {
+    // The IO will keep running after the machine loses power, so the platform
+    // keeps the connection and judges the machine on its beats instead.
+    const { db, env, hub, sqlite } = await fixture();
+    const ha = homeAssistant();
+    try {
+      sqlite.run(`UPDATE device_capabilities SET config_json = json_set(config_json, '$.disconnectOnPowerOff', json('false'))
+        WHERE shop_id='shop-id' AND device_id='io' AND capability='hinata_io'`);
+      const device = (await loadResource(db, "shop-id", "io"))!;
+      await createRuntimeBus({ db, env, shopId: "shop-id" })
+        .perform({ device, action: "power.off", actor: { type: "system" } });
+      expect(hub.disconnects).toEqual([]);
+      // The watch is still handed on: that does not depend on the IO going away.
+      expect(hub.markDown).toEqual([["shop-id", "io"]]);
+    } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });

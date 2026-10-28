@@ -22,7 +22,7 @@ import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResu
 import type { HaEntityConfig } from "./catalog.js";
 import { doorConfigOf, hinataConfigOf, readSecret, type Resource } from "../resource.js";
 import { openHaConnection } from "./ha-connections.js";
-import { markWatcherDown } from "../../durable-objects/shop-hub-client.js";
+import { disconnectMachineRelay, markWatcherDown } from "../../durable-objects/shop-hub-client.js";
 import { announceShopEvent, eventPlayer } from "../shop-events.js";
 import { readDeviceFacts } from "./state-view.js";
 
@@ -394,8 +394,16 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       // A HINATA IO that was just powered off will not report again; the hub
       // need not wait out its lease to hand the watch to another.
       if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
-        && input.device.capabilities.has("hinata_io"))
+        && input.device.capabilities.has("hinata_io")) {
         await markWatcherDown(runtime.env, runtime.shopId, input.device.id);
+        // The IO runs on the machine, so its process ends with the power and
+        // the relay should stop holding a connection to a machine that cannot
+        // answer. A store that gives the IO its own power later turns this off,
+        // and the connection then lives on, judged on its beats.
+        const hinata = hinataConfigOf(input.device);
+        if (hinata?.disconnectOnPowerOff !== false)
+          await disconnectMachineRelay(runtime.env, input.device.id, hinata?.channel, "machine powered off");
+      }
       return result;
     },
   };

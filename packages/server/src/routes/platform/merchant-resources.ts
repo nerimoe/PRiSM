@@ -136,6 +136,7 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,
+    disconnectOnPowerOff: hinata?.disconnectOnPowerOff !== false,
     relayConnection: embedded ? "embedded" : "external",
     // The token itself is only ever returned once, at mint time. What the board
     // needs afterwards is whether one exists and where the device should point.
@@ -407,6 +408,8 @@ const machineInput=z.object({
   ttlockLockId:z.number().int().positive().nullable().optional(),
   coinKey:z.number().int().min(0).max(65535).default(32),
   coinAfterSwipe:z.boolean().default(false),
+  // Whether switching the machine off also drops its IO connection.
+  disconnectOnPowerOff:z.boolean().default(true),
   // Choosing `embedded` points the device at this platform instead of an
   // external relay. Existing devices stay on `external`, so nothing changes
   // until a store opts in per machine.
@@ -576,12 +579,14 @@ async function nextCapabilities(
     // orphan a connected device.
     const channel=before?.channel??`m_${randomToken(16)}`;
     const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,channel},secrets,credentialHash});
+    const disconnectOnPowerOff=body.disconnectOnPowerOff??before?.disconnectOnPowerOff??true;
+    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,channel,disconnectOnPowerOff},secrets,credentialHash});
   }else if(secrets.url){
     const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
     if(coinAfterSwipe&&!secrets.password)
       jsonError(400,"自动投币需要 HINATA IO 连接密码","DEVICE_CONFIGURATION_REQUIRED");
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe},secrets,credentialHash:null});
+    const disconnectOnPowerOff=body.disconnectOnPowerOff??before?.disconnectOnPowerOff??true;
+    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,disconnectOnPowerOff},secrets,credentialHash:null});
   }else{
     next.delete("hinata_io");
   }

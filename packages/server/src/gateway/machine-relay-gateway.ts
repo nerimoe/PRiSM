@@ -97,6 +97,8 @@ export type MachineRelayNamespace = {
       e2ee: boolean;
       agents: Array<{ cardProtocol: number; clientVersion: string }>;
     }>;
+    /** Close the IO's sockets: the machine was switched off and took its IO with it. */
+    disconnect(why: string): Promise<{ closed: number }>;
   };
 };
 

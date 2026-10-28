@@ -432,7 +432,11 @@ describe("MachineRelay Home Assistant watch", () => {
     const watch = { term: 4, connections: [{ id: "ha_1", urls: ["http://ha.local"], token: "r", entities: ["switch.a"] }] };
     expect((await relay.watchHa(watch)).ok).toBe(true);
     expect(JSON.parse(ws.sent.at(-1)!)).toEqual({ action: "HA_WATCH", body: watch });
-    await relay.webSocketMessage(ws as any, JSON.stringify({ jsonrpc: "2.0", method: "ha.status", params: { term: 4, connection: "ha_1", connected: true } }));
+    // Home Assistant health rides the IO's beat now, not a report of its own.
+    await relay.webSocketMessage(ws as any, JSON.stringify({
+      jsonrpc: "2.0", method: "io.heartbeat",
+      params: { ha: [{ term: 4, connection: "ha_1", connected: true }] },
+    }));
     expect(calls.at(-1)).toEqual(["report", "shop-1", "machine-1", { method: "ha.status", params: { term: 4, connection: "ha_1", connected: true, error: null } }]);
     await relay.watchHa(null);
     expect(JSON.parse(ws.sent.at(-1)!)).toEqual({ action: "HA_UNWATCH", body: {} });
@@ -453,5 +457,63 @@ describe("MachineRelay capabilities", () => {
   it("reports offline with no agent connected", async () => {
     const { relay } = fixture();
     expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("stops calling a machine online once its beats stop", async () => {
+    // The machine was switched off at the wall: its process is gone, so nothing
+    // closes the socket and the runtime may take minutes to notice.
+    const { relay, sockets } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.webSocketMessage(ws as any, JSON.stringify({ method: "io.heartbeat", params: { ha: [] } }));
+    expect((await relay.getCapabilities()).online).toBe(true);
+    // Two beats missed (the IO beats every 60 s).
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 151_000 });
+    expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("counts any message as proof of life, not only the beat", async () => {
+    const { relay, sockets } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.fetch(upgradeRequest());
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 140_000 });
+    // A card report from the reader: the machine is evidently alive.
+    await relay.webSocketMessage(ws as any, consumed(OP, 1));
+    expect((await relay.getCapabilities()).online).toBe(true);
+  });
+
+  it("gives a socket that has never beaten the benefit of the doubt", async () => {
+    // It has only just connected and has not had a turn yet.
+    const { relay, sockets } = fixture();
+    attachAgent(sockets);
+    expect((await relay.getCapabilities()).online).toBe(true);
+  });
+});
+
+describe("MachineRelay disconnect", () => {
+  it("closes the IO's sockets and records the link as offline", async () => {
+    const { relay, sockets, link } = fixture();
+    await relay.fetch(upgradeRequest());
+    const agent = sockets.at(-1)!;
+    attachAgent(sockets);
+    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 2 });
+    // An ordinary close: the IO reconnects when the machine next starts.
+    expect(agent.closed?.code).toBe(1000);
+    // The upgrade said online; the power-off is what says offline, last.
+    expect(link().at(-1)).toBe("offline");
+  });
+
+  it("does nothing and says nothing when no IO is connected", async () => {
+    const { relay, link } = fixture();
+    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 0 });
+    expect(link()).toEqual([]);
+  });
+
+  it("leaves a controller socket alone", async () => {
+    const { relay, sockets } = fixture();
+    const controller = new FakeSocket();
+    controller.serializeAttachment({ cardProtocol: 2, clientVersion: "1.2.0", role: "controller" });
+    sockets.push(controller);
+    expect(await relay.disconnect("machine powered off")).toEqual({ closed: 0 });
+    expect(controller.closed).toBeNull();
   });
 });
