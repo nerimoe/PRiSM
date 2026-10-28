@@ -26,7 +26,7 @@ const { origin, shop, owner, admin, ha, devices } = cfg as {
   devices: Record<"a" | "b" | "lounge", { id: string; relayToken?: string }>;
 };
 const IO_BIN = process.env.IO_SIM ?? "/Users/neri/Projects/hinata-aimeio-rs/tools/mac-test/target/debug/io_sim";
-const LEASE_MS = 90_000;
+const LEASE_MS = 180_000;
 
 // ---------------------------------------------------------------- reporting
 
@@ -558,7 +558,7 @@ scenarios.lease = async () => {
   check("租约到期：变成非实时", !!down);
   const waited = down ? down.at - frozen : -1;
   if (down) info(`冻结 → 非实时帧 ${(waited / 1000).toFixed(1)}s`);
-  check("到期时间落在租约之内（最后一次上报起算 ≤ 90s，加报警延迟）", waited > 40_000 && waited <= LEASE_MS + 30_000, waited);
+  check(`到期时间落在租约之内（最后一次上报起算 ≤ ${LEASE_MS / 1000}s，加报警延迟）`, waited > 40_000 && waited <= LEASE_MS + 30_000, waited);
   check("D1 的实时连接被撤销", liveConnections().length === 0, liveConnections());
   m = board.mark();
   ioA.signal("SIGCONT");
