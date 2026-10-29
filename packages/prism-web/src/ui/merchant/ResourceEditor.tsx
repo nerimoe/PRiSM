@@ -411,7 +411,7 @@ export function ResourceEditor({
         });
         // Whether it is never switched off lives with the shop's idle rules, keyed by device.
         const own = idle.settings?.devices[saved.machine.id];
-        if (caps.power && !!own?.exclude !== idleExclude) {
+        if ((caps.power || caps.climate) && !!own?.exclude !== idleExclude) {
           await api(idlePath(shopId, `/devices/${encodeURIComponent(saved.machine.id)}`), {
             method: "PUT",
             body: JSON.stringify({ exclude: idleExclude }),
@@ -607,6 +607,10 @@ export function ResourceEditor({
               <Hint>{t("与电源控制是同一个 Home Assistant，令牌可以留空，沿用电源的令牌。")}</Hint>
             )}
             <Hint>{t("可选的模式、风速和温度范围以空调实体自己上报的为准。")}</Hint>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={idleExclude} onChange={(e) => setIdleExclude(e.target.checked)} />
+              {t("从不自动关机")}
+            </label>
           </div>
         </CapabilityPane>
       )}
@@ -837,7 +841,7 @@ export function ResourceEditor({
                 {(
                   [
                     ["announceIdle", "设备闲置（关机前提醒）"],
-                    ["announcePower", "开机、关机（含闲置自动关机）"],
+                    ["announcePower", "开机、关机（含空调和闲置自动关机）"],
                     ["announceStarts", "上机（刷卡或投币后开始占用机台）"],
                     ["announceCards", "刷卡"],
                     ["announceCoins", "投币"],

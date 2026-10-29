@@ -9,6 +9,7 @@ import {
   IDLE_SETTINGS_KEY,
   parseIdleSettings,
   planIdle,
+  idleGroups,
   type IdleDevice,
   type Reminder,
 } from "../resources/capabilities/idle-power.js";
@@ -40,7 +41,7 @@ export type IdleNotice = Omit<Reminder, "deviceIds" | "key"> & { devices: Array<
  */
 const HOLD_ACTIONS = Object.values(capabilities)
   .flatMap((spec) => Object.entries(spec.actions))
-  .filter(([name, spec]) => spec?.countsAsPlay && name !== "power.off")
+  .filter(([name, spec]) => (spec?.countsAsPlay || name.startsWith("climate.")) && name !== "power.off" && name !== "climate.off")
   .map(([name]) => name);
 /** Only recent activity can matter; idle times are at most a day. */
 const LOOKBACK_MS = 24 * 60 * 60_000;
@@ -87,13 +88,13 @@ export async function runIdleCheck(input: {
                    THEN 0 ELSE m.occupancy_minutes END AS occupancy_minutes
        FROM machines m
        JOIN device_capabilities c ON c.shop_id = m.shop_id AND c.device_id = m.id
-       WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN ('power', 'climate')`,
+       WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN ('power', 'climate') ORDER BY m.id, c.capability`,
     ).bind(JSON.stringify(heldProviders.map((provider) => provider.capability)), shopId)
       .all<{ id: string; name: string; occupancy_minutes: number; capability: "power" | "climate"; config_json: string }>(),
-    // Whether the idle rule already marked a device idle is the rule's own record, not Home Assistant state.
+    // Room temperature updates the view constantly; only settings move a climate's idle clock.
     db.prepare(
-      "SELECT device_id, value_json FROM device_state WHERE shop_id = ? AND capability = 'power' AND key = 'idle'",
-    ).bind(shopId).all<{ device_id: string; value_json: string }>(),
+      "SELECT device_id, capability, key, value_json, changed_at FROM device_state WHERE shop_id = ? AND (key = 'idle' OR (capability = 'climate' AND key = 'climate'))",
+    ).bind(shopId).all<{ device_id: string; capability: string; key: string; value_json: string; changed_at: string }>(),
     db.prepare(
       `SELECT device_id, MAX(occurred_at) AS at FROM device_events
        WHERE shop_id = ? AND occurred_at >= ?
@@ -110,7 +111,9 @@ export async function runIdleCheck(input: {
     if (!entry) {
       entry = {
         id, name, minutes, hasPower: false, hasClimate: false, power: null, climate: null,
+        powerTarget: null, climateTarget: null, climateChangedAt: null,
         lastActivity: null, busyUntil: null, poweredOnAt: null, idle: false, lastAutoOff: input.memory.lastAutoOff[id] ?? null,
+        lastClimateAutoOff: input.memory.lastAutoOff[`climate:${id}`] ?? null,
       };
       devices.set(id, entry);
     }
@@ -125,7 +128,12 @@ export async function runIdleCheck(input: {
     if (row.capability === "power") entry.hasPower = true;
     else entry.hasClimate = true;
     const target = bound.get(row.id) ?? { id: row.id, capabilities: new Map() };
-    target.capabilities.set(row.capability, { config: (parse(row.config_json) as Record<string, unknown> | null) ?? {} });
+    const config = (parse(row.config_json) as Record<string, unknown> | null) ?? {};
+    target.capabilities.set(row.capability, { config });
+    const binding = typeof config.connectionId === "string" && typeof config.entityId === "string"
+      ? JSON.stringify([config.connectionId, config.entityId]) : null;
+    if (row.capability === "power") entry.powerTarget = binding;
+    else entry.climateTarget = binding;
     bound.set(row.id, target);
   }
   const live = await readShopLiveStates(db, shopId, [...bound.values()], { liveConnections: input.eventConnections });
@@ -140,7 +148,12 @@ export async function runIdleCheck(input: {
   }
   for (const row of idleRows.results) {
     const entry = devices.get(row.device_id);
-    if (entry) entry.idle = parse(row.value_json) === true;
+    if (!entry) continue;
+    if (row.key === "idle" && row.capability === (entry.hasPower ? "power" : "climate")) entry.idle = parse(row.value_json) === true;
+    else if (row.key === "climate" && entry.climate !== null) {
+      const at = Date.parse(row.changed_at);
+      if (Number.isFinite(at)) entry.climateChangedAt = at;
+    }
   }
   for (const row of activityRows.results) {
     const entry = devices.get(row.device_id);
@@ -189,14 +202,19 @@ export async function runIdleCheck(input: {
     }
   };
   const poweredOff: string[] = [];
-  for (const id of plan.powerOff) {
-    memory.lastAutoOff[id] = now;
-    if (await act(id, "power.off")) poweredOff.push(id);
+  for (const group of idleGroups([...devices.values()])) {
+    const planned = group.capability === "power" ? plan.powerOff : plan.climateOff;
+    if (!group.devices.some((device) => planned.includes(device.id))) continue;
+    for (const device of group.devices) memory.lastAutoOff[group.capability === "power" ? device.id : `climate:${device.id}`] = now;
+    // Shared bindings get one command; its retry window applies to every member.
+    if (await act(group.devices[0]!.id, group.capability === "power" ? "power.off" : "climate.off")) {
+      if (group.capability === "power") poweredOff.push(...group.devices.map((device) => device.id));
+    } else memory.emptyHandled = input.memory.emptyHandled;
   }
-  for (const id of plan.climateOff) await act(id, "climate.off");
   for (const [ids, value] of [[plan.markIdle, true], [plan.clearIdle, false]] as const) {
     for (const id of ids) {
-      await bus.setOwned({ device: { id }, capability: "power", key: "idle", value }).catch((error) =>
+      const capability = devices.get(id)?.hasPower ? "power" : "climate";
+      await bus.setOwned({ device: { id }, capability, key: "idle", value }).catch((error) =>
         console.error("Idle mark failed", { shopId, id, error }));
     }
   }
@@ -208,7 +226,7 @@ export async function runIdleCheck(input: {
       devices: reminder.deviceIds.map((id) => ({ id, name: devices.get(id)?.name ?? id })),
     };
   });
-  if (plan.powerOff.length) {
+  if (plan.powerOff.length || plan.climateOff.length) {
     // Check again once the retry window has passed, in case one did not take.
     const retry = now + 10 * 60_000;
     memory.wakeAt = memory.wakeAt === null ? retry : Math.min(memory.wakeAt, retry);

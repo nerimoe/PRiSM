@@ -1833,7 +1833,7 @@
   "设备闲置（关机前提醒）": "A device going idle (warned before it is switched off)",
   "播报群": "Announcement channels",
   "每行一个群号。闲置提醒和店内动态都发到这里。": "One group ID per line. Idle warnings and shop news both go here.",
-  "开机、关机（含闲置自动关机）": "Power on and off (including idle power-offs)",
+  "开机、关机（含空调和闲置自动关机）": "Power on and off (including air conditioners and idle shutdowns)",
   "上机（刷卡或投币后开始占用机台）": "Starting on a machine (after a card or a coin)",
   "刷卡或投币同时上机时只发一条：开了「上机」就按上机播报，否则按刷卡或投币播报。提前量为 0 时不做闲置提醒。通过这个 Bot 自己的命令做的操作不会再播报一遍。": "A card or a coin that also starts someone sends one message: a start when starts are announced, otherwise the swipe or the coin. With a lead of 0 there is no idle warning. What this bot's own commands did is not announced again.",
   "建议改为直连": "Switch to a direct connection",

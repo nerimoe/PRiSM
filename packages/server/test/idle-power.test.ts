@@ -7,6 +7,7 @@ const NOW = 1_800_000_000_000;
 const device = (over: Partial<IdleDevice> = {}): IdleDevice => ({
   // 20 minutes busy after a sign of someone, then the shop's default 10 minutes free.
   id: "m1", name: "舞萌", minutes: 20, hasPower: true, hasClimate: false, power: "on", climate: null,
+  powerTarget: null, climateTarget: null, climateChangedAt: null, lastClimateAutoOff: null,
   lastActivity: null, busyUntil: null, poweredOnAt: NOW - 5 * MIN, idle: false, lastAutoOff: null, ...over,
 });
 const inputs = (over: Omit<Partial<IdleInputs>, "settings"> & { settings?: unknown } = {}): IdleInputs => ({
@@ -15,6 +16,75 @@ const inputs = (over: Omit<Partial<IdleInputs>, "settings"> & { settings?: unkno
 });
 
 describe("idle power planning", () => {
+  const shared = (over: Partial<IdleDevice> = {}) => [
+    device({ powerTarget: "ha-1|switch.shared", poweredOnAt: NOW - 60 * MIN }),
+    device({ id: "m2", name: "中二", powerTarget: "ha-1|switch.shared", poweredOnAt: NOW - 60 * MIN, ...over }),
+  ];
+  const offSettings = { device: { enabled: true, minutes: 10, whileOccupied: "off" } };
+
+  it("uses the latest shared resource's free time for one warning and a common deadline", () => {
+    const devices = shared({ lastActivity: NOW - 25 * MIN });
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
+    expect(plan).toMatchObject({ powerOff: [], powerOffAt: { m1: NOW + 5 * MIN, m2: NOW + 5 * MIN }, nextWake: NOW + 5 * MIN });
+    expect(plan.remind).toEqual([{ key: "device:m1", reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 5 * MIN }]);
+    const due = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN }));
+    expect(due.powerOff).toEqual(["m1", "m2"]);
+  });
+
+  for (const activeEntries of [0, 1]) it(`protects every shared resource while one is occupied, active entries=${activeEntries}`, () => {
+    const plan = planIdle(inputs({
+      settings: { ...offSettings, shopEmpty: { enabled: true, minutes: 15 } }, activeEntries,
+      emptySince: NOW - 60 * MIN, devices: shared({ busyUntil: Infinity }), reminderLeadMs: 5 * MIN,
+    }));
+    expect(plan).toMatchObject({ powerOff: [], remind: [], powerOffAt: {}, nextWake: null });
+    expect(plan.emptyHandled).toBeNull();
+  });
+
+  for (const activeEntries of [0, 1]) it(`an excluded resource protects its whole supply, active entries=${activeEntries}`, () => {
+    const plan = planIdle(inputs({
+      settings: { ...offSettings, shopEmpty: { enabled: true }, devices: { m2: { exclude: true } } },
+      activeEntries, emptySince: NOW - 60 * MIN, devices: shared(), reminderLeadMs: 5 * MIN,
+    }));
+    expect(plan).toMatchObject({ powerOff: [], remind: [], powerOffAt: {} });
+  });
+
+  it("does not combine equal entity ids belonging to different HA connections", () => {
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1,
+      devices: shared({ powerTarget: "ha-2|switch.shared", busyUntil: Infinity }) }));
+    expect(plan.powerOff).toEqual(["m1"]);
+  });
+
+  it("shares the retry window across resources on one supply", () => {
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: shared({ lastAutoOff: NOW - MIN }) }));
+    expect(plan).toMatchObject({ powerOff: [], nextWake: NOW - MIN + RETRY_OFF_MS });
+  });
+
+  it("defers the empty-shop shutdown and its warning until the shared supply is free", () => {
+    const devices = shared({ busyUntil: NOW + 4 * MIN });
+    const settings = { shopEmpty: { enabled: true, minutes: 15 } };
+    const plan = planIdle(inputs({ settings, emptySince: NOW - 60 * MIN, devices, reminderLeadMs: 5 * MIN }));
+    expect(plan).toMatchObject({ powerOff: [], powerOffAt: { m1: NOW + 4 * MIN, m2: NOW + 4 * MIN }, nextWake: NOW + 4 * MIN, emptyHandled: null });
+    expect(plan.remind).toEqual([expect.objectContaining({ reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 4 * MIN })]);
+    expect(planIdle(inputs({ settings, emptySince: NOW - 60 * MIN, devices, now: NOW + 4 * MIN })).powerOff).toEqual(["m1", "m2"]);
+  });
+
+  it("warns and switches off shared air conditioners using their own settings clock", () => {
+    const devices = ["m1", "m2"].map((id) => device({ id, hasPower: false, hasClimate: true, power: null,
+      climate: "cool", climateTarget: "ha-1|climate.shared", climateChangedAt: NOW - 25 * MIN }));
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
+    expect(plan).toMatchObject({ powerOff: [], climateOff: [], powerOffAt: { m1: NOW + 5 * MIN, m2: NOW + 5 * MIN } });
+    expect(plan.remind).toEqual([{ key: "climate:m1", reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 5 * MIN }]);
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["m1", "m2"]);
+    devices[1]!.lastClimateAutoOff = NOW;
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
+  });
+
+  it("keeps a resource's power and air conditioner on separate idle clocks", () => {
+    const devices = [device({ hasClimate: true, climate: "heat", poweredOnAt: NOW - 60 * MIN, climateChangedAt: NOW - MIN })];
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices }));
+    expect(plan).toMatchObject({ powerOff: ["m1"], climateOff: [] });
+  });
+
   it("does nothing until the shop turns a rule on", () => {
     const plan = planIdle(inputs({ emptySince: NOW - 60 * MIN }));
     expect(plan).toMatchObject({ powerOff: [], climateOff: [], markIdle: [], nextWake: null });
@@ -22,7 +92,7 @@ describe("idle power planning", () => {
 
   it("switches everything off, air conditioners included, once the shop has been empty long enough", () => {
     const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const devices = [device(), device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool" }), device({ id: "off", power: "off" })];
+    const devices = [device({ poweredOnAt: NOW - 40 * MIN }), device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool", climateChangedAt: NOW - 40 * MIN }), device({ id: "off", power: "off" })];
     const early = planIdle(inputs({ settings, devices, emptySince: NOW - 10 * MIN }));
     expect(early.powerOff).toEqual([]);
     expect(early.nextWake).toBe(NOW + 5 * MIN);
@@ -93,7 +163,7 @@ describe("idle power planning", () => {
     const marked = planIdle(inputs({ settings: { device: { enabled: true } }, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 25 * MIN })] }));
     expect(marked.powerOffAt).toEqual({});
     // An empty shop switches everything off on its own deadline.
-    const empty = planIdle(inputs({ settings: { shopEmpty: { enabled: true, minutes: 15 } }, emptySince: NOW - 10 * MIN }));
+    const empty = planIdle(inputs({ settings: { shopEmpty: { enabled: true, minutes: 15 } }, devices: [device({ poweredOnAt: NOW - 40 * MIN })], emptySince: NOW - 10 * MIN }));
     expect(empty.powerOffAt).toEqual({ m1: NOW + 5 * MIN });
   });
 
@@ -118,7 +188,7 @@ describe("idle power planning", () => {
   it("switches a device off without knowing its state, as an unknown one may be on", () => {
     const settings = { shopEmpty: { enabled: true, minutes: 15 } };
     const devices = [
-      device({ power: null }),
+      device({ power: null, poweredOnAt: null }),
       device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: null }),
       device({ id: "known-off", power: "off" }),
     ];
@@ -143,12 +213,13 @@ describe("idle power planning", () => {
 
   it("reminds the bot once, its lead time before the power-off", () => {
     const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const before = planIdle(inputs({ settings, emptySince: NOW - 5 * MIN, reminderLeadMs: 5 * MIN }));
+    const devices = [device({ poweredOnAt: NOW - 40 * MIN })];
+    const before = planIdle(inputs({ settings, devices, emptySince: NOW - 5 * MIN, reminderLeadMs: 5 * MIN }));
     expect(before.remind).toEqual([]);
     expect(before.nextWake).toBe(NOW + 5 * MIN);
-    const due = planIdle(inputs({ settings, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN }));
+    const due = planIdle(inputs({ settings, devices, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN }));
     expect(due.remind).toEqual([{ key: `empty:${NOW - 11 * MIN}`, reason: "shop_empty", deviceIds: ["m1"], at: NOW + 4 * MIN }]);
-    const again = planIdle(inputs({ settings, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN, reminded: { [due.remind[0]!.key]: due.remind[0]!.at } }));
+    const again = planIdle(inputs({ settings, devices, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN, reminded: { [due.remind[0]!.key]: due.remind[0]!.at } }));
     expect(again.remind).toEqual([]);
   });
 

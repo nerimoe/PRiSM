@@ -8,6 +8,7 @@ import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
 import type { ShopEvent } from "../resources/shop-events.js";
+import { climatePower } from "../resources/capabilities/idle-power.js";
 import {
   climateState,
   deviceView,
@@ -1500,10 +1501,17 @@ export class ShopHub extends BaseDurableObject<Env> {
       const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
       applied[key] = next;
       const at = item.last_changed ? new Date(item.last_changed) : undefined;
-      if (announcePower && (previous?.state === "on" || previous?.state === "off")
-        && (next.state === "on" || next.state === "off") && previous.state !== next.state) {
-        const deviceIds = (targets[key] ?? []).filter((target) => target.capability === "power").map((target) => target.deviceId);
-        if (deviceIds.length) powerChanges.push({ deviceIds, state: next.state, at: (at ?? new Date()).toISOString() });
+      if (announcePower && previous) {
+        const deviceIds: string[] = [];
+        let state: "on" | "off" | null = null;
+        for (const target of targets[key] ?? []) {
+          const before = target.capability === "climate" ? climatePower(previous.state)
+            : previous.state === "on" || previous.state === "off" ? previous.state : null;
+          const after = target.capability === "climate" ? climatePower(next.state)
+            : next.state === "on" || next.state === "off" ? next.state : null;
+          if (before && after && before !== after) { deviceIds.push(target.deviceId); state = after; }
+        }
+        if (state) powerChanges.push({ deviceIds: [...new Set(deviceIds)], state, at: (at ?? new Date()).toISOString() });
       }
       for (const target of targets[key] ?? []) {
         const device = { id: target.deviceId };
@@ -1523,8 +1531,12 @@ export class ShopHub extends BaseDurableObject<Env> {
           // The page shows room temperature too, so it gets every change and the
           // log only gets the setting.
           writes.push({ device, capability: "climate", key: "view", value: view, quiet: true, ...(at ? { at } : {}) });
-          if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next)))
-            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(at ? { at } : {}) });
+          if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next))) {
+            // HA leaves last_changed alone when only temperature or fan settings change.
+            const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
+            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
+            if (previous) powerMoved = true;
+          }
           pushes.push([target.deviceId, { type: "state", climate: view }]);
         }
       }

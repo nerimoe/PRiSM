@@ -168,6 +168,37 @@ describe("HA-confirmed power announcements", () => {
     } finally { sqlite.close(); }
   });
 
+  it("announces shared air conditioners only when switching between off and running modes", async () => {
+    const { hub, sockets, sqlite, connectionId } = await fixture({ climate: true });
+    const events: any[] = [];
+    connectBot(sockets, (event) => events.push(event));
+    try {
+      sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,aliases_json) VALUES (?,'m4','pub-m4','m4','[]')", [SHOP]);
+      sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) SELECT shop_id,'m4',capability,config_json,secret_json,created_at,updated_at FROM device_capabilities WHERE device_id='m3'");
+      await hub.relayOnline(SHOP, "a", "chan-a");
+      await hub.relayOnline(SHOP, "b", "chan-b");
+      const report = (mode: string, minute: number, full = false, watcher = "a", term = 1) => hub.haReport(SHOP, watcher,
+        states(term, connectionId, [["climate.c", mode, `2026-10-21T09:0${minute}:00.000Z`]], full));
+      await report("off", 0, true);
+      await report("off", 0, true, "b", 2);
+      expect(events).toEqual([]);
+      await Promise.all([report("cool", 1), report("cool", 1, false, "b", 2)]);
+      await report("heat", 2);
+      await hub.haReport(SHOP, "a", states(1, connectionId,
+        [["climate.c", "heat", "2026-10-21T09:02:00.000Z", "2026-10-21T09:03:00.000Z", { temperature: 24, current_temperature: 27 }]], false));
+      expect(events).toHaveLength(1);
+      await report("off", 4);
+      await report("unavailable", 5);
+      await report("cool", 6);
+      await report("unknown", 7);
+      await report("heat", 8);
+      expect(events).toEqual(["on", "off"].map((state, index) => ({
+        kind: "power", resourceId: "m3", resourceName: "m3、m4", state, by: "ha", player: null,
+        at: `2026-10-21T09:0${index ? 4 : 1}:00.000Z`,
+      })));
+    } finally { sqlite.close(); }
+  });
+
   it("does not announce snapshots, unready or stale watchers, unknown states or changes during a disconnect", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture();
     const events: any[] = [];
@@ -762,7 +793,7 @@ describe("ShopHub watchers", () => {
   });
 
   it("keeps an air conditioner's full view up to date but logs only its setting", async () => {
-    const { hub, facts, changes, connectionId } = await fixture({ climate: true });
+    const { hub, facts, changes, connectionId, sqlite, state } = await fixture({ climate: true });
     await hub.relayOnline(SHOP, "a", "chan-a");
     const attributes = (current: number, temperature = 24) => ({
       hvac_modes: ["off", "cool"], temperature, current_temperature: current, fan_mode: "low", fan_modes: ["auto", "low"],
@@ -774,9 +805,13 @@ describe("ShopHub watchers", () => {
     await hub.haReport(SHOP, "a", states(1, connectionId, [["climate.c", "cool", NOON, "2026-10-21T09:01:00.000Z", attributes(28)]], false));
     expect((await facts("m3")).climate).toMatchObject({ currentTemperature: 28 });
     expect(changes("climate")).toHaveLength(1);
+    expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe(NOON);
+    state.delete("touchAt");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["climate.c", "cool", NOON, "2026-10-21T09:02:00.000Z", attributes(28, 22)]], false));
     expect((await facts("m3")).climate).toMatchObject({ temperature: 22 });
     expect(changes("climate")).toHaveLength(2);
+    expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe("2026-10-21T09:02:00.000Z");
+    expect(state.has("touchAt")).toBe(true);
   });
 
   it("rewrites every fact after the devices an entity drives changed, without un-announcing the connection", async () => {

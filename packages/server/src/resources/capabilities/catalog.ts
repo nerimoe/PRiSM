@@ -146,7 +146,7 @@ export const climate: CapabilitySpec<HaEntityConfig> = {
     "climate.set_fan_mode": climateAction,
   },
   signals: {},
-  state: { climate: { authority: "external" } },
+  state: { climate: { authority: "external" }, idle: { authority: "owned" } },
   available: (_action, config, secrets) => haBound(config, secrets),
 };
 

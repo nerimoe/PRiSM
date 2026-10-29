@@ -670,7 +670,7 @@ function ResourceCard({
           {(caps.power || caps.climate) && (
             <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
           )}
-          {caps.power && powerOffAt && state?.power !== "off" && <IdleCountdown at={powerOffAt} />}
+          {powerOffAt && ((caps.power && state?.power !== "off") || (caps.climate && state?.climate?.mode !== "off")) && <IdleCountdown at={powerOffAt} />}
           {[
             ...(isDirectConnect(device) ? [{ kind: "io", online: device.relayOnline, up: "机台在线", down: "机台离线" }] : []),
             ...(caps.bot ? [{ kind: "bot", online: device.botOnline, up: "Bot 在线", down: "Bot 离线" }] : []),

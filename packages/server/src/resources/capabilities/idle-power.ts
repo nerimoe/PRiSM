@@ -4,10 +4,9 @@
  * the plan and wakes for the next deadline.
  *
  * Two rules, both off until the shop turns them on:
- * - **Shop empty**: no active entry for N minutes, then every powered device
- *   and every air conditioner is switched off. Nobody is billed, so this rule
- *   never needs to know who is playing what.
- * - **Device idle**: a device with power that has been free for the shop's
+ * - **Shop empty**: no active entry for N minutes, then every free powered device
+ *   and air conditioner is switched off, respecting occupancy and holds.
+ * - **Device idle**: a powered device or air conditioner free for the shop's
  *   idle time. While the shop has players the owner chooses what happens: only
  *   mark it idle or switch it off, with an optional advance warning by the bot.
  *
@@ -76,6 +75,9 @@ export type IdleDevice = {
   name: string;
   hasPower: boolean;
   hasClimate: boolean;
+  /** The physical HA binding; unshared when a legacy binding has no connection id. */
+  powerTarget: string | null;
+  climateTarget: string | null;
   /** Current power; null when nothing watches the device, or its source reports it unavailable. */
   power: "on" | "off" | null;
   /** Climate mode; anything other than "off" is running. Null when unknown. */
@@ -91,9 +93,30 @@ export type IdleDevice = {
   busyUntil: number | null;
   /** When it was last seen switching on, in ms. */
   poweredOnAt: number | null;
+  climateChangedAt: number | null;
   idle: boolean;
   lastAutoOff: number | null;
+  lastClimateAutoOff: number | null;
 };
+
+/** Unknown HA modes must not look like an air conditioner switching on. */
+export function climatePower(state: string | null): "on" | "off" | null {
+  return !state || state === "unknown" || state === "unavailable" ? null : state === "off" ? "off" : "on";
+}
+
+/** One physical actuator, with every resource that would be affected by switching it off. */
+export function idleGroups(devices: IdleDevice[]) {
+  const groups = new Map<string, { capability: "power" | "climate"; devices: IdleDevice[] }>();
+  for (const device of devices) for (const capability of ["power", "climate"] as const) {
+    if (!(capability === "power" ? device.hasPower : device.hasClimate)) continue;
+    const target = capability === "power" ? device.powerTarget : device.climateTarget;
+    const key = JSON.stringify([capability, target ?? device.id]);
+    const group = groups.get(key) ?? { capability, devices: [] };
+    group.devices.push(device);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
 
 export type IdleInputs = {
   now: number;
@@ -129,11 +152,6 @@ export type IdlePlan = {
   powerOffAt: Record<string, number>;
 };
 
-/** Whether the device rule looks at this device at all. */
-function watchedForIdle(settings: IdleSettings, device: Pick<IdleDevice, "id">): boolean {
-  return settings.device.enabled && !settings.devices[device.id]?.exclude;
-}
-
 export function planIdle(input: IdleInputs): IdlePlan {
   const { now, settings } = input;
   const plan: IdlePlan = {
@@ -148,7 +166,7 @@ export function planIdle(input: IdleInputs): IdlePlan {
     powerOffAt: {},
   };
   const wake = (at: number) => {
-    if (at > now && (plan.nextWake === null || at < plan.nextWake)) plan.nextWake = at;
+    if (Number.isFinite(at) && at > now && (plan.nextWake === null || at < plan.nextWake)) plan.nextWake = at;
   };
   const remindBefore = (key: string, reason: Reminder["reason"], deviceIds: string[], deadline: number) => {
     if (input.reminderLeadMs === null || !deviceIds.length) return;
@@ -156,68 +174,96 @@ export function planIdle(input: IdleInputs): IdlePlan {
     if (now >= at && now < deadline && input.reminded[key] !== deadline) plan.remind.push({ key, reason, deviceIds, at: deadline });
     else if (now < at) wake(at);
   };
-  const excluded = (device: IdleDevice) => settings.devices[device.id]?.exclude === true;
-  const canRetry = (device: IdleDevice) => device.lastAutoOff === null || now - device.lastAutoOff >= RETRY_OFF_MS;
-
+  const groups = idleGroups(input.devices).map((group) => {
+    const power = group.devices.map((d) => group.capability === "power" ? d.power : climatePower(d.climate));
+    const changedAt = Math.max(...group.devices.map((d) => (group.capability === "power" ? d.poweredOnAt : d.climateChangedAt) ?? 0));
+    const activity = Math.max(...group.devices.map((d) => d.lastActivity ?? 0));
+    const attempted = Math.max(...group.devices.map((d) => (group.capability === "power" ? d.lastAutoOff : d.lastClimateAutoOff) ?? 0));
+    const state = power.includes("on") ? "on" : power.every((state) => state === "off") ? "off" : null;
+    return {
+      ...group,
+      ids: group.devices.map((d) => d.id),
+      state,
+      excluded: group.devices.some((d) => settings.devices[d.id]?.exclude),
+      free: Math.max(...group.devices.map((d) => Math.max(
+        (Math.max(d.lastActivity ?? 0, changedAt) || (state === "on" ? now : 0)) + d.minutes * 60_000, d.busyUntil ?? 0,
+      ))),
+      activity, attempted,
+      canRetry: !attempted || now - attempted >= RETRY_OFF_MS,
+    };
+  });
+  const turnOff = (group: typeof groups[number]) => {
+    (group.capability === "power" ? plan.powerOff : plan.climateOff).push(...group.ids);
+  };
+  const countdown = (group: typeof groups[number], deadline: number) => {
+    for (const id of group.ids) plan.powerOffAt[id] = Math.min(plan.powerOffAt[id] ?? Infinity, deadline);
+  };
   const empty = input.activeEntries === 0;
   if (settings.shopEmpty.enabled && empty) {
     const since = input.emptySince ?? now;
     plan.emptySince = since;
     plan.emptyHandled = input.emptyHandled;
-    const deadline = since + settings.shopEmpty.minutes * 60_000;
-    // An unknown state (nothing watches the device) is treated as possibly on:
-    // switching off a device that is already off does no harm.
-    const powered = input.devices.filter((d) => d.hasPower && d.power !== "off" && !excluded(d));
-    const cooling = input.devices.filter((d) => d.hasClimate && d.climate !== "off" && !excluded(d));
     if (input.emptyHandled !== since) {
-      if (now >= deadline) {
-        plan.powerOff.push(...powered.filter(canRetry).map((d) => d.id));
-        plan.climateOff.push(...cooling.map((d) => d.id));
-        plan.emptyHandled = since;
-      } else {
-        wake(deadline);
-        for (const d of powered) plan.powerOffAt[d.id] = deadline;
-        remindBefore(`empty:${since}`, "shop_empty", [...new Set([...powered, ...cooling].map((d) => d.id))], deadline);
+      let pending = false;
+      const warnings = new Map<number, string[]>();
+      for (const group of groups) {
+        if (group.excluded || group.state === "off") continue;
+        // An occupied or recently used shared supply must not be cut by the shop rule either.
+        const deadline = Math.max(since + settings.shopEmpty.minutes * 60_000, group.free);
+        if (now < deadline) {
+          pending = true;
+          wake(deadline);
+          if (Number.isFinite(deadline)) {
+            countdown(group, deadline);
+            warnings.set(deadline, [...(warnings.get(deadline) ?? []), ...group.ids]);
+          }
+        } else if (group.canRetry) turnOff(group);
+        else { pending = true; wake(group.attempted + RETRY_OFF_MS); }
       }
+      for (const [deadline, ids] of warnings) {
+        const deferred = deadline !== since + settings.shopEmpty.minutes * 60_000;
+        remindBefore(deferred ? `empty:${since}:${deadline}` : `empty:${since}`, deferred ? "device_idle" : "shop_empty", [...new Set(ids)], deadline);
+      }
+      if (!pending) plan.emptyHandled = since;
     }
   } else if (empty) {
     plan.emptySince = input.emptySince ?? now;
   }
 
-  for (const device of input.devices) {
+  for (const group of groups) {
     // Without a known state the device's own activity is the only clock, and it
     // is switched off once per stretch of idleness: nothing shows whether it took.
-    const blind = device.power === null;
-    const handled = blind && device.lastAutoOff !== null && device.lastAutoOff >= (device.lastActivity ?? 0);
-    if (!device.hasPower || device.power === "off" || !watchedForIdle(settings, device) || (blind && (device.lastActivity === null || handled))) {
-      if (device.idle) plan.clearIdle.push(device.id);
+    const blind = group.state === null;
+    const handled = blind && group.attempted > 0 && group.attempted >= group.activity;
+    if (group.excluded || group.state === "off" || !settings.device.enabled || (blind && (!group.activity || handled))) {
+      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
-    const since = Math.max(device.lastActivity ?? 0, device.poweredOnAt ?? 0) || now;
     // Never idle while occupied: an occupant without an expiry holds it indefinitely.
-    if (device.busyUntil === Infinity) {
-      if (device.idle) plan.clearIdle.push(device.id);
+    if (group.free === Infinity) {
+      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
     // Free once nothing keeps it busy; idle after the idle time free.
-    const free = Math.max(since + device.minutes * 60_000, device.busyUntil ?? 0);
-    const deadline = free + settings.device.minutes * 60_000;
+    const deadline = group.free + settings.device.minutes * 60_000;
     const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
     if (now < deadline) {
-      if (device.idle) plan.clearIdle.push(device.id);
+      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       wake(deadline);
       // Counting down once nothing keeps it busy, where the rule would switch it off.
-      if (now >= free && switchesOff) plan.powerOffAt[device.id] = deadline;
+      if (now >= group.free && switchesOff) countdown(group, deadline);
       if (switchesOff)
-        remindBefore(`device:${device.id}`, "device_idle", [device.id], deadline);
+        remindBefore(`${group.capability === "power" ? "device" : "climate"}:${group.ids[0]}`, "device_idle", group.ids, deadline);
       continue;
     }
-    if (plan.powerOff.includes(device.id)) continue;
+    if ((group.capability === "power" ? plan.powerOff : plan.climateOff).includes(group.ids[0]!)) continue;
     // With nobody in, the device rule switches off unless the shop rule is
     // about to; with players in, the owner's choice applies.
-    if (!device.idle) plan.markIdle.push(device.id);
-    if (switchesOff && canRetry(device)) plan.powerOff.push(device.id);
-    if (switchesOff && !canRetry(device)) wake(device.lastAutoOff! + RETRY_OFF_MS);
+    plan.markIdle.push(...group.devices.filter((d) => !d.idle).map((d) => d.id));
+    if (switchesOff && group.canRetry) turnOff(group);
+    if (switchesOff && !group.canRetry) wake(group.attempted + RETRY_OFF_MS);
   }
+  plan.clearIdle = [...new Set(plan.clearIdle)];
+  plan.markIdle = [...new Set(plan.markIdle)].filter((id) => !plan.clearIdle.includes(id));
   return plan;
 }

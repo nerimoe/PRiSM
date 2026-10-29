@@ -163,7 +163,17 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
       const all = targets.length > 1;
       const parentId = all ? deps.id() : undefined;
       const outcomes = [];
+      const switched = new Set<string>();
       for (const { device, action: targetAction } of targets) {
+        // Keep authorization above for every resource, but switch each shared actuator once.
+        if (["power.on", "power.off", "climate.on", "climate.off"].includes(targetAction)) {
+          const config = device.capabilities.get(targetAction.startsWith("power.") ? "power" : "climate")?.config;
+          if (typeof config?.connectionId === "string" && typeof config.entityId === "string") {
+            const key = JSON.stringify([targetAction, config.connectionId, config.entityId]);
+            if (switched.has(key)) continue;
+            switched.add(key);
+          }
+        }
         outcomes.push(
           await bus.perform({
             device,
