@@ -51,6 +51,7 @@ import {
   applyBoardFrame,
   hasUnwatched,
   learnBoardState,
+  lostConnections,
   mergeBoardStates,
   type BoardFrame,
   type BoardState,
@@ -114,6 +115,8 @@ export function ResourcesPage() {
   const [watchers, setWatchers] = useState<BoardWatchers | null>(null);
   const [statesFailed, setStatesFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  /** The Home Assistant connections the hub last said are live. */
+  const liveNow = useRef<Set<string>>(new Set());
   // Whether the devices with no state of their own have been read since the board opened.
   const [firstRead, setFirstRead] = useState(false);
   const askedRef = useRef(false);
@@ -199,7 +202,12 @@ export function ResourcesPage() {
     hasStateDevices,
     useCallback((frame: BoardFrame) => {
       if (frame.type === "watchers") setWatchers(frame);
-      else setStates((previous) => applyBoardFrame(previous, frame));
+      else {
+        // Which Home Assistant connections are live rides on every board update; it is
+        // what says whether a device's silence is a connection going quiet.
+        if (frame.type === "states") liveNow.current = new Set(frame.liveConnections);
+        setStates((previous) => applyBoardFrame(previous, frame));
+      }
     }, []),
   );
   // A device with no state of its own is read once, as soon as the board knows which they are.
@@ -208,27 +216,23 @@ export function ResourcesPage() {
     void readStates();
   }, [states, readStates]);
   /**
-   * A device that stops being watched is only marked not-live; its last known
-   * value would otherwise stay on screen and read as if it were current. Read
-   * once per change, so a device dropping out of live mode is followed by a
-   * fresh look rather than by a label change alone.
+   * A Home Assistant connection going quiet leaves every device bound to it
+   * showing a value that was true a moment ago. The hub says which connections
+   * are live with each board update, so the change is noticed once, however many
+   * devices share that connection, and the shop is read once.
+   *
+   * A connection coming back needs no read: the hub is about to push what it
+   * sees. Nor does the first board update: it is what the board opened with.
    */
-  const unwatched = states === null ? null : new Set(
-    Object.entries(states).filter(([, view]) => !view.watching).map(([id]) => id),
-  );
-  const wasWatched = useRef<Set<string> | null>(null);
+  const liveBefore = useRef<string[] | null>(null);
   useEffect(() => {
-    if (states === null || unwatched === null) { wasWatched.current = null; return; }
-    const before = wasWatched.current;
-    wasWatched.current = new Set(Object.entries(states).filter(([, view]) => view.watching).map(([id]) => id));
-    // Only a device that was live and no longer is: the page is holding a value
-    // that was true a moment ago and would go on being shown as if it still were.
-    // A device becoming live needs no read — the hub is about to push its state.
-    if (!before) return;
-    const dropped = [...before].filter((id) => unwatched.has(id));
-    if (!dropped.length) return;
+    if (states === null) { liveBefore.current = null; return; }
+    const now = [...liveNow.current];
+    const lost = lostConnections(liveBefore.current, now);
+    liveBefore.current = now;
+    if (!lost.length) return;
     void readStates();
-  }, [states, unwatched, readStates]);
+  }, [states, readStates]);
   // If the hub gives the board no state (it cannot connect, or says nothing), read it over HTTP.
   const unread = states === null;
   useEffect(() => {

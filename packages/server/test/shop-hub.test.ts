@@ -646,7 +646,7 @@ describe("ShopHub device pages", () => {
   it("gives a board the whole shop when it connects, whether or not anything is watched", async () => {
     const { hub, sockets, connectionId } = await fixture({ climate: true });
     await openBoard(hub);
-    expect((sockets[0] as PageSocket).sent).toEqual([{ type: "states", states: { m1: idle, m2: idle, m3: idle } }]);
+    expect((sockets[0] as PageSocket).sent).toEqual([{ type: "states", states: { m1: idle, m2: idle, m3: idle }, liveConnections: [] }]);
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
     await openBoard(hub);
@@ -658,6 +658,7 @@ describe("ShopHub device pages", () => {
         m2: { watching: true, power: "off", climate: null },
         m3: { watching: true, power: null, climate: null },
       },
+      liveConnections: [connectionId],
     }]);
   });
 
@@ -671,14 +672,18 @@ describe("ShopHub device pages", () => {
     // Nothing is live until the connection is announced, so the first snapshot is not a change per
     // device: the board gets the whole shop, with the values, once.
     expect(board.sent.slice(1)).toEqual([
-      { type: "states", states: { m1: { watching: true, power: "on", climate: null }, m2: { watching: true, power: "off", climate: null } } },
+      {
+        type: "states",
+        states: { m1: { watching: true, power: "on", climate: null }, m2: { watching: true, power: "off", climate: null } },
+        liveConnections: [connectionId],
+      },
     ]);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
     expect(board.sent.at(-1)).toEqual({ type: "state", power: "off", deviceId: "m1" });
     expect(board.sent).toHaveLength(3);
     // The connection stops being watched: the board is told which devices are no longer live.
     await hub.relayOffline(SHOP, "a");
-    expect(board.sent.at(-1)).toEqual({ type: "states", states: { m1: idle, m2: idle } });
+    expect(board.sent.at(-1)).toEqual({ type: "states", states: { m1: idle, m2: idle }, liveConnections: [] });
   });
 
   it("pushes and records a change once when two watchers report it at the same moment", async () => {

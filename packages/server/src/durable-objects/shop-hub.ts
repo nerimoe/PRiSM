@@ -313,10 +313,21 @@ export class ShopHub extends BaseDurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Every device of the shop with its stored facts, as the board's `states` frame; null if it cannot be read. */
-  private async boardSnapshot(shopId: string): Promise<{ type: "states"; states: Record<string, unknown> } | null> {
+  /**
+   * Every device of the shop with its stored facts, as the board's `states`
+   * frame; null if it cannot be read.
+   *
+   * `liveConnections` travels with it because liveness belongs to a Home
+   * Assistant connection, not to a device: one connection going quiet takes
+   * every device bound to it out of live mode at once, and a board that wants to
+   * react to that should see one change rather than one per device.
+   */
+  private async boardSnapshot(
+    shopId: string,
+  ): Promise<{ type: "states"; states: Record<string, unknown>; liveConnections: string[] } | null> {
     try {
-      return { type: "states", states: (await readBoardStates(this.env.DB, shopId)).states };
+      const { states, liveConnections } = await readBoardStates(this.env.DB, shopId);
+      return { type: "states", states, liveConnections };
     } catch (error) {
       console.error("Shop hub board snapshot failed", error);
       return null;

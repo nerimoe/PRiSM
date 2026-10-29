@@ -35,6 +35,21 @@ export function mergeBoardStates(next: BoardStates, previous: BoardStates | null
   return merged;
 }
 
+/**
+ * Whether a board update means a Home Assistant connection went quiet.
+ *
+ * Liveness belongs to the connection, not to a device: when one stops being
+ * watched every device bound to it stops being live at once, so the change is
+ * reported once here however many devices share it. Gained connections are not
+ * a reason to read anything — the hub is about to push what it sees — and
+ * neither is the first update, which is what the board opened with.
+ */
+export function lostConnections(before: readonly string[] | null, now: readonly string[]): string[] {
+  if (!before) return [];
+  const live = new Set(now);
+  return before.filter((id) => !live.has(id));
+}
+
 /** Whether a refresh has anything to do: some device has no state of its own. */
 export function hasUnwatched(states: BoardStates | null): boolean {
   return !!states && Object.values(states).some((state) => !state.watching);
@@ -54,7 +69,7 @@ export type BoardWatchers = { limit: number; max: number; watchers: BoardWatcher
 /** A frame the shop hub pushes to the board. */
 export type BoardFrame =
   /** The whole shop: when the board connects, and again whenever which devices are live changes. */
-  | { type: "states"; states: BoardStates }
+  | { type: "states"; states: BoardStates; liveConnections: string[] }
   /** A live device's state changed; a key that is absent was not part of the change. */
   | { type: "state"; deviceId: string; power?: "on" | "off" | null; climate?: ClimateState | null }
   /** Who is watching, when the board connects and whenever that changes. */
@@ -101,7 +116,13 @@ export function parseBoardFrame(raw: string): BoardFrame | null {
         climate: isRecord(value.climate) ? (value.climate as ClimateState) : null,
       };
     }
-    return { type: "states", states };
+    return {
+      type: "states",
+      states,
+      liveConnections: Array.isArray(frame.liveConnections)
+        ? frame.liveConnections.filter((id): id is string => typeof id === "string")
+        : [],
+    };
   }
   if (frame.type === "state" && typeof frame.deviceId === "string") {
     return {

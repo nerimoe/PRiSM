@@ -59,14 +59,17 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   const exceptions = [], calls = [], sockets = [], received = [], puts = [];
   page.on("pageerror", (error) => exceptions.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") exceptions.push(message.text()); });
+  // Each device sits on its own Home Assistant connection here, so a device going
+  // quiet is a connection going quiet.
   const snapshot = {
     cab: { watching: true, power: "off", climate: view },
     io: watchedIo ? { watching: true, power: "on", climate: null } : nothing,
   };
+  const connections = watchedIo ? ["ha_cab", "ha_io"] : ["ha_cab"];
   await page.routeWebSocket(/\/api\/v1\/merchant\/machines\/ws/, (ws) => {
     sockets.push({ ws, url: ws.url() });
     ws.onMessage((message) => received.push(String(message)));
-    if (!silentHub) ws.send(JSON.stringify({ type: "states", states: snapshot }));
+    if (!silentHub) ws.send(JSON.stringify({ type: "states", states: snapshot, liveConnections: connections }));
   });
   await page.route("**/api/**", async (route) => {
     const request = route.request(), url = new URL(request.url()), p = url.pathname;
@@ -185,17 +188,21 @@ async function operate(page, name, button) {
       assert.equal(await refresh.isEnabled(), true, "A device with no state of its own remains to refresh");
       await page.screenshot({ path: `${output}/device-board-refreshed-${label}.png`, fullPage: true });
 
-      // Which devices are live changes: the hub sends the whole board again. What a device last showed
-      // stays; only its tag changes.
+      // Which devices are live changes: the hub sends the whole board again. A device that stops
+      // being live is read once, so its card shows what Home Assistant says now instead of a value
+      // that was only true when it was still watched.
+      const beforeSwitch = stateReads(calls).length;
       push(mixed, { type: "states", states: {
         cab: nothing,
         io: { watching: true, power: "off", climate: null },
-      } });
+      }, liveConnections: ["ha_io"] });
       await cab.getByText("非实时", { exact: true }).waitFor();
       await io.getByText("实时", { exact: true }).waitFor();
-      assert.equal(await cab.getByText("已开机").count(), 1, "A device that stopped being live keeps its last value");
+      await until(() => stateReads(calls).length === beforeSwitch + 1, "one read after a device stops being live");
       assert.equal(await page.getByText("电源状态未知").count(), 0);
-      assert.equal(await io.getByText("已关机").count(), 1);
+      // The read replaces what the card showed: this device is not live, so what the shop
+      // says about it now is the only value worth showing. The mock answers "on" for it.
+      assert.equal(await io.getByText("已开机").count(), 1);
       await page.screenshot({ path: `${output}/device-board-switched-${label}.png`, fullPage: true });
       assert.deepEqual(mixed.exceptions, []);
       await mixed.context.close();

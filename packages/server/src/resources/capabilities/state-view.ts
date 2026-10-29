@@ -93,7 +93,7 @@ export async function readShopFacts(
   db: D1DatabaseLike,
   shopId: string,
   devices: ReadonlyArray<Pick<Resource, "id" | "capabilities">>,
-): Promise<Map<string, DeviceFacts>> {
+): Promise<{ facts: Map<string, DeviceFacts>; live: Set<string> }> {
   const [watched, stored] = (await db.batch([
     db.prepare("SELECT connection_id FROM ha_event_connections WHERE shop_id = ?").bind(shopId),
     db
@@ -110,7 +110,8 @@ export async function readShopFacts(
     list.push(row);
     rowsByDevice.set(row.device_id, list);
   }
-  return new Map(devices.map((device) => [device.id, factsFrom(haConnectionsOf(device), live, rowsByDevice.get(device.id) ?? [])]));
+  const facts = new Map(devices.map((device) => [device.id, factsFrom(haConnectionsOf(device), live, rowsByDevice.get(device.id) ?? [])]));
+  return { facts, live };
 }
 
 /**
@@ -121,14 +122,17 @@ export async function readShopFacts(
 export async function readBoardStates(
   db: D1DatabaseLike,
   shopId: string,
-): Promise<{ devices: Resource[]; states: Record<string, DeviceFacts> }> {
+): Promise<{ devices: Resource[]; states: Record<string, DeviceFacts>; liveConnections: string[] }> {
   const devices = (await listResources(db, shopId)).filter(
     (device) => device.capabilities.has("power") || device.capabilities.has("climate"),
   );
-  const facts = await readShopFacts(db, shopId, devices);
+  const { facts, live } = await readShopFacts(db, shopId, devices);
   const states: Record<string, DeviceFacts> = {};
   for (const device of devices) states[device.id] = facts.get(device.id) ?? noFacts;
-  return { devices, states };
+  // Which Home Assistant connections are live right now. Liveness is a property of a
+  // connection, not of a device: one connection dropping takes every device bound to it
+  // out of live mode at once, and readers that care about the change should see it once.
+  return { devices, states, liveConnections: [...live] };
 }
 
 /** The set of watched connections among `connectionIds`, for code that already has its own device rows. */
