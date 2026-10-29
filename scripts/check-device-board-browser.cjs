@@ -231,12 +231,23 @@ async function operate(page, name, button) {
       await panel.getByText("前台 Bot").waitFor();
       assert.equal(await panel.getByText("机台B").count(), 1, "A watching machine is named as the board names it");
       assert.equal(await panel.getByText("监听中").count(), 1);
-      assert.equal(await panel.getByText("正在启动…").count(), 1);
+      assert.equal(await panel.getByText("等待 HA 首次报告…").count(), 1);
       assert.equal(await panel.getByText("2 / 2 个监听器").count(), 1);
       assert.equal(await panel.getByText(/另有 1 个在线/).count(), 1);
       assert.equal(await panel.locator("select").count(), 0, "A shop owner cannot change the number");
       assert.equal(await panel.getByText("由平台管理员设置").count(), 1);
       await owner.page.screenshot({ path: `${output}/device-board-watchers-${label}.png`, fullPage: true });
+      // Power-off confirmation retains the task without consuming a normal slot.
+      push(owner, { type: "watchers", limit: 2, max: 4, standby: 0, watchers: [
+        { id: "bot:1", kind: "bot", name: "前台 Bot", state: "watching" },
+        { id: "io", kind: "device", deviceId: "io", state: "confirming" },
+        { id: "cab", kind: "device", deviceId: "cab", state: "subscribing" },
+      ] });
+      await panel.getByText("关机后等待心跳确认（不占名额）").waitFor();
+      assert.equal(await panel.getByText("等待 HA 首次报告…").count(), 0);
+      assert.equal(await panel.getByText("等待 HA 全量状态…").count(), 1);
+      assert.equal(await panel.getByText("2 / 2 个监听器").count(), 1);
+      assert.equal(await panel.getByText("3 / 2 个监听器").count(), 0);
       // The hub changes who watches: the list follows, and a watcher that left is gone.
       push(owner, { type: "watchers", limit: 2, max: 4, standby: 0, watchers: [{ id: "io", kind: "device", deviceId: "io", state: "unreachable" }] });
       await panel.getByText("连不上 Home Assistant").waitFor();

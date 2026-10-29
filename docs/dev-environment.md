@@ -31,6 +31,8 @@ bun run check:platform
 
 平台测试涉及 Miniflare，首次启动使用 30 秒测试超时。`check:platform` 构建 React 并进行 Worker dry-run，不部署线上。
 
+CI 还会运行浏览器检查。`scripts/check-device-board-browser.cjs` 在桌面和手机尺寸验证 HA 监听器文案，以及关机后等待心跳确认的任务不计入正常名额；修改状态或文案时须同步这些断言，单元测试和构建不能替代该检查。
+
 ## 真实 Home Assistant 与 HINATA IO 的端到端测试
 
 单元测试和浏览器脚本里的 Home Assistant、IO 都是模拟的。设备状态相关的改动（实时 / 非实时两种模式、店铺 Hub、看板、玩家页、App Clip）另有一套不模拟任何一端的端到端测试，在 `scripts/e2e-ha/`：Home Assistant 官方镜像跑在 docker，平台跑在 `wrangler dev`，HINATA IO 是固件仓库 `hinata-aimeio-rs` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件（`tools/mac-test` 的 `io_sim`），Bot 是 `packages/koishi-plugin`（独立仓库的子模块）的真实代码（`scripts/e2e-ha/bot-sim.ts`，只把 Koishi 本身换成替身），页面由 Playwright 的真实 Chromium 打开，App Clip 一侧是 `hinata_go` 里的 `PrismAPI` 与 `MachineLoginViewModel` 原样编译的 macOS 检查（`test/native/run-prism-real-check.sh`，真实 `URLSessionWebSocketTask`）。断言只看真实组件做了什么：WebSocket 收到的帧、D1 里的行，以及 Home Assistant 自己的访问日志里平台读了哪些实体。启动、造数据和各脚本的用法见 `scripts/e2e-ha/README.md`。
