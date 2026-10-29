@@ -48,7 +48,6 @@ const signals = (over: Partial<SetupSignals> = {}): SetupSignals => ({
   settings: settings(),
   billing: false,
   machines: [],
-  tokens: [],
   ttLock: null,
   players: null,
   redeemCodes: 0,
@@ -61,7 +60,16 @@ const signals = (over: Partial<SetupSignals> = {}): SetupSignals => ({
 });
 
 const ids = (status: ReturnType<typeof setupStatus>) => status.steps.map((step) => `${step.id}:${step.done ? "done" : "todo"}`);
-const connectedBot = [{ role: "integration", status: "active", lastUsedAt: "2026-10-20T00:00:00Z" }];
+const bot = (over: Partial<Resource> = {}) => machine({
+  id: "bot", hasBotToken: true, botLastUsedAt: "2026-10-20T00:00:00Z",
+  bot: {
+    playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false,
+    doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false, announceChannelIds: [],
+    idleReminderMinutes: 5, announceIdle: false, announcePower: false, announceStarts: false,
+    announceCards: false, announceCoins: false,
+  },
+  ...over,
+});
 
 describe("setup guide", () => {
   it("maps the two identity switches to the policies and back", () => {
@@ -117,13 +125,17 @@ describe("setup guide", () => {
     expect(ready2.steps.filter((s) => s.id === "reader" || s.id === "staff").every((s) => s.done)).toBe(true);
   });
 
-  it("only counts a bot as connected once it has used its token", () => {
+  it("reads bot setup from enabled resources with an active, used credential", () => {
     const base = { billing: true, settings: settings(), players: [] };
-    const identityDone = (tokens: SetupSignals["tokens"]) =>
-      setupStatus(signals({ ...base, tokens })).steps.find((s) => s.id === "identity")!.done;
-    expect(identityDone([{ role: "integration", status: "active", lastUsedAt: null }])).toBe(false);
-    expect(identityDone(connectedBot)).toBe(true);
-    expect(identityDone([{ ...connectedBot[0]!, status: "revoked" }])).toBe(false);
+    const status = (machines: Resource[]) => setupStatus(signals({ ...base, machines }));
+    expect(status([bot()])).toMatchObject({ botIssued: true, botConnected: true });
+    expect(status([bot()]).steps.find((s) => s.id === "identity")!.done).toBe(true);
+    expect(status([bot({ botLastUsedAt: null })])).toMatchObject({ botIssued: true, botConnected: false });
+    for (const resource of [bot({ enabled: false }), bot({ hasBotToken: false }), bot({ bot: null })]) {
+      expect(status([resource])).toMatchObject({ botIssued: false, botConnected: false });
+      expect(status([resource]).steps.find((s) => s.id === "identity")!.done).toBe(false);
+    }
+    expect(status([bot({ enabled: false }), bot({ id: "other-bot" })]).botConnected).toBe(true);
   });
 
   it("explains why billing is not ready: only a missing balance asset stops it", () => {
@@ -147,8 +159,7 @@ describe("setup guide", () => {
   it("completes a configured self-service shop once someone has played", () => {
     const status = setupStatus(signals({
       billing: true, settings: settings({ billingConfiguration: ready }),
-      tokens: connectedBot,
-      machines: [machine({ homeAssistant: { url: "http://ha", entityId: "switch.a" } })],
+      machines: [bot(), machine({ homeAssistant: { url: "http://ha", entityId: "switch.a" } })],
       players: [{ walletTotal: 10 }],
     }));
     expect(status.complete).toBe(true);

@@ -27,7 +27,7 @@ import {
 /** The integration token a bot request carries, or a 403. */
 export async function integrationToken(
   c: Context<AppBindings>,
-  shop: TenantShop,
+  shop: Pick<TenantShop, "id">,
 ): Promise<{ id: string; label: string }> {
   const auth = c.req.header("authorization");
   const token = auth?.match(/^Bearer (.+)$/i)?.[1];
@@ -38,15 +38,18 @@ export async function integrationToken(
 
   const tokenHash = await sha256Hex(token);
   const row = await c.env.DB.prepare(
-    "SELECT id, label, role, status FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active'",
+    "SELECT id, label, role, status, last_used_at FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active'",
   )
     .bind(shop.id, tokenHash)
-    .first<{ id: string; label: string; role: string; status: string }>();
+    .first<{ id: string; label: string; role: string; status: string; last_used_at: string | null }>();
 
   if (!row || row.role !== "integration") {
     // Bot credentials are independent of platform admin sessions.
     jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
   }
+  if (!row.last_used_at) await c.env.DB.prepare(
+    "UPDATE api_tokens SET last_used_at=? WHERE shop_id=? AND id=? AND last_used_at IS NULL",
+  ).bind(new Date().toISOString(), shop.id, row.id).run();
   return { id: row.id, label: row.label };
 }
 
@@ -101,10 +104,7 @@ integrationSocketRouter.get("/ws", async (c) => {
   if (!hub) jsonError(503, "店铺连接服务尚未配置", "SHOP_HUB_UNAVAILABLE");
   const { code, id } = await shopOfIntegrationToken(c);
   // A credential from before bots were resources gets one when it connects.
-  const token = c.req.header("authorization")!.match(/^Bearer (.+)$/i)![1];
-  const tokenRow = await c.env.DB.prepare("SELECT id, label FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND role = 'integration' AND status = 'active'")
-    .bind(id, await sha256Hex(token)).first<{ id: string; label: string }>();
-  if (!tokenRow) jsonError(403, "店铺 Bot 凭据无效", "FORBIDDEN");
+  const tokenRow = await integrationToken(c, { id });
   const bot = await ensureBotResource(c.env.DB, id, tokenRow);
   if (!bot.enabled) jsonError(403, "这个 Bot 已停用", "BOT_DISABLED");
   const headers = new Headers(c.req.raw.headers);

@@ -171,6 +171,8 @@ describe("bot connection route", () => {
       // The hub is told which shop the credential belongs to.
       expect(forwarded.at(-1)?.headers.get("x-prism-hub-shop")).toBe("shop");
       expect(forwarded.at(-1)?.headers.get("x-prism-hub-shop-code")).toBe("shop-code");
+      const used = sqlite.query("SELECT last_used_at FROM api_tokens WHERE shop_id='shop' AND status='active'").get() as { last_used_at: string | null };
+      expect(used.last_used_at).not.toBeNull();
     } finally {
       globalThis.Response = BunResponse;
     }

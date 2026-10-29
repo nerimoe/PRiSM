@@ -46,7 +46,6 @@ export type SetupSignals = {
   /** Whether any resource bills; see `shopBills`. */
   billing: boolean;
   machines: Resource[];
-  tokens: { role: string; status: string; lastUsedAt?: string | null }[];
   ttLock: {
     clientId?: string;
     clientSecret?: string;
@@ -116,10 +115,8 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
   const caps = machines.map(resourceCapabilities);
   const unconfigured = machines.filter(isUnconfigured).length;
   const doorDevices = caps.filter((c) => c.door).length;
-  const activeBots = signals.tokens.filter(
-    (token) => token.role === "integration" && token.status === "active",
-  );
-  const botConnected = activeBots.some((token) => !!token.lastUsedAt);
+  const activeBots = machines.filter((machine) => machine.enabled && machine.bot && machine.hasBotToken);
+  const botConnected = activeBots.some((machine) => !!machine.botLastUsedAt);
   const identity = identityPolicy(settings);
   const ttLock = signals.ttLock;
   const ttLockReady = !!(

@@ -74,7 +74,7 @@ async function loadStatus(shopCode: string, shopId: string) {
     Api.resourceGroups(shopId).then((r) => r.resourceGroups).catch(() => []),
   ]);
   const billing = shopBills(groups, machines);
-  const [staffSettings, tokens, players, members, presents, codes, reader] =
+  const [staffSettings, players, members, presents, codes, reader] =
     await Promise.all([
       optional(
         api<{
@@ -83,11 +83,6 @@ async function loadStatus(shopCode: string, shopId: string) {
             registration?: { defaultPresentId: string | null };
           };
         }>(shopApi(shopCode, "staff/settings")),
-      ),
-      optional(
-        api<{
-          apiTokens: { role: string; status: string; lastUsedAt?: string | null }[];
-        }>(shopApi(shopCode, "staff/api-tokens")),
       ),
       billing
         ? optional(api<{ players: { walletTotal: number }[] }>(shopApi(shopCode, "staff/players")))
@@ -108,7 +103,6 @@ async function loadStatus(shopCode: string, shopId: string) {
     settings,
     billing,
     machines,
-    tokens: tokens?.apiTokens ?? [],
     ttLock: staffSettings?.settings.ttLockConnection ?? null,
     players: players?.players ?? null,
     redeemCodes:

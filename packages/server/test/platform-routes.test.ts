@@ -154,6 +154,7 @@ function createTestEnvironment(): { db: D1DatabaseLike; sqlite: Database; env: E
       token_hash TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
+      last_used_at TEXT,
       PRIMARY KEY (shop_id, id)
     );
     CREATE TABLE IF NOT EXISTS asset_definitions (

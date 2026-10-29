@@ -104,6 +104,10 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
   const climate = await describeHa(c, device, "climate");
   const embedded = hinata?.transport === "embedded";
   const coinKey = hinata?.coinKey ?? 32;
+  const botConfig = device.capabilities.get("bot")?.config as BotConfig | undefined;
+  const botToken = botConfig?.tokenId ? await c.env.DB.prepare(
+    "SELECT last_used_at FROM api_tokens WHERE shop_id=? AND id=? AND role='integration' AND status='active'",
+  ).bind(device.shopId, botConfig.tokenId).first<{ last_used_at: string | null }>() : null;
   return {
     id: device.id,
     publicId: device.publicId,
@@ -126,13 +130,13 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     mahjong: mahjongConfigOf(device),
     // The token itself is only returned when it is issued.
     bot: (() => {
-      const config = device.capabilities.get("bot")?.config as BotConfig | undefined;
-      if (!config) return null;
-      const { tokenId: _token, ...settings } = config;
+      if (!botConfig) return null;
+      const { tokenId: _token, ...settings } = botConfig;
       return settings;
     })(),
     // Whether the bot has a live credential, told like a device's relay token.
-    hasBotToken: !!device.capabilities.get("bot")?.config.tokenId,
+    hasBotToken: !!botToken,
+    botLastUsedAt: botToken?.last_used_at ?? null,
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,

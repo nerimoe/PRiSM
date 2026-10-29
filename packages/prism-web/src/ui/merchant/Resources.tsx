@@ -254,6 +254,7 @@ export function ResourcesPage() {
   const reloadAll = () => {
     void load();
     void resourceGroups.reload();
+    window.dispatchEvent(new Event("prism-shop-settings"));
   };
   return (
     <div className="grid gap-5">

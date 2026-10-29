@@ -162,6 +162,8 @@ export type Resource = {
   bot?: BotSettings | null;
   /** Whether the bot has an active credential, as a device has a relay token. */
   hasBotToken?: boolean;
+  /** First authenticated use of the current bot credential, not its live connection status. */
+  botLastUsedAt?: string | null;
   /** The group whose default plan this resource bills; "default" for the shop's default group. */
   resourceGroupId?: string;
   /** A plan of its own that replaces the group's; null to follow the group. */

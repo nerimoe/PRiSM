@@ -113,6 +113,26 @@ describe("a bot is a resource", () => {
     expect(listed.body.machines.some((machine: { name: string; bot: unknown }) => machine.name === "旧 Bot" && machine.bot)).toBe(true);
   });
 
+  it("reports the current credential's first use for the setup guide, and resets it on rotation or revocation", async () => {
+    const { sqlite, bot, call, createBot } = await fixture();
+    const created = await createBot();
+    expect(created.machine).toMatchObject({ hasBotToken: true, botLastUsedAt: null });
+    const listed = async () => (await call("GET", "/api/v1/merchant/machines?shopId=shop", OWNER)).body.machines
+      .find((machine: { id: string }) => machine.id === created.id);
+    expect((await bot(created.token).get("bot")).status).toBe(200);
+    const firstUse = (await listed()).botLastUsedAt;
+    expect(Number.isFinite(Date.parse(firstUse))).toBe(true);
+    expect((await bot(created.token).get("bot")).status).toBe(200);
+    expect((await listed()).botLastUsedAt).toBe(firstUse);
+    const rotated = await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { rotateBotToken: true });
+    expect(rotated.body.machine).toMatchObject({ hasBotToken: true, botLastUsedAt: null });
+    expect((await bot(created.token).get("bot")).status).toBe(403);
+    expect((await listed()).botLastUsedAt).toBeNull();
+    await bot(rotated.body.botToken).get("bot");
+    sqlite.run("UPDATE api_tokens SET status='revoked' WHERE shop_id='shop' AND status='active'");
+    expect(await listed()).toMatchObject({ hasBotToken: false, botLastUsedAt: null });
+  });
+
   it("revokes the token when the bot is removed or its token rotated", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot();
