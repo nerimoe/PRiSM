@@ -5,6 +5,7 @@ import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adap
 import type { AppBindings, Env } from "../src/bindings.js";
 import { deviceEventSchema } from "@prism/storage-sql";
 import { merchantResourceRouter } from "../src/routes/platform/merchant-resources.js";
+import { responseTimeMiddleware } from "../src/middleware/response-time.js";
 
 class SqliteD1 implements D1DatabaseLike {
   constructor(private readonly sqlite: Database) {}
@@ -68,6 +69,29 @@ function fixture() {
 }
 
 describe("pre-fork merchant machine lifecycle",()=>{
+  it("returns operation history in the resource's shop zone, including midnight and daylight saving", async () => {
+    const { app, env, sqlite } = fixture();
+    const api = new Hono<AppBindings>();
+    api.use("*", responseTimeMiddleware);
+    api.route("/", app);
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet')");
+    for (const [zone, at, expected] of [
+      ["Asia/Shanghai", "2026-10-29T16:08:00.000Z", "2026-10-30T00:08:00.000+08:00"],
+      ["America/New_York", "2026-07-01T02:08:00.000Z", "2026-06-30T22:08:00.000-04:00"],
+      ["America/New_York", "2026-01-01T02:08:00.000Z", "2025-12-31T21:08:00.000-05:00"],
+      ["UTC", "2026-10-29T16:08:00.000Z", "2026-10-29T16:08:00.000Z"],
+    ] as const) {
+      sqlite.run("INSERT OR REPLACE INTO app_settings(shop_id,key,value_json) VALUES ('shop-1','store.profile',?)", [JSON.stringify({ timeZone: zone })]);
+      sqlite.run(`INSERT OR REPLACE INTO device_events(shop_id,id,device_id,capability,kind,name,origin,occurred_at)
+        VALUES ('shop-1','event','cab','power','request','power.off','platform',?)`, [at]);
+      const response = await api.fetch(new Request("https://prism.test/api/v1/merchant/machines/cab/events"), env);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { data: { events: { at: string }[] } };
+      expect(body.data.events[0]!.at).toBe(expected);
+      expect(sqlite.query("SELECT occurred_at FROM device_events WHERE id='event'").get()).toEqual({ occurred_at: at });
+    }
+    sqlite.close();
+  });
   it("creates, updates and deletes against the actual shop-scoped machine columns",async()=>{
     const {app,env,sqlite}=fixture();
     const created=await app.fetch(new Request("https://prism.test/api/v1/merchant/machines",{

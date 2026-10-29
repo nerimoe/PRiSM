@@ -251,6 +251,7 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
     .bind(c.req.param("id")).first<{ shop_id: string }>();
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c,user,machine.shop_id);
+  await shopTimes(c, machine.shop_id);
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
     .listEvents({ deviceId: c.req.param("id"), limit });
@@ -269,7 +270,7 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   });
 });
 
-/** Times in occupancy answers are shown in the shop's time zone, as the rest of the shop's data is. */
+/** Resource event and occupancy times use the shop's display zone. */
 async function shopTimes(c: C, shopId: string) {
   const row = await c.env.DB.prepare(
     "SELECT COALESCE((SELECT json_extract(value_json, '$.timeZone') FROM app_settings WHERE shop_id = ? AND key = 'store.profile'), 'Asia/Shanghai') AS time_zone",
