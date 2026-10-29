@@ -424,6 +424,19 @@ describe("MachineRelay Home Assistant watch", () => {
     expect((await relay.watchHa({ term: 1, connections: [] })).ok).toBe(false);
   });
 
+  it("offers a surviving standby again on an unassigned heartbeat, but only if it can watch", async () => {
+    const { relay, sockets, calls } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    const ws = sockets[0]!;
+    const beat = JSON.stringify({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } });
+    await relay.webSocketMessage(ws as any, beat);
+    expect(calls).toEqual([]);
+    await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
+    calls.length = 0;
+    await relay.webSocketMessage(ws as any, beat);
+    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan"]]);
+  });
+
   it("passes the watch down and the reports up", async () => {
     const { relay, sockets, calls } = withHub();
     await relay.fetch(upgradeWithChannel());

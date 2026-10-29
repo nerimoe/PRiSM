@@ -252,8 +252,7 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       // The command was accepted, which is all this can know: Home Assistant
       // answers the same whether or not the machine actually went dark. The hub
       // starts an observation and waits for the state to confirm it.
-      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
-        && input.device.capabilities.has("hinata_io")) {
+      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded") {
         await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
       }
       // What a power or climate action left the device in, read back the same

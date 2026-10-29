@@ -432,7 +432,7 @@ describe("telling bots what happened", () => {
   });
 });
 
-describe("switching a HINATA IO off", () => {
+describe("switching a shared power supply off", () => {
   const off = async (machine: string, runtime: { notifyHub?: boolean } = {}) => {
     const { db, env, hub, sqlite } = await fixture();
     const ha = homeAssistant();
@@ -448,8 +448,11 @@ describe("switching a HINATA IO off", () => {
     expect(await off("io")).toEqual({ status: "succeeded", poweredOff: [["shop-id", "io"]] });
   });
 
-  it("says nothing for a device that is not an IO, or when the hub switched it off itself", async () => {
-    expect((await off("cab")).poweredOff).toEqual([]);
+  it("also tells the hub for a resource without an IO, since other IOs may share its power", async () => {
+    expect((await off("cab")).poweredOff).toEqual([["shop-id", "cab"]]);
+  });
+
+  it("leaves the hub's own power-offs to the hub", async () => {
     expect((await off("io", { notifyHub: false })).poweredOff).toEqual([]);
   });
 

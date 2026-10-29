@@ -346,9 +346,8 @@ describe("ShopHub watchers", () => {
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.relayOnline(SHOP, "b", "chan-b");
     await hub.relayOnline(SHOP, "c", "chan-c");
-    console.log("DEBUG watchers before:", JSON.stringify((await hub.watching()).map((e) => e.machineId)));
     await hub.poweredOff(SHOP, "a");
-        // Nobody was told to stop...
+    // Nobody was told to stop...
     expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
     // ...and a third watcher covers the machine that went dark.
     expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b", "c"]);
@@ -475,16 +474,122 @@ describe("ShopHub watchers", () => {
     expect((state.get("reliability") as Record<string, unknown> | undefined)?.m1).toBeUndefined();
   });
 
-  it("stops covering for a machine whose IO has already proved it survives power-offs", async () => {
-    // Covering every time would make the extra slot permanent exactly for the
-    // shops that need it least.
-    const { hub, state } = await fixture();
+  it("covers even a trusted IO until it reports after the power-off, then retires the spare", async () => {
+    const { hub, state, connectionId, watches } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.relayOnline(SHOP, "b", "chan-b");
     await hub.relayOnline(SHOP, "c", "chan-c");
     state.set("reliability", { a: { trusted: true, consecutiveFailures: 0 } });
     await hub.poweredOff(SHOP, "a");
+    expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b", "c"]);
+    await hub.haReport(SHOP, "a", status(1, connectionId, true));
     expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b"]);
+    expect(watches.at(-1)).toEqual({ channel: "chan-c", watch: null });
+  });
+
+  it("fills again when the temporary watcher also powers off, without ending either observation", async () => {
+    const { hub, state, watches, assigned, connectionId, watched } = await fixture();
+    state.set("limit", 1);
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m2", "chan-b");
+    await hub.relayOnline(SHOP, "m3", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.poweredOff(SHOP, "m1");
+    await hub.haReport(SHOP, "m2", states(2, connectionId, [["switch.a", "off", "2026-10-21T10:00:00Z"], ["switch.b", "on", NOON]]));
+    expect(watched()).toEqual([connectionId]);
+
+    await hub.poweredOff(SHOP, "m2");
+    expect(assigned()).toEqual([["chan-a", 1], ["chan-b", 2], ["chan-c", 3]]);
+    expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
+    expect(watched()).toEqual([]);
+    await hub.haReport(SHOP, "m3", states(3, connectionId, [["switch.a", "off", "2026-10-21T10:00:00Z"], ["switch.b", "off", "2026-10-21T10:01:00Z"]]));
+    expect(watched()).toEqual([connectionId]);
+
+    await hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["m1", "m2"]);
+    expect(watched()).toEqual([connectionId]);
+  });
+
+  it("replaces pending watchers even with the shop's limit already at four", async () => {
+    const { hub, state, reachable, assigned } = await fixture();
+    state.set("limit", 4);
+    for (const id of ["a", "b", "c", "d", "e", "f"]) {
+      reachable.add(`chan-${id}`);
+      await hub.relayOnline(SHOP, id, `chan-${id}`);
+    }
+    await hub.poweredOff(SHOP, "a");
+    await hub.poweredOff(SHOP, "e");
+    expect(assigned().map(([channel]) => channel)).toEqual(["chan-a", "chan-b", "chan-c", "chan-d", "chan-e", "chan-f"]);
+    expect(await hub.watching()).toHaveLength(6);
+  });
+
+  it("holds shared-power watchers and excludes their standby peers before filling", async () => {
+    const { hub, sqlite, state, connectionId, assigned, watched, watches } = await fixture();
+    state.set("limit", 1);
+    sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='m2' AND capability='power'", [JSON.stringify({ connectionId, entityId: "switch.a" })]);
+    await hub.relayOnline(SHOP, "m2", "chan-a");
+    await hub.relayOnline(SHOP, "m1", "chan-b");
+    await hub.relayOnline(SHOP, "m3", "chan-c");
+    await hub.haReport(SHOP, "m2", states(1, connectionId, [["switch.a", "on", NOON]]));
+
+    // The command's target need not itself be a watcher or even have an IO.
+    await hub.poweredOff(SHOP, "m1");
+    expect(watched()).toEqual([]);
+    expect(assigned()).toEqual([["chan-a", 1], ["chan-c", 2]]);
+    expect((state.get("watchers") as Record<string, { held?: number }>).m2!.held).toBeDefined();
+    expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
+
+    await hub.relayOffline(SHOP, "m3");
+    expect(assigned()).toHaveLength(2);
+    // A new heartbeat/hello proves that the standby IO survived the power-off.
+    await hub.relayOnline(SHOP, "m1", "chan-b");
+    expect(assigned().at(-1)).toEqual(["chan-b", 3]);
+  });
+
+  it("holds both watchers of a shared entity before selecting cover for an HA power-off", async () => {
+    const { hub, sqlite, state, connectionId, assigned, power, watched } = await fixture();
+    sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='m2' AND capability='power'", [JSON.stringify({ connectionId, entityId: "switch.a" })]);
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m2", "chan-b");
+    await hub.relayOnline(SHOP, "m3", "chan-c");
+    for (const [id, term] of [["m1", 1], ["m2", 2]] as const)
+      await hub.haReport(SHOP, id, states(term, connectionId, [["switch.a", "on", NOON]]));
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00Z"]], false));
+    const watchers = state.get("watchers") as Record<string, { held?: number }>;
+    expect(watchers.m1!.held).toBeDefined();
+    expect(watchers.m2!.held).toBeDefined();
+    expect(assigned()).toEqual([["chan-a", 1], ["chan-b", 2], ["chan-c", 3]]);
+    expect(power().map((row) => [row.device_id, JSON.parse(row.value_json)])).toEqual([["m1", "off"], ["m2", "off"]]);
+    expect(watched()).toEqual([]);
+  });
+
+  it("does not lift a power-off hold with a heartbeat already queued before it", async () => {
+    const { hub, connectionId, watched } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON]]));
+    let unblock!: () => void;
+    (hub as any).reports = new Promise<void>((resolve) => { unblock = resolve; });
+    const old = hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    try {
+      await hub.poweredOff(SHOP, "m1");
+    } finally { unblock(); }
+    await old;
+    expect(watched()).toEqual([]);
+    await hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    expect(watched()).toEqual([connectionId]);
+  });
+
+  it("keeps a standby's failure cooldown and priority when its next heartbeat offers it again", async () => {
+    const { hub, state, assigned } = await fixture();
+    state.set("limit", 1);
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.relayOnline(SHOP, "b", "chan-b");
+    const candidates = state.get("candidates") as Record<string, { since: number; benchedUntil?: number }>;
+    candidates.b!.benchedUntil = Date.now() + 300_000;
+    state.set("candidates", candidates);
+    await hub.relayOnline(SHOP, "b", "chan-b");
+    expect(state.get("candidates")).toEqual(candidates);
+    expect(assigned()).toEqual([["chan-a", 1]]);
   });
 
   it("skips an IO that could not be told and tries the next", async () => {
@@ -682,7 +787,7 @@ describe("ShopHub device pages", () => {
     ha?.mockImplementation((async () => {
       await held;
       return Response.json({ state: "off" });
-    }) as typeof fetch);
+    }) as unknown as typeof fetch);
     await open(hub, "m1");
     await openBoard(hub);
     const [page, board] = sockets as PageSocket[];
@@ -908,6 +1013,23 @@ describe("ShopHub device pages", () => {
       await botSnapshot(hub, bot, connectionId);
       expect(await ids(hub)).toEqual(["bot"]);
       expect(stopped(watches, "chan-a")).toBe(true);
+      expect(watched()).toEqual([connectionId]);
+    });
+
+    it("does not retire cover on the strength of a held watcher's snapshot during a bot handover", async () => {
+      const { hub, sockets, state, watches, watched, connectionId } = await fixture();
+      state.set("limit", 1);
+      await hub.relayOnline(SHOP, "a", "chan-a");
+      await hub.relayOnline(SHOP, "b", "chan-b");
+      await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
+      await hub.poweredOff(SHOP, "a");
+      await hub.haReport(SHOP, "b", states(2, connectionId, [["switch.a", "on", NOON]]));
+      const bot = await connectBot(hub, sockets);
+      expect(stopped(watches, "chan-b")).toBe(false);
+      expect(watched()).toEqual([connectionId]);
+      await botSnapshot(hub, bot, connectionId);
+      expect(stopped(watches, "chan-b")).toBe(true);
+      expect(await ids(hub)).toEqual(["a", "bot"]);
       expect(watched()).toEqual([connectionId]);
     });
 
