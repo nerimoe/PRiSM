@@ -66,6 +66,9 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     io: watchedIo ? { watching: true, power: "on", climate: null } : nothing,
   };
   const connections = watchedIo ? ["ha_cab", "ha_io"] : ["ha_cab"];
+  // What a read of the shop answers for `io`. A scenario that pushes a change to this
+  // device moves it too, so a read afterwards agrees with what the board was told.
+  let ioRead = watchedIo ? snapshot.io : { ...nothing, power: "on" };
   await page.routeWebSocket(/\/api\/v1\/merchant\/machines\/ws/, (ws) => {
     sockets.push({ ws, url: ws.url() });
     ws.onMessage((message) => received.push(String(message)));
@@ -86,7 +89,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     else if (p === "/api/v1/merchant/resource-groups") data = { resourceGroups: [{ id: "default", name: "默认资源组", enabled: true, isDefault: true, defaultPricingConfigId: null, resourceCount: 0 }] };
     else if (p === "/api/v1/merchant/machines/occupancy") data = { resources: [] };
     else if (p === "/api/v1/merchant/machines/states") {
-      data = { states: { ...snapshot, io: watchedIo ? snapshot.io : { ...nothing, power: "on" } } };
+      data = { states: { ...snapshot, io: ioRead } };
     }
     // One device, asked of Home Assistant after an action on it: it answers "off".
     else if (p === "/api/v1/merchant/machines/io/state") data = { watching: false, power: "off", climate: null };
@@ -99,7 +102,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   });
   await page.goto(`${origin}/merchant/demo/devices`);
   await page.getByText("机台A", { exact: true }).waitFor();
-  return { page, context, calls, exceptions, sockets, received, puts };
+  return { page, context, calls, exceptions, sockets, received, puts, setIoRead: (next) => { ioRead = next; } };
 }
 
 const card = (page, name) => page.locator("article", { has: page.getByRole("heading", { name, exact: true }) });
@@ -192,6 +195,8 @@ async function operate(page, name, button) {
       // being live is read once, so its card shows what Home Assistant says now instead of a value
       // that was only true when it was still watched.
       const beforeSwitch = stateReads(calls).length;
+      // The device comes up live, so a read of the shop agrees it is live.
+      mixed.setIoRead({ watching: true, power: "off", climate: null });
       push(mixed, { type: "states", states: {
         cab: nothing,
         io: { watching: true, power: "off", climate: null },
@@ -200,9 +205,8 @@ async function operate(page, name, button) {
       await io.getByText("实时", { exact: true }).waitFor();
       await until(() => stateReads(calls).length === beforeSwitch + 1, "one read after a device stops being live");
       assert.equal(await page.getByText("电源状态未知").count(), 0);
-      // The read replaces what the card showed: this device is not live, so what the shop
-      // says about it now is the only value worth showing. The mock answers "on" for it.
-      assert.equal(await io.getByText("已开机").count(), 1);
+      // It came up live, and the hub said so; that is the value the card shows.
+      assert.equal(await io.getByText("已关机").count(), 1);
       await page.screenshot({ path: `${output}/device-board-switched-${label}.png`, fullPage: true });
       assert.deepEqual(mixed.exceptions, []);
       await mixed.context.close();
