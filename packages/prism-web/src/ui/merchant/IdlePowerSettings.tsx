@@ -6,7 +6,7 @@ import { ActionForm, Field, input, useMerchant } from "./shared";
 /** The shop's idle power-off rules, as the server stores them. */
 export type IdleSettings = {
   shopEmpty: { enabled: boolean; minutes: number };
-  device: { enabled: boolean; minutes: number; whileOccupied: "mark" | "remind" | "off" };
+  device: { enabled: boolean; minutes: number; whileOccupied: "mark" | "off" };
   devices: Record<string, { exclude?: boolean }>;
 };
 
@@ -91,10 +91,12 @@ export function IdlePowerSettings() {
               <Field label="店里有人时，闲置的设备">
                 <select className={input} name="whileOccupied" defaultValue={settings.device.whileOccupied}>
                   <option value="mark">{t("只标记为闲置")}</option>
-                  <option value="remind">{t("通过 Bot 提醒")}</option>
-                  <option value="off">{t("直接关机")}</option>
+                  <option value="off">{t("到时自动关机")}</option>
                 </select>
               </Field>
+              <p className="text-sm leading-relaxed text-ink/60 sm:col-span-2">
+                {t("自动关机可提前由 Bot 预告：在 Bot 设置中开启「设备闲置（关机前提醒）」并设置提前分钟数。预告是否发送成功不影响到时关机。")}
+              </p>
             </div>
           )}
         </div>

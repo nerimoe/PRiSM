@@ -52,7 +52,7 @@ describe("idle power planning", () => {
 
   it("follows the owner's choice while players are in", () => {
     const idle = [device({ poweredOnAt: NOW - 60 * MIN })];
-    for (const [whileOccupied, off] of [["mark", []], ["remind", []], ["off", ["m1"]]] as const) {
+    for (const [whileOccupied, off] of [["mark", []], ["remind", ["m1"]], ["off", ["m1"]]] as const) {
       const plan = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied } }, activeEntries: 2, devices: idle }));
       expect(plan.markIdle).toEqual(["m1"]);
       expect(plan.powerOff).toEqual([...off]);
@@ -98,7 +98,8 @@ describe("idle power planning", () => {
   });
 
   it("reads a device idle time from before idle times moved onto resources as the rule being on", () => {
-    expect(parseIdleSettings({ device: { defaultMinutes: 20, whileOccupied: "remind" } }).device).toEqual({ enabled: true, minutes: 20, whileOccupied: "remind" });
+    expect(parseIdleSettings({ device: { defaultMinutes: 20, whileOccupied: "remind" } }).device).toEqual({ enabled: true, minutes: 20, whileOccupied: "off" });
+    expect(parseIdleSettings({ device: { enabled: true, minutes: 10, whileOccupied: "remind" } }).device).toEqual({ enabled: true, minutes: 10, whileOccupied: "off" });
     expect(parseIdleSettings({ device: { defaultMinutes: 0 } }).device.enabled).toBe(false);
   });
 
@@ -151,11 +152,30 @@ describe("idle power planning", () => {
     expect(again.remind).toEqual([]);
   });
 
-  it("only reminds about a device going off while occupied when the owner chose to", () => {
+  it("only warns about devices whose rule will switch them off, including old reminder settings", () => {
     const devices = [device({ poweredOnAt: NOW - 28 * MIN })];
     const mark = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "mark" } }, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
     expect(mark.remind).toEqual([]);
     const remind = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "remind" } }, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
     expect(remind.remind.map((r) => r.reason)).toEqual(["device_idle"]);
+    expect(remind.powerOffAt).toEqual({ m1: NOW + 2 * MIN });
+    const deadline = remind.remind[0]!.at;
+    const due = planIdle(inputs({
+      settings: { device: { enabled: true, whileOccupied: "remind" } }, activeEntries: 1, devices,
+      now: deadline, reminderLeadMs: 5 * MIN, reminded: { "device:m1": deadline },
+    }));
+    expect(due.powerOff).toEqual(["m1"]);
+    expect(due.remind).toEqual([]);
+  });
+
+  it("moves both the warning and power-off deadline when a device is kept on after a warning", () => {
+    const settings = { device: { enabled: true, whileOccupied: "off" } };
+    const warned = { "device:m1": NOW + 2 * MIN };
+    const devices = [device({ poweredOnAt: NOW - 28 * MIN, lastActivity: NOW })];
+    const kept = planIdle(inputs({ settings, activeEntries: 1, devices, reminded: warned, reminderLeadMs: 5 * MIN }));
+    expect(kept).toMatchObject({ powerOff: [], remind: [], nextWake: NOW + 25 * MIN });
+    const later = planIdle(inputs({ settings, activeEntries: 1, devices, reminded: warned, reminderLeadMs: 5 * MIN, now: NOW + 25 * MIN }));
+    expect(later.remind).toEqual([{ key: "device:m1", reason: "device_idle", deviceIds: ["m1"], at: NOW + 30 * MIN }]);
+    expect(later.nextWake).toBe(NOW + 30 * MIN);
   });
 });

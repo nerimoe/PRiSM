@@ -1575,6 +1575,8 @@
   "只标记为闲置": "only marked idle",
   "通过 Bot 提醒": "announced by the bot",
   "直接关机": "switched off",
+  "到时自动关机": "Turn off automatically when due",
+  "自动关机可提前由 Bot 预告：在 Bot 设置中开启「设备闲置（关机前提醒）」并设置提前分钟数。预告是否发送成功不影响到时关机。": "For an advance warning, enable idle power-off warnings in the Bot settings and set the lead time. Devices still turn off when due even if the warning cannot be sent.",
   "设备闲置判定时长覆盖": "Device idle threshold override",
   "店铺默认（{minutes}）": "Shop default ({minutes})",
   "从不自动关机": "Never switch off automatically",

@@ -9,7 +9,7 @@
  *   never needs to know who is playing what.
  * - **Device idle**: a device with power that has been free for the shop's
  *   idle time. While the shop has players the owner chooses what happens: only
- *   mark it idle, remind through the bot, or switch it off.
+ *   mark it idle or switch it off, with an optional advance warning by the bot.
  *
  * A device is busy while someone occupies it (see `occupancy/`). Being switched
  * on, kept from idling, or operated through the platform keeps it busy for its
@@ -47,7 +47,8 @@ export const idleSettingsSchema = z.preprocess(
         enabled: z.boolean().default(false),
         /** How long a device stays free before it counts as idle. */
         minutes: z.number().int().min(1).max(24 * 60).default(10),
-        whileOccupied: z.enum(["mark", "remind", "off"]).default("mark"),
+        // Old reminder-only settings now share the automatic power-off deadline.
+        whileOccupied: z.preprocess((value) => value === "remind" ? "off" : value, z.enum(["mark", "off"]).default("mark")),
       })
       .default({}),
     devices: z
@@ -201,23 +202,22 @@ export function planIdle(input: IdleInputs): IdlePlan {
     // Free once nothing keeps it busy; idle after the idle time free.
     const free = Math.max(since + device.minutes * 60_000, device.busyUntil ?? 0);
     const deadline = free + settings.device.minutes * 60_000;
+    const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
     if (now < deadline) {
       if (device.idle) plan.clearIdle.push(device.id);
       wake(deadline);
       // Counting down once nothing keeps it busy, where the rule would switch it off.
-      const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
       if (now >= free && switchesOff) plan.powerOffAt[device.id] = deadline;
-      if (!empty && settings.device.whileOccupied !== "mark")
+      if (switchesOff)
         remindBefore(`device:${device.id}`, "device_idle", [device.id], deadline);
       continue;
     }
     if (plan.powerOff.includes(device.id)) continue;
     // With nobody in, the device rule switches off unless the shop rule is
     // about to; with players in, the owner's choice applies.
-    const policy = empty ? (settings.shopEmpty.enabled ? "mark" : "off") : settings.device.whileOccupied;
     if (!device.idle) plan.markIdle.push(device.id);
-    if (policy === "off" && canRetry(device)) plan.powerOff.push(device.id);
-    if (policy === "off" && !canRetry(device)) wake(device.lastAutoOff! + RETRY_OFF_MS);
+    if (switchesOff && canRetry(device)) plan.powerOff.push(device.id);
+    if (switchesOff && !canRetry(device)) wake(device.lastAutoOff! + RETRY_OFF_MS);
   }
   return plan;
 }

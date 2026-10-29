@@ -109,7 +109,7 @@ HINATA IO 的判断：
 闲置时刻 = 空闲时刻 + 闲置判定时长
 ```
 
-所以自动关机触发时，机器上一定没有人，也不需要再刷新占用。店铺设置「位置与设备 → 闲置自动关机」里只有三项：是否启用「设备闲置自动处理」、闲置判定时长，以及店里有人时怎么处理闲置设备（只标记、Bot 提醒、直接关机）。旧设置里的 `device.defaultMinutes` 读取时转成闲置判定时长。代码：`resources/capabilities/idle-power.ts`、`durable-objects/shop-hub-idle.ts`。
+所以设备闲置自动关机触发时，机器上一定没有人，也不需要再刷新占用。店铺设置「位置与设备 → 闲置自动关机」里只有三项：是否启用「设备闲置自动处理」、闲置判定时长，以及店里有人时怎么处理闲置设备（只标记、到时自动关机）。预告是自动关机的提前通知：例如闲置阈值 N 分钟，Bot 提前量 5 分钟，则闲置 N−5 分钟时预告，N 分钟时关机。是否预告和提前多久在 Bot 设置里控制；Bot 离线、播报失败或关闭预告都不影响平台关机。旧设置里的 `device.defaultMinutes` 读取时转成闲置判定时长，旧的 `whileOccupied: "remind"` 按 `"off"` 处理。代码：`resources/capabilities/idle-power.ts`、`durable-objects/shop-hub-idle.ts`。
 
 ## 3. 麻将等位
 

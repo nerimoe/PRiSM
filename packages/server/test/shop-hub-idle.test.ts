@@ -47,22 +47,28 @@ async function fixture(settings: unknown, options: { watched?: boolean } = {}) {
       a: { machineId: "a", channel: "chan-a", term: 1, leaseUntil: Date.now() + 10 * MIN, links: { [connection.id]: { connected: true, snapshot: true } } },
     });
   }
+  const sockets: Array<{ tags: string[]; send(data: string): void; deserializeAttachment(): unknown }> = [];
   let alarm: number | null = null;
   const ctx = {
     storage: {
       async get<T>(key: string) { return structuredClone(state.get(key)) as T | undefined; },
       async put(key: string, value: unknown) { state.set(key, structuredClone(value)); },
       async delete(key: string) { return state.delete(key); },
+      async getAlarm() { return alarm; },
       async setAlarm(at: number) { alarm = at; },
       async deleteAlarm() { alarm = null; },
     },
-    getWebSockets() { return []; },
+    getWebSockets(tag?: string) { return tag ? sockets.filter((socket) => socket.tags.includes(tag)) : sockets; },
   };
   const hub = new ShopHub(ctx as any, { DB: db, URL_ENCRYPTION_KEY: KEY } as any);
+  const fireAlarm = async () => {
+    alarm = null;
+    await hub.alarm();
+  };
   const run = async () => {
     await hub.touch("shop");
     state.set("touchAt", Date.now() - 1);
-    await hub.alarm();
+    await fireAlarm();
   };
   const offs = () =>
     sqlite.query<{ action: string; player_id: string | null; staff_id: string | null }, []>(
@@ -70,7 +76,7 @@ async function fixture(settings: unknown, options: { watched?: boolean } = {}) {
     ).all();
   const idle = () =>
     (sqlite.query("SELECT value_json FROM device_state WHERE key='idle'").get() as { value_json: string } | null)?.value_json ?? null;
-  return { hub, sqlite, run, offs, idle, state, alarm: () => alarm };
+  return { hub, sqlite, run, fireAlarm, sockets, offs, idle, state, alarm: () => alarm };
 }
 
 const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request) => {
@@ -81,6 +87,57 @@ const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url:
 }) as typeof fetch);
 
 describe("idle check in the shop hub", () => {
+  for (const scenario of [
+    { policy: "off", players: 1, sendFails: false },
+    { policy: "remind", players: 1, sendFails: false },
+    { policy: "off", players: 0, sendFails: false },
+    { policy: "off", players: 1, sendFails: true },
+  ]) it(`warns five minutes before a ten-minute idle power-off and still switches off: ${JSON.stringify(scenario)}`, async () => {
+    const start = Date.now();
+    let now = start;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const { sqlite, run, fireAlarm, offs, sockets, state, alarm } = await fixture({
+      device: { enabled: true, minutes: 10, whileOccupied: scenario.policy },
+    });
+    const notices: any[] = [];
+    sockets.push({
+      tags: ["bot"],
+      deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }),
+      send(data: string) {
+        notices.push(JSON.parse(data));
+        if (scenario.sendFails) throw new Error("Bot disconnected");
+      },
+    });
+    // Isolate the idle alarm from watcher lease renewals.
+    const watchers = state.get("watchers") as Record<string, { leaseUntil: number }>;
+    watchers.a!.leaseUntil = start + 60 * MIN;
+    state.set("watchers", watchers);
+    sqlite.run("UPDATE machines SET occupancy_minutes=1 WHERE id='m1'");
+    sqlite.run("UPDATE device_state SET changed_at=? WHERE key='power'", [new Date(start - MIN).toISOString()]);
+    if (scenario.players) sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");
+    const spy = haCalls();
+    try {
+      await run();
+      expect(alarm()).toBe(start + 5 * MIN);
+      expect(offs()).toEqual([]);
+      expect(notices).toEqual([]);
+      now = start + 5 * MIN;
+      await fireAlarm();
+      expect(notices).toEqual([{
+        type: "event", event: "idle.reminder",
+        data: { reason: "device_idle", at: start + 10 * MIN, devices: [{ id: "m1", name: "舞萌" }] },
+      }]);
+      expect(offs()).toEqual([]);
+      expect(alarm()).toBe(start + 10 * MIN);
+      // Once warned, no Bot and no user action is needed to keep the deadline.
+      sockets.length = 0;
+      now = start + 10 * MIN;
+      await fireAlarm();
+      expect(offs()).toEqual([{ action: "power.off", player_id: null, staff_id: null }]);
+      expect(spy.mock.calls.map(([url]) => new URL(String(url)).pathname)).toContain("/api/services/switch/turn_off");
+    } finally { spy.mockRestore(); clock.mockRestore(); sqlite.close(); }
+  });
+
   it("switches an empty shop's machines off as the system once its time is up", async () => {
     const { hub, run, offs, sqlite } = await fixture({ shopEmpty: { enabled: true, minutes: 15 } });
     const announced = spyOn(hub, "shopEvent");
