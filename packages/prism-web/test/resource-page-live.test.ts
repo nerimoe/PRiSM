@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   applyLiveFrame,
+  deviceViewOf,
   idleLive,
   parseLiveFrame,
-  type FactsChange,
+  type DeviceView,
   type LiveHandlers,
 } from "../src/ui/use-resource-live";
-import { settleClimate, TEMPERATURE_SETTLE_MS, type ClimateState } from "../src/ui/ClimateControls";
+import { TEMPERATURE_SETTLE_MS, type ClimateState } from "../src/ui/ClimateControls";
 
 const cooling: ClimateState = {
   mode: "cool", modes: ["off", "cool", "heat"], temperature: 24, currentTemperature: 27,
@@ -14,23 +15,22 @@ const cooling: ClimateState = {
 };
 
 function recorder() {
-  const log: Array<["facts" | "change", FactsChange] | ["refresh"]> = [];
+  const log: Array<["state", DeviceView] | ["refresh"]> = [];
   const handlers: LiveHandlers = {
-    onFacts: (facts) => log.push(["facts", facts]),
-    onChange: (change) => log.push(["change", change]),
+    onState: (view) => log.push(["state", view]),
     onRefresh: () => log.push(["refresh"]),
   };
   return { log, handlers };
 }
 
 describe("device page frames", () => {
-  test("reads the hub's frames and ignores anything else", () => {
-    expect(parseLiveFrame('{"type":"hello","watching":false}')).toEqual({ type: "hello", watching: false });
-    expect(parseLiveFrame('{"type":"hello","watching":true,"power":"on","climate":null}'))
-      .toEqual({ type: "hello", watching: true, power: "on", climate: null });
-    expect(parseLiveFrame('{"type":"watching","watching":true,"power":"off"}')).toEqual({ type: "watching", watching: true, power: "off" });
+  test("reads the hub's frames as state, whatever older App Clips are told about watching", () => {
+    expect(parseLiveFrame('{"type":"hello","watching":false,"power":"off"}')).toEqual({ type: "hello", power: "off" });
+    expect(parseLiveFrame('{"type":"hello","watching":true,"power":"on","climate":null}')).toEqual({ type: "hello", power: "on", climate: null });
+    expect(parseLiveFrame('{"type":"watching","watching":false,"power":"off"}')).toEqual({ type: "state", power: "off" });
     expect(parseLiveFrame('{"type":"state","power":"on"}')).toEqual({ type: "state", power: "on" });
     // A key that was not said stays out; one that was said as null means unknown.
+    expect(parseLiveFrame('{"type":"hello","watching":false}')).toEqual({ type: "hello" });
     expect(parseLiveFrame('{"type":"state","power":null}')).toEqual({ type: "state", power: null });
     expect(parseLiveFrame('{"type":"state","power":"standby"}')).toEqual({ type: "state", power: null });
     expect(parseLiveFrame('{"type":"state","climate":' + JSON.stringify(cooling) + "}")).toEqual({ type: "state", climate: cooling });
@@ -40,26 +40,18 @@ describe("device page frames", () => {
     expect(parseLiveFrame("null")).toBeNull();
   });
 
-  test("a greeting says whether the device is pushed, and carries its state only when it is", () => {
+  test("passes on every state the hub sends, and the greeting marks the channel as current", () => {
     const { log, handlers } = recorder();
-    const unwatched = applyLiveFrame(idleLive, { type: "hello", watching: false }, handlers);
-    expect(unwatched).toEqual({ connected: true, watching: false, dropped: false });
-    expect(log).toEqual([]);
-    const watched = applyLiveFrame(unwatched, { type: "watching", watching: true, power: "off", climate: cooling }, handlers);
-    expect(watched).toEqual({ connected: true, watching: true, dropped: false });
-    expect(log).toEqual([["facts", { power: "off", climate: cooling }]]);
+    const greeted = applyLiveFrame(idleLive, { type: "hello", power: "off", climate: cooling }, handlers);
+    expect(greeted).toEqual({ connected: true, dropped: false });
+    applyLiveFrame(greeted, { type: "state", power: "on" }, handlers);
+    expect(log).toEqual([["state", { power: "off", climate: cooling }], ["state", { power: "on" }]]);
   });
 
-  test("passes on changes only while the device is watched, and says when it stops being", () => {
+  test("a greeting with nothing to say about the device says nothing", () => {
     const { log, handlers } = recorder();
-    const idle = applyLiveFrame(idleLive, { type: "hello", watching: false }, handlers);
-    applyLiveFrame(idle, { type: "state", power: "on" }, handlers);
+    expect(applyLiveFrame(idleLive, { type: "hello" }, handlers)).toEqual({ connected: true, dropped: false });
     expect(log).toEqual([]);
-    const watched = applyLiveFrame(idle, { type: "watching", watching: true, power: "off" }, handlers);
-    applyLiveFrame(watched, { type: "state", power: "on" }, handlers);
-    expect(log.at(-1)).toEqual(["change", { power: "on" }]);
-    const stopped = applyLiveFrame(watched, { type: "watching", watching: false }, handlers);
-    expect(stopped).toEqual({ connected: true, watching: false, dropped: false });
   });
 
   test("a refresh is passed on whatever the status", () => {
@@ -67,26 +59,15 @@ describe("device page frames", () => {
     expect(applyLiveFrame(idleLive, { type: "refresh", reason: "binding" }, handlers)).toBe(idleLive);
     expect(log).toEqual([["refresh"]]);
   });
+
+  test("an answer's device is read the same way, and anything else in it is ignored", () => {
+    expect(deviceViewOf({ watching: true, power: "on", other: 1 })).toEqual({ power: "on" });
+    expect(deviceViewOf({ climate: null })).toEqual({ climate: null });
+    expect(deviceViewOf(undefined)).toEqual({});
+  });
 });
 
-describe("air conditioner settings with nothing pushing the state", () => {
-  test("show what was asked once Home Assistant accepted it", () => {
-    expect(settleClimate(cooling, "climate.off")?.mode).toBe("off");
-    expect(settleClimate({ ...cooling, mode: "off" }, "climate.on")?.mode).toBe("cool");
-    expect(settleClimate(cooling, "climate.on")).toBe(cooling);
-    expect(settleClimate(cooling, "climate.set_mode", { mode: "heat" })?.mode).toBe("heat");
-    expect(settleClimate(cooling, "climate.set_temperature", { temperature: 22 })?.temperature).toBe(22);
-    expect(settleClimate(cooling, "climate.set_fan_mode", { fanMode: "auto" })?.fanMode).toBe("auto");
-    // The rest of the state is kept as it was.
-    expect(settleClimate(cooling, "climate.set_temperature", { temperature: 22 })).toMatchObject({ mode: "cool", currentTemperature: 27 });
-  });
-
-  test("leave an unknown state unknown, and ignore an action that sets nothing", () => {
-    expect(settleClimate(null, "climate.off")).toBeNull();
-    expect(settleClimate(cooling, "climate.set_mode")).toBe(cooling);
-    expect(settleClimate(cooling, "climate.set_temperature", { temperature: "cold" })).toBe(cooling);
-  });
-
+describe("air conditioner controls", () => {
   test("gather taps on the temperature buttons for a second", () => {
     expect(TEMPERATURE_SETTLE_MS).toBe(1000);
   });

@@ -1,58 +1,51 @@
 import type { ClimateState } from "../ClimateControls";
 
 /**
- * What the board knows of one device's power and air conditioner. `watching` is
- * the "实时" tag: a HINATA IO reports every change, so the values are current.
- * Without it the device has no state of its own and the values are only what the
- * last refresh found, or unknown.
+ * What the board knows of one device's power and air conditioner. A value that
+ * is absent has not been said yet (the backend is still asking); `null` is one
+ * the backend could not read. `watching` is the "实时" label and nothing else:
+ * the board never decides anything by it, the backend has decided already.
  */
-export type BoardState = { watching: boolean; power: "on" | "off" | null; climate: ClimateState | null };
+export type BoardState = { watching: boolean; power?: "on" | "off" | null; climate?: ClimateState | null };
 export type BoardStates = Record<string, BoardState>;
 
 /**
- * What the board shows once something was read or said about a device. A live device takes
- * it. A device with no state of its own keeps what it last showed, even if that was
- * pushed before it stopped being live or read ten minutes ago: a value that is out of date is
- * still a value, and only a field that has never been learned is empty.
+ * One device after something was said about it: the label as said, and each
+ * value that was said. A value not said keeps what the board showed, however
+ * old: a value that is out of date is still a value.
  */
-export function learnBoardState(previous: BoardState | null | undefined, next: BoardState): BoardState {
-  if (next.watching || !previous) return next;
-  return { watching: false, power: next.power ?? previous.power, climate: next.climate ?? previous.climate };
+export function applyBoardState(previous: BoardState | null | undefined, next: Partial<BoardState>): BoardState {
+  return {
+    watching: next.watching ?? previous?.watching ?? false,
+    ...(previous?.power !== undefined ? { power: previous.power } : {}),
+    ...(previous?.climate !== undefined ? { climate: previous.climate } : {}),
+    ...(next.power !== undefined ? { power: next.power } : {}),
+    ...(next.climate !== undefined ? { climate: next.climate } : {}),
+  };
 }
 
 /**
- * What the board shows after a read of the whole shop over HTTP. The read is for the devices with no
- * state of their own, so it only fills those in. A device that is live is kept as it is: the hub already
- * keeps it current, and the read's copy of it is only what the database held when it was read.
+ * The board after an HTTP answer (the refresh button, the fallback, an action's
+ * answer). A device the hub has said something about since the question was
+ * asked keeps what the hub said: the answer is older than that.
  */
-export function mergeBoardStates(next: BoardStates, previous: BoardStates | null): BoardStates {
-  if (!previous) return next;
-  const merged: BoardStates = {};
-  for (const [id, state] of Object.entries(next)) {
-    const kept = previous[id];
-    merged[id] = state.watching && kept?.watching ? kept : learnBoardState(kept, state);
+export function applyBoardAnswer(
+  states: BoardStates | null,
+  answer: BoardStates,
+  askedAt: number,
+  pushedAt: Readonly<Record<string, number>>,
+): BoardStates {
+  const next: BoardStates = { ...(states ?? {}) };
+  for (const [id, state] of Object.entries(answer)) {
+    if ((pushedAt[id] ?? 0) > askedAt) continue;
+    next[id] = applyBoardState(next[id], state);
   }
-  return merged;
+  return next;
 }
 
-/**
- * Whether a board update means a Home Assistant connection went quiet.
- *
- * Liveness belongs to the connection, not to a device: when one stops being
- * watched every device bound to it stops being live at once, so the change is
- * reported once here however many devices share it. Gained connections are not
- * a reason to read anything — the hub is about to push what it sees — and
- * neither is the first update, which is what the board opened with.
- */
-export function lostConnections(before: readonly string[] | null, now: readonly string[]): string[] {
-  if (!before) return [];
-  const live = new Set(now);
-  return before.filter((id) => !live.has(id));
-}
-
-/** Whether a refresh has anything to do: some device has no state of its own. */
-export function hasUnwatched(states: BoardStates | null): boolean {
-  return !!states && Object.values(states).some((state) => !state.watching);
+/** Whether a device still waits for a value it has: the backend has not said it yet. */
+export function awaitingState(state: BoardState | null, caps: { power: boolean; climate: boolean }): boolean {
+  return !state || (caps.power && state.power === undefined) || (caps.climate && state.climate === undefined);
 }
 
 /** Who is watching Home Assistant for the shop: one entry per bot or HINATA IO the platform has handed the watch. */
@@ -68,9 +61,9 @@ export type BoardWatchers = { limit: number; max: number; watchers: BoardWatcher
 
 /** A frame the shop hub pushes to the board. */
 export type BoardFrame =
-  /** The whole shop: when the board connects, and again whenever which devices are live changes. */
-  | { type: "states"; states: BoardStates; liveConnections: string[] }
-  /** A live device's state changed; a key that is absent was not part of the change. */
+  /** Devices' labels and values: the whole shop when the board connects or liveness changes, then what Home Assistant said. */
+  | { type: "states"; states: Record<string, Partial<BoardState>> }
+  /** What one device shows now; a key that is absent was not part of it. */
   | { type: "state"; deviceId: string; power?: "on" | "off" | null; climate?: ClimateState | null }
   /** Who is watching, when the board connects and whenever that changes. */
   | ({ type: "watchers" } & BoardWatchers);
@@ -80,6 +73,14 @@ const phaseOf = (value: unknown): WatcherPhase =>
   value === "watching" || value === "subscribing" || value === "unreachable" ? value : "starting";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
+/** The label and the values a record says; what it does not say is left out. */
+export function viewOf(value: Record<string, unknown>): Partial<BoardState> {
+  return {
+    ...(typeof value.watching === "boolean" ? { watching: value.watching } : {}),
+    ...("power" in value ? { power: powerOf(value.power) } : {}),
+    ...("climate" in value ? { climate: isRecord(value.climate) ? (value.climate as ClimateState) : null } : {}),
+  };
+}
 
 /** A frame from the hub, or null for anything that is not one. */
 export function parseBoardFrame(raw: string): BoardFrame | null {
@@ -107,22 +108,12 @@ export function parseBoardFrame(raw: string): BoardFrame | null {
     };
   }
   if (frame.type === "states" && isRecord(frame.states)) {
-    const states: BoardStates = {};
+    const states: Record<string, Partial<BoardState>> = {};
     for (const [id, value] of Object.entries(frame.states)) {
       if (!isRecord(value)) continue;
-      states[id] = {
-        watching: value.watching === true,
-        power: powerOf(value.power),
-        climate: isRecord(value.climate) ? (value.climate as ClimateState) : null,
-      };
+      states[id] = viewOf(value);
     }
-    return {
-      type: "states",
-      states,
-      liveConnections: Array.isArray(frame.liveConnections)
-        ? frame.liveConnections.filter((id): id is string => typeof id === "string")
-        : [],
-    };
+    return { type: "states", states };
   }
   if (frame.type === "state" && typeof frame.deviceId === "string") {
     return {
@@ -136,24 +127,27 @@ export function parseBoardFrame(raw: string): BoardFrame | null {
 }
 
 /**
- * What a frame does to the board. The hub only sends a change for a device that is
- * live, so there is nothing to decide here: the change goes onto the device it names,
- * if the board has that device.
+ * What a frame does to the board: each device it names takes what it says. The
+ * hub has already decided what to say; there is nothing to decide here.
  */
 export function applyBoardFrame(states: BoardStates | null, frame: BoardFrame): BoardStates | null {
   // Who is watching is not about any device's state; the board keeps it apart.
   if (frame.type === "watchers") return states;
-  // The hub's word about which devices are live and what they show is the newest there is.
-  if (frame.type === "states")
-    return Object.fromEntries(Object.entries(frame.states).map(([id, state]) => [id, learnBoardState(states?.[id], state)]));
-  const current = states?.[frame.deviceId];
-  if (!states || !current) return states;
-  return {
-    ...states,
-    [frame.deviceId]: {
-      ...current,
-      ...(frame.power !== undefined ? { power: frame.power } : {}),
-      ...(frame.climate !== undefined ? { climate: frame.climate } : {}),
-    },
-  };
+  const next: BoardStates = { ...(states ?? {}) };
+  if (frame.type === "states") {
+    for (const [id, state] of Object.entries(frame.states)) next[id] = applyBoardState(next[id], state);
+    return next;
+  }
+  const { type: _type, deviceId, ...view } = frame;
+  next[deviceId] = applyBoardState(next[deviceId], view);
+  return next;
+}
+
+/** The devices whose values a frame says, so an older HTTP answer does not overwrite them. A label alone is not a value. */
+export function framedDevices(frame: BoardFrame): string[] {
+  if (frame.type === "watchers") return [];
+  if (frame.type === "state") return [frame.deviceId];
+  return Object.entries(frame.states)
+    .filter(([, state]) => state.power !== undefined || state.climate !== undefined)
+    .map(([id]) => id);
 }

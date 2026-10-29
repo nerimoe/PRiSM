@@ -1,108 +1,66 @@
 import { describe, expect, test } from "bun:test";
-import { lostConnections } from "../src/ui/merchant/board-state";
 import {
+  applyBoardAnswer,
   applyBoardFrame,
-  hasUnwatched,
-  learnBoardState,
-  mergeBoardStates,
+  applyBoardState,
+  awaitingState,
+  framedDevices,
   parseBoardFrame,
   type BoardState,
   type BoardStates,
 } from "../src/ui/merchant/board-state";
 
-const nothing: BoardState = { watching: false, power: null, climate: null };
-const watched = (power: "on" | "off"): BoardState => ({ watching: true, power, climate: null });
-const found = (power: "on" | "off"): BoardState => ({ watching: false, power, climate: null });
+const live = (power: "on" | "off"): BoardState => ({ watching: true, power });
+const notLive = (power?: "on" | "off" | null): BoardState => ({ watching: false, ...(power !== undefined ? { power } : {}) });
 const cooling = {
   mode: "cool", modes: ["off", "cool"], temperature: 24, currentTemperature: 27, minTemperature: 16,
   maxTemperature: 30, temperatureStep: 1, fanMode: "low", fanModes: ["auto", "low"],
 };
 
 describe("what the board shows of a device", () => {
-  test("a live device takes what it is given", () => {
-    expect(learnBoardState(found("on"), watched("off"))).toEqual(watched("off"));
-    expect(learnBoardState(undefined, watched("on"))).toEqual(watched("on"));
+  test("takes the label and every value it is told, whatever the label", () => {
+    expect(applyBoardState(notLive("on"), live("off"))).toEqual(live("off"));
+    expect(applyBoardState(live("on"), notLive("off"))).toEqual(notLive("off"));
+    expect(applyBoardState(undefined, live("on"))).toEqual(live("on"));
   });
 
-  test("a device with no state of its own keeps what it last showed, however old", () => {
-    expect(learnBoardState(found("on"), nothing)).toEqual(found("on"));
-    // It was live and stopped: the last pushed value stays, and only the tag changes.
-    expect(learnBoardState(watched("on"), nothing)).toEqual(found("on"));
+  test("keeps a value it was not told, however old", () => {
+    // It was live and stopped: the label changes and the last value stays until the backend says another.
+    expect(applyBoardState(live("on"), { watching: false })).toEqual(notLive("on"));
+    expect(applyBoardState({ watching: false, power: "on", climate: cooling }, { power: "off" }))
+      .toEqual({ watching: false, power: "off", climate: cooling });
   });
 
-  test("a read fills in what it learned and keeps the rest", () => {
-    const before: BoardState = { watching: false, power: "on", climate: cooling };
-    expect(learnBoardState(before, { watching: false, power: null, climate: { ...cooling, temperature: 22 } }))
-      .toEqual({ watching: false, power: "on", climate: { ...cooling, temperature: 22 } });
-    expect(learnBoardState(before, { watching: false, power: "off", climate: null })).toEqual({ watching: false, power: "off", climate: cooling });
-  });
-
-  test("only what has never been read is empty", () => {
-    expect(learnBoardState(undefined, nothing)).toEqual(nothing);
-    expect(learnBoardState(nothing, nothing)).toEqual(nothing);
-    expect(learnBoardState(nothing, found("off"))).toEqual(found("off"));
+  test("tells a value not said yet from one the backend could not read", () => {
+    expect(awaitingState(null, { power: true, climate: false })).toBe(true);
+    expect(awaitingState(notLive(), { power: true, climate: false })).toBe(true);
+    expect(awaitingState(notLive(null), { power: true, climate: false })).toBe(false);
+    expect(awaitingState(notLive("on"), { power: true, climate: true })).toBe(true);
+    expect(awaitingState({ watching: true, power: "on", climate: null }, { power: true, climate: true })).toBe(false);
   });
 });
 
-describe("which connections went quiet", () => {
-  test("one connection going quiet is one change, however many devices it carries", () => {
-    expect(lostConnections(["ha_1", "ha_2"], ["ha_2"])).toEqual(["ha_1"]);
+describe("an HTTP answer on the board", () => {
+  test("fills in every device it names, live or not", () => {
+    const board: BoardStates = { a: live("on"), b: notLive() };
+    expect(applyBoardAnswer(board, { a: live("off"), b: notLive("on"), c: notLive(null) }, 100, {}))
+      .toEqual({ a: live("off"), b: notLive("on"), c: notLive(null) });
+    expect(applyBoardAnswer(null, { a: live("on") }, 100, {})).toEqual({ a: live("on") });
   });
 
-  test("nothing is lost when nothing changed, or when a connection came back", () => {
-    expect(lostConnections(["ha_1"], ["ha_1"])).toEqual([]);
-    expect(lostConnections(["ha_1"], ["ha_1", "ha_2"])).toEqual([]);
-  });
-
-  test("the first update is not a change", () => {
-    expect(lostConnections(null, [])).toEqual([]);
-    expect(lostConnections(null, ["ha_1"])).toEqual([]);
-  });
-
-  test("every connection going quiet at once is still just the ones that went", () => {
-    expect(lostConnections(["ha_1", "ha_2"], [])).toEqual(["ha_1", "ha_2"]);
-  });
-});
-
-describe("device board states", () => {
-  test("a read fills what has no state of its own and leaves a live device as the hub keeps it", () => {
-    // The read's copy of a live device is only what the database held when it was read.
-    const previous: BoardStates = { a: watched("on"), b: found("on"), c: nothing };
-    const next: BoardStates = { a: watched("off"), b: found("off"), c: found("on") };
-    expect(mergeBoardStates(next, previous)).toEqual({ a: watched("on"), b: found("off"), c: found("on") });
-  });
-
-  test("a read that could learn nothing leaves the last value in place", () => {
-    expect(mergeBoardStates({ a: nothing }, { a: found("on") })).toEqual({ a: found("on") });
-    // A device that stopped being live keeps its last pushed value.
-    expect(mergeBoardStates({ a: nothing }, { a: watched("on") })).toEqual({ a: found("on") });
-  });
-
-  test("a read takes a device that has become live, and everything when the board has nothing yet", () => {
-    expect(mergeBoardStates({ a: watched("on") }, { a: found("off") })).toEqual({ a: watched("on") });
-    expect(mergeBoardStates({ a: found("on") }, null)).toEqual({ a: found("on") });
-  });
-
-  test("a device new to the board, and a device that left", () => {
-    expect(mergeBoardStates({ a: found("on"), n: nothing }, { a: found("on") })).toEqual({ a: found("on"), n: nothing });
-    expect(mergeBoardStates({ a: nothing }, { a: found("on"), gone: found("off") })).toEqual({ a: found("on") });
-  });
-
-  test("says whether anything has no state of its own", () => {
-    expect(hasUnwatched(null)).toBe(false);
-    expect(hasUnwatched({})).toBe(false);
-    expect(hasUnwatched({ a: watched("on"), b: watched("off") })).toBe(false);
-    expect(hasUnwatched({ a: watched("on"), b: nothing })).toBe(true);
+  test("loses to whatever the hub said about a device after the question was asked", () => {
+    const board: BoardStates = { a: live("off"), b: notLive("on") };
+    expect(applyBoardAnswer(board, { a: live("on"), b: notLive("off") }, 100, { a: 150, b: 50 }))
+      .toEqual({ a: live("off"), b: notLive("off") });
   });
 });
 
 describe("device board frames", () => {
   test("reads the hub's frames and ignores anything else", () => {
-    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on", climate: null }, b: { watching: false, power: null, climate: null } }, liveConnections: ["ha_1"] })))
-      .toEqual({ type: "states", states: { a: watched("on"), b: nothing }, liveConnections: ["ha_1"] });
-    // An older hub that says nothing about connections reads as none, not as a failure.
-    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on", climate: null } } })))
-      .toEqual({ type: "states", states: { a: watched("on") }, liveConnections: [] });
+    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on" }, b: { watching: false } }, liveConnections: ["ha_1"] })))
+      .toEqual({ type: "states", states: { a: live("on"), b: { watching: false } } });
+    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { b: { watching: false, power: "off", climate: null } } })))
+      .toEqual({ type: "states", states: { b: { watching: false, power: "off", climate: null } } });
     expect(parseBoardFrame('{"type":"state","deviceId":"a","power":"off"}')).toEqual({ type: "state", deviceId: "a", power: "off" });
     // A key that was not said stays out; one that was said as null means unknown.
     expect(parseBoardFrame('{"type":"state","deviceId":"a","power":null}')).toEqual({ type: "state", deviceId: "a", power: null });
@@ -116,31 +74,32 @@ describe("device board frames", () => {
     expect(parseBoardFrame("null")).toBeNull();
   });
 
-  test("a change goes onto the device it names, and only what it says", () => {
-    const board: BoardStates = { a: { watching: true, power: "on", climate: cooling }, b: watched("off") };
+  test("a change goes onto the device it names, and only what it says, whether or not it is live", () => {
+    const board: BoardStates = { a: { watching: true, power: "on", climate: cooling }, b: notLive("off") };
     expect(applyBoardFrame(board, { type: "state", deviceId: "a", climate: { ...cooling, currentTemperature: 28 } }))
-      .toEqual({ a: { watching: true, power: "on", climate: { ...cooling, currentTemperature: 28 } }, b: watched("off") });
+      .toEqual({ a: { watching: true, power: "on", climate: { ...cooling, currentTemperature: 28 } }, b: notLive("off") });
     expect(applyBoardFrame(board, { type: "state", deviceId: "a", power: null }))
-      .toEqual({ a: { watching: true, power: null, climate: cooling }, b: watched("off") });
-    expect(applyBoardFrame(board, { type: "state", deviceId: "b", power: "on" })).toEqual({ a: board.a, b: watched("on") });
+      .toEqual({ a: { watching: true, power: null, climate: cooling }, b: notLive("off") });
+    // What an action left a device in that nothing watches comes the same way.
+    expect(applyBoardFrame(board, { type: "state", deviceId: "b", power: "on" })).toEqual({ a: board.a, b: notLive("on") });
   });
 
-  test("a change for a device the board does not have, or before it has any state, changes nothing", () => {
-    const board: BoardStates = { a: watched("off") };
-    expect(applyBoardFrame(board, { type: "state", deviceId: "missing", power: "on" })).toBe(board);
-    expect(applyBoardFrame(null, { type: "state", deviceId: "a", power: "on" })).toBeNull();
+  test("the hub's labels change which devices are live without losing a value, and values follow", () => {
+    const board: BoardStates = { a: live("on"), b: notLive("on") };
+    const labelled = applyBoardFrame(board, { type: "states", states: { a: { watching: false }, b: { watching: false }, c: live("off") } });
+    expect(labelled).toEqual({ a: notLive("on"), b: notLive("on"), c: live("off") });
+    expect(applyBoardFrame(labelled, { type: "states", states: { a: notLive("off") } })).toEqual({ a: notLive("off"), b: notLive("on"), c: live("off") });
+    expect(applyBoardFrame(null, { type: "states", states: { a: live("on") } })).toEqual({ a: live("on") });
   });
 
-  test("the whole shop from the hub says which devices are live, and nothing that was known goes back to unknown", () => {
-    const board: BoardStates = { a: watched("on"), b: found("on") };
-    // Connection a stopped being watched, b stays as it was, c is new.
-    const next = applyBoardFrame(board, { type: "states", states: { a: nothing, b: nothing, c: watched("off") } });
-    expect(next).toEqual({ a: found("on"), b: found("on"), c: watched("off") });
-    expect(applyBoardFrame(null, { type: "states", states: { a: watched("on") } })).toEqual({ a: watched("on") });
+  test("only a frame with values counts as the hub having spoken about a device", () => {
+    expect(framedDevices({ type: "states", states: { a: { watching: false }, b: notLive("on") } })).toEqual(["b"]);
+    expect(framedDevices({ type: "state", deviceId: "a", power: "on" })).toEqual(["a"]);
+    expect(framedDevices({ type: "watchers", limit: 2, max: 4, watchers: [], standby: 0 })).toEqual([]);
   });
 
   test("who is watching is not about any device, so it leaves the device states alone", () => {
-    const board: BoardStates = { a: watched("on") };
+    const board: BoardStates = { a: live("on") };
     expect(applyBoardFrame(board, { type: "watchers", limit: 2, max: 4, watchers: [], standby: 0 })).toBe(board);
     expect(applyBoardFrame(null, { type: "watchers", limit: 2, max: 4, watchers: [], standby: 0 })).toBeNull();
   });

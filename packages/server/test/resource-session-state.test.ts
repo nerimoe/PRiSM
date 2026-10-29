@@ -55,6 +55,8 @@ async function fixture() {
 
   const hub = {
     poweredOff: [] as Array<[string, string]>,
+    /** What the backend read of a device that is not live and handed the hub for its pages and the boards. */
+    reads: [] as Array<[string, string, Record<string, unknown>]>,
     /** What the hub was asked to tell the shop's bots. */
     events: [] as Array<Record<string, unknown>>,
     /** What the route handed the hub when a board connected. */
@@ -68,6 +70,7 @@ async function fixture() {
     SHOP_HUB: {
       getByName: (name: string) => ({
         async poweredOff(shop: string, machine: string) { hub.poweredOff.push([shop, machine]); },
+        async deviceRead(shop: string, device: string, view: Record<string, unknown>) { hub.reads.push([shop, device, view]); },
         async shopEvent(event: Record<string, unknown>) { hub.events.push(event); },
         async fetch(request: Request) {
           const read = (header: string) => request.headers.get(header);
@@ -156,13 +159,14 @@ describe("device page state", () => {
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 
-  it("says an unwatched device has no state, without asking Home Assistant", async () => {
+  it("leaves an unwatched device's state to the page's channel, without asking Home Assistant", async () => {
     const { call, jsonAs, ticket, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
       const res = await call(`/api/v1/devices/session/bootstrap?ticket=${await ticket("cab")}`);
       const { state } = await jsonAs<{ state: { device: unknown } }>(res);
-      expect(state.device).toEqual({ watching: false, power: null, climate: null });
+      // No power or climate at all: an unknown value is not sent as if it were one.
+      expect(state.device).toEqual({ watching: false });
       expect(ha.calls).toEqual([]);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
@@ -206,8 +210,8 @@ describe("device page state", () => {
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 
-  it("treats a power action as done when Home Assistant accepts it, without reading the state back", async () => {
-    const { call, json, ticket, recorded, sqlite } = await fixture();
+  it("answers a power action with what Home Assistant shows after it, and hands that to the hub", async () => {
+    const { call, json, ticket, recorded, hub, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
       const res = await call("/api/v1/devices/session/actions", PLAYER, {
@@ -215,15 +219,18 @@ describe("device page state", () => {
         body: JSON.stringify({ ticket: await ticket("cab"), operationId: crypto.randomUUID(), action: "power.on" }),
       });
       expect(res.status).toBe(200);
-      expect(await json(res)).not.toHaveProperty("power");
-      expect(ha.calls).toEqual([{ method: "POST", path: "/api/services/switch/turn_on" }]);
-      // Only the request and its result are logged; no state change was observed or invented.
+      expect((await json(res)).device).toEqual({ power: "on", climate: view });
+      expect(ha.calls[0]).toEqual({ method: "POST", path: "/api/services/switch/turn_on" });
+      // It showed on at the first read, so it was not read again.
+      expect(ha.calls.slice(1).map((entry) => entry.path).sort()).toEqual(["/api/states/climate.room", "/api/states/switch.cab"]);
+      expect(hub.reads).toEqual([["shop-id", "cab", { power: "on", climate: view }]]);
+      // Only the request and its result are logged; a read is not recorded as a state change.
       expect((sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE kind='change'").get() as { n: number }).n).toBe(0);
       expect(recorded()).toBe(0);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 
-  it("does the same for an air conditioner setting", async () => {
+  it("reads an air conditioner a few times when it does not show the setting yet, and answers with the last read", async () => {
     const { call, json, ticket, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
@@ -232,8 +239,27 @@ describe("device page state", () => {
         body: JSON.stringify({ ticket: await ticket("cab"), operationId: crypto.randomUUID(), action: "climate.set_temperature", temperature: 23 }),
       });
       expect(res.status).toBe(200);
-      expect(await json(res)).not.toHaveProperty("climate");
-      expect(ha.calls).toEqual([{ method: "POST", path: "/api/services/climate/set_temperature" }]);
+      // This Home Assistant keeps saying 24°, which is what the page is told.
+      expect((await json(res)).device).toEqual({ power: "on", climate: view });
+      expect(ha.calls[0]).toEqual({ method: "POST", path: "/api/services/climate/set_temperature" });
+      expect(ha.calls.filter((entry) => entry.path === "/api/states/climate.room")).toHaveLength(3);
+    } finally { ha.spy.mockRestore(); sqlite.close(); }
+  });
+
+  it("answers a watched device's action from storage and leaves telling its pages to its watcher", async () => {
+    const { call, json, ticket, watch, hub, sqlite } = await fixture();
+    watch();
+    // The watcher's event has already been stored.
+    sqlite.run("UPDATE device_state SET value_json='\"on\"' WHERE device_id='cab' AND capability='power'");
+    const ha = homeAssistant();
+    try {
+      const res = await call("/api/v1/devices/session/actions", PLAYER, {
+        method: "POST",
+        body: JSON.stringify({ ticket: await ticket("cab"), operationId: crypto.randomUUID(), action: "power.on" }),
+      });
+      expect((await json(res)).device).toEqual({ power: "on", climate: view });
+      expect(ha.calls).toEqual([{ method: "POST", path: "/api/services/switch/turn_on" }]);
+      expect(hub.reads).toEqual([]);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });
@@ -289,7 +315,7 @@ describe("shop-wide board state", () => {
       // The door has nothing to show, so it is not part of the board's state.
       expect(board.states).toEqual({
         cab: { watching: false, power: "on", climate: view },
-        io: { watching: false, power: "on", climate: null },
+        io: { watching: false, power: "on" },
       });
       expect(ha.calls.map((entry) => entry.path).sort())
         .toEqual(["/api/states/climate.room", "/api/states/switch.cab", "/api/states/switch.io"]);
@@ -312,7 +338,7 @@ describe("shop-wide board state", () => {
       const board = await json(await call(BOARD, ADMIN));
       expect(board.states).toEqual({
         cab: { watching: true, power: "off", climate: view },
-        io: { watching: false, power: "on", climate: null },
+        io: { watching: false, power: "on" },
       });
       expect(ha.calls).toEqual([{ method: "GET", path: "/api/states/switch.io" }]);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
@@ -335,7 +361,7 @@ describe("shop-wide board state", () => {
     try {
       const res = await call(BOARD, ADMIN);
       expect(res.status).toBe(200);
-      expect((await json(res)).states).toEqual({ cab: idle, io: idle });
+      expect((await json(res)).states).toEqual({ cab: idle, io: { watching: false, power: null } });
     } finally { spy.mockRestore(); sqlite.close(); }
   });
 

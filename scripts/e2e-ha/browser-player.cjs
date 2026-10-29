@@ -69,7 +69,7 @@ async function stopIo() {
 }
 
 /** A player's page, with everything it sends recorded. */
-async function scan(browser, device, { delayDevice = 0 } = {}) {
+async function scan(browser, device) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "zh-CN" });
   await context.addCookies([{ name: "arcadelink_session", value: player.token, url: BASE }]);
   const page = await context.newPage();
@@ -84,7 +84,6 @@ async function scan(browser, device, { delayDevice = 0 } = {}) {
     seen.sockets += 1;
     ws.on("framereceived", ({ payload }) => seen.frames.push({ at: Date.now(), frame: JSON.parse(String(payload)) }));
   });
-  if (delayDevice) await page.route("**/api/v1/devices/session/device*", async (route) => { await pause(delayDevice); await route.continue(); });
   const started = Date.now();
   await page.goto(`${BASE}/t/${shop.publicId}/${devices[device].publicId}`);
   return { page, context, seen, started };
@@ -104,24 +103,26 @@ const text = (page) => page.locator("body").innerText();
     console.log("\n== 休息室：没有 IO 监听（无状态）");
     {
       const since = new Date().toISOString();
-      const { page, seen, context, started } = await scan(browser, "lounge", { delayDevice: 1500 });
+      const { page, seen, context, started } = await scan(browser, "lounge");
       await page.getByText("休息室").first().waitFor();
       const named = Date.now() - started;
-      await page.getByText("正在获取电源状态").waitFor({ timeout: 1000 });
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 1, "the one read is in flight");
-      assert.equal(await page.getByText("设备尚未开机").count(), 0, "no power answer yet");
-      step(`设备名先出现（${named} ms），副标题显示「正在获取电源状态」，此时那次读取还在途中`);
-      await page.screenshot({ path: `${output}/player-lounge-checking.png` });
+      step(`设备名先出现（${named} ms），不等 Home Assistant`);
       await page.getByText("设备尚未开机").waitFor({ timeout: 5000 });
+      await until(() => seen.frames.some((f) => f.frame.type === "state"), "the hub's answer");
+      const hello = seen.frames.find((f) => f.frame.type === "hello").frame;
+      assert.equal("power" in hello, false, "the greeting does not wait on Home Assistant");
+      const answer = seen.frames.find((f) => f.frame.type === "state").frame;
+      assert.equal(answer.power, "off");
       assert.equal(await page.getByText("正在获取电源状态").count(), 0);
-      step("读取返回后「正在获取电源状态」消失，显示「设备尚未开机」");
-      await pause(400);
-      assert.equal(seen.sockets, 0, "no WebSocket for a device nothing watches");
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 1);
+      step("hub 立刻打招呼（不带值），随后替页面问 HA 并用 state 帧发来「关」：页面显示「设备尚未开机」");
+      await page.screenshot({ path: `${output}/player-lounge-off.png` });
+      await pause(3500);
+      assert.equal(seen.sockets, 1);
+      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 0, "the page reads nothing while the hub speaks");
       assert.deepEqual(platformReads(since), ["climate.heatpump", "input_boolean.lounge_power"]);
-      step("整个页面只读了 1 次 /session/device、没有开 WebSocket；HA 只收到休息室两个实体各 1 次读取");
+      step("页面只开 1 条 WebSocket、没有发 /session/device；HA 只收到 hub 替它问的休息室两个实体各 1 次");
 
-      // Home Assistant answering a power-on is the end of it: no read-back, the page moves on.
+      // A power-on answers with what the backend read back from Home Assistant; the page moves on by it.
       const t0 = new Date().toISOString();
       const before = seen.requests.length;
       await page.getByRole("button", { name: "开机", exact: true }).click();
@@ -130,9 +131,10 @@ const text = (page) => page.locator("body").innerText();
       assert.equal((await haState("input_boolean.lounge_power")).state, "on");
       const after = seen.requests.slice(before);
       assert.equal(after.filter((r) => r.path === "/api/v1/devices/session/actions").length, 1);
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 1, "no read after power-on");
-      assert.deepEqual(platformReads(t0), [], "Home Assistant was not asked to confirm");
-      step("点「开机」：HA 真的打开了；HA 回 200 页面就继续，没有回读、HA 没收到任何读取");
+      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 0, "the page reads nothing after power-on");
+      const readBack = platformReads(t0);
+      assert.ok(readBack.length > 0 && readBack.every((e) => /lounge_power|heatpump/.test(e)), `read back: ${readBack}`);
+      step("点「开机」：HA 真的打开了；后端读回这台设备、响应带上「开」，页面据此往下走，自己不读");
       await page.screenshot({ path: `${output}/player-lounge-on.png` });
 
       // The temperature buttons settle for a second, then send once.
@@ -170,23 +172,22 @@ const text = (page) => page.locator("body").innerText();
       await page.getByText("设备尚未开机").waitFor({ timeout: 8000 });
       await until(() => seen.frames.some((f) => f.frame.type === "hello"), "the hub's greeting");
       const hello = seen.frames.find((f) => f.frame.type === "hello").frame;
-      assert.equal(hello.watching, true);
       assert.equal(hello.power, "off");
       assert.equal(hello.climate.temperature, 21);
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 0, "a watched device is never asked");
+      assert.equal(calls(seen, "/api/v1/devices/session/device").length, 0, "the page reads nothing while the hub speaks");
       assert.equal(seen.sockets, 1);
-      step("扫码：hub 的第一条帧就带着 watching=true 和当前电源/空调；页面没发 /session/device，只开 1 条 WebSocket");
+      step("扫码：hub 的第一条帧就带着存储的电源/空调；页面没发 /session/device，只开 1 条 WebSocket");
       await page.screenshot({ path: `${output}/player-a-live.png` });
 
-      // Power on: Home Assistant is asked to switch, and the page moves on when the push says it is on.
+      // Power on: Home Assistant is asked to switch; the answer's read-back (from storage) or the push says it is on.
       const before = seen.requests.length;
       const framesBefore = seen.frames.length;
       await page.getByRole("button", { name: "开机", exact: true }).click();
       await page.getByText("设备尚未开机").waitFor({ state: "detached", timeout: 8000 });
       assert.equal((await haState("switch.decorative_lights")).state, "on");
-      assert.ok(seen.frames.slice(framesBefore).some((f) => f.frame.type === "state" && f.frame.power === "on"), "the page moved on because of the pushed state");
+      await until(() => seen.frames.slice(framesBefore).some((f) => f.frame.type === "state" && f.frame.power === "on"), "the watcher's push", 4000);
       assert.equal(calls(seen, "/api/v1/devices/session/device").length, 0);
-      step("点「开机」：页面是在收到推送（power=on）后才往下走的，没有任何读取");
+      step("点「开机」：页面按后端说的「开」往下走（读回来自存储，监听者也推了 power=on），页面自己没有读");
 
       // The machine is switched off elsewhere: the page notices by itself and goes back to the power page.
       const quiet = seen.requests.length;
@@ -202,18 +203,19 @@ const text = (page) => page.locator("body").innerText();
       assert.deepEqual(platformReads(since), [], "Home Assistant was never asked by the platform");
       step("整个过程 HA 的访问日志里平台没有任何一次读取");
 
-      // The IO goes away: the device is no longer watched, so the page asks once, like any other.
+      // The IO goes away: nobody reports its changes, so the hub asks Home Assistant once and tells the page.
       const t1 = new Date().toISOString();
       const asked = calls(seen, "/api/v1/devices/session/device").length;
       await haCall("climate", "set_temperature", { entity_id: "climate.hvac", temperature: 27 });
       await page.getByText("27°").first().waitFor({ timeout: 4000 });
       await stopIo();
-      await until(() => seen.frames.some((f) => f.frame.type === "watching" && f.frame.watching === false), "the hub to say the device is no longer watched", 8000);
-      await until(() => calls(seen, "/api/v1/devices/session/device").length === asked + 1, "the page's one read", 8000);
-      await pause(600);
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, asked + 1, "exactly one read");
+      await until(() => seen.frames.some((f) => f.frame.type === "watching" && f.frame.watching === false), "the hub to say what the device shows now", 8000);
+      const dropped = seen.frames.find((f) => f.frame.type === "watching" && f.frame.watching === false).frame;
+      assert.equal(dropped.climate?.temperature, 27, "the hub asked Home Assistant and sent its answer");
+      await pause(3500);
+      assert.equal(calls(seen, "/api/v1/devices/session/device").length, asked, "the page itself reads nothing");
       assert.deepEqual(platformReads(t1), ["climate.hvac", "switch.decorative_lights"]);
-      step("IO 掉线：hub 告知「不再监听」，页面只读 1 次（HA 收到 A 的电源和空调各 1 次）");
+      step("IO 掉线：hub 替页面问 HA 一次并把结果发来，页面自己不读（HA 收到 A 的电源和空调各 1 次）");
       assert.equal(await page.getByText("27°").count() > 0, true, "the last value stays");
 
       // It comes back: the hub says so, sends the state, and the page stops asking.
@@ -225,7 +227,7 @@ const text = (page) => page.locator("body").innerText();
       assert.equal(back.power, "on");
       await haCall("climate", "set_temperature", { entity_id: "climate.hvac", temperature: 22 });
       await page.getByText("22°").first().waitFor({ timeout: 4000 });
-      assert.equal(calls(seen, "/api/v1/devices/session/device").length, asked + 1, "no further reads");
+      assert.equal(calls(seen, "/api/v1/devices/session/device").length, asked, "no reads");
       assert.deepEqual(platformReads(t2), []);
       step("IO 回来：hub 再次告知「监听中」并带上当前状态，之后又靠推送更新，不再读");
       assert.deepEqual(seen.exceptions, []);

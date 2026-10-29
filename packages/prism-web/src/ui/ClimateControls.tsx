@@ -79,26 +79,6 @@ export function climateSummary(state: ClimateState | null, t: Translate): string
     .join(" · ");
 }
 
-/**
- * What the controls show after Home Assistant accepted a setting while nothing
- * pushes the state: the setting that was asked for. A watched device reports the
- * real state as an event instead, so this is not used for it.
- */
-export function settleClimate(
-  state: ClimateState | null,
-  action: string,
-  extra: Record<string, unknown> = {},
-): ClimateState | null {
-  if (!state) return state;
-  if (action === "climate.off") return { ...state, mode: "off" };
-  if (action === "climate.on")
-    return state.mode !== "off" ? state : { ...state, mode: state.modes.find((mode) => mode !== "off") ?? "auto" };
-  if (action === "climate.set_mode" && typeof extra.mode === "string") return { ...state, mode: extra.mode };
-  if (action === "climate.set_temperature" && typeof extra.temperature === "number") return { ...state, temperature: extra.temperature };
-  if (action === "climate.set_fan_mode" && typeof extra.fanMode === "string") return { ...state, fanMode: extra.fanMode };
-  return state;
-}
-
 type Draft = { mode?: string; fanMode?: string; temperature?: number };
 
 /** How long a choice is shown before the entity has to confirm it. */

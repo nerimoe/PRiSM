@@ -12,7 +12,8 @@ import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import type { AppBindings } from "../../bindings.js";
 import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
 import { vkFromKeyText } from "../../resources/capabilities/key-text.js";
-import { createRuntimeBus, readClimate, readPower, type ClimateState } from "../../resources/capabilities/runtime.js";
+import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
+import { readClimate, readPower, type ClimateState } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
 import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
@@ -215,14 +216,13 @@ export async function executeResourceAction(
         const sync = refreshActivityBill(c.env, shop.id, player.id, false, true).catch(error => console.error("Device live bill sync failed", error));
         try { c.executionCtx.waitUntil(sync); } catch { void sync; }
       }
-      // Home Assistant answering 200 is the whole outcome: a watched connection
-      // reports the new state as an event, and an unwatched one has no state to
-      // report, so nothing is read back here.
+      // A power or climate action answers with what the device shows now, read back by the bus;
+      // the page shows it without knowing where it came from.
       // A player or staff action may start or end an idle countdown.
       touchShopHubAfter(c, shop.id);
       // A coin leaves no state to show, so the player is told it went in.
       const notices = action === "coin" ? [notice("COIN_SENT", requestLocale(c.req.header("accept-language")))] : undefined;
-      return c.json({ operationId: body.operationId, ...done.result, ...(notices ? { notices } : {}) });
+      return c.json({ operationId: body.operationId, ...done.result, ...(done.device ? { device: done.device } : {}), ...(notices ? { notices } : {}) });
     },
   );
 }

@@ -10,6 +10,7 @@ type ShopHubNamespace = {
     relayOnline(shopId: string, machineId: string, channel: string): Promise<void>;
     relayOffline(shopId: string, machineId: string): Promise<void>;
     poweredOff(shopId: string, machineId: string): Promise<void>;
+    deviceRead(shopId: string, deviceId: string, view: Record<string, unknown>): Promise<void>;
     refresh(shopId: string): Promise<void>;
     watching(): Promise<Array<{ machineId: string; leaseUntil: number }>>;
     haReport(shopId: string, machineId: string, report: HaReport): Promise<void>;
@@ -41,6 +42,19 @@ export async function refreshShopHub(env: Env, shopId: string): Promise<void> {
     await shopHub(env, shopId)?.refresh(shopId);
   } catch (error) {
     console.error("Shop hub refresh failed", error);
+  }
+}
+
+/**
+ * What the backend just read of a device that is not live, for the hub to pass
+ * to the device's pages and the boards. A live device's changes come from its
+ * watcher, so the hub ignores this for one. Never throws.
+ */
+export async function deviceRead(env: Env, shopId: string, deviceId: string, view: Record<string, unknown>): Promise<void> {
+  try {
+    await shopHub(env, shopId)?.deviceRead(shopId, deviceId, view);
+  } catch (error) {
+    console.error("Shop hub device read failed", error);
   }
 }
 

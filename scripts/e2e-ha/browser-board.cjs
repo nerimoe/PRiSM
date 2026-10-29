@@ -123,7 +123,7 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       await until(() => spawnSync("scripts/e2e-ha/d1.sh", ["SELECT count(*) AS n FROM ha_event_connections"], { encoding: "utf8" }).stdout.includes('"n": 0'), "nothing live", 20000);
       await pause(500);
 
-      // 1. No IO: every device is 非实时 and shows what Home Assistant says, read once as the board opens.
+      // 1. No IO: every device is 非实时 and shows what Home Assistant says, which the hub asked for the board.
       const since = new Date().toISOString();
       const board = await openBoard(browser, viewport);
       const { page } = board;
@@ -137,12 +137,12 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       step("没有 IO：三台设备都是「非实时」，值来自 HA（A 开机 / B 关机 / 休息室 关机 / A 空调 21°）");
       await until(() => board.sockets.length === 1, "the board's WebSocket");
       assert.equal(new URL(board.sockets[0]).searchParams.get("shopId"), shop.id);
-      assert.equal(states(board).length, 1, "one read of the shop on entering");
+      assert.equal(states(board).length, 0, "the board reads nothing over HTTP while the hub speaks");
       assert.equal(oneDevice(board, devices.a.id).length + oneDevice(board, devices.lounge.id).length, 0);
       await pause(500);
       const entered = platformReads(since);
       assert.deepEqual(entered, ["climate.heatpump", "climate.hvac", "input_boolean.lounge_power", "switch.ac", "switch.decorative_lights"]);
-      step(`进入页面：只发 1 次 /machines/states 和 1 条 WebSocket；HA 收到每个实体恰好 1 次读取`);
+      step(`进入页面：只有 1 条 WebSocket，没有 HTTP 读取；Hub 替看板读 HA，每个实体恰好 1 次`);
       await page.screenshot({ path: `${output}/board-1-nonlive-${label}.png`, fullPage: true });
 
       // 2. A real IO comes up: the tags flip to 实时 by themselves, without the page asking anything.
@@ -167,8 +167,9 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       step("HA 里改电源/空调温度：A、B 的卡片立刻更新，页面没有发请求");
 
       // 3b. The machine the only watcher runs on goes dark. Its assignment is kept and its
-      //     word stops being taken for the present, so the shop falls back to reading Home
-      //     Assistant until that IO reports again.
+      //     word stops being taken for the present, so the hub asks Home Assistant for the
+      //     board until that IO reports again. The board itself reads nothing.
+      const beforeDark = states(board).length;
       await haCall("switch", "turn_off", { entity_id: "switch.decorative_lights" });
       await A.getByText("已关机").waitFor({ timeout: 3000 });
       // The page is what the shop sees: A goes 非实时 and comes back by itself, and
@@ -176,7 +177,8 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       await A.getByText("非实时", { exact: true }).waitFor({ timeout: 15000 });
       step("关机台A：卡片变成「非实时」，订阅没有被撤掉");
       await A.getByText("实时", { exact: true }).waitFor({ timeout: 90000 });
-      step("IO 继续上报：自动回到「实时」，用的是原来的订阅（没有重新下发）");
+      assert.equal(states(board).length, beforeDark, "going dark and coming back cost the board no read");
+      step("IO 继续上报：自动回到「实时」，用的是原来的订阅（没有重新下发）；看板始终没有自己读");
 
       // A device with no state of its own does not move on its own.
       await haCall("input_boolean", "turn_on", { entity_id: "input_boolean.lounge_power" });
@@ -185,20 +187,18 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       assert.equal(await L.getByText("已开机").count(), 0);
       step("休息室（非实时）在 HA 里被打开：页面不动，仍显示上次读到的「已关机」");
 
-      // 4. The refresh button fills only the devices with no state of their own.
+      // 4. The refresh button asks the backend for the whole shop; the backend asks Home Assistant only for the lounge.
       const t0 = new Date().toISOString();
       const refresh = page.getByRole("button", { name: "刷新设备状态" });
       await refresh.click();
       await L.getByText("已开机").waitFor({ timeout: 8000 });
       await pause(500);
-      // The board reads the shop when it opens, once after A dropped out of live
-      // mode (step 3b), and now when the button is pressed.
-      assert.equal(states(board).length, 3, "the refresh is the third read of the shop");
+      assert.equal(states(board).length, 1, "the refresh is the board's only read of the shop");
       assert.deepEqual(platformReads(t0), ["climate.heatpump", "input_boolean.lounge_power"]);
       assert.equal(await A.getByText("实时", { exact: true }).count(), 1);
-      step("点「刷新设备状态」：休息室变成「已开机」；HA 只收到休息室两个实体的读取，A、B 一个都没读");
+      step("点「刷新设备状态」：一次整店读取，休息室变成「已开机」；后端只向 HA 读了休息室两个实体");
 
-      // 5. Operating a live device reads nothing: the result is the push.
+      // 5. Operating a live device: the answer carries the read-back from storage, and nothing asks Home Assistant.
       const t1 = new Date().toISOString();
       const m1 = board.requests.length;
       let dialog = await operate(page, "机台A", "开机");
@@ -208,21 +208,23 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       assert.equal(after.filter((r) => r.startsWith("GET") && /machines\/(states|[^/?]+\/state)/.test(r)).length, 0, `no state read after operating a live device: ${after}`);
       assert.deepEqual(platformReads(t1).filter((e) => /decorative_lights|hvac|switch\.ac/.test(e)), []);
       await dialog.getByRole("button", { name: "关闭" }).click();
-      step("面板里操作实时设备 A（开机）：卡片靠推送更新，没有任何读取请求，HA 也没收到 A 的读取");
+      step("面板里操作实时设备 A（开机）：卡片按响应的读回和推送更新，没有任何读取请求，HA 也没收到 A 的读取");
 
-      // 6. Operating a device with no state of its own reads that one device.
+      // 6. Operating a device with no state of its own: the backend reads it back from Home Assistant and the answer carries it.
       const t2 = new Date().toISOString();
       const m2 = board.requests.length;
       dialog = await operate(page, "休息室", "关机");
       await L.getByText("已关机").waitFor({ timeout: 8000 });
       await pause(500);
       const lounge = board.requests.slice(m2).filter((r) => r.startsWith("GET") && /machines\/(states|[^/?]+\/state)/.test(r));
-      assert.deepEqual(lounge, [`GET /api/v1/merchant/machines/${devices.lounge.id}/state`]);
-      assert.deepEqual(platformReads(t2).every((e) => /lounge_power|heatpump/.test(e)), true);
+      assert.deepEqual(lounge, [], "the board reads nothing after an action");
+      const loungeReads = platformReads(t2);
+      assert.equal(loungeReads.length > 0 && loungeReads.every((e) => /lounge_power|heatpump/.test(e)), true, `${loungeReads}`);
       await dialog.getByRole("button", { name: "关闭" }).click();
-      step("面板里操作非实时设备（休息室关机）：只重读这一台，HA 只收到休息室的读取");
+      step("面板里操作非实时设备（休息室关机）：响应带后端的读回，看板不发请求；HA 只收到休息室的读取");
 
-      // 7. The IO goes away: the tags go back to 非实时 at once and nothing turns into "unknown".
+      // 7. The IO goes away: the tags go back to 非实时 at once, nothing turns into "unknown", and the
+      //    hub asks Home Assistant for A and B and tells the board.
       await stopIos();
       await A.getByText("非实时", { exact: true }).waitFor({ timeout: 8000 });
       await B.getByText("非实时", { exact: true }).waitFor();
@@ -230,7 +232,8 @@ const oneDevice = (board, id) => board.requests.filter((r) => r.startsWith(`GET 
       assert.equal(await A.getByText("已开机").count(), 1, "A keeps the last value it had");
       await A.getByText(/空调：.*24°/).waitFor();
       assert.equal(await B.getByText("已开机").count(), 1);
-      step("IO 掉线：A、B 立刻变成「非实时」，保留最后的值（A 已开机 24° / B 已开机），没有「未知」");
+      assert.equal(states(board).length, 1, "the board did not read the shop itself");
+      step("IO 掉线：A、B 立刻变成「非实时」，值与 HA 一致（A 已开机 24° / B 已开机），没有「未知」，看板没有自己读");
       await page.screenshot({ path: `${output}/board-3-after-${label}.png`, fullPage: true });
 
       // 8. Now stale until refreshed; a refresh reads all three.

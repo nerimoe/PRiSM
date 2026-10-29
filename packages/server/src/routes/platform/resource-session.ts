@@ -15,8 +15,7 @@ import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { checkShopLocation } from "../../middleware/geo.js";
-import { readDeviceState } from "../../resources/capabilities/runtime.js";
-import { noFacts, readBoardStates, readDeviceFacts } from "../../resources/capabilities/state-view.js";
+import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type DeviceState } from "../../resources/capabilities/device-state.js";
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
@@ -121,14 +120,15 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
       }};
     }
   }
-  const facts=device?await readDeviceFacts(c.env.DB,shop.id,device):noFacts;
+  // The first read never waits on Home Assistant: a device that is not live is filled in by the page's channel.
+  const live=device?await readLiveState(c.env.DB,shop.id,device):null;
   return {
     gate,coinUsed:false,billing,
     mahjong:gate==="ready"?await mahjongState(c,machine):null,
     power:gate==="ready"&&bound("power")&&options.includePower
       ?await resourcePowerState(c,machine):"unmanaged",
     climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
-    device:facts,
+    device:device&&live?.watching?{watching:true,...deviceView(device,live)}:{watching:false},
   };
 }
 
@@ -153,16 +153,17 @@ resourceSessionRouter.get("/session/bootstrap", async c=>{
 });
 
 /**
- * Power and climate for a page that is not watched. A watched device answers
- * from its stored facts; otherwise Home Assistant is asked now, in parallel
- * for both, and nothing is recorded.
+ * A device page's state when its channel to the shop hub gives it none (it cannot
+ * connect, or dropped). The backend reads it as everywhere else; `watching` is
+ * only for App Clip builds that still decide for themselves.
  */
 resourceSessionRouter.get("/session/device", async c=>{
   requireUser(c);
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
-  if(!device)return c.json(noFacts);
-  return c.json(await readDeviceState({db:c.env.DB,env:c.env,shopId:machine.shop_id},device));
+  if(!device)return c.json({watching:false});
+  const state=await readDeviceState({db:c.env.DB,env:c.env,shopId:machine.shop_id},device);
+  return c.json({watching:state.watching,...deviceView(device,state)});
 });
 
 resourceSessionRouter.get("/session/power",async c=>{
@@ -267,40 +268,30 @@ merchantResourceActionRouter.get("/machines/ws",async c=>{
 
 /**
  * The state of every device with power or an air conditioner, for the board, in
- * one request. A device on a watched Home Assistant connection answers from its
- * stored facts. An unwatched one has no state of its own, so Home Assistant is
- * asked for exactly those devices now, a few at a time, and nothing is recorded.
+ * one request: its refresh button and the fallback while the hub's channel gives
+ * it nothing. Read as everywhere else (`readShopDeviceStates`); `watching` is the
+ * board's "实时" label and nothing more.
  */
-const BOARD_LIVE_CONCURRENCY=4;
 merchantResourceActionRouter.get("/machines/states",async c=>{
   const user=requireUser(c);
   const shopId=c.req.query("shopId");
   if(!shopId)jsonError(400,"请选择店铺","SHOP_REQUIRED");
   await assertResourceShop(c,user,shopId);
-  const {devices,states}=await readBoardStates(c.env.DB,shopId);
-  // A device nothing watches has no stored state, so Home Assistant is the only place to ask.
-  const runtime={db:c.env.DB,env:c.env,shopId};
-  const unwatched=devices.filter(device=>!states[device.id]!.watching);
-  let next=0;
-  await Promise.all(Array.from({length:Math.min(BOARD_LIVE_CONCURRENCY,unwatched.length)},async()=>{
-    while(next<unwatched.length){
-      const device=unwatched[next++]!;
-      states[device.id]=await readDeviceState(runtime,device).catch(()=>noFacts);
-    }
-  }));
-  return c.json({states});
+  const {devices,states}=await readShopDeviceStates({db:c.env.DB,env:c.env,shopId});
+  return c.json({states:Object.fromEntries(devices.map(device=>[device.id,stateForBoard(device,states[device.id]!)]))});
 });
 
+const stateForBoard=(device:Parameters<typeof deviceView>[0],state:DeviceState)=>({watching:state.watching,...deviceView(device,state)});
+
 /**
- * One device's power and air conditioner: the stored facts if it is watched, otherwise
- * Home Assistant is asked now (and nothing is recorded). For re-reading a device with no
- * state of its own after an action on it.
+ * One device, read the same way. Kept for board builds from before the read-back
+ * after an action: the current board no longer asks.
  */
 merchantResourceActionRouter.get("/machines/:id/state",async c=>{
   const machine=await merchantMachine(c);
   const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
-  if(!device)return c.json(noFacts);
-  return c.json(await readDeviceState({db:c.env.DB,env:c.env,shopId:machine.shop_id},device));
+  if(!device)return c.json({watching:false});
+  return c.json(stateForBoard(device,await readDeviceState({db:c.env.DB,env:c.env,shopId:machine.shop_id},device)));
 });
 
 /**

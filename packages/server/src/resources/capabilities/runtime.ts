@@ -1,7 +1,7 @@
 /**
- * Hardware runners and readers for the capability catalog, plus the per-request
- * bus that wires them together. Runners only talk to hardware; recording what
- * happened is the bus's job.
+ * Hardware runners for the capability catalog, plus the per-request bus that
+ * wires them to the readers in `device-state.ts`. Runners only talk to
+ * hardware; recording what happened is the bus's job.
  */
 import { createOccupancy } from "../occupancy/service.js";
 import type { D1DatabaseLike } from "@prism/adapter-d1";
@@ -9,22 +9,15 @@ import { createD1Executor } from "@prism/adapter-d1";
 import { normalizeTTLockConnectionConfig } from "@prism/application";
 import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { Env } from "../../bindings.js";
-import {
-  callHomeAssistantPower,
-  callHomeAssistantService,
-  getHomeAssistantEntity,
-  getHomeAssistantEntityState,
-} from "../../hardware/home-assistant.js";
+import { callHomeAssistantPower, callHomeAssistantService } from "../../hardware/home-assistant.js";
 import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardware/hinata.js";
 import { TTLockClient } from "../../hardware/ttlock.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
-import type { HaEntityConfig } from "./catalog.js";
-import { doorConfigOf, hinataConfigOf, readSecret, type Resource } from "../resource.js";
-import { openHaConnection } from "./ha-connections.js";
-import { machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
+import { doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
+import { deviceRead, machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
 import { announceShopEvent, eventPlayer } from "../shop-events.js";
-import { readDeviceFacts } from "./state-view.js";
+import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
 const KEY_PRESS_TTL_MS = 30_000;
 const HA_TIMEOUT_MS = 10_000;
@@ -33,8 +26,6 @@ const HA_TIMEOUT_MS = 10_000;
  * means it is busy elsewhere; the IO drops the card after 3 s.
  */
 const CARD_LOGIN_WAIT = { readMs: 4500 };
-
-type HaBinding = { url: string; token: string; entityId: string };
 
 export type DeviceRuntime = {
   db: D1DatabaseLike;
@@ -49,56 +40,6 @@ export type DeviceRuntime = {
    */
   notifyHub?: boolean;
 };
-
-async function haBinding(
-  runtime: DeviceRuntime,
-  device: Resource,
-  capability: "power" | "climate" = "power",
-): Promise<HaBinding | null> {
-  const config = device.capabilities.get(capability)?.config as HaEntityConfig | undefined;
-  if (config?.connectionId && config.entityId) {
-    const connection = await openHaConnection(runtime.db, device.shopId, config.connectionId, runtime.env.URL_ENCRYPTION_KEY);
-    return connection ? { url: connection.url, token: connection.token, entityId: config.entityId } : null;
-  }
-  // A binding from before shop connections, not yet adopted.
-  const raw = await readSecret(runtime.db, device, capability, "binding", runtime.env.URL_ENCRYPTION_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<HaBinding>;
-    return typeof parsed.url === "string" && typeof parsed.token === "string" && typeof parsed.entityId === "string"
-      ? { url: parsed.url, token: parsed.token, entityId: parsed.entityId }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Power state: "on", "off", or null when it cannot be read.
- *
- * While the device's Home Assistant is watched the stored fact is the answer
- * and Home Assistant is not asked. Otherwise nothing is known, so Home
- * Assistant is asked now and the answer is not recorded: only a watcher's
- * events and the platform's own actions write device state.
- */
-export async function readPower(runtime: DeviceRuntime, device: Resource): Promise<"on" | "off" | null> {
-  const facts = await readDeviceFacts(runtime.db, runtime.shopId, device);
-  if (facts.watching) return facts.power;
-  return askPower(runtime, device);
-}
-
-async function askPower(runtime: DeviceRuntime, device: Resource): Promise<"on" | "off" | null> {
-  const binding = await haBinding(runtime, device);
-  if (!binding) return null;
-  const state = await getHomeAssistantEntityState({
-    baseUrl: binding.url,
-    accessToken: binding.token,
-    entityId: binding.entityId,
-    fetch: runtime.fetcher,
-    timeoutMs: 3000,
-  });
-  return state === "on" || state === "off" ? state : null;
-}
 
 /**
  * Keep a running device from being switched off as idle. Nothing is sent to
@@ -127,89 +68,6 @@ function powerRunner(runtime: DeviceRuntime, service: "turn_on" | "turn_off"): A
     }));
   };
 }
-
-/** What a climate entity is doing and what it offers, read live from Home Assistant. */
-export type ClimateState = {
-  /** `off`, or the running HVAC mode such as `cool`, `heat`, `dry`, `fan_only`, `auto`. */
-  mode: string;
-  modes: string[];
-  temperature: number | null;
-  currentTemperature: number | null;
-  minTemperature: number | null;
-  maxTemperature: number | null;
-  temperatureStep: number | null;
-  fanMode: string | null;
-  fanModes: string[];
-};
-
-const numberOrNull = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-const strings = (value: unknown) =>
-  Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-
-/**
- * Climate state, from the stored fact while the device's Home Assistant is
- * watched and from Home Assistant itself otherwise (not recorded). Null when
- * neither works.
- */
-export async function readClimate(runtime: DeviceRuntime, device: Resource): Promise<ClimateState | null> {
-  const facts = await readDeviceFacts(runtime.db, runtime.shopId, device);
-  if (facts.watching) return facts.climate;
-  return askClimate(runtime, device);
-}
-
-async function askClimate(runtime: DeviceRuntime, device: Resource): Promise<ClimateState | null> {
-  const binding = await haBinding(runtime, device, "climate");
-  if (!binding) return null;
-  const entity = await getHomeAssistantEntity({
-    baseUrl: binding.url,
-    accessToken: binding.token,
-    entityId: binding.entityId,
-    fetch: runtime.fetcher,
-    timeoutMs: 3000,
-  });
-  if (!entity || entity.state === "unavailable" || entity.state === "unknown") return null;
-  return climateState(entity.state, entity.attributes);
-}
-
-/** Power and climate of a device in one read: stored facts when watched, else both asked of Home Assistant at once. */
-export async function readDeviceState(
-  runtime: DeviceRuntime,
-  device: Resource,
-): Promise<{ watching: boolean; power: "on" | "off" | null; climate: ClimateState | null }> {
-  const facts = await readDeviceFacts(runtime.db, runtime.shopId, device);
-  if (facts.watching) return facts;
-  const [power, climate] = await Promise.all([
-    device.capabilities.has("power") ? askPower(runtime, device).catch(() => null) : null,
-    device.capabilities.has("climate") ? askClimate(runtime, device).catch(() => null) : null,
-  ]);
-  return { watching: false, power, climate };
-}
-
-/** A climate state from a Home Assistant state and its attributes. */
-export function climateState(state: string, a: Record<string, unknown>): ClimateState {
-  return {
-    mode: state,
-    modes: strings(a.hvac_modes),
-    temperature: numberOrNull(a.temperature),
-    currentTemperature: numberOrNull(a.current_temperature),
-    minTemperature: numberOrNull(a.min_temp),
-    maxTemperature: numberOrNull(a.max_temp),
-    temperatureStep: numberOrNull(a.target_temp_step),
-    fanMode: typeof a.fan_mode === "string" ? a.fan_mode : null,
-    fanModes: strings(a.fan_modes),
-  };
-}
-
-/**
- * The part of a climate state that is a setting. Room temperature drifts on
- * its own, so recording it would log a change on nearly every read.
- */
-export const climateSetting = (state: ClimateState) => ({
-  mode: state.mode,
-  temperature: state.temperature,
-  fanMode: state.fanMode,
-});
 
 function climateRunner(
   runtime: DeviceRuntime,
@@ -377,7 +235,7 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
   const occupancy = createOccupancy({ db: runtime.db, shopId: runtime.shopId, ...(runtime.now ? { now: runtime.now } : {}) });
   return {
     ...bus,
-    async perform(input: PerformInput): Promise<PerformResult> {
+    async perform(input: PerformInput): Promise<PerformResult & { device?: DeviceView }> {
       const result = await bus.perform(input);
       if (result.operation.status === "succeeded") {
         // Who a swipe or a coin was for may now occupy the resource. Losing
@@ -397,6 +255,17 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
         && input.device.capabilities.has("hinata_io")) {
         await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
+      }
+      // What a power or climate action left the device in, read back the same
+      // way as any read, so the caller can show it. A device that is not live has
+      // nobody else to tell its pages and the boards, so the hub is handed it.
+      if (runtime.notifyHub !== false && result.operation.status === "succeeded") {
+        const after = await readAfterAction(runtime, input.device, input.action, input.payload).catch(() => null);
+        if (after) {
+          const device = deviceView(input.device, after);
+          if (!after.watching) await deviceRead(runtime.env, runtime.shopId, input.device.id, device);
+          return { ...result, device };
+        }
       }
       return result;
     },

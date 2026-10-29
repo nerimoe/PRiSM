@@ -48,11 +48,12 @@ import {
 import { ResourceEditor } from "./ResourceEditor";
 import { ResourceGroupEditor, useBillablePlans, useResourceGroups } from "./ResourceGroups";
 import {
+  applyBoardAnswer,
   applyBoardFrame,
-  hasUnwatched,
-  learnBoardState,
-  lostConnections,
-  mergeBoardStates,
+  applyBoardState,
+  awaitingState,
+  framedDevices,
+  viewOf,
   type BoardFrame,
   type BoardState,
   type BoardStates,
@@ -115,35 +116,28 @@ export function ResourcesPage() {
   const [watchers, setWatchers] = useState<BoardWatchers | null>(null);
   const [statesFailed, setStatesFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  /** The Home Assistant connections the hub last said are live. */
-  const liveNow = useRef<Set<string>>(new Set());
-  // Whether the devices with no state of their own have been read since the board opened.
-  const [firstRead, setFirstRead] = useState(false);
-  const askedRef = useRef(false);
+  /** When the hub last said each device's values; an HTTP answer to an older question loses to it. */
+  const pushedAt = useRef<Record<string, number>>({});
   // Another shop's states are not this one's.
   useEffect(() => {
     setStates(null);
     setWatchers(null);
     setStatesFailed(false);
-    setFirstRead(false);
-    askedRef.current = false;
+    pushedAt.current = {};
   }, [shopId]);
   /**
-   * The state of the whole shop over HTTP. A live device answers from what is stored and the board
-   * already has it from the hub; a device with no state of its own has none stored, so Home
-   * Assistant is asked for it. This is how those devices get a value: once when the board opens,
-   * by the refresh button, and as the fallback while the hub's connection gives the board nothing.
+   * The state of the whole shop over HTTP, read by the backend as everywhere else. For the refresh
+   * button, and as the fallback while the hub's connection gives the board nothing.
    */
   const readStates = useCallback(async () => {
-    askedRef.current = true;
+    const askedAt = Date.now();
     try {
       const r = await api<{ states: BoardStates }>(`/api/v1/merchant/machines/states?shopId=${encodeURIComponent(shopId)}`);
-      setStates((previous) => mergeBoardStates(r.states, previous));
+      setStates((previous) => applyBoardAnswer(previous, r.states, askedAt, pushedAt.current));
       setStatesFailed(false);
     } catch {
       setStatesFailed(true);
     }
-    setFirstRead(true);
   }, [shopId]);
   /** Who is on each resource now; read with the states and every half minute. */
   const [occupancy, setOccupancy] = useState<Record<string, ResourceOccupancyView>>({});
@@ -167,10 +161,12 @@ export function ResourcesPage() {
     const timer = setInterval(() => void readOccupancy(), 30_000);
     return () => clearInterval(timer);
   }, [readOccupancy]);
-  /** What the panel read of one device, put where the board shows it. */
+  /** What an action's answer said of one device, unless the hub has said something newer since. */
   const setDeviceState = useCallback(
-    (id: string, next: BoardState) =>
-      setStates((previous) => (previous ? { ...previous, [id]: learnBoardState(previous[id], next) } : previous)),
+    (id: string, next: Partial<BoardState>, askedAt: number) => {
+      if ((pushedAt.current[id] ?? 0) > askedAt) return;
+      setStates((previous) => ({ ...(previous ?? {}), [id]: applyBoardState(previous?.[id], next) }));
+    },
     [],
   );
   async function refresh() {
@@ -193,53 +189,35 @@ export function ResourcesPage() {
     const caps = resourceCapabilities(device);
     return caps.power || caps.climate;
   });
-  const allWatched = states !== null && !hasUnwatched(states);
-  // The board's state is what the hub sends: the whole shop when the connection opens, again
-  // whenever which devices are live changes, and every change of a live device. A live device is
-  // never read: its changes arrive on their own, after an action as well.
+  // The board shows what the hub sends: the whole shop when the connection opens and whenever which
+  // devices are live changes, what Home Assistant said of the devices nothing watches, every change
+  // of a live device, and what an action left a device in. Which of those a value was is the
+  // backend's business.
   useBoardLive(
     shopId,
     hasStateDevices,
     useCallback((frame: BoardFrame) => {
-      if (frame.type === "watchers") setWatchers(frame);
-      else {
-        // Which Home Assistant connections are live rides on every board update; it is
-        // what says whether a device's silence is a connection going quiet.
-        if (frame.type === "states") liveNow.current = new Set(frame.liveConnections);
-        setStates((previous) => applyBoardFrame(previous, frame));
+      if (frame.type === "watchers") {
+        setWatchers(frame);
+        return;
       }
+      const now = Date.now();
+      for (const id of framedDevices(frame)) pushedAt.current[id] = now;
+      setStates((previous) => applyBoardFrame(previous, frame));
     }, []),
   );
-  // A device with no state of its own is read once, as soon as the board knows which they are.
-  useEffect(() => {
-    if (states === null || askedRef.current || !hasUnwatched(states)) return;
-    void readStates();
-  }, [states, readStates]);
-  /**
-   * A Home Assistant connection going quiet leaves every device bound to it
-   * showing a value that was true a moment ago. The hub says which connections
-   * are live with each board update, so the change is noticed once, however many
-   * devices share that connection, and the shop is read once.
-   *
-   * A connection coming back needs no read: the hub is about to push what it
-   * sees. Nor does the first board update: it is what the board opened with.
-   */
-  const liveBefore = useRef<string[] | null>(null);
-  useEffect(() => {
-    if (states === null) { liveBefore.current = null; return; }
-    const now = [...liveNow.current];
-    const lost = lostConnections(liveBefore.current, now);
-    liveBefore.current = now;
-    if (!lost.length) return;
-    void readStates();
-  }, [states, readStates]);
-  // If the hub gives the board no state (it cannot connect, or says nothing), read it over HTTP.
+  // If the hub gives the board no state (it cannot connect, or says nothing), read it over HTTP;
+  // likewise if a device's values never follow its label.
   const unread = states === null;
+  const awaiting = !unread && (devices ?? []).some((device) => {
+    const caps = resourceCapabilities(device);
+    return (caps.power || caps.climate) && awaitingState(states[device.id] ?? null, caps);
+  });
   useEffect(() => {
-    if (!hasStateDevices || !unread) return;
-    const timer = setTimeout(() => void readStates(), statesFailed ? 15_000 : 3_000);
+    if (!hasStateDevices || (!unread && !awaiting)) return;
+    const timer = setTimeout(() => void readStates(), unread ? (statesFailed ? 15_000 : 3_000) : 20_000);
     return () => clearTimeout(timer);
-  }, [hasStateDevices, unread, statesFailed, readStates]);
+  }, [hasStateDevices, unread, awaiting, statesFailed, readStates]);
   // Card cabinets still behind an external relay: the page suggests moving them to a direct connection.
   const relayed = useMemo(
     () => (devices ?? []).filter((device) => resourceCapabilities(device).hinata_io && !isDirectConnect(device)),
@@ -286,8 +264,7 @@ export function ResourcesPage() {
             <button
               type="button"
               className={button}
-              disabled={refreshing || (states === null && !statesFailed) || allWatched}
-              title={allWatched ? t("所有设备都在实时监听") : undefined}
+              disabled={refreshing || (states === null && !statesFailed)}
               onClick={() => void refresh()}
             >
               <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
@@ -404,8 +381,6 @@ export function ResourcesPage() {
                         occupancy={occupancy[device.id]}
                         powerOffAt={powerOffAt[device.id]}
                         stateFailed={statesFailed && states === null}
-                        // The first read of a device with no state of its own is still on its way.
-                        pending={!firstRead && !!states?.[device.id] && !states[device.id]!.watching}
                         playerHref={(playerId) => `/merchant/${segment(shopCode)}/live?player=${segment(playerId)}`}
                         onAct={() => setActing(device)}
                         onQR={() => setQR(device)}
@@ -433,7 +408,7 @@ export function ResourcesPage() {
           <ResourceActions
             device={acting}
             state={states?.[acting.id] ?? null}
-            onState={(next) => setDeviceState(acting.id, next)}
+            onState={(next, askedAt) => setDeviceState(acting.id, next, askedAt)}
             onChanged={() => void load()}
           />
         </Modal>
@@ -569,7 +544,6 @@ function ResourceCard({
   occupancy,
   powerOffAt,
   stateFailed,
-  pending,
   playerHref,
   onAct,
   onQR,
@@ -585,8 +559,6 @@ function ResourceCard({
   /** When the idle rules will switch it off; absent unless it is counting down. */
   powerOffAt?: string;
   stateFailed: boolean;
-  /** A device with no state of its own whose first read has not come back yet. */
-  pending: boolean;
   /** Where a player's own page is: their profile and, while they bill, their bill. */
   playerHref: (playerId: string) => string;
   onAct: () => void;
@@ -689,7 +661,7 @@ function ResourceCard({
       {(caps.power || caps.climate || isDirectConnect(device)) && (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-5 text-xs">
           {(caps.power || caps.climate) && (
-            <LiveStatus state={state} failed={stateFailed} pending={pending} power={caps.power} climate={caps.climate} />
+            <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
           )}
           {caps.power && powerOffAt && state?.power !== "off" && <IdleCountdown at={powerOffAt} />}
           {isDirectConnect(device) && (
@@ -763,28 +735,25 @@ function ResourceCard({
 }
 
 /**
- * A device's power and air conditioner as the board knows them, with a tag for
- * how: 实时 when a HINATA IO reports every change, 非实时 when the device has no
- * state of its own and shows only what the last refresh found.
+ * A device's power and air conditioner as the board knows them, with the 实时 /
+ * 非实时 label the backend gave it. A value the backend has not said yet is being
+ * read; one it said as null is unknown.
  */
 function LiveStatus({
   state,
   failed,
-  pending,
   power: hasPower,
   climate: hasClimate,
 }: {
   state: BoardState | null;
   failed: boolean;
-  pending: boolean;
   power: boolean;
   climate: boolean;
 }) {
   const { t } = useI18n();
-  // Waiting for a read is not "unknown": a device with no state of its own is read once, and
-  // only a read that found nothing (or failed) leaves it without a value.
-  const waiting = !failed && (!state || (pending && state.power === null && state.climate === null));
-  const power = failed ? "unknown" : waiting ? "loading" : state?.power ?? "unknown";
+  const powerWaiting = !failed && state?.power === undefined;
+  const climateWaiting = !failed && state?.climate === undefined;
+  const power = failed ? "unknown" : powerWaiting ? "loading" : state?.power ?? "unknown";
   const running = !!state?.climate && state.climate.mode !== "off";
   return (
     <>
@@ -817,7 +786,7 @@ function LiveStatus({
       {hasClimate && (
         <span className={`flex items-center gap-1.5 ${running ? "text-mint" : "text-ink/50"}`}>
           <AirVent size={13} aria-hidden="true" />
-          {waiting
+          {climateWaiting
             ? t("读取空调状态…")
             : t("空调：{mode}", { mode: climateSummary(state?.climate ?? null, t) })}
         </span>
@@ -904,10 +873,10 @@ function ResourceActions({
   onChanged,
 }: {
   device: Resource;
-  /** Power and air conditioner as the board has them: pushed for a live device, last read otherwise. */
+  /** Power and air conditioner as the board has them. */
   state: BoardState | null;
-  /** Hands the board what this panel read of the device. */
-  onState: (next: BoardState) => void;
+  /** Hands the board what an action's answer said of the device, with when it was asked. */
+  onState: (next: Partial<BoardState>, askedAt: number) => void;
   onChanged: () => void;
 }) {
   const { t } = useI18n();
@@ -927,18 +896,6 @@ function ResourceActions({
   const [error, setError] = useState("");
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
-  /**
-   * A device with no state of its own, asked of Home Assistant: its power and air conditioner go to the board.
-   */
-  const readState = useCallback(
-    () =>
-      api<{ watching: boolean; power: "on" | "off" | null; climate: ClimateState | null }>(
-        `/api/v1/merchant/machines/${device.id}/state`,
-      )
-        .then((r) => onStateRef.current({ watching: r.watching, power: r.power, climate: r.climate ?? null }))
-        .catch(() => {}),
-    [device.id],
-  );
   /** The mahjong table is not Home Assistant state and nothing pushes it, so it is read on its own. */
   const readTable = useCallback(
     () =>
@@ -957,9 +914,11 @@ function ResourceActions({
     setError("");
     setResult("");
     try {
+      const askedAt = Date.now();
       const r = await playerOperation<{
         temporaryPassword?: string;
         mahjong?: MahjongTable;
+        device?: Record<string, unknown>;
       }>(`/api/v1/merchant/machines/${device.id}/actions`, {
         action,
         ...extra,
@@ -971,9 +930,8 @@ function ResourceActions({
       );
       if (r?.mahjong) setTable(r.mahjong);
       else if (action.startsWith("mahjong.")) void readTable();
-      // A device that reports its own changes needs nothing read: the change arrives on its own.
-      // One with no state of its own is asked once, since nothing else will say what the action did.
-      if (/^(power|climate)\./.test(action) && !state?.watching) void readState();
+      // A power or climate action answers with what the device shows now; the board shows it.
+      if (r?.device) onStateRef.current(viewOf(r.device), askedAt);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("操作失败"));

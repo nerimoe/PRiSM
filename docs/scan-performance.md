@@ -31,7 +31,7 @@ Worker CPU 上限为 1000ms，避免意外无限执行；应根据生产 CPU 分
 
 回归测试覆盖加密/过期/错误密钥、二维码无需 D1、旧 ticket JOIN、跨店与禁用设备、轮询冷却与 Retry-After、共享 GET 缓存、维护 fence、APNs retry 和有界 retention。`.github/workflows/check.yml` 使用 Bun 1.3.14 执行完整测试、类型检查及平台 dry-run，不部署生产环境。CI 为所有 Git 跟踪的 test/spec 文件分别启动进程，隔离全局 mocks 和 Miniflare/workerd 生命周期；任何文件失败都会使检查失败。两个部署/维护测试文件使用 `node scripts/check-workerd-tests.cjs <测试路径>`：在 Bun 1.3.14 中反复复现 workerd 进程通信 Broken pipe/超时，而相同测试在 Node 下通过。此 runner 用 Node test/assert 执行原来的十项断言，esbuild 代替测试里的 Bun.build，仍使用真实 Miniflare、D1 和 Worker，未跳过维护保护或修改业务断言；其余文件由 Bun 执行。每个用例超时三十秒，容纳真实 Miniflare/D1 启动与事务；生成配置测试使用临时目录，不依赖本地未提交的 `wrangler.generated.jsonc`。本地仍可使用 `bun test`；单进程执行出现环境污染时应按文件重现，而非跳过用例。
 
-浏览器回归由 `scripts/check-scan-browser.cjs` 使用模拟 API 验证 hero 先于 /me、卡片先于 HA 且页眉在电源读取期间显示「正在获取电源状态」、电源只读取一次且不轮询、麻将动态轮询期间只获取一次店铺配置；另有一个事件驱动场景：首屏接口带着电源为关的设备状态，页面直接显示电源页，不再发 `/session/state`、`/session/device`、`/session/power` 任何读取。通过 `bun run --cwd packages/prism-web preview` 启动 production build，CI 的 `scan-first-paint` artifact 保存移动端截图。截图使用虚构店铺与玩家，不执行真实设备操作；artifact 显式包含 `.scan-check` 目录中的 PNG。
+浏览器回归由 `scripts/check-scan-browser.cjs` 使用模拟 API 验证 hero 先于 /me、卡片先于 HA 且页眉在电源读取期间显示「正在获取电源状态」、Hub 通道不说话时 3 秒后兜底读取电源一次且不轮询、麻将动态轮询期间只获取一次店铺配置；另有一个场景：首屏接口带着电源为关的设备状态、Hub 通道打了招呼，页面直接显示电源页，之后也不发 `/session/state`、`/session/device`、`/session/power` 任何读取。通过 `bun run --cwd packages/prism-web preview` 启动 production build，CI 的 `scan-first-paint` artifact 保存移动端截图。截图使用虚构店铺与玩家，不执行真实设备操作；artifact 显式包含 `.scan-check` 目录中的 PNG。
 
 ### 首屏回归截图
 

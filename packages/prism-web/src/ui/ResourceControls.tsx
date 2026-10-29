@@ -1,8 +1,8 @@
 import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
-import { idleLive, useResourceLive, type DeviceFacts, type FactsChange, type LiveStatus } from "./use-resource-live";
+import { deviceViewOf, useResourceLive, type DeviceView } from "./use-resource-live";
 import { billTime } from "./bill-time";
 import { PlatformBinding } from "./SessionContent";
-import { PlayerClimate, settleClimate, type ClimateState } from "./ClimateControls";
+import { PlayerClimate, type ClimateState } from "./ClimateControls";
 import {
   useCallback,
   useEffect,
@@ -48,6 +48,13 @@ const localNote = (body: string, level: Notice["level"] = "warning"): Notice =>
 
 /** How long a power-on waits for the machine to report on before the button comes back. */
 const POWER_ON_WAIT_MS = 15_000;
+/** How long the page gives the hub's channel to connect before it reads the state over HTTP. */
+const CHANNEL_GRACE_MS = 3000;
+/**
+ * How long a channel that greeted the page may take to send the device's state (the hub asks Home
+ * Assistant for it after the greeting) before the page reads it over HTTP itself.
+ */
+const STATE_GRACE_MS = 10_000;
 
 type BillingChange = { planId: string; planName: string; reason: string };
 /** What confirming this resource would do to the player's billing, or why it cannot bill. */
@@ -64,8 +71,8 @@ export type ResourceState = {
   billing?: ResourceBilling | null;
   coinUsed: boolean;
   mahjong?: {capacity:number;seats:{name:string;mine:boolean;playing:boolean}[]} | null;
-  /** What is known of the device's Home Assistant state; `watching` says it is current and pushed. */
-  device: DeviceFacts;
+  /** The device's power and air conditioner as far as the first read knows them; the hub's channel fills in the rest. */
+  device: DeviceView;
 };
 type PowerState = "on" | "off" | "unknown";
 
@@ -98,8 +105,15 @@ export function ResourceControls({
   const { setBillingActive } = useAuth();
   const hasHa = !!(machine.capabilities.power || machine.capabilities.climate);
   const [state, setState] = useState<ResourceState | null>(initialState);
-  const [power, setPower] = useState<PowerState>(() => (initialState?.device.watching ? initialState.device.power ?? "unknown" : "unknown"));
-  const [climateState, setClimateState] = useState<ClimateState | null>(() => (initialState?.device.watching ? initialState.device.climate : null));
+  const [power, setPower] = useState<PowerState>(() => initialState?.device.power ?? "unknown");
+  const [climateState, setClimateState] = useState<ClimateState | null>(() => initialState?.device.climate ?? null);
+  /** Whether anything has said what the power is yet; until then the header says it is being read. */
+  const [powerLearned, setPowerLearned] = useState(() => initialState?.device.power !== undefined);
+  /** Whether anything has said anything about the device's power or air conditioner yet. */
+  const [heard, setHeard] = useState(() => Object.keys(deviceViewOf(initialState?.device)).length > 0);
+  const powerRef = useRef<PowerState>(power);
+  /** When the hub last said something about the device; an HTTP answer to an older question loses to it. */
+  const pushedAt = useRef(0);
   const [info, setInfo] = useState<ShopInfo | null>(null);
   const [password, setPassword] = useState<{
     temporaryPassword: string;
@@ -109,11 +123,8 @@ export function ResourceControls({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [waitingPower, setWaitingPower] = useState(false);
-  const [checking, setChecking] = useState(false);
-  /** The device turned out to be watched after the first read said it was not. */
-  const [watchHint, setWatchHint] = useState(false);
+  const [readFailed, setReadFailed] = useState(false);
   const refreshError = useRef("");
-  const liveRef = useRef<LiveStatus>(idleLive);
   const showNotice = useNotice();
   const [note, showNote] = useInlineNotice();
   const [noteAnchor, setNoteAnchor] = useState("");
@@ -135,72 +146,80 @@ export function ResourceControls({
     [onExpired, showNotice, showNoteAt],
   );
 
-  /** What was learned about the device's state, from a read, a pushed frame or the hub's greeting. */
-  const applyFacts = useCallback((facts: FactsChange) => {
-    if (facts.power !== undefined) {
-      setPower(facts.power ?? "unknown");
-      if (facts.power === "on") setWaitingPower(false);
+  /** What the backend said of the device, from whichever channel carried it. */
+  const applyView = useCallback((view: DeviceView) => {
+    if (view.power !== undefined || view.climate !== undefined) setHeard(true);
+    if (view.power !== undefined) {
+      const next = view.power ?? "unknown";
+      powerRef.current = next;
+      setPower(next);
+      setPowerLearned(true);
+      if (view.power === "on") setWaitingPower(false);
     }
-    if (facts.climate !== undefined) setClimateState(facts.climate);
+    if (view.climate !== undefined) setClimateState(view.climate);
   }, []);
+  /** An HTTP answer, unless the hub has said something since the question was asked. */
+  const applyAnswer = useCallback((askedAt: number, view: DeviceView) => {
+    if (pushedAt.current <= askedAt) applyView(view);
+  }, [applyView]);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
+    const askedAt = Date.now();
     const current = await api<ResourceState>(
       `/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}&includePower=0&includeClimate=0`, { signal });
     if (signal?.aborted) return;
     setState(current);
-    // A pushed state is fresher than this read; with no push, a watched device's stored state is the answer.
-    if (current.device.watching && !liveRef.current.connected) applyFacts(current.device);
+    applyAnswer(askedAt, deviceViewOf(current.device));
     const previousRefreshError = refreshError.current;
     setError(previous => previous === previousRefreshError ? "" : previous);
     refreshError.current = "";
-  }, [ticket, applyFacts]);
+  }, [ticket, applyAnswer]);
 
-  // A watched device's state and the page's own changes (a bot confirmed the binding) are pushed;
-  // the page asks for them only while nothing pushes.
-  const live = useResourceLive(ticket, hasHa && (!!state?.device.watching || watchHint), {
-    onFacts: applyFacts,
-    onChange: applyFacts,
+  // The device's state comes over the hub's channel: when it opens, and whenever the backend learns
+  // something new. So do the page's own changes (a bot confirmed the binding).
+  const live = useResourceLive(ticket, hasHa, {
+    onState: (view) => {
+      pushedAt.current = Date.now();
+      applyView(view);
+    },
     onRefresh: () => { void refresh().catch(() => undefined); },
   });
-  liveRef.current = live;
-  const pushed = live.connected && live.watching;
-  const eventMode = live.dropped ? false : live.connected ? live.watching : !!state?.device.watching;
-  const unpushed = hasHa && state !== null && !eventMode;
+  const pushed = live.connected;
 
-  // Nothing pushes this device's state, so ask for it once, without holding the page back:
-  // the page is usable meanwhile, and a machine found off simply switches to its power page.
+  // While the channel says nothing (it has not connected yet, or dropped), or greeted the page but never
+  // sent the state, the state is read once over HTTP, without holding the page back: a machine found off
+  // simply switches to its power page.
+  const silent = hasHa && state !== null && (!live.connected || !heard);
+  const grace = live.connected ? STATE_GRACE_MS : CHANNEL_GRACE_MS;
   useEffect(() => {
-    if (!unpushed) return;
+    if (!silent) return;
     const controller = new AbortController();
     let retry: ReturnType<typeof setTimeout> | undefined;
     const load = async (attempt: number) => {
-      setChecking(true);
+      const askedAt = Date.now();
       try {
-        const facts = await api<DeviceFacts>(`/api/v1/devices/session/device?ticket=${encodeURIComponent(ticket)}`, { signal: controller.signal });
+        const view = await api<DeviceView>(`/api/v1/devices/session/device?ticket=${encodeURIComponent(ticket)}`, { signal: controller.signal });
         if (controller.signal.aborted) return;
-        if (facts.watching) setWatchHint(true);
-        applyFacts(facts);
-        setChecking(false);
+        applyAnswer(askedAt, deviceViewOf(view));
       } catch (e) {
         if (controller.signal.aborted) return;
         if (attempt === 0 && isTransientReadFailure(e)) {
           retry = setTimeout(() => void load(1), 3000);
           return;
         }
-        setChecking(false);
+        setReadFailed(true);
         failed(e, "power", true);
       }
     };
-    void load(0);
+    const wait = setTimeout(() => void load(0), grace);
     return () => {
       controller.abort();
+      clearTimeout(wait);
       clearTimeout(retry);
-      setChecking(false);
     };
-  }, [unpushed, ticket, applyFacts, failed]);
+  }, [silent, grace, ticket, applyAnswer, failed]);
 
-  const checkingPower = checking && !!machine.capabilities.power;
+  const checkingPower = !!machine.capabilities.power && !powerLearned && !readFailed;
   useEffect(() => { onCheckingPower?.(checkingPower); }, [checkingPower, onCheckingPower]);
   useEffect(() => () => onCheckingPower?.(false), [onCheckingPower]);
 
@@ -266,26 +285,18 @@ export function ResourceControls({
     }, POWER_ON_WAIT_MS);
     return () => clearTimeout(timer);
   }, [waitingPower, showNoteAt, t]);
-  // The push that would say the machine is on is gone (the connection dropped, or nothing
-  // watches the device any more). Home Assistant accepted the request; that is all there is to wait for.
-  useEffect(() => {
-    if (waitingPower && !pushed) {
-      setWaitingPower(false);
-      setPower("on");
-    }
-  }, [waitingPower, pushed]);
   function climate(action: string, extra?: Record<string, unknown>) {
     return act(action, async () => {
       const location = await operationLocation(!!(machine.shop.locationEnabled ?? machine.shop.machineGeo));
-      await playerOperation("/api/v1/devices/session/actions", {
+      const askedAt = Date.now();
+      const result = await playerOperation<{ device?: unknown }>("/api/v1/devices/session/actions", {
         ticket,
         action,
         location,
         ...extra,
       });
-      // Home Assistant accepted it. A watched device reports the new state as an event; otherwise
-      // there is no state to wait for and the page shows what was asked.
-      if (!pushed) setClimateState((current) => settleClimate(current, action, extra));
+      // The answer says what the air conditioner shows now; the controls keep the choice until it agrees.
+      applyAnswer(askedAt, deviceViewOf(result.device));
     });
   }
   function operate(action: "power.on" | "coin" | "door.open" | "mahjong.join" | "mahjong.leave") {
@@ -295,10 +306,12 @@ export function ResourceControls({
           ? !!(info?.shop.locationEnabled ?? info?.shop.checkinGeo)
           : !!(machine.shop.locationEnabled ?? machine.shop.machineGeo),
       );
+      const askedAt = Date.now();
       const result = await playerOperation<{
         temporaryPassword?: string;
         expiresAt?: string;
         notices?: Notice[];
+        device?: unknown;
       }>("/api/v1/devices/session/actions", {
         ticket,
         action,
@@ -310,11 +323,11 @@ export function ResourceControls({
           temporaryPassword: result.temporaryPassword,
           expiresAt: result.expiresAt!,
         });
-      // A watched machine reports when it is on, and the page moves on then; otherwise Home
-      // Assistant answering is the end of it.
+      // The answer says what the machine shows now. Still off, the page waits for it to say on
+      // (from the hub, or not at all); unknown, there is nothing to wait for.
       if (action === "power.on") {
-        if (pushed) setWaitingPower(true);
-        else setPower("on");
+        applyAnswer(askedAt, deviceViewOf(result.device));
+        if (powerRef.current === "off") setWaitingPower(true);
       }
       if (action === "coin")
         setState((current) =>

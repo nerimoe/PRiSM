@@ -110,7 +110,8 @@ async function api(path: string, init: RequestInit & { as?: string } = {}): Prom
   }
   return { status: response.status, body: body?.data ?? body };
 }
-type Facts = { watching: boolean; power: string | null; climate: any };
+/** A device as the backend shows it: the label, and only the values it says (absent is not said, null is unreadable). */
+type Facts = { watching: boolean; power?: string | null; climate?: any };
 async function boardStates(): Promise<Record<string, Facts>> {
   return (await api(`/api/v1/merchant/machines/states?shopId=${shop.id}`)).body.states;
 }
@@ -147,7 +148,11 @@ async function until<T>(what: string, produce: () => T | Promise<T>, ms = 15_000
 
 type Watcher = { id: string; kind: "bot" | "device"; name?: string; deviceId?: string; state: string };
 type WatchersFrame = { type: "watchers"; limit: number; max: number; standby: number; watchers: Watcher[] };
-type Frame = { type: string; deviceId?: string; power?: string | null; climate?: any; states?: Record<string, Facts> };
+/**
+ * A board frame. A `states` frame with `liveConnections` is the hub's snapshot (labels, and values for
+ * live devices); one without is what the hub then asked Home Assistant for the devices that are not live.
+ */
+type Frame = { type: string; deviceId?: string; power?: string | null; climate?: any; states?: Record<string, Facts>; liveConnections?: string[] };
 class Board {
   frames: { at: number; frame: Frame }[] = [];
   closed = false;
@@ -197,11 +202,11 @@ class Board {
     await Bun.sleep(ms);
     return !this.frames.slice(from).some((entry) => predicate(entry.frame));
   }
-  /** The facts for a device as of the frames so far (a `states` frame replaces, a `state` frame patches). */
+  /** The facts for a device as of the frames so far: every frame sets what it says and keeps the rest, as the board does. */
   seen(deviceId: string): Partial<Facts> {
     let facts: Partial<Facts> = {};
     for (const { frame } of this.frames) {
-      if (frame.type === "states" && frame.states?.[deviceId]) facts = { ...frame.states[deviceId] };
+      if (frame.type === "states" && frame.states?.[deviceId]) facts = { ...facts, ...frame.states[deviceId] };
       if (frame.type === "state" && frame.deviceId === deviceId) {
         if (frame.power !== undefined) facts.power = frame.power;
         if (frame.climate !== undefined) facts.climate = frame.climate;
@@ -213,8 +218,14 @@ class Board {
     this.ws.close();
   }
 }
-const aboutDevice = (id: string) => (frame: Frame) => frame.type === "state" ? frame.deviceId === id : !!frame.states?.[id];
-const watchingFrame = (id: string, watching: boolean) => (frame: Frame) => frame.type === "states" && frame.states?.[id]?.watching === watching;
+const carriesValue = (facts: Facts | undefined) => !!facts && ("power" in facts || "climate" in facts);
+/** A frame that says a value of the device. */
+const aboutDevice = (id: string) => (frame: Frame) => frame.type === "state" ? frame.deviceId === id : carriesValue(frame.states?.[id]);
+/** The hub's snapshot saying whether the device is live (not an answer from Home Assistant, which is labelled too). */
+const watchingFrame = (id: string, watching: boolean) => (frame: Frame) =>
+  frame.type === "states" && !!frame.liveConnections && frame.states?.[id]?.watching === watching;
+/** What the hub asked Home Assistant for the board, about this device. */
+const answerFrame = (id: string) => (frame: Frame) => frame.type === "states" && !frame.liveConnections && carriesValue(frame.states?.[id]);
 
 // ---------------------------------------------------------------- the real IO client
 
@@ -313,22 +324,36 @@ scenarios.baseline = async () => {
   info(`平台读 HA 的 User-Agent：${[...new Set(haRequests(t0).map((request) => request.ua))].join(" | ")}`);
 
   const t1 = new Date().toISOString();
+  // Kept for older boards; the current board never asks for one device.
   const one = (await api(`/api/v1/merchant/machines/${L}/state`)).body;
-  check("单台读取（休息室）取自 HA", one.watching === false && one.power === "off" && one.climate?.mode === "heat", one);
+  check("单台读取（兼容接口，休息室）取自 HA", one.watching === false && one.power === "off" && one.climate?.mode === "heat", one);
   await Bun.sleep(400);
   check("单台读取只读该设备的两个实体", JSON.stringify(platformReads(t1).sort()) === JSON.stringify(["climate.heatpump", "input_boolean.lounge_power"]), platformReads(t1));
 
+  const tBoard = new Date().toISOString();
   const board = new Board();
   await board.opened;
-  await Bun.sleep(1200);
+  const answered = await board.wait(answerFrame(L), 0, 10_000);
+  await Bun.sleep(300);
   // Besides the devices, the hub also says who is watching; that is asserted on its own (scenario 18).
   const framesOnOpen = board.frames.map((entry) => entry.frame).filter((frame) => frame.type !== "watchers");
-  info(`看板 WS 刚连上收到：${JSON.stringify(framesOnOpen).slice(0, 200)}`);
-  const carriesValue = (facts: Facts) => facts.power !== null || facts.climate !== null;
+  info(`看板 WS 刚连上收到：${JSON.stringify(framesOnOpen).slice(0, 300)}`);
+  const snapshot = framesOnOpen.find((frame) => frame.type === "states" && frame.liveConnections);
   check(
-    "没有实时设备时 WS 只告知「非实时」，不带任何设备状态",
-    framesOnOpen.length > 0 && framesOnOpen.every((frame) => frame.type === "states" && Object.values(frame.states ?? {}).every((facts) => !facts.watching && !carriesValue(facts))),
-    framesOnOpen,
+    "WS 先发整店标签：全是非实时，不带任何值（没人监听的存储值不是状态）",
+    !!snapshot && [A, B, L].every((id) => snapshot.states?.[id]?.watching === false && !carriesValue(snapshot.states?.[id])),
+    snapshot,
+  );
+  const shown = answered?.frame.states ?? {};
+  check(
+    "随后 Hub 替看板问 HA，把值发过来；看板自己不发任何 HTTP 读取",
+    shown[A]?.power === "on" && shown[A]?.climate?.mode === "cool" && shown[B]?.power === "off" && shown[L]?.power === "off" && shown[L]?.climate?.mode === "heat",
+    shown,
+  );
+  check(
+    "Hub 替看板读 HA：每个实体恰好一次",
+    JSON.stringify(platformReads(tBoard).sort()) === JSON.stringify(["climate.heatpump", "climate.hvac", "input_boolean.lounge_power", "switch.ac", "switch.decorative_lights"]),
+    platformReads(tBoard),
   );
   const t2 = new Date().toISOString();
   await haCall("input_boolean", "turn_on", { entity_id: "input_boolean.lounge_power" });
@@ -354,7 +379,7 @@ scenarios.live = async () => {
   check("快照带电源和空调", facts.power === "on" && facts.climate?.temperature === 21, facts);
   check("B 的快照带电源", board.seen(B).power === "off", board.seen(B));
   const loungeFacts = first?.frame.states?.[L];
-  check("休息室在帧里是非实时，且不带值", loungeFacts?.watching === false && loungeFacts.power === null && loungeFacts.climate === null, loungeFacts);
+  check("休息室在快照里是非实时，且不带值", loungeFacts?.watching === false && !carriesValue(loungeFacts), loungeFacts);
   check("D1 记下了这条 HA 连接", liveConnections().length === 1, liveConnections());
   check("IO 日志：收到监听任务", /Watching 1 Home Assistant/.test(ioA.log), ioA.log.slice(-300));
 
@@ -388,26 +413,28 @@ scenarios.live = async () => {
   check("休息室来自 HA 且是最新值", states[L]?.watching === false && states[L]?.power === "on", states[L]);
   check("平台只读了休息室的两个实体", JSON.stringify(reads) === JSON.stringify(["climate.heatpump", "input_boolean.lounge_power"]), reads);
 
-  section("5 通过平台操作实时设备：不回读，结果靠推送");
+  section("5 通过平台操作实时设备：读回来自存储（不问 HA），变化也照常推送");
   const t1 = new Date().toISOString();
   m = board.mark();
   const on = await act("a", "power.on");
   check("power.on 成功", on.status === 200, on);
+  check("响应带读回：已经是开（监听者的事件在读回前就存下了）", on.body?.device?.power === "on", on.body?.device);
   const pushed = await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.power === "on", m);
-  check("操作结果来自推送", !!pushed);
+  check("变化由监听者推送", !!pushed);
   const adjust = await act("a", "climate.set_temperature", { temperature: 22 });
   check("climate.set_temperature 成功", adjust.status === 200, adjust);
   check("温度推送", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.climate?.temperature === 22, m)));
   await Bun.sleep(400);
   const readsAfterAction = platformReads(t1);
-  check("操作期间平台没有读 A 的任何实体", !readsAfterAction.some((entity) => /decorative_lights|hvac/.test(entity)), readsAfterAction);
+  check("操作和读回期间平台没有向 HA 读 A 的任何实体", !readsAfterAction.some((entity) => /decorative_lights|hvac/.test(entity)), readsAfterAction);
 
-  section("6 通过平台操作非实时设备：只重读这一台");
+  section("6 通过平台操作非实时设备：后端向 HA 读回这一台，响应带上，Hub 推给看板");
   const t2 = new Date().toISOString();
+  m = board.mark();
   const lounge = await act("lounge", "power.off");
   check("休息室 power.off 成功", lounge.status === 200, lounge);
-  const reread = (await api(`/api/v1/merchant/machines/${L}/state`)).body;
-  check("重读该设备得到新值", reread.power === "off", reread);
+  check("响应带读回：已经是关", lounge.body?.device?.power === "off", lounge.body?.device);
+  check("看板收到这台设备的读回（不用自己去读）", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === L && frame.power === "off", m)));
   await Bun.sleep(400);
   const readsLounge = platformReads(t2).sort();
   check("只读了休息室的实体", readsLounge.every((entity) => /lounge_power|heatpump/.test(entity)) && readsLounge.length > 0, readsLounge);
@@ -461,7 +488,7 @@ scenarios.dedupe = async () => {
 };
 
 scenarios.handover = async () => {
-  section("8 监听器断开：一个断开仍实时，全断开立刻非实时，值保留靠客户端");
+  section("8 监听器断开：一个断开仍实时，全断开立刻非实时，Hub 随即替看板问一次 HA");
   const board = new Board();
   await board.opened;
   await goLive(board, ioA);
@@ -483,7 +510,10 @@ scenarios.handover = async () => {
   const down = await board.wait(watchingFrame(A, false), m, 10_000);
   check("两个监听器都断开：立刻变成非实时", !!down && !!down.frame.states?.[B] && down.frame.states[B]!.watching === false, down?.frame);
   if (down) info(`最后一个监听器断开 → 看板收到非实时帧 ${down.at - killed} ms`);
+  check("非实时帧只换标签，不带值（看板保留最后的值）", !!down && !carriesValue(down.frame.states?.[A]), down?.frame.states?.[A]);
   check("D1 的实时连接被撤销", liveConnections().length === 0, liveConnections());
+  const asked = await board.wait(answerFrame(A), m, 10_000);
+  check("Hub 替看板向 HA 问了刚变成非实时的 A、B，值与 HA 一致", asked?.frame.states?.[A]?.power === "off" && asked?.frame.states?.[B]?.watching === false, asked?.frame);
 
   m = board.mark();
   await haCall("switch", "turn_on", { entity_id: "switch.decorative_lights" });
@@ -611,7 +641,7 @@ scenarios.hadown = async () => {
   const during = await api(`/api/v1/merchant/machines/states?shopId=${shop.id}`);
   info(`HA 不可用时读取：HTTP ${during.status}，耗时 ${Date.now() - started} ms，A=${JSON.stringify(during.body?.states?.[A])?.slice(0, 80)}`);
   check("HA 不可用时读取不报错、不卡住", during.status === 200 && Date.now() - started < 20_000, during.status);
-  check("HA 不可用时该设备的值为空（客户端据此保留旧值）", during.body?.states?.[A]?.watching === false && during.body.states[A].power === null, during.body?.states?.[A]);
+  check("HA 不可用时该设备的值为 null（读不到，看板显示未知）", during.body?.states?.[A]?.watching === false && during.body.states[A].power === null, during.body?.states?.[A]);
   const back = await board.wait(watchingFrame(A, true), m, 150_000);
   check("HA 恢复后重新实时", !!back);
   if (back) info(`HA 重启 → 重新实时 ${((back.at - restarted) / 1000).toFixed(1)}s`);

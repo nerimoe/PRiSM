@@ -3,12 +3,12 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 
 /**
- * The merchant device board. A live device (a HINATA IO listener subscribes to its Home Assistant)
- * is shown from what the shop hub sends over one WebSocket and is never read. A device with no state
- * of its own is read (from Home Assistant, there being nowhere else) once when the board opens and by
- * the refresh button, and after an action on it:
- * it is never "unknown", however old its value. Each device with power or an air conditioner has a
- * 实时 / 非实时 tag, and the one shop-level refresh only fills the devices with no state of their own.
+ * The merchant device board. It shows what the backend tells it and decides nothing by whether a
+ * device is live: the shop hub sends every device's 实时 / 非实时 label and the live devices' values
+ * when the board connects, then what Home Assistant said of the others, then every change; an
+ * action answers with what the device shows now; the one shop-level refresh asks the backend for
+ * everything. A value is never "unknown" because it is old, only while it is being read or when the
+ * backend could not read it.
  */
 const origin = process.env.PRISM_SCAN_ORIGIN || "http://127.0.0.1:4173";
 const output = process.env.PRISM_SCAN_OUTPUT || ".scan-check";
@@ -33,7 +33,7 @@ const machines = [
     homeAssistant: { connectionId: "ha_2", url: "https://ha2.test", entityId: "switch.io" } },
   { ...base, id: "door", publicId: "door", name: "大门", kind: "door", ttlockLockId: 7 },
 ];
-const nothing = { watching: false, power: null, climate: null };
+const unlabelled = { watching: false };
 
 const until = async (condition, what) => {
   for (let attempt = 0; attempt < 200; attempt += 1) {
@@ -47,9 +47,9 @@ const until = async (condition, what) => {
  * `watchedIo`: whether the second Home Assistant is watched too, so every device is.
  * `clock`: fake timers, to move past a reconnect wait and a polling interval.
  * `silentHub`: the hub accepts the connection and never says anything.
- * The hub is played by the page's WebSocket route: it greets each connection with the board's state,
- * and the test sends it whatever frames it wants to push. The "database" says the live machine is
- * off, which is older than what the test pushes; Home Assistant says the other one is on.
+ * The hub is played by the page's WebSocket route: it greets each connection with the board's labels
+ * and the live devices' values, then what Home Assistant says of the other one (on), and the test
+ * sends it whatever frames it wants to push. An action answers with what the device shows after it.
  */
 async function openBoard(browser, { watchedIo, viewport, clock = false, silentHub = false, role = "user" }) {
   const context = await browser.newContext({ viewport, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
@@ -63,23 +63,29 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   // quiet is a connection going quiet.
   const snapshot = {
     cab: { watching: true, power: "off", climate: view },
-    io: watchedIo ? { watching: true, power: "on", climate: null } : nothing,
+    io: watchedIo ? { watching: true, power: "on" } : unlabelled,
   };
   const connections = watchedIo ? ["ha_cab", "ha_io"] : ["ha_cab"];
-  // What a read of the shop answers for `io`. A scenario that pushes a change to this
-  // device moves it too, so a read afterwards agrees with what the board was told.
-  let ioRead = watchedIo ? snapshot.io : { ...nothing, power: "on" };
+  // What a read of the shop answers: the backend's view at the time, which the scenario moves along.
+  let shopRead = { cab: snapshot.cab, io: watchedIo ? snapshot.io : { watching: false, power: "on" } };
   await page.routeWebSocket(/\/api\/v1\/merchant\/machines\/ws/, (ws) => {
     sockets.push({ ws, url: ws.url() });
     ws.onMessage((message) => received.push(String(message)));
-    if (!silentHub) ws.send(JSON.stringify({ type: "states", states: snapshot, liveConnections: connections }));
+    if (silentHub) return;
+    ws.send(JSON.stringify({ type: "states", states: snapshot, liveConnections: connections }));
+    if (!watchedIo) ws.send(JSON.stringify({ type: "states", states: { io: { watching: false, power: "on" } } }));
   });
   await page.route("**/api/**", async (route) => {
     const request = route.request(), url = new URL(request.url()), p = url.pathname;
     if (request.method() !== "GET") {
       calls.push(`${request.method()} ${p}`);
       if (request.method() === "PUT") puts.push({ path: p, query: url.search.slice(1), body: JSON.parse(request.postData() || "null") });
-      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: {} }) });
+      // What each device shows after an action: the cabinet came on, the other one stayed off.
+      const answers = {
+        "/api/v1/merchant/machines/cab/actions": { device: { power: "on", climate: view } },
+        "/api/v1/merchant/machines/io/actions": { device: { power: "off" } },
+      };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: answers[p] ?? {} }) });
     }
     calls.push(p + url.search);
     let data = {};
@@ -88,11 +94,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     else if (p === "/api/v1/merchant/machines") data = { machines };
     else if (p === "/api/v1/merchant/resource-groups") data = { resourceGroups: [{ id: "default", name: "默认资源组", enabled: true, isDefault: true, defaultPricingConfigId: null, resourceCount: 0 }] };
     else if (p === "/api/v1/merchant/machines/occupancy") data = { resources: [] };
-    else if (p === "/api/v1/merchant/machines/states") {
-      data = { states: { ...snapshot, io: ioRead } };
-    }
-    // One device, asked of Home Assistant after an action on it: it answers "off".
-    else if (p === "/api/v1/merchant/machines/io/state") data = { watching: false, power: "off", climate: null };
+    else if (p === "/api/v1/merchant/machines/states") data = { states: shopRead };
     else if (p === "/api/v1/merchant/device-bindings") data = { bindings: [] };
     else if (p === "/api/v1/merchant/ha-connections") data = { connections: [] };
     else if (p === "/api/v1/shops/demo") data = { shop, membership: { playerId: "p", identityBound: true }, entryPricing: [] };
@@ -102,7 +104,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   });
   await page.goto(`${origin}/merchant/demo/devices`);
   await page.getByText("机台A", { exact: true }).waitFor();
-  return { page, context, calls, exceptions, sockets, received, puts, setIoRead: (next) => { ioRead = next; } };
+  return { page, context, calls, exceptions, sockets, received, puts, setShopRead: (next) => { shopRead = next; } };
 }
 
 const card = (page, name) => page.locator("article", { has: page.getByRole("heading", { name, exact: true }) });
@@ -137,89 +139,81 @@ async function operate(page, name, button) {
       assert.equal(await cab.getByText(/空调：/).count(), 1);
       assert.equal(await door.getByText(/实时/).count(), 0, "A device without power or air conditioner has no tag");
       assert.equal(await card(page, "机台B").getByText("非实时", { exact: true }).count(), 1);
-      assert.equal(deviceReads(calls, "cab").length + deviceReads(calls, "io").length, 0, "No request per card");
       const refresh = page.getByRole("button", { name: "刷新设备状态" });
       assert.equal(await refresh.count(), 1, "One refresh for the shop, not one per card");
 
-      // The device with no state of its own is read once as the board opens, and is never unknown.
+      // The other device's value is what the hub then said Home Assistant answered. The board asks nothing.
       await io.getByText("已开机").waitFor();
-      assert.equal(await page.getByText("电源状态未知").count(), 0, "A device with no state of its own always has a value");
-      assert.deepEqual(stateReads(calls), [ASK], "Only the device with no state of its own is asked, once");
+      assert.equal(await page.getByText("电源状态未知").count(), 0, "A value is never unknown for being old");
+      await pause(300);
+      assert.deepEqual(stateReads(calls), [], "The board reads nothing over HTTP while the hub speaks");
+      assert.equal(deviceReads(calls, "cab").length + deviceReads(calls, "io").length, 0, "No request per card");
       await page.screenshot({ path: `${output}/device-board-${label}.png`, fullPage: true });
 
       // One connection for the whole board, opened for the shop.
       await until(() => mixed.sockets.length === 1, "the board's WebSocket");
       assert.equal(new URL(mixed.sockets[0].url).searchParams.get("shopId"), "shop");
 
-      // The hub pushes a live device's change: it shows at once, with no read.
+      // The hub pushes a change: it shows at once, with no read.
       push(mixed, { type: "state", deviceId: "cab", power: "on" });
       await cab.getByText("已开机").waitFor();
       push(mixed, { type: "state", deviceId: "cab", climate: { ...view, currentTemperature: 29 } });
       await cab.getByText(/室温 29°/).waitFor();
-      assert.equal(stateReads(calls).length, 1, "Pushed changes are not read");
+      assert.deepEqual(stateReads(calls), [], "Pushed changes are not read");
 
-      // Operating a live device reads nothing at all, not the shop and not the device: the change
-      // arrives on its own. The panel shows what the board has.
+      // An action answers with what the device shows now, live or not; nothing is read afterwards.
       let dialog = await operate(page, "机台A", "开机");
       await until(() => calls.includes("POST /api/v1/merchant/machines/cab/actions"), "the action");
       await until(() => calls.filter((call) => call.startsWith("/api/v1/merchant/machines?")).length >= 2, "the device list reloading");
       await pause(300);
-      assert.equal(await dialog.getByText("已开机").count() > 0, true, "The panel shows the pushed state");
-      assert.equal(stateReads(calls).length, 1, "An action on a live device does not read the shop");
-      assert.equal(deviceReads(calls, "cab").length, 0, "An action on a live device does not read the device");
+      assert.equal(await dialog.getByText("已开机").count() > 0, true, "The panel shows the device's state");
       await dialog.getByRole("button", { name: "关闭" }).click();
-
-      // Operating a device with no state of its own reads that one device once, since nothing
-      // else will say what the action did. Until then the old value stays; it is never unknown.
       dialog = await operate(page, "机台B", "开机");
-      await until(() => deviceReads(calls, "io").length === 1, "the device being read after the action");
-      assert.deepEqual(deviceReads(calls, "io"), ["/api/v1/merchant/machines/io/state"]);
+      await until(() => calls.includes("POST /api/v1/merchant/machines/io/actions"), "the action");
+      // The answer says it is still off: that is what the card shows, not what was asked for.
       await io.getByText("已关机").waitFor();
       assert.equal(await io.getByText("非实时", { exact: true }).count(), 1);
       assert.equal(await page.getByText("电源状态未知").count(), 0);
-      assert.equal(stateReads(calls).length, 1, "Reading one device is not reading the shop");
+      await pause(300);
+      assert.deepEqual(stateReads(calls), [], "An action reads nothing afterwards");
+      assert.equal(deviceReads(calls, "cab").length + deviceReads(calls, "io").length, 0, "An action reads no device afterwards");
       await dialog.getByRole("button", { name: "关闭" }).click();
 
-      // Refreshing asks for the devices with no state of their own and fills them in. It does not
-      // make them live and leaves the live one alone, though the database still says "off" there.
+      // Refreshing asks the backend for the whole shop once and shows what it says, whichever devices are live.
+      mixed.setShopRead({ cab: { watching: true, power: "on", climate: view }, io: { watching: false, power: "on" } });
+      assert.equal(await refresh.isEnabled(), true);
       await refresh.click();
       await io.getByText("已开机").waitFor();
       assert.equal(await io.getByText("非实时", { exact: true }).count(), 1);
       assert.equal(await cab.getByText("实时", { exact: true }).count(), 1);
-      assert.equal(await cab.getByText("已开机").count(), 1, "A refresh does not touch a live device");
-      assert.deepEqual(stateReads(calls), [ASK, ASK], "The refresh is the second ask, not a read of the live device");
-      assert.equal(await refresh.isEnabled(), true, "A device with no state of its own remains to refresh");
+      assert.equal(await cab.getByText("已开机").count(), 1);
+      assert.deepEqual(stateReads(calls), [ASK], "The refresh is one read of the shop");
+      assert.equal(await refresh.isEnabled(), true, "There is always something to refresh");
       await page.screenshot({ path: `${output}/device-board-refreshed-${label}.png`, fullPage: true });
 
-      // Which devices are live changes: the hub sends the whole board again. A device that stops
-      // being live is read once, so its card shows what Home Assistant says now instead of a value
-      // that was only true when it was still watched.
-      const beforeSwitch = stateReads(calls).length;
-      // The device comes up live, so a read of the shop agrees it is live.
-      mixed.setIoRead({ watching: true, power: "off", climate: null });
-      push(mixed, { type: "states", states: {
-        cab: nothing,
-        io: { watching: true, power: "off", climate: null },
-      }, liveConnections: ["ha_io"] });
+      // Which devices are live changes: the hub sends the labels, keeps each card's last value, then
+      // says what Home Assistant answered for the one that stopped being live. The board reads nothing.
+      push(mixed, { type: "states", states: { cab: unlabelled, io: { watching: true, power: "off" } }, liveConnections: ["ha_io"] });
       await cab.getByText("非实时", { exact: true }).waitFor();
       await io.getByText("实时", { exact: true }).waitFor();
-      await until(() => stateReads(calls).length === beforeSwitch + 1, "one read after a device stops being live");
+      assert.equal(await cab.getByText("已开机").count(), 1, "A label alone does not change a value");
+      push(mixed, { type: "states", states: { cab: { watching: false, power: "off", climate: view } } });
+      await cab.getByText("已关机").waitFor();
       assert.equal(await page.getByText("电源状态未知").count(), 0);
-      // It came up live, and the hub said so; that is the value the card shows.
       assert.equal(await io.getByText("已关机").count(), 1);
+      await pause(300);
+      assert.deepEqual(stateReads(calls), [ASK], "A device that stopped being live is not read by the board");
       await page.screenshot({ path: `${output}/device-board-switched-${label}.png`, fullPage: true });
       assert.deepEqual(mixed.exceptions, []);
       await mixed.context.close();
 
-      // Every device is live: nothing to refresh and nothing to ask.
+      // Every device is live: the board still reads nothing on its own, and the refresh is still there.
       const watched = await openBoard(browser, { watchedIo: true, viewport });
       await card(watched.page, "机台B").getByText("实时", { exact: true }).waitFor();
       assert.equal(await card(watched.page, "机台B").getByText("非实时").count(), 0);
-      const idle = watched.page.getByRole("button", { name: "刷新设备状态" });
-      assert.equal(await idle.isDisabled(), true);
-      assert.equal(await idle.getAttribute("title"), "所有设备都在实时监听");
+      assert.equal(await watched.page.getByRole("button", { name: "刷新设备状态" }).isEnabled(), true);
       await pause(300);
-      assert.deepEqual(stateReads(watched.calls), [], "Nothing is read when every device is live");
+      assert.deepEqual(stateReads(watched.calls), [], "Nothing is read when the hub says everything");
       assert.deepEqual(watched.exceptions, []);
       await watched.context.close();
 
@@ -270,11 +264,10 @@ async function operate(page, name, button) {
       assert.deepEqual(admin.exceptions, []);
       await admin.context.close();
 
-      console.log(`PASS ${label}: live devices only from the hub, devices with no state of their own read once and never unknown, one read after an action on them, refresh only fills them`);
+      console.log(`PASS ${label}: every value from the hub or an answer, never read by the board on its own, labels only label, one refresh for everything`);
     }
 
-    // The hub says nothing: after a moment the board reads the shop over HTTP, once, asking for the
-    // devices with no state of their own too.
+    // The hub says nothing: after a moment the board reads the shop over HTTP, once.
     const silent = await openBoard(browser, { watchedIo: false, viewport: { width: 1280, height: 900 }, clock: true, silentHub: true });
     await until(() => silent.sockets.length === 1, "the board's WebSocket");
     assert.deepEqual(stateReads(silent.calls), []);
@@ -301,13 +294,13 @@ async function operate(page, name, button) {
     await dropped.page.clock.fastForward(16_000);
     await until(() => dropped.sockets.length === 2, "the board reconnecting");
     await pause(300);
-    assert.equal(stateReads(dropped.calls).length, reads, "A live device is never read, not even while the connection is down");
+    assert.equal(stateReads(dropped.calls).length, reads, "Nothing is read while the connection is down; the hub resends when it is back");
     // What the hub says when it is back shows.
-    dropped.sockets[1].ws.send(JSON.stringify({ type: "states", states: { cab: { watching: true, power: "on", climate: view }, io: nothing } }));
+    dropped.sockets[1].ws.send(JSON.stringify({ type: "states", states: { cab: { watching: true, power: "on", climate: view }, io: unlabelled } }));
     await card(dropped.page, "机台A").getByText("已开机").waitFor();
     assert.deepEqual(dropped.exceptions, []);
     await dropped.context.close();
-    console.log("PASS keep-alive, reconnect after a drop, and the hub's resend catching a live device up without any read");
+    console.log("PASS keep-alive, reconnect after a drop, and the hub's resend catching the board up without any read");
   } finally {
     await browser.close();
   }

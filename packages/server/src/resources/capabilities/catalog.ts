@@ -12,7 +12,7 @@
  * - external  the truth lives elsewhere (Home Assistant). While a HINATA IO
  *             watches it, every change arrives as an event and the stored value
  *             is the fact; otherwise nothing is known and a reader asks Home
- *             Assistant itself, without recording the answer (see `state-view.ts`)
+ *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
 

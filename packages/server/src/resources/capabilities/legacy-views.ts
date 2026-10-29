@@ -7,42 +7,36 @@ import type { DeviceState, MachineConnection } from "@prism/core";
 import { createD1Executor } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
 import { loadResources } from "../resource.js";
-import { readPower, type DeviceRuntime } from "./runtime.js";
+import type { DeviceRuntime } from "./runtime.js";
+import { readShopDeviceStates } from "./device-state.js";
 
 /**
- * Power of every enabled device that has it: the stored fact while its Home
- * Assistant is watched, otherwise read from Home Assistant now. A source that
- * cannot be reached right now reports its last stored value as `offline`, or
- * `unknown` when there never was one.
+ * Power of every enabled device that has it, read as everywhere else
+ * (`readShopDeviceStates`): from storage while live, otherwise from Home
+ * Assistant now. A device whose power cannot be read is `offline` with state
+ * `unknown`; a value stored while nothing watched it is history, not its state.
  */
 export async function listDeviceStates(runtime: DeviceRuntime): Promise<DeviceState[]> {
   const now = runtime.now ?? (() => new Date());
   const devices = (await loadResources(runtime.db, runtime.shopId, runtime.env.URL_ENCRYPTION_KEY))
     .filter((device) => device.enabled && device.capabilities.has("power"));
   if (!devices.length) return [];
-  const stored = new Map(
-    (await createDeviceEventRepository(createD1Executor(runtime.db, runtime.shopId))
-      .listState(devices.map((device) => device.id)))
-      .filter((state) => state.capability === "power" && state.key === "power")
-      .map((state) => [state.deviceId, state]),
-  );
-  return Promise.all(devices.map(async (device): Promise<DeviceState> => {
-    const live = await readPower(runtime, device).catch(() => null);
-    const last = stored.get(device.id);
-    const reachable = live === "on" || live === "off";
+  const { states } = await readShopDeviceStates(runtime, devices);
+  return devices.map((device): DeviceState => {
+    const power = states[device.id]?.power ?? null;
     return {
       deviceId: device.id,
       type: "power.on",
       targetKind: "facility",
       executorKind: "home_assistant",
       label: device.name,
-      status: reachable ? "online" : "offline",
-      state: reachable ? live : typeof last?.value === "string" ? last.value : "unknown",
+      status: power ? "online" : "offline",
+      state: power ?? "unknown",
       metadata: { aliases: device.aliases },
-      reportedAt: reachable ? now() : last?.changedAt ?? now(),
+      reportedAt: now(),
       reportedBy: "home_assistant",
     };
-  }));
+  });
 }
 
 /** Embedded HINATA IO links, from the link state the relay records. */

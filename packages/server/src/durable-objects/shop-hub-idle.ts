@@ -12,6 +12,7 @@ import {
   type IdleDevice,
   type Reminder,
 } from "../resources/capabilities/idle-power.js";
+import { readShopLiveStates } from "../resources/capabilities/device-state.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import { heldProviders } from "../resources/occupancy/providers.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
@@ -72,7 +73,7 @@ export async function runIdleCheck(input: {
   const anyRule = settings.shopEmpty.enabled || settings.device.enabled;
   if (!anyRule) return { memory: { ...emptyIdleMemory(), lastAutoOff: input.memory.lastAutoOff }, notices: [], poweredOff: [] };
 
-  const [visits, capabilityRows, stateRows, activityRows, occupancy] = await Promise.all([
+  const [visits, capabilityRows, idleRows, activityRows, occupancy] = await Promise.all([
     db.prepare(
       `SELECT (SELECT COUNT(*) FROM sessions WHERE shop_id = ? AND status = 'active') AS active,
               (SELECT MAX(ended_at) FROM sessions WHERE shop_id = ? AND status = 'closed') AS last_end`,
@@ -89,10 +90,10 @@ export async function runIdleCheck(input: {
        WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN ('power', 'climate')`,
     ).bind(JSON.stringify(heldProviders.map((provider) => provider.capability)), shopId)
       .all<{ id: string; name: string; occupancy_minutes: number; capability: "power" | "climate"; config_json: string }>(),
+    // Whether the idle rule already marked a device idle is the rule's own record, not Home Assistant state.
     db.prepare(
-      `SELECT device_id, capability, key, value_json, changed_at FROM device_state
-       WHERE shop_id = ? AND ((capability = 'power' AND key IN ('power', 'idle')) OR (capability = 'climate' AND key = 'climate'))`,
-    ).bind(shopId).all<{ device_id: string; capability: string; key: string; value_json: string; changed_at: string }>(),
+      "SELECT device_id, value_json FROM device_state WHERE shop_id = ? AND capability = 'power' AND key = 'idle'",
+    ).bind(shopId).all<{ device_id: string; value_json: string }>(),
     db.prepare(
       `SELECT device_id, MAX(occurred_at) AS at FROM device_events
        WHERE shop_id = ? AND occurred_at >= ?
@@ -115,27 +116,31 @@ export async function runIdleCheck(input: {
     }
     return entry;
   };
-  // Stored power and climate are facts only on a watched connection; elsewhere
-  // they are unknown, and the idle rules switch off without knowing.
-  const watchedCapabilities = new Set<string>();
+  // Power and climate are known only for a live device, judged as every other
+  // reader judges it; elsewhere they are unknown, and the idle rules switch off
+  // without knowing.
+  const bound = new Map<string, { id: string; capabilities: Map<string, { config: Record<string, unknown> }> }>();
   for (const row of capabilityRows.results) {
     const entry = device(row.id, row.name, row.occupancy_minutes);
-    const connection = (parse(row.config_json) as { connectionId?: unknown } | null)?.connectionId;
-    if (typeof connection === "string" && input.eventConnections.has(connection)) watchedCapabilities.add(`${row.id}:${row.capability}`);
     if (row.capability === "power") entry.hasPower = true;
     else entry.hasClimate = true;
+    const target = bound.get(row.id) ?? { id: row.id, capabilities: new Map() };
+    target.capabilities.set(row.capability, { config: (parse(row.config_json) as Record<string, unknown> | null) ?? {} });
+    bound.set(row.id, target);
   }
-  for (const row of stateRows.results) {
-    const entry = devices.get(row.device_id);
-    if (!entry) continue;
-    const value = parse(row.value_json);
-    if (row.capability === "power" && row.key === "idle") entry.idle = value === true;
-    else if (row.capability === "power" && row.key === "power" && watchedCapabilities.has(`${row.device_id}:power`) && (value === "on" || value === "off")) {
-      entry.power = value;
-      if (value === "on") entry.poweredOnAt = Date.parse(row.changed_at);
-    } else if (row.capability === "climate" && watchedCapabilities.has(`${row.device_id}:climate`) && value && typeof value.mode === "string") {
-      entry.climate = value.mode;
+  const live = await readShopLiveStates(db, shopId, [...bound.values()], { liveConnections: input.eventConnections });
+  for (const [id, state] of Object.entries(live.states)) {
+    const entry = devices.get(id);
+    if (!entry || !state.watching) continue;
+    if (entry.hasPower) {
+      entry.power = state.power;
+      if (state.power === "on") entry.poweredOnAt = live.powerChangedAt[id] ?? null;
     }
+    if (entry.hasClimate && state.climate) entry.climate = state.climate.mode;
+  }
+  for (const row of idleRows.results) {
+    const entry = devices.get(row.device_id);
+    if (entry) entry.idle = parse(row.value_json) === true;
   }
   for (const row of activityRows.results) {
     const entry = devices.get(row.device_id);

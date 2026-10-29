@@ -7,8 +7,7 @@ import type { Env } from "../src/bindings.js";
 import { encryptSecret } from "../src/crypto.js";
 import { createDeviceActionService } from "../src/resources/capabilities/actions.js";
 import { loadResource } from "../src/resources/resource.js";
-import { readClimate } from "../src/resources/capabilities/runtime.js";
-import { readDeviceFacts } from "../src/resources/capabilities/state-view.js";
+import { readClimate, readLiveState, readShopLiveStates } from "../src/resources/capabilities/device-state.js";
 import { createD1DatabaseFromSqlite, platformSchema } from "../src/local-server.js";
 
 const KEY = "unit-test-encryption-key";
@@ -171,15 +170,45 @@ describe("climate capability", () => {
     const device = (await loadResource(db, SHOP, "ac"))!;
 
     // The stored view is not trusted until the shop hub says the connection is watched.
-    expect(await readDeviceFacts(db, SHOP, device)).toEqual({ watching: false, power: null, climate: null });
+    expect(await readLiveState(db, SHOP, device)).toEqual({ watching: false, power: null, climate: null });
 
     sqlite.run("INSERT INTO ha_event_connections(shop_id, connection_id, since) VALUES (?,?,?)", [SHOP, "ha_1", NOW.toISOString()]);
-    expect(await readDeviceFacts(db, SHOP, device)).toEqual({ watching: true, power: null, climate: view });
+    expect(await readLiveState(db, SHOP, device)).toEqual({ watching: true, power: null, climate: view });
     expect(await readClimate(runtime, device)).toEqual(view);
     expect(asked).toBe(0);
 
     // When the connection stops being watched the stored view is ignored again.
     sqlite.run("DELETE FROM ha_event_connections");
-    expect(await readDeviceFacts(db, SHOP, device)).toEqual({ watching: false, power: null, climate: null });
+    expect(await readLiveState(db, SHOP, device)).toEqual({ watching: false, power: null, climate: null });
+  });
+
+  it("judges a device live only when every connection it uses is live, for one device and for the shop alike", async () => {
+    const { db, sqlite } = await fixture();
+    sqlite.run("INSERT INTO machines(id, public_id, shop_id, name, aliases_json) VALUES ('m','pub-m',?,'机台','[]')", [SHOP]);
+    for (const [capability, connectionId] of [["power", "ha_1"], ["climate", "ha_2"]])
+      sqlite.run(
+        `INSERT INTO device_capabilities(shop_id, device_id, capability, config_json, secret_json, created_at, updated_at)
+         VALUES (?,'m',?,?,'{}',?,?)`,
+        [SHOP, capability, JSON.stringify({ connectionId, entityId: `${capability}.m` }), NOW.toISOString(), NOW.toISOString()],
+      );
+    sqlite.run(
+      `INSERT INTO device_state(shop_id, device_id, capability, key, value_json, authority, event_id, changed_at)
+       VALUES (?,'m','power','power','"on"','observed',NULL,?)`,
+      [SHOP, NOW.toISOString()],
+    );
+    sqlite.run("INSERT INTO ha_event_connections(shop_id, connection_id, since) VALUES (?,?,?)", [SHOP, "ha_1", NOW.toISOString()]);
+    const device = (await loadResource(db, SHOP, "m"))!;
+    const unknown = { watching: false, power: null, climate: null };
+
+    // Power's connection is live, climate's is not: the device is not.
+    expect(await readLiveState(db, SHOP, device)).toEqual(unknown);
+    const shop = await readShopLiveStates(db, SHOP, [device]);
+    expect(shop.states).toEqual({ m: unknown });
+    expect(shop.liveConnections).toEqual(["ha_1"]);
+
+    // The hub passes the set it holds; the same rule applies to it.
+    const both = await readShopLiveStates(db, SHOP, [device], { liveConnections: new Set(["ha_1", "ha_2"]) });
+    expect(both.states).toEqual({ m: { watching: true, power: "on", climate: null } });
+    expect(both.powerChangedAt).toEqual({ m: NOW.getTime() });
   });
 });

@@ -1,11 +1,11 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { deviceEventSchema } from "@prism/storage-sql";
 import { encryptSecret } from "../src/crypto.js";
 import { loadResource } from "../src/resources/resource.js";
 import { getHaConnection, newHaConnection, writeHaConnection } from "../src/resources/capabilities/ha-connections.js";
-import { readDeviceFacts } from "../src/resources/capabilities/state-view.js";
+import { readLiveState } from "../src/resources/capabilities/device-state.js";
 import { LEASE_MS, ShopHub } from "../src/durable-objects/shop-hub.js";
 import type { HaWatch } from "../src/durable-objects/machine-relay.js";
 
@@ -69,7 +69,10 @@ async function fixture(options: { climate?: boolean; legacy?: boolean } = {}) {
   let alarm: number | null = null;
   let alarms = 0;
   const alarmHistory: number[] = [];
+  /** Work the hub left running after answering, such as asking Home Assistant for a new board. */
+  const pending: Promise<unknown>[] = [];
   const ctx = {
+    waitUntil(promise: Promise<unknown>) { pending.push(promise); },
     storage: {
       async get<T>(key: string) { return structuredClone(state.get(key)) as T | undefined; },
       async put(key: string, value: unknown) { puts.push(key); state.set(key, structuredClone(value)); },
@@ -90,12 +93,13 @@ async function fixture(options: { climate?: boolean; legacy?: boolean } = {}) {
     `SELECT name, payload_json FROM device_events WHERE kind='change' AND capability='${capability}' ORDER BY occurred_at, id`,
   );
   const watched = () => rows<{ connection_id: string }>("SELECT connection_id FROM ha_event_connections").map((row) => row.connection_id);
-  const facts = async (deviceId: string) => readDeviceFacts(db, SHOP, (await loadResource(db, SHOP, deviceId))!);
+  const facts = async (deviceId: string) => readLiveState(db, SHOP, (await loadResource(db, SHOP, deviceId))!);
   const assigned = () => watches.filter((entry) => entry.watch).map((entry) => [entry.channel, entry.watch!.term] as const);
   return {
     hub, watches, reachable, state, sqlite, sockets, puts, alarm: () => alarm, alarms: () => alarms, alarmHistory,
     // The runtime has cleared the alarm by the time its handler runs.
     clearAlarm: () => { alarm = null; },
+    drain: async () => { while (pending.length) await pending.shift(); },
     connectionId: connection.id, power, changes, watched, facts, assigned,
   };
 }
@@ -589,23 +593,60 @@ describe("ShopHub device pages", () => {
     }
   };
 
-  it("tells a page nothing is watched, then pushes the device's state once it is", async () => {
-    const { hub, sockets, connectionId } = await fixture();
+  /**
+   * Home Assistant as a device that nothing watches is read: it says the opposite of what
+   * the watcher will report, so a frame shows where its value came from.
+   */
+  let ha: ReturnType<typeof spyOn> | null = null;
+  /** Every entity Home Assistant was asked for, in order. */
+  const asked: string[] = [];
+  beforeEach(() => {
+    asked.length = 0;
+    ha = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname;
+      if (path.startsWith("/api/states/")) asked.push(path.slice("/api/states/".length));
+      if (path === "/api/states/switch.a" || path === "/api/states/switch.b") return Response.json({ state: "off" });
+      return new Response("", { status: 404 });
+    }) as typeof fetch);
+  });
+  afterEach(() => { ha?.mockRestore(); ha = null; });
+
+  it("tells a page its device's state from Home Assistant while nothing watches it, and from the watcher once it does", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture();
     await open(hub, "m1");
     const page = sockets[0] as PageSocket;
+    // The greeting does not wait on Home Assistant; its answer follows.
     expect(page.sent).toEqual([{ type: "hello", watching: false }]);
+    await drain();
+    expect(page.sent).toEqual([{ type: "hello", watching: false }, { type: "state", power: "off" }]);
     await hub.relayOnline(SHOP, "a", "chan-a");
-    expect(page.sent).toHaveLength(1);
+    expect(page.sent).toHaveLength(2);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "off", NOON]]));
-    // Only its own device, the state before the announcement that it is now pushed.
-    expect(page.sent.slice(1)).toEqual([
-      { type: "state", power: "on" },
-      { type: "watching", watching: true, power: "on" },
-    ]);
+    // The first snapshot is not the device's state until the connection is announced; then it is, once.
+    expect(page.sent.slice(2)).toEqual([{ type: "watching", watching: true, power: "on" }]);
     await open(hub, "m1");
     expect((sockets[1] as PageSocket).sent).toEqual([{ type: "hello", watching: true, power: "on" }]);
+    // Nobody reports its changes any more, so Home Assistant is asked and the page told.
     await hub.relayOffline(SHOP, "a");
-    expect(page.sent.at(-1)).toEqual({ type: "watching", watching: false });
+    expect(page.sent.at(-1)).toEqual({ type: "watching", watching: false, power: "off" });
+  });
+
+  it("passes what the backend read of a device that is not live to its pages and the boards, and ignores it for a live one", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture();
+    await open(hub, "m1");
+    await openBoard(hub);
+    await drain();
+    const [page, board] = sockets as PageSocket[];
+    await hub.deviceRead(SHOP, "m1", { power: "on" });
+    expect(page!.sent.at(-1)).toEqual({ type: "state", power: "on" });
+    expect(board!.sent.at(-1)).toEqual({ type: "state", deviceId: "m1", power: "on" });
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "off", NOON]]));
+    const pageSent = page!.sent.length;
+    const boardSent = board!.sent.length;
+    await hub.deviceRead(SHOP, "m1", { power: "off" });
+    expect(page!.sent).toHaveLength(pageSent);
+    expect(board!.sent).toHaveLength(boardSent);
   });
 
   it("tells a page when its own device switches, and only that device", async () => {
@@ -621,13 +662,56 @@ describe("ShopHub device pages", () => {
   });
 
   it("reaches only the pages of the user it names", async () => {
-    const { hub, sockets } = await fixture();
+    const { hub, sockets, drain } = await fixture();
     await open(hub, "m1", "u1");
     await open(hub, "m1", "u2");
+    await drain();
     await hub.notifyUser("u1", { type: "refresh", reason: "binding" });
     const [first, second] = sockets as PageSocket[];
     expect(first!.sent.at(-1)).toEqual({ type: "refresh", reason: "binding" });
-    expect(second!.sent).toEqual([{ type: "hello", watching: false }]);
+    expect(second!.sent).toEqual([{ type: "hello", watching: false }, { type: "state", power: "off" }]);
+    // Two pages of the same device opening together share one read.
+    expect(asked).toEqual(["switch.a"]);
+  });
+
+  it("drops a Home Assistant answer that comes back after the device became live", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture();
+    // Home Assistant is slow to answer, and the watcher's snapshot gets in first.
+    let answer!: () => void;
+    const held = new Promise<void>((done) => { answer = done; });
+    ha?.mockImplementation((async () => {
+      await held;
+      return Response.json({ state: "off" });
+    }) as typeof fetch);
+    await open(hub, "m1");
+    await openBoard(hub);
+    const [page, board] = sockets as PageSocket[];
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    expect(page!.sent.at(-1)).toEqual({ type: "watching", watching: true, power: "on" });
+    const live = board!.sent.length;
+    answer();
+    await drain();
+    // The older answer would have labelled the devices not live and shown the switches off.
+    expect(page!.sent.at(-1)).toEqual({ type: "watching", watching: true, power: "on" });
+    expect(board!.sent).toHaveLength(live);
+  });
+
+  it("asks Home Assistant only while a page or a board is open, once per device for all of them", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture();
+    // Nobody is looking: a connection starting and stopping asks Home Assistant nothing.
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "off", NOON]]));
+    await hub.relayOffline(SHOP, "a");
+    expect(asked).toEqual([]);
+    // A page of m1 and a board open together: each device is asked once, m1 for both of them.
+    await open(hub, "m1");
+    await openBoard(hub);
+    await drain();
+    expect([...asked].sort()).toEqual(["switch.a", "switch.b"]);
+    const [page, board] = sockets as PageSocket[];
+    expect(page!.sent.at(-1)).toEqual({ type: "state", power: "off" });
+    expect(board!.sent.at(-1)).toEqual({ type: "states", states: { m1: { watching: false, power: "off" }, m2: { watching: false, power: "off" } } });
   });
 
   const openBoard = async (hub: ShopHub) => {
@@ -641,49 +725,58 @@ describe("ShopHub device pages", () => {
       delete (globalThis as any).WebSocketPair;
     }
   };
-  const idle = { watching: false, power: null, climate: null };
-
-  it("gives a board the whole shop when it connects, whether or not anything is watched", async () => {
-    const { hub, sockets, connectionId } = await fixture({ climate: true });
+  it("gives a board the whole shop when it connects, and what Home Assistant says of the devices nothing watches", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture({ climate: true });
     await openBoard(hub);
-    expect((sockets[0] as PageSocket).sent).toEqual([{ type: "states", states: { m1: idle, m2: idle, m3: idle }, liveConnections: [] }]);
+    await drain();
+    expect((sockets[0] as PageSocket).sent).toEqual([
+      // Which devices are not live, with no values: nothing stored for them is their state.
+      { type: "states", states: { m1: { watching: false }, m2: { watching: false }, m3: { watching: false } }, liveConnections: [] },
+      // Then what Home Assistant said; it has no such climate entity, so the air conditioner is unknown.
+      { type: "states", states: { m1: { watching: false, power: "off" }, m2: { watching: false, power: "off" }, m3: { watching: false, climate: null } } },
+    ]);
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
     await openBoard(hub);
-    // The climate device is on the same connection but has no stored view yet.
+    await drain();
+    // The climate device is on the same connection but has no stored view yet. Everything is live, so nothing is asked.
     expect((sockets[1] as PageSocket).sent).toEqual([{
       type: "states",
       states: {
-        m1: { watching: true, power: "on", climate: null },
-        m2: { watching: true, power: "off", climate: null },
-        m3: { watching: true, power: null, climate: null },
+        m1: { watching: true, power: "on" },
+        m2: { watching: true, power: "off" },
+        m3: { watching: true, climate: null },
       },
       liveConnections: [connectionId],
     }]);
   });
 
-  it("gives a board the whole shop once a connection is live, then each change of a live device, and the whole shop again when it stops", async () => {
-    const { hub, sockets, connectionId } = await fixture();
+  it("gives a board the whole shop once a connection is live, then each change of a live device, and asks Home Assistant when it stops", async () => {
+    const { hub, sockets, connectionId, drain } = await fixture();
     await openBoard(hub);
+    await drain();
     const board = sockets[0] as PageSocket;
     await hub.relayOnline(SHOP, "a", "chan-a");
-    expect(board.sent).toHaveLength(1);
+    expect(board.sent).toHaveLength(2);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
     // Nothing is live until the connection is announced, so the first snapshot is not a change per
     // device: the board gets the whole shop, with the values, once.
-    expect(board.sent.slice(1)).toEqual([
+    expect(board.sent.slice(2)).toEqual([
       {
         type: "states",
-        states: { m1: { watching: true, power: "on", climate: null }, m2: { watching: true, power: "off", climate: null } },
+        states: { m1: { watching: true, power: "on" }, m2: { watching: true, power: "off" } },
         liveConnections: [connectionId],
       },
     ]);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
     expect(board.sent.at(-1)).toEqual({ type: "state", power: "off", deviceId: "m1" });
-    expect(board.sent).toHaveLength(3);
-    // The connection stops being watched: the board is told which devices are no longer live.
+    expect(board.sent).toHaveLength(4);
+    // The connection stops being watched: the board is told which devices are no longer live, then what Home Assistant says of them.
     await hub.relayOffline(SHOP, "a");
-    expect(board.sent.at(-1)).toEqual({ type: "states", states: { m1: idle, m2: idle }, liveConnections: [] });
+    expect(board.sent.slice(4)).toEqual([
+      { type: "states", states: { m1: { watching: false }, m2: { watching: false } }, liveConnections: [] },
+      { type: "states", states: { m1: { watching: false, power: "off" }, m2: { watching: false, power: "off" } } },
+    ]);
   });
 
   it("pushes and records a change once when two watchers report it at the same moment", async () => {

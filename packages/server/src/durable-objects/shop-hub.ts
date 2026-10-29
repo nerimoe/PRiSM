@@ -2,12 +2,29 @@ import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
 import { decryptSecret } from "../crypto.js";
 import type { DeviceBus } from "../resources/capabilities/bus.js";
-import { climateState, createRuntimeBus, type ClimateState } from "../resources/capabilities/runtime.js";
+import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
-import { readBoardStates, readDeviceFacts, writeEventConnections } from "../resources/capabilities/state-view.js";
+import {
+  climateState,
+  deviceView,
+  haConnectionsOf,
+  readDeviceState,
+  readLiveState,
+  readShopLiveStates,
+  statefulDevices,
+  writeEventConnections,
+  type DeviceState,
+  type DeviceView,
+} from "../resources/capabilities/device-state.js";
+
+/** How many devices that are not live the hub asks Home Assistant about at once for the boards. */
+const BOARD_READ_CONCURRENCY = 4;
+/** How long one Home Assistant read of a device answers everyone else who asks for it. */
+const READ_SHARED_MS = 2000;
+import type { Resource } from "../resources/resource.js";
 import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
 import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
 import type { HaWatch } from "./machine-relay.js";
@@ -217,6 +234,12 @@ export class ShopHub extends BaseDurableObject<Env> {
   private lastResync = 0;
   /** The last watcher list sent to the boards, so a board hears only about a change. */
   private lastWatchers = "";
+  /**
+   * Home Assistant reads by device, under way or just answered: a page and a
+   * board, or several pages, asking within a moment share one read instead of
+   * asking Home Assistant again.
+   */
+  private reading = new Map<string, Promise<DeviceState>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -261,25 +284,90 @@ export class ShopHub extends BaseDurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server!, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
     server!.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
-    server!.send(JSON.stringify({ type: "hello", ...(await this.pageSnapshot(shopId, deviceId)) }));
+    // The greeting never waits on Home Assistant: a live device's stored state goes with it at once,
+    // and one that is not live is asked for afterwards and sent when Home Assistant answers.
+    const greeting = await this.pageGreeting(shopId, deviceId);
+    server!.send(JSON.stringify({ type: "hello", ...greeting.frame }));
+    if (greeting.ask) this.later(this.askPage(shopId, greeting.ask, server!));
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Whether the device's state is pushed, and what it is now if so. */
-  private async pageSnapshot(shopId: string, deviceId: string): Promise<{ watching: boolean; power?: "on" | "off" | null; climate?: ClimateState | null }> {
+  /**
+   * What a device page is greeted with, from storage only: a live device's power
+   * and climate, or for one that is not live nothing yet and the device to ask
+   * Home Assistant about. `watching` is only for App Clip builds that still
+   * decide for themselves; the web page ignores it.
+   */
+  private async pageGreeting(shopId: string, deviceId: string): Promise<{ frame: { watching: boolean } & DeviceView; ask: Resource | null }> {
     try {
       const device = await loadResource(this.env.DB, shopId, deviceId);
-      if (!device) return { watching: false };
-      const facts = await readDeviceFacts(this.env.DB, shopId, device);
-      if (!facts.watching) return { watching: false };
-      return {
-        watching: true,
-        ...(device.capabilities.has("power") ? { power: facts.power } : {}),
-        ...(device.capabilities.has("climate") ? { climate: facts.climate } : {}),
-      };
+      if (!device) return { frame: { watching: false }, ask: null };
+      const state = await readLiveState(this.env.DB, shopId, device);
+      return state.watching
+        ? { frame: { watching: true, ...deviceView(device, state) }, ask: null }
+        : { frame: { watching: false }, ask: device };
     } catch (error) {
-      console.error("Shop hub page snapshot failed", error);
+      console.error("Shop hub page greeting failed", error);
+      return { frame: { watching: false }, ask: null };
+    }
+  }
+
+  /** A device's state for its pages after its liveness changed: stored if it is live, else Home Assistant's answer. */
+  private async pageState(shopId: string | null, deviceId: string): Promise<{ watching: boolean } & DeviceView> {
+    try {
+      const device = shopId ? await loadResource(this.env.DB, shopId, deviceId) : null;
+      if (!device) return { watching: false };
+      const state = await this.readDevice(shopId!, device);
+      return { watching: state.watching, ...deviceView(device, state) };
+    } catch (error) {
+      console.error("Shop hub page state failed", error);
       return { watching: false };
+    }
+  }
+
+  /** A device that is not live, read for one page that just connected; a read under way is shared. */
+  private async askPage(shopId: string, device: Resource, ws: WebSocket) {
+    try {
+      const state = await this.readDevice(shopId, device);
+      // It became live meanwhile: the announcement told the page, and this answer is older.
+      if (state.watching || (await this.liveNow(device))) return;
+      ws.send(JSON.stringify({ type: "state", ...deviceView(device, state) }));
+    } catch {
+      // The page left, or Home Assistant could not be read; the page reads for itself if it hears nothing.
+    }
+  }
+
+  /**
+   * One device as every reader reads it (stored while live, else Home Assistant),
+   * shared with any read of it already under way in this object.
+   */
+  private readDevice(shopId: string, device: Resource): Promise<DeviceState> {
+    const pending = this.reading.get(device.id);
+    if (pending) return pending;
+    const read = readDeviceState({ db: this.env.DB, env: this.env, shopId }, device);
+    this.reading.set(device.id, read);
+    const forget = () => {
+      if (this.reading.get(device.id) === read) this.reading.delete(device.id);
+    };
+    // A live device's stored state moves with every report, so only Home Assistant's answer is kept a moment.
+    read.then((state) => (state.watching ? forget() : setTimeout(forget, READ_SHARED_MS)), forget);
+    return read;
+  }
+
+  /** Whether a device is live by the connections this object announced, as of now. */
+  private async liveNow(device: Resource): Promise<boolean> {
+    const connections = haConnectionsOf(device);
+    if (!connections.length || connections.includes("")) return false;
+    const live = new Set(await this.load<string[]>("eventConnections", []));
+    return connections.every((id) => live.has(id));
+  }
+
+  /** Work that goes on after a reply, such as asking Home Assistant for a page that just connected. */
+  private later(work: Promise<unknown>) {
+    try {
+      this.ctx.waitUntil(work);
+    } catch {
+      void work;
     }
   }
 
@@ -302,9 +390,12 @@ export class ShopHub extends BaseDurableObject<Env> {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server!, ["board"]);
     server!.serializeAttachment({ kind: "board" } satisfies BoardAttachment);
-    // What is stored now, so the board catches up on anything that moved between its read and this connection.
+    // What is stored now, then what Home Assistant says of the devices nothing watches.
     const snapshot = await this.boardSnapshot(shopId);
-    if (snapshot) server!.send(JSON.stringify(snapshot));
+    if (snapshot) {
+      server!.send(JSON.stringify(snapshot.frame));
+      this.later(this.askBoards(shopId, snapshot.unknown, [server!]));
+    }
     try {
       server!.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
     } catch (error) {
@@ -314,23 +405,66 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Every device of the shop with its stored facts, as the board's `states`
-   * frame; null if it cannot be read.
+   * Every device of the shop as the board's `states` frame, from storage, and
+   * the devices that are not live, which have nothing stored to show; null if it
+   * cannot be read. A live device carries its power and climate; one that is not
+   * carries only its label, and its values follow once Home Assistant has been
+   * asked (`askBoards`).
    *
    * `liveConnections` travels with it because liveness belongs to a Home
-   * Assistant connection, not to a device: one connection going quiet takes
-   * every device bound to it out of live mode at once, and a board that wants to
-   * react to that should see one change rather than one per device.
+   * Assistant connection, not to a device.
    */
   private async boardSnapshot(
     shopId: string,
-  ): Promise<{ type: "states"; states: Record<string, unknown>; liveConnections: string[] } | null> {
+  ): Promise<{ frame: { type: "states"; states: Record<string, unknown>; liveConnections: string[] }; unknown: Resource[] } | null> {
     try {
-      const { states, liveConnections } = await readBoardStates(this.env.DB, shopId);
-      return { type: "states", states, liveConnections };
+      const devices = await statefulDevices(this.env.DB, shopId);
+      const { states, liveConnections } = await readShopLiveStates(this.env.DB, shopId, devices);
+      const shown: Record<string, unknown> = {};
+      const unknown: Resource[] = [];
+      for (const device of devices) {
+        const state = states[device.id]!;
+        if (state.watching) shown[device.id] = { watching: true, ...deviceView(device, state) };
+        else {
+          shown[device.id] = { watching: false };
+          unknown.push(device);
+        }
+      }
+      return { frame: { type: "states", states: shown, liveConnections }, unknown };
     } catch (error) {
       console.error("Shop hub board snapshot failed", error);
       return null;
+    }
+  }
+
+  /**
+   * Ask Home Assistant for devices that are not live and tell the given boards
+   * what it said. A device that became live meanwhile is left to its watcher.
+   */
+  private async askBoards(shopId: string, devices: readonly Resource[], boards: readonly WebSocket[]) {
+    if (!devices.length || !boards.length) return;
+    const shown: Record<string, unknown> = {};
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(BOARD_READ_CONCURRENCY, devices.length) }, async () => {
+      while (next < devices.length) {
+        const device = devices[next++]!;
+        try {
+          const state = await this.readDevice(shopId, device);
+          // One that became live while Home Assistant was asked has had the live snapshot; this answer is older.
+          if (!state.watching && !(await this.liveNow(device))) shown[device.id] = { watching: false, ...deviceView(device, state) };
+        } catch (error) {
+          console.error("Shop hub board read failed", error);
+        }
+      }
+    }));
+    if (!Object.keys(shown).length) return;
+    const encoded = JSON.stringify({ type: "states", states: shown });
+    for (const ws of boards) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // A board that left is reaped by the runtime.
+      }
     }
   }
 
@@ -349,14 +483,20 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /**
    * Send every open board the whole shop again. Done when a Home Assistant
-   * connection starts or stops being watched: which devices are live changed,
-   * and a board can only tell by being told.
+   * connection starts or stops being watched: which devices are live changed.
+   * A device on a connection that stopped being watched still shows a value that
+   * was true a moment ago, so Home Assistant is asked for it once and the boards
+   * are told.
    */
-  private async announceBoards() {
-    if (!this.ctx.getWebSockets("board").length) return;
+  private async announceBoards(lost: ReadonlySet<string>) {
+    const boards = this.ctx.getWebSockets("board");
+    if (!boards.length) return;
     const shopId = await this.shopId();
     const snapshot = shopId ? await this.boardSnapshot(shopId) : null;
-    if (snapshot) this.toBoards(snapshot);
+    if (!snapshot) return;
+    this.toBoards(snapshot.frame);
+    const dropped = snapshot.unknown.filter((device) => haConnectionsOf(device).some((id) => lost.has(id)));
+    await this.askBoards(shopId!, dropped, boards);
   }
 
   /**
@@ -472,8 +612,8 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /**
    * Tell pages whose device uses a connection that just started or stopped being
-   * watched. A page that becomes watched also gets the current state, so it can
-   * stop asking Home Assistant and show what it was missing.
+   * watched what their device shows now: the stored state when it became live,
+   * Home Assistant's answer when it stopped, since nobody will report its changes.
    */
   private async announce(live: ReadonlySet<string>, changed: ReadonlySet<string>) {
     const pages = this.ctx.getWebSockets().filter((ws) => (ws.deserializeAttachment() as PageAttachment | null)?.kind === "page");
@@ -488,17 +628,18 @@ export class ShopHub extends BaseDurableObject<Env> {
         connections.set(target.deviceId, set);
       }
     }
-    const snapshots = new Map<string, Record<string, unknown>>();
+    const snapshots = new Map<string, Promise<Record<string, unknown>>>();
     for (const ws of pages) {
       const { deviceId } = ws.deserializeAttachment() as PageAttachment;
       const mine = connections.get(deviceId);
       if (!mine || ![...mine].some((id) => changed.has(id))) continue;
-      const watching = [...mine].every((id) => live.has(id));
-      let frame = snapshots.get(`${deviceId}:${watching}`);
-      if (!frame) {
-        frame = { type: "watching", ...(watching && shopId ? await this.pageSnapshot(shopId, deviceId) : { watching: false }) };
-        snapshots.set(`${deviceId}:${watching}`, frame);
+      // Once per device however many pages show it, and only for devices that have one open.
+      let pending = snapshots.get(deviceId);
+      if (!pending) {
+        pending = this.pageState(shopId, deviceId).then((state) => ({ type: "watching", ...state }));
+        snapshots.set(deviceId, pending);
       }
+      const frame = await pending;
       try {
         ws.send(JSON.stringify(frame));
       } catch {
@@ -672,6 +813,21 @@ export class ShopHub extends BaseDurableObject<Env> {
     delete candidates[machineId];
     await this.ctx.storage.put("candidates", candidates);
     await this.drop(machineId);
+  }
+
+  /**
+   * The backend read a device that is not live (after an action on it): pass
+   * what it shows to the device's pages and the boards. A device that is live is
+   * reported by its watcher, and an older read must not overtake that.
+   */
+  async deviceRead(shopId: string, deviceId: string, view: DeviceView): Promise<void> {
+    await this.rememberShop(shopId);
+    const device = await loadResource(this.env.DB, shopId, deviceId);
+    if (!device || (await readLiveState(this.env.DB, shopId, device)).watching) return;
+    // Newer than any read this object still shares.
+    this.reading.delete(deviceId);
+    this.toPages(deviceId, { type: "state", ...view });
+    this.toBoards({ type: "state", deviceId, ...view });
   }
 
   /**
@@ -1372,17 +1528,18 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
-    // A board is told of a device's change only while the device is live, that is while every
-    // Home Assistant connection it uses is announced. The first snapshot of a connection reaches
-    // a board as the whole shop once it is announced, not as a change per device before.
+    // Pages and boards are told of a device's change only while the device is live, that is while
+    // every Home Assistant connection it uses is announced. Until then a report is not yet the
+    // device's state (a first snapshot, a held watcher); the announcement brings it once it is.
     const announced = new Set(await this.load<string[]>("eventConnections", []));
     const connectionsOf = new Map<string, string[]>();
     for (const [key, list] of Object.entries(targets))
       for (const target of list) connectionsOf.set(target.deviceId, [...(connectionsOf.get(target.deviceId) ?? []), connectionOf(key)]);
     const live = (deviceId: string) => (connectionsOf.get(deviceId) ?? []).every((id) => announced.has(id));
     for (const [deviceId, frame] of pushes) {
+      if (!live(deviceId)) continue;
       this.toPages(deviceId, frame);
-      if (live(deviceId)) this.toBoards({ ...frame, deviceId });
+      this.toBoards({ ...frame, deviceId });
     }
     // Switched on starts an idle countdown; switched off may end one.
     if (powerMoved) await this.touch(shopId);
@@ -1425,8 +1582,10 @@ export class ShopHub extends BaseDurableObject<Env> {
       return;
     }
     await this.ctx.storage.put("eventConnections", [...live]);
+    // A read from before the change may say a device is not live when it now is.
+    this.reading.clear();
     await this.announce(live, new Set([...add, ...remove]));
-    await this.announceBoards();
+    await this.announceBoards(new Set(remove));
   }
 
   /** Wake for the earliest thing that needs checking. */

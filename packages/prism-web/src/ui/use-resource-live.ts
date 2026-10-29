@@ -2,28 +2,35 @@ import { useEffect, useRef, useState } from "react";
 import type { ClimateState } from "./ClimateControls";
 
 /**
- * What a device page knows of its Home Assistant state. `watching` says the
- * values are current and the shop hub pushes every change; without it nothing
- * is known and the page asks for the state once.
+ * What a device page is told of its device's power and air conditioner. A key
+ * that is absent was not said; `null` is a value the backend could not read.
+ * Where a value came from (stored events or Home Assistant asked now) is the
+ * backend's business: the page shows the latest it was told.
  */
-export type DeviceFacts = {
-  watching: boolean;
-  power: "on" | "off" | null;
-  climate: ClimateState | null;
-};
-
-/** A part of the state that came in a frame; a key that is absent was not said. */
-export type FactsChange = { power?: "on" | "off" | null; climate?: ClimateState | null };
+export type DeviceView = { power?: "on" | "off" | null; climate?: ClimateState | null };
 
 /** A frame the shop hub pushes to a device page. */
 export type LiveFrame =
-  | ({ type: "hello" | "watching"; watching: boolean } & FactsChange)
-  | ({ type: "state" } & FactsChange)
+  /** The device's state; `hello` is the first one on a connection. */
+  | ({ type: "hello" | "state" } & DeviceView)
   | { type: "refresh"; reason?: string };
 
 const powerOf = (value: unknown): "on" | "off" | null => (value === "on" || value === "off" ? value : null);
 
-/** A frame from the hub, or null for anything that is not one. */
+/** The power and climate a frame or a response carries; other keys are ignored. */
+export function deviceViewOf(value: unknown): DeviceView {
+  if (!value || typeof value !== "object") return {};
+  const record = value as Record<string, unknown>;
+  return {
+    ...("power" in record ? { power: powerOf(record.power) } : {}),
+    ...("climate" in record ? { climate: (record.climate as ClimateState | null) ?? null } : {}),
+  };
+}
+
+/**
+ * A frame from the hub, or null for anything that is not one. `watching`
+ * frames are state like any other; the flag itself is for older App Clips.
+ */
 export function parseLiveFrame(raw: string): LiveFrame | null {
   let frame: Record<string, unknown>;
   try {
@@ -32,35 +39,27 @@ export function parseLiveFrame(raw: string): LiveFrame | null {
     return null;
   }
   if (!frame || typeof frame !== "object") return null;
-  const change: FactsChange = {
-    ...("power" in frame ? { power: powerOf(frame.power) } : {}),
-    ...("climate" in frame ? { climate: (frame.climate as ClimateState | null) ?? null } : {}),
-  };
-  if (frame.type === "hello" || frame.type === "watching") return { type: frame.type, watching: frame.watching === true, ...change };
-  if (frame.type === "state") return { type: "state", ...change };
+  if (frame.type === "hello") return { type: "hello", ...deviceViewOf(frame) };
+  if (frame.type === "state" || frame.type === "watching") return { type: "state", ...deviceViewOf(frame) };
   if (frame.type === "refresh") return { type: "refresh", ...(typeof frame.reason === "string" ? { reason: frame.reason } : {}) };
   return null;
 }
 
 export type LiveStatus = {
-  /** The hub has greeted this connection. */
+  /** The hub has greeted this connection, so what it says is current. */
   connected: boolean;
-  /** The hub is pushing this device's state. */
-  watching: boolean;
   /** A connection that had been up closed since; what it last said may be out of date. */
   dropped: boolean;
 };
 
 export type LiveHandlers = {
-  /** The current state, when the connection opens or the device becomes watched. */
-  onFacts(facts: FactsChange): void;
-  /** A change to the state while it is watched. */
-  onChange(change: FactsChange): void;
+  /** The device's state, whenever the hub says anything about it. */
+  onState(view: DeviceView): void;
   /** Something the page shows changed elsewhere (a bot confirmed the binding); read it again. */
   onRefresh(): void;
 };
 
-export const idleLive: LiveStatus = { connected: false, watching: false, dropped: false };
+export const idleLive: LiveStatus = { connected: false, dropped: false };
 
 /** What a frame does to the connection's status, and what the page is told. */
 export function applyLiveFrame(status: LiveStatus, frame: LiveFrame, handlers: LiveHandlers): LiveStatus {
@@ -68,24 +67,18 @@ export function applyLiveFrame(status: LiveStatus, frame: LiveFrame, handlers: L
     handlers.onRefresh();
     return status;
   }
-  if (frame.type === "state") {
-    // The hub only pushes changes for a watched device.
-    const { type: _type, ...change } = frame;
-    if (status.watching) handlers.onChange(change);
-    return status;
-  }
-  const { type: _type, watching, ...facts } = frame;
-  if (watching) handlers.onFacts(facts);
-  return { connected: true, watching, dropped: false };
+  const { type, ...view } = frame;
+  if (Object.keys(view).length) handlers.onState(view);
+  return type === "hello" ? { connected: true, dropped: false } : status;
 }
 
 const RETRY_MS = [5000, 10_000, 20_000, 60_000];
 
 /**
- * The shop hub's channel for a device page: the device's state while it is
- * watched, and word when the page's own state changed. It is opened only for a
- * device that is watched. A dropped connection is reopened with a growing wait;
- * meanwhile `dropped` tells the page its last state may be stale.
+ * The shop hub's channel for a device page: its device's state, sent when the
+ * connection opens and whenever the backend learns something new, and word when
+ * the page's own state changed. A dropped connection is reopened with a growing
+ * wait; meanwhile `dropped` tells the page its last state may be stale.
  */
 export function useResourceLive(ticket: string, enabled: boolean, handlers: LiveHandlers): LiveStatus {
   const [status, setStatus] = useState<LiveStatus>(idleLive);
@@ -115,7 +108,7 @@ export function useResourceLive(ticket: string, enabled: boolean, handlers: Live
       };
       opened.onclose = () => {
         if (socket !== opened) return;
-        set({ connected: false, watching: false, dropped: current.connected || current.dropped });
+        set({ connected: false, dropped: current.connected || current.dropped });
         if (!stopped) retry = setTimeout(connect, RETRY_MS[Math.min(failures++, RETRY_MS.length - 1)]);
       };
     };
