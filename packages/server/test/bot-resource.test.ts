@@ -133,6 +133,26 @@ describe("a bot is a resource", () => {
     expect(await listed()).toMatchObject({ hasBotToken: false, botLastUsedAt: null });
   });
 
+  it("reports each bot's live connection independently, and keeps unavailable status unknown", async () => {
+    const { env, call, createBot } = await fixture();
+    const first = await createBot();
+    const second = await createBot();
+    let online = [first.id];
+    env.SHOP_HUB = { getByName: (id: string) => {
+      expect(id).toBe("shop");
+      return { connectedBots: async () => online };
+    } } as unknown as Env["SHOP_HUB"];
+    const list = async () => (await call("GET", "/api/v1/merchant/machines?shopId=shop", OWNER)).body.machines as { id: string; botOnline: boolean | null }[];
+    let machines = await list();
+    expect(machines.find((m) => m.id === first.id)?.botOnline).toBe(true);
+    expect(machines.find((m) => m.id === second.id)?.botOnline).toBe(false);
+    online = [];
+    expect((await list()).find((m) => m.id === first.id)?.botOnline).toBe(false);
+    delete env.SHOP_HUB;
+    machines = await list();
+    expect(machines.filter((m) => [first.id, second.id].includes(m.id)).every((m) => m.botOnline === null)).toBe(true);
+  });
+
   it("revokes the token when the bot is removed or its token rotated", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot();

@@ -1,6 +1,6 @@
 import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
-import { decryptSecret } from "../crypto.js";
+import { decryptSecret, sha256Hex } from "../crypto.js";
 import type { DeviceBus } from "../resources/capabilities/bus.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import { listHaConnections } from "../resources/capabilities/ha-connections.js";
@@ -272,6 +272,31 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   private bots(): WebSocket[] {
     return this.ctx.getWebSockets("bot");
+  }
+
+  /** Live sockets, including bots connected before credential usage was recorded. */
+  async connectedBots(): Promise<string[]> {
+    const shopId = await this.shopId();
+    if (!shopId) return [];
+    const hashes = await Promise.all(this.bots().filter((ws) => ws.readyState === 1).map(async (ws) => {
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      return attachment?.kind === "bot" ? sha256Hex(attachment.token) : "";
+    }));
+    if (!hashes.length) return [];
+    const rows = await this.env.DB.prepare(
+      `SELECT m.id, t.id AS tokenId, t.last_used_at FROM api_tokens t
+       JOIN device_capabilities c ON c.shop_id=t.shop_id AND c.capability='bot'
+         AND json_extract(c.config_json,'$.tokenId')=t.id
+       JOIN machines m ON m.shop_id=c.shop_id AND m.id=c.device_id
+       WHERE t.shop_id=? AND t.role='integration' AND t.status='active' AND m.enabled=1
+         AND t.token_hash IN (SELECT value FROM json_each(?))`,
+    ).bind(shopId, JSON.stringify(hashes)).all<{ id: string; tokenId: string; last_used_at: string | null }>();
+    const now = new Date().toISOString();
+    const missing = rows.results.filter((row) => !row.last_used_at);
+    if (missing.length) await this.env.DB.batch(missing.map((row) => this.env.DB.prepare(
+      "UPDATE api_tokens SET last_used_at=? WHERE shop_id=? AND id=? AND last_used_at IS NULL",
+    ).bind(now, shopId, row.tokenId)));
+    return rows.results.map((row) => row.id);
   }
 
   /** A device page connecting; the Worker route has checked its user and ticket. */

@@ -42,13 +42,13 @@
 | 设定收费标准 | 有资源计费 | 有有效余额资产；缺失时引导去「资产」恢复。哪些资源组计费在「资源」页设置，资源组不设方案（免费）不算未完成 |
 | 准备前台读卡器 | 前台收银 | 本浏览器已授权 HINATA 读卡器（WebHID `getDevices()` 中有 vendor `0xF822`）；浏览器不支持 WebHID 时提示用桌面版 Chrome 或 Edge |
 | 给前台店员开账号 | 前台收银 | 店铺成员多于 1 人；说明在前台收款需要计费权限「管理」 |
-| 确认玩家身份与 Bot | 有资源计费；或有门锁、麻将设备 | 不要求绑定；或至少一个已启用的 Bot 资源拥有有效凭据，且 `botLastUsedAt` 非空。步骤内可直接改身份策略，并预览当前的绑定提示 |
+| 确认玩家身份与 Bot | 有资源计费；或有门锁、麻将设备 | 不要求绑定；或至少一个已启用的 Bot 资源拥有有效凭据，且 `botOnline` 为真或 `botLastUsedAt` 非空。步骤内可直接改身份策略，并预览当前的绑定提示 |
 | 准备玩家储值 | 自助计费 | 有可用兑换码（未用尽、未过期），或已有玩家余额大于 0 |
 | 添加资源并配置能力 | 总是 | 至少一个资源且都配置了能力；没有能力的资源只用来开始计费 |
 | 连接 TTLock 账号 | 有资源启用开门密码 | `ttLockConnection` 有 `clientId`、`clientSecret` 及 `accessToken` 或 `appAccount` |
 | 贴好二维码或 NFC，自己试一次 | 总是 | 有资源计费且已有玩家档案；或店长勾选「我已试过」（`localStorage` 的 `prism.setup.trial.<shopCode>`） |
 
-数据来源全部是现有 GET 接口：`settings`、`merchant/machines`、`merchant/resource-groups`、`staff/settings`、`staff/players`、`merchant/shop-members`、`staff/presents`、`staff/redeem-codes`。Bot 状态直接使用 `merchant/machines` 返回的 Bot 资源：`hasBotToken` 表示当前凭据有效，`botLastUsedAt` 表示它首次成功鉴权的时间（HTTP 或 WebSocket），并非当前在线状态。停用的 Bot、已撤销或删除的凭据不计入；轮换凭据后须新凭据使用过才算完成。旧凭据首次接入时自动补建 Bot 资源，与新建资源使用同一判断；不再读取迁移前的 `staff/api-tokens`。可选数据读取失败只让对应步骤按未完成显示，不阻塞工作台。
+数据来源全部是现有 GET 接口：`settings`、`merchant/machines`、`merchant/resource-groups`、`staff/settings`、`staff/players`、`merchant/shop-members`、`staff/presents`、`staff/redeem-codes`。Bot 状态直接使用 `merchant/machines` 返回的 Bot 资源：`hasBotToken` 表示当前凭据有效，`botOnline` 表示当前 WebSocket 在线；`botLastUsedAt` 表示首次记录到的成功接入（HTTP 或 WebSocket），并非当前在线状态。对迁移前已连接且没有使用记录的 Bot，读取资源时从 Hub 的现存连接识别并补记，无需等待重新连接。停用的 Bot、已撤销或删除的凭据不计入；轮换凭据后须新凭据使用过才算完成。已创建凭据但尚未接入时，指南每 15 秒复查一次，Bot 接入后自动更新。旧凭据首次接入时自动补建 Bot 资源，与新建资源使用同一判断；不再读取迁移前的 `staff/api-tokens`。可选数据读取失败只让对应步骤按未完成显示，不阻塞工作台。
 
 ## 玩家身份
 

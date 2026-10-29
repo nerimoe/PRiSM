@@ -116,7 +116,7 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
   const unconfigured = machines.filter(isUnconfigured).length;
   const doorDevices = caps.filter((c) => c.door).length;
   const activeBots = machines.filter((machine) => machine.enabled && machine.bot && machine.hasBotToken);
-  const botConnected = activeBots.some((machine) => !!machine.botLastUsedAt);
+  const botConnected = activeBots.some((machine) => machine.botOnline === true || !!machine.botLastUsedAt);
   const identity = identityPolicy(settings);
   const ttLock = signals.ttLock;
   const ttLockReady = !!(

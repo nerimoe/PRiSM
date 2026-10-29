@@ -17,6 +17,7 @@ type ShopHubNamespace = {
     touch(shopId: string): Promise<void>;
     notifyUser(userId: string, frame: Record<string, unknown>): Promise<void>;
     botsChanged(): Promise<void>;
+    connectedBots(): Promise<string[]>;
     shopEvent(event: Record<string, unknown>): Promise<void>;
     idleSchedule(): Promise<Record<string, number>>;
   };
@@ -24,6 +25,16 @@ type ShopHubNamespace = {
 
 export function shopHub(env: Env, shopId: string) {
   return (env.SHOP_HUB as unknown as ShopHubNamespace | undefined)?.getByName(shopId) ?? null;
+}
+
+/** null means the hub could not be asked, rather than that every bot is offline. */
+export async function connectedBots(env: Env, shopId: string): Promise<string[] | null> {
+  try {
+    return (await shopHub(env, shopId)?.connectedBots()) ?? null;
+  } catch (error) {
+    console.error("Shop hub bot status failed", error);
+    return null;
+  }
 }
 
 /** When the idle rules will switch each device off. Empty when the hub cannot be asked. */

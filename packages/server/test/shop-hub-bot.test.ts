@@ -7,11 +7,13 @@ import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { sha256Hex } from "../src/crypto.js";
 import { ShopHub } from "../src/durable-objects/shop-hub.js";
 import { botRequestUrl, parseBotFrame } from "../src/durable-objects/shop-hub-bot.js";
+import { ensureBotResource } from "../src/resources/bot.js";
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
 const TOKEN = "integration_test_token";
 
 class FakeSocket {
+  readyState = 1;
   readonly sent: string[] = [];
   attachment: unknown = null;
   closed: { code?: number; reason?: string } | null = null;
@@ -78,6 +80,37 @@ async function fixture() {
 }
 
 describe("bot connection", () => {
+  it("finds a legacy live socket without an HA watch and backfills its credential usage", async () => {
+    const { hub, ws, sqlite } = await fixture();
+    const bot = await ensureBotResource(createD1DatabaseFromSqlite(sqlite), "shop", { id: "t1", label: "bot" });
+    const usedAt = () => (sqlite.query("SELECT last_used_at FROM api_tokens WHERE id='t1'").get() as { last_used_at: string | null }).last_used_at;
+    expect(usedAt()).toBeNull();
+    expect(await hub.connectedBots()).toEqual([bot.id]);
+    const firstUse = usedAt();
+    expect(Number.isFinite(Date.parse(firstUse!))).toBe(true);
+    expect(await hub.connectedBots()).toEqual([bot.id]);
+    expect(usedAt()).toBe(firstUse);
+    ws.readyState = 3;
+    expect(await hub.connectedBots()).toEqual([]);
+    // Offline is distinct from never connected.
+    expect(usedAt()).toBe(firstUse);
+    sqlite.close();
+  });
+
+  it("excludes live sockets whose resource is disabled or whose credential is revoked or rotated", async () => {
+    const { hub, sqlite } = await fixture();
+    const bot = await ensureBotResource(createD1DatabaseFromSqlite(sqlite), "shop", { id: "t1", label: "bot" });
+    sqlite.run("UPDATE machines SET enabled=0 WHERE id=?", [bot.id]);
+    expect(await hub.connectedBots()).toEqual([]);
+    sqlite.run("UPDATE machines SET enabled=1 WHERE id=?", [bot.id]);
+    sqlite.run("UPDATE api_tokens SET status='revoked' WHERE id='t1'");
+    expect(await hub.connectedBots()).toEqual([]);
+    sqlite.run("UPDATE api_tokens SET status='active',token_hash=? WHERE id='t1'", [await sha256Hex("rotated-token")]);
+    expect(await hub.connectedBots()).toEqual([]);
+    expect((sqlite.query("SELECT last_used_at FROM api_tokens WHERE id='t1'").get() as { last_used_at: string | null }).last_used_at).toBeNull();
+    sqlite.close();
+  });
+
   it("runs a request through the shop's integration routes with the bot's token", async () => {
     const { send, sqlite } = await fixture();
     const reply = await send({ type: "request", id: "r1", method: "GET", path: "integration/sessions/active" });

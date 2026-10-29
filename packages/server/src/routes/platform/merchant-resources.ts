@@ -10,7 +10,7 @@ import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjong
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
 import { capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
-import { idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
+import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
   normalizeHaUrl,
@@ -137,6 +137,7 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     // Whether the bot has a live credential, told like a device's relay token.
     hasBotToken: !!botToken,
     botLastUsedAt: botToken?.last_used_at ?? null,
+    botOnline: null as boolean | null,
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,
@@ -182,7 +183,10 @@ async function relayStatus(
 }
 
 async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicId: string, canConfigure: boolean) {
-  const [status, bindings] = await Promise.all([relayStatus(c, devices), billingBindings(c, devices)]);
+  const [status, bindings, bots] = await Promise.all([
+    relayStatus(c, devices), billingBindings(c, devices),
+    devices.some((device) => device.capabilities.has("bot")) ? connectedBots(c.env, devices[0]!.shopId) : null,
+  ]);
   return Promise.all(devices.map(async (device) => {
     const presented = await presentResource(c, device, shopPublicId, canConfigure);
     const live = status.get(device.id);
@@ -197,6 +201,7 @@ async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicI
       occupancyMinutes: binding?.occupancyMinutes ?? 15,
       relayOnline: live ? live.online : null,
       relayE2ee: live ? live.e2ee : null,
+      botOnline: device.capabilities.has("bot") && bots !== null ? bots.includes(device.id) : null,
     };
   }));
 }

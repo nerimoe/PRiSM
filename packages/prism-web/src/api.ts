@@ -164,6 +164,8 @@ export type Resource = {
   hasBotToken?: boolean;
   /** First authenticated use of the current bot credential, not its live connection status. */
   botLastUsedAt?: string | null;
+  /** A current authenticated Bot WebSocket; null when the hub cannot be queried. */
+  botOnline?: boolean | null;
   /** The group whose default plan this resource bills; "default" for the shop's default group. */
   resourceGroupId?: string;
   /** A plan of its own that replaces the group's; null to follow the group. */

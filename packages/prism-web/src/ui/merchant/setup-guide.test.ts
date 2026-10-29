@@ -131,10 +131,14 @@ describe("setup guide", () => {
     expect(status([bot()])).toMatchObject({ botIssued: true, botConnected: true });
     expect(status([bot()]).steps.find((s) => s.id === "identity")!.done).toBe(true);
     expect(status([bot({ botLastUsedAt: null })])).toMatchObject({ botIssued: true, botConnected: false });
+    expect(status([bot({ botLastUsedAt: null, botOnline: true })]).botConnected).toBe(true);
+    expect(status([bot({ botOnline: false })]).botConnected).toBe(true);
+    expect(status([bot({ botLastUsedAt: null, botOnline: null })]).botConnected).toBe(false);
     for (const resource of [bot({ enabled: false }), bot({ hasBotToken: false }), bot({ bot: null })]) {
       expect(status([resource])).toMatchObject({ botIssued: false, botConnected: false });
       expect(status([resource]).steps.find((s) => s.id === "identity")!.done).toBe(false);
     }
+    expect(status([bot({ hasBotToken: false, botOnline: true })]).botConnected).toBe(false);
     expect(status([bot({ enabled: false }), bot({ id: "other-bot" })]).botConnected).toBe(true);
   });
 

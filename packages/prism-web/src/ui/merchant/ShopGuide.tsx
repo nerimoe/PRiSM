@@ -154,6 +154,11 @@ export function useSetupStatus(
     window.addEventListener("prism-shop-settings", refresh);
     return () => window.removeEventListener("prism-shop-settings", refresh);
   }, [enabled, reload]);
+  useEffect(() => {
+    if (!enabled || !status?.botIssued || status.botConnected) return;
+    const timer = setInterval(() => void reload(), 15_000);
+    return () => clearInterval(timer);
+  }, [enabled, status?.botIssued, status?.botConnected, reload]);
   return { status, loaded: !enabled || loaded, reload };
 }
 

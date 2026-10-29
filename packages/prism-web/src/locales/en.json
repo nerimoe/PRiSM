@@ -1131,6 +1131,8 @@
   "直连": "Direct",
   "机台在线": "Machine online",
   "机台离线": "Machine offline",
+  "Bot 在线": "Bot online",
+  "Bot 离线": "Bot offline",
   "连接未知": "Connection unknown",
   "无电源控制": "No power control",
   "刷卡后投币": "Coin after swipe",

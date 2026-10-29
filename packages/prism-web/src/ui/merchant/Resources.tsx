@@ -171,7 +171,7 @@ export function ResourcesPage() {
   );
   async function refresh() {
     setRefreshing(true);
-    await Promise.all([readStates(), readOccupancy()]);
+    await Promise.all([readStates(), readOccupancy(), load().catch((e) => setError(e.message))]);
     setRefreshing(false);
   }
   const load = useCallback(
@@ -185,6 +185,12 @@ export function ResourcesPage() {
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, [load]);
+  const hasConnections = (devices ?? []).some((device) => device.bot || isDirectConnect(device));
+  useEffect(() => {
+    if (!hasConnections) return;
+    const timer = setInterval(() => void load().catch(() => {}), 15_000);
+    return () => clearInterval(timer);
+  }, [hasConnections, load]);
   const hasStateDevices = (devices ?? []).some((device) => {
     const caps = resourceCapabilities(device);
     return caps.power || caps.climate;
@@ -261,11 +267,11 @@ export function ResourcesPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="text-xl font-semibold">{t("店内资源")}</h2>
         <div className="flex flex-wrap items-center gap-2">
-          {hasStateDevices && (
+          {(hasStateDevices || hasConnections) && (
             <button
               type="button"
               className={button}
-              disabled={refreshing || (states === null && !statesFailed)}
+              disabled={refreshing || (hasStateDevices && states === null && !statesFailed)}
               onClick={() => void refresh()}
             >
               <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
@@ -659,19 +665,22 @@ function ResourceCard({
           </button>
         </div>
       )}
-      {(caps.power || caps.climate || isDirectConnect(device)) && (
+      {(caps.power || caps.climate || isDirectConnect(device) || caps.bot) && (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-5 text-xs">
           {(caps.power || caps.climate) && (
             <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
           )}
           {caps.power && powerOffAt && state?.power !== "off" && <IdleCountdown at={powerOffAt} />}
-          {isDirectConnect(device) && (
-            <span className="flex items-center gap-1.5 text-ink/60">
+          {[
+            ...(isDirectConnect(device) ? [{ kind: "io", online: device.relayOnline, up: "机台在线", down: "机台离线" }] : []),
+            ...(caps.bot ? [{ kind: "bot", online: device.botOnline, up: "Bot 在线", down: "Bot 离线" }] : []),
+          ].map(({ kind, online, up, down }) => (
+            <span key={kind} className="flex items-center gap-1.5 text-ink/60">
               <span
                 className={
-                  device.relayOnline === true
+                  online === true
                     ? "text-mint"
-                    : device.relayOnline === false
+                    : online === false
                       ? "text-coral"
                       : "text-ink/35"
                 }
@@ -680,14 +689,14 @@ function ResourceCard({
                 ●
               </span>
               {t(
-                device.relayOnline === true
-                  ? "机台在线"
-                  : device.relayOnline === false
-                    ? "机台离线"
+                online === true
+                  ? up
+                  : online === false
+                    ? down
                     : "连接未知",
               )}
             </span>
-          )}
+          ))}
         </div>
       )}
       <footer className="mt-auto flex items-center justify-between gap-2 border-t border-ink/10 px-4 py-2">
