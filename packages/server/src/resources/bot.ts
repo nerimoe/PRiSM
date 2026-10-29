@@ -60,7 +60,7 @@ export async function ensureBotResource(
 
 /** Everything a bot is told: its settings plus what the platform knows. */
 export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: BotResource) {
-  const [staff, currency, tables, doors, own] = await Promise.all([
+  const [staff, currency, tables, doors, own, power] = await Promise.all([
     // Staff are whoever works at the shop and bound a platform identity there.
     db.prepare(
       `SELECT DISTINCT b.provider, b.subject FROM shop_platform_bindings b
@@ -88,6 +88,12 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     db.prepare(
       `SELECT ${resourceBilledSql("m")} AS billed FROM machines m WHERE m.shop_id = ? AND m.id = ?`,
     ).bind(shopId, bot.id).first<{ billed: number }>(),
+    db.prepare(
+      `SELECT m.id, m.name, json_extract(c.config_json, '$.connectionId') AS connectionId,
+              json_extract(c.config_json, '$.entityId') AS entityId
+       FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
+       WHERE c.shop_id = ? AND c.capability = 'power' AND m.enabled = 1 ORDER BY m.name, m.id`,
+    ).bind(shopId).all<{ id: string; name: string; connectionId: string | null; entityId: string | null }>(),
   ]);
   const { tokenId: _token, doorResourceId, ...settings } = bot.config;
   // The chosen door, or the only door the shop has.
@@ -101,6 +107,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     billingEnabled: !!own?.billed,
     currencyName: currency?.name ?? "余额",
     staff: staff.results,
+    powerResources: power.results.filter((row) => row.connectionId && row.entityId),
     door: door ? { id: door.id, name: door.name } : null,
     mahjongTables: tables.results.map((row) => ({
       id: row.id,

@@ -104,6 +104,28 @@ describe("a bot is a resource", () => {
     });
   });
 
+  it("supplies enabled shop power bindings for local HA announcements without exposing credentials", async () => {
+    const { sqlite, bot, createBot } = await fixture();
+    const created = await createBot();
+    sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('other-shop','other-code','Other',0,0,80,'owner-user')");
+    sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,created_at,updated_at) VALUES ('other-shop','default','Default',1,?,?)", [NOW, NOW]);
+    for (const [id, shopId, enabled, capability] of [
+      ["cab-a", "shop", 1, "power"], ["cab-b", "shop", 1, "power"],
+      ["disabled", "shop", 0, "power"], ["other", "other-shop", 1, "power"], ["ac", "shop", 1, "climate"],
+    ] as const) {
+      sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,enabled,hinata_url_encrypted) VALUES (?,?,?,?,?,'')", [id, id, shopId, id, enabled]);
+      sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?)`, [shopId, id, capability, JSON.stringify({ connectionId: "ha-1", entityId: "switch.shared" }), '{"token":"private"}', NOW, NOW]);
+    }
+    const response = await bot(created.token).get("bot");
+    expect(response.status).toBe(200);
+    expect(response.body.powerResources).toEqual(["cab-a", "cab-b"].map((id) => ({
+      id, name: id, connectionId: "ha-1", entityId: "switch.shared",
+    })));
+    expect(JSON.stringify(response.body)).not.toContain("private");
+    sqlite.close();
+  });
+
   it("gives a token issued before bots were resources a resource of its own", async () => {
     const { sqlite, bot, call } = await fixture();
     sqlite.run("INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','old','旧 Bot','integration','prism_integration',?,'active',?)",

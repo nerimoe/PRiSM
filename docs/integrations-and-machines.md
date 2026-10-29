@@ -55,6 +55,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - `{"type":"hello","reminderLeadSeconds":300}`：插件告诉 Hub 闲置关机前多久提醒。之后 Hub 推送 `{"type":"event","event":"idle.reminder","data":{"reason":"shop_empty"|"device_idle","at":<关机时间 ms>,"devices":[{"id","name"}]}}`；Koishi 发到 Bot 设置的播报群。多个 Bot 连接时取最长的提前量。只有开了「设备闲置」播报、设置了播报群且提前量大于 0 时才声明。
 - `{"type":"event","event":"shop.event","data":…}`：店内动态，Hub 发给所有在线 Bot，每个 Bot 按自己的设置决定播不播（`resources/shop-events.ts`）。四种：`power`（通过平台开机或关机，`by` 为 `player`／`staff`／`system`，`system` 是闲置自动关机，由 Hub 自己发）、`card`（卡到达机台，`started` 表示这张卡同时让持卡人开始占用机台，即上机）、`coin`（通过平台投币，`started` 同上）、`occupancy`（不经刷卡或投币的上机）。都带 `resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的卡为 `null`）。去重规则：一次刷卡只发一条 `card`，一次投币只发一条 `coin`，上机合并在 `started` 里；平台下发的卡在下发时发出，机台随后回报的同一张卡不再发；Bot 自己的命令（`by-identity/device-actions` 会在操作里记下 `viaBot`）带 `botId`，这个 Bot 已经回复过命令，不再播报。插件：开了「上机」时 `started` 的刷卡或投币按上机播报，否则按刷卡／投币播报。下机（占用超时）是在读取时才结算的，不会实时播报。
 - Koishi 插件 0.4.2 起，店内动态和闲置提醒直接由对应平台第一个可用机器人发送到配置的频道／私聊，无需 Koishi 本地数据库或频道分配；播报开关由 PRiSM 管理，不读取 Koishi 数据库的 silent 标记。单个目标失败会记录目标和错误并继续其他目标，离线时不缓存补发。此修复需要升级 Koishi 插件，仅部署后端不会生效。
+- Koishi 插件 0.5.0 起，电源播报完全由当前 HA 监听 Bot 本地观察到的 `on ↔ off` 变化触发，不再消费平台的 `shop.event.power`。`GET integration/bot` 新增 `powerResources: [{id,name,connectionId,entityId}]`，只含本店启用资源的电源绑定，不含凭据；Bot 用其映射资源名称并将共享实体的资源合并播报。首次／重连／重新分配任务的全量快照仅建立内存基线，未知状态及恢复不播报，不补报断线期间的变化。平台保留原电源事件供旧插件兼容，刷卡、投币、上机及闲置前提醒仍由平台下发。监听调度和平台断线后停止监听的行为不变；未承担监听任务的 Bot 不发电源播报，多个监听 Bot 各自按配置发送，相同目标群只需在一个 Bot 上开启电源播报。先部署包含映射的新后端，再升级插件；缺少映射时新版插件不会发电源播报。
 
 ### Bot 是一种资源：设置由服务端下发
 
