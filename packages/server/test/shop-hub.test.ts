@@ -7,7 +7,7 @@ import { loadResource } from "../src/resources/resource.js";
 import { getHaConnection, newHaConnection, writeHaConnection } from "../src/resources/capabilities/ha-connections.js";
 import { readLiveState } from "../src/resources/capabilities/device-state.js";
 import { LEASE_MS, ShopHub } from "../src/durable-objects/shop-hub.js";
-import type { HaWatch } from "../src/durable-objects/machine-relay.js";
+import { MachineRelay, type HaWatch } from "../src/durable-objects/machine-relay.js";
 
 const KEY = "hub-test-key";
 const SHOP = "shop-1";
@@ -123,6 +123,51 @@ const status = (term: number, connection: string, connected: boolean) => ({
 });
 
 describe("ShopHub watchers", () => {
+  it("reissues a persisted assignment immediately to a reconnect, but preserves the term on ordinary heartbeats", async () => {
+    const { hub, assigned, state, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "a", "chan-a", { session: "before-deploy" });
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
+    await hub.relayOnline(SHOP, "a", "chan-a", { session: "after-deploy" });
+    expect(assigned()).toEqual([["chan-a", 1], ["chan-a", 2]]);
+    await hub.relayOffline(SHOP, "a", { session: "before-deploy" });
+    expect((await hub.watching()).map((entry) => entry.machineId)).toEqual(["a"]);
+    await hub.haReport(SHOP, "a", status(1, connectionId, true));
+    expect((state.get("watchers") as Record<string, { links: object }>).a!.links).toEqual({});
+    await hub.relayOnline(SHOP, "a", "chan-a", { session: "after-deploy" });
+    expect(assigned()).toHaveLength(2);
+    await hub.relayOnline(SHOP, "a", "chan-a", { session: "after-deploy", restart: true });
+    expect(assigned().at(-1)).toEqual(["chan-a", 3]);
+  });
+
+  for (const trigger of ["read", "alarm"] as const) it(`withdraws and replaces an offline IO through the relay ${trigger}, even before its HA lease expires`, async () => {
+    const { hub, state, sqlite, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m3", "chan-b");
+    await hub.relayOnline(SHOP, "m2", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON]]));
+    await hub.poweredOff(SHOP, "m1");
+    expect((await (hub as any).watchersFrame(state.get("watchers"))).watchers.find((w: { id: string }) => w.id === "m1").state).toBe("confirming");
+    const stored = new Map<string, unknown>([
+      ["online", true], ["channel", { shopId: SHOP, machineId: "m1", channel: "chan-a" }],
+    ]);
+    const attachment = { role: "agent", ha: true, seenAt: Date.now() - 151_000 };
+    const socket = { readyState: 1, deserializeAttachment: () => attachment };
+    const relay = new MachineRelay({
+      storage: {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => { stored.set(key, value); },
+        deleteAlarm: async () => {},
+      },
+      getWebSockets: () => [socket],
+    } as any, {
+      DB: createD1DatabaseFromSqlite(sqlite), SHOP_HUB: { getByName: () => hub },
+    } as any);
+    if (trigger === "read") expect((await relay.getCapabilities()).online).toBe(false);
+    else await relay.alarm();
+    expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["m2", "m3"]);
+    expect((state.get("candidates") as Record<string, unknown>).m1).toBeUndefined();
+  });
+
   it("gives the watch to the two IOs online longest, with the shop-local address first", async () => {
     const { hub, watches, assigned, connectionId } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");

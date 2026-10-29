@@ -49,7 +49,7 @@ export function awaitingState(state: BoardState | null, caps: { power: boolean; 
 }
 
 /** Who is watching Home Assistant for the shop: one entry per bot or HINATA IO the platform has handed the watch. */
-export type WatcherPhase = "watching" | "subscribing" | "starting" | "unreachable";
+export type WatcherPhase = "watching" | "subscribing" | "starting" | "confirming" | "unreachable";
 export type BoardWatcher =
   | { id: string; kind: "bot"; name: string; state: WatcherPhase }
   | { id: string; kind: "device"; deviceId: string; state: WatcherPhase };
@@ -70,7 +70,7 @@ export type BoardFrame =
 
 const powerOf = (value: unknown): "on" | "off" | null => (value === "on" || value === "off" ? value : null);
 const phaseOf = (value: unknown): WatcherPhase =>
-  value === "watching" || value === "subscribing" || value === "unreachable" ? value : "starting";
+  value === "watching" || value === "subscribing" || value === "confirming" || value === "unreachable" ? value : "starting";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 /** The label and the values a record says; what it does not say is left out. */

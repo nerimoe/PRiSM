@@ -7,8 +7,8 @@ import type { HaReport } from "../hardware/aimeio-relay.js";
 
 type ShopHubNamespace = {
   getByName(name: string): {
-    relayOnline(shopId: string, machineId: string, channel: string): Promise<void>;
-    relayOffline(shopId: string, machineId: string): Promise<void>;
+    relayOnline(shopId: string, machineId: string, channel: string, options?: { session?: string; restart?: boolean }): Promise<void>;
+    relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void>;
     poweredOff(shopId: string, machineId: string): Promise<void>;
     deviceRead(shopId: string, deviceId: string, view: Record<string, unknown>): Promise<void>;
     refresh(shopId: string): Promise<void>;

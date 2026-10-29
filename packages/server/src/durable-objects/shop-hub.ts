@@ -91,6 +91,7 @@ type Candidate = {
   machineId: string;
   /** The relay channel an IO is reached through; a bot is reached on its own socket. */
   channel: string;
+  session?: string;
   since: number;
   /** A bot's name for the board. */
   label?: string;
@@ -107,6 +108,7 @@ type Link = {
 type Watcher = {
   machineId: string;
   channel: string;
+  session?: string;
   label?: string;
   term: number;
   leaseUntil: number;
@@ -537,7 +539,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       .map((watcher) => {
         const links = Object.values(watcher.links);
         const state = watcher.held !== undefined
-          ? "starting"
+          ? "confirming"
           : links.some((link) => link.connected && link.snapshot)
             ? "watching"
             : links.some((link) => link.connected)
@@ -773,9 +775,9 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** An IO announcing it can watch Home Assistant has connected. */
-  async relayOnline(shopId: string, machineId: string, channel: string): Promise<void> {
+  async relayOnline(shopId: string, machineId: string, channel: string, options: { session?: string; restart?: boolean } = {}): Promise<void> {
     await this.rememberShop(shopId);
-    await this.addCandidate({ machineId, channel, since: Date.now() });
+    await this.addCandidate({ machineId, channel, session: options.session, since: Date.now() }, options.restart);
   }
 
   /** A bot that can watch Home Assistant has said hello. */
@@ -785,12 +787,12 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** A client that can watch has connected: it is a candidate, and may take a slot at once. */
-  private async addCandidate(candidate: Candidate): Promise<void> {
+  private async addCandidate(candidate: Candidate, restart = false): Promise<void> {
     const candidates = await this.load<Candidates>("candidates", {});
     const key = candidate.machineId;
     const known = candidates[key];
     // Standby heartbeats must not reset their priority or failure cooldown.
-    if (known?.channel !== candidate.channel || known?.label !== candidate.label) {
+    if (known?.channel !== candidate.channel || known?.label !== candidate.label || known?.session !== candidate.session) {
       candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
       await this.ctx.storage.put("candidates", candidates);
     }
@@ -800,7 +802,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     // fresh subscription for no reason.
     const watchers = await this.load<Watchers>("watchers", {});
     const watcher = watchers[key];
-    if (watcher && known && watcher.channel === candidate.channel) return;
+    if (watcher && known && watcher.channel === candidate.channel && known.session === candidate.session && !restart) return;
     if (watcher) {
       delete watchers[key];
       await this.ctx.storage.put("watchers", watchers);
@@ -809,9 +811,11 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** That IO is gone. Its watch, if it had one, moves to another. */
-  async relayOffline(shopId: string, machineId: string): Promise<void> {
+  async relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void> {
     await this.rememberShop(shopId);
     const candidates = await this.load<Candidates>("candidates", {});
+    // A late close or expiry from the previous socket must not remove its replacement.
+    if (options && candidates[machineId]?.session !== options.session) return;
     delete candidates[machineId];
     await this.ctx.storage.put("candidates", candidates);
     await this.drop(machineId);
@@ -1005,7 +1009,7 @@ export class ShopHub extends BaseDurableObject<Env> {
    * Hand a watcher what to watch, or with null take it away. An IO is reached through its relay, a bot
    * on its own socket. False when it could not be told.
    */
-  private async tell(watcher: Pick<Watcher, "machineId" | "channel">, watch: HaWatch | null): Promise<boolean> {
+  private async tell(watcher: Pick<Watcher, "machineId" | "channel" | "session">, watch: HaWatch | null): Promise<boolean> {
     if (isBot(watcher.machineId)) {
       const socket = this.botSocket(watcher.machineId);
       if (!socket) return false;
@@ -1019,7 +1023,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const relay = machineRelayNamespace(this.env);
     if (!relay) return false;
     try {
-      return (await relay.getByName(watcher.channel).watchHa(watch)).ok;
+      return (await relay.getByName(watcher.channel).watchHa(watch, watcher.session)).ok;
     } catch {
       return false;
     }
@@ -1332,6 +1336,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         const watcher: Watcher = {
           machineId: candidate.machineId,
           channel: candidate.channel,
+          session: candidate.session,
           ...(candidate.label ? { label: candidate.label } : {}),
           term: 0,
           leaseUntil: 0,

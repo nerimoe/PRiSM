@@ -6,14 +6,16 @@ import type { BoardWatcher, BoardWatchers, WatcherPhase } from "./board-state";
 
 const phaseText: Record<WatcherPhase, string> = {
   watching: "监听中",
-  subscribing: "正在订阅…",
-  starting: "正在启动…",
+  subscribing: "等待 HA 全量状态…",
+  starting: "等待 HA 首次报告…",
+  confirming: "关机后等待心跳确认（不占名额）",
   unreachable: "连不上 Home Assistant",
 };
 const phaseColor: Record<WatcherPhase, string> = {
   watching: "text-mint",
   subscribing: "text-ink/35",
   starting: "text-ink/35",
+  confirming: "text-ink/35",
   unreachable: "text-coral",
 };
 
@@ -59,7 +61,7 @@ export function HaWatchersPanel({
         <h3 className="text-sm font-semibold">
           {t("HA 监听器")}
           <span className="ml-2 font-normal text-ink/55">
-            {t("{count} / {limit} 个监听器", { count: watchers.watchers.length, limit: watchers.limit })}
+            {t("{count} / {limit} 个监听器", { count: watchers.watchers.filter((watcher) => watcher.state !== "confirming").length, limit: watchers.limit })}
           </span>
         </h3>
         {canEdit ? (

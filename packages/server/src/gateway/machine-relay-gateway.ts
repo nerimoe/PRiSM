@@ -87,7 +87,7 @@ export type MachineRelayNamespace = {
     }): Promise<{ ok: boolean; error?: string; login?: CardLoginResult }>;
     sendKeyPress(input: { key: number; messageId: string; expiresAt: number; count?: number }):
       Promise<{ ok: boolean; error?: string }>;
-    watchHa(watch: HaWatch | null): Promise<{ ok: boolean }>;
+    watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }>;
     startCardCapture(input: {
       id: string; shopId: string; userId: string; playerId: string; expiresAt: number;
     }): Promise<{ ok: boolean; error?: string }>;

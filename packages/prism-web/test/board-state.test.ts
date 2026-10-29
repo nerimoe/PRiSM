@@ -106,6 +106,12 @@ describe("device board frames", () => {
 });
 
 describe("the hub's word on who is watching", () => {
+  test("keeps a power-off confirmation distinct from an assignment's first report", () => {
+    expect(parseBoardFrame(JSON.stringify({
+      type: "watchers", limit: 2, max: 4, standby: 0,
+      watchers: [{ id: "m1", kind: "device", deviceId: "m1", state: "confirming" }],
+    }))).toMatchObject({ watchers: [{ state: "confirming" }] });
+  });
   test("reads each watcher by kind and how far it has got", () => {
     const frame = parseBoardFrame(JSON.stringify({
       type: "watchers",

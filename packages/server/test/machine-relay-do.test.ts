@@ -23,6 +23,7 @@ afterEach(() => {
 
 /** Minimal hibernation-socket double that records what the DO sends. */
 class FakeSocket {
+  readyState = 1;
   readonly sent: string[] = [];
   readonly attachment = { ref: null as unknown };
   closed: { code?: number; reason?: string } | null = null;
@@ -31,6 +32,7 @@ class FakeSocket {
     this.sent.push(payload);
   }
   close(code?: number, reason?: string) {
+    this.readyState = 3;
     this.closed = { code, reason };
   }
   serializeAttachment(value: unknown) {
@@ -47,11 +49,15 @@ function fixture() {
   for (const statement of deviceEventSchema) sqlite.run(statement);
   const state = new Map<string, unknown>();
   const sockets: FakeSocket[] = [];
+  let alarm: number | null = null;
   const ctx = {
     storage: {
       async get<T>(key: string) { return state.get(key) as T | undefined; },
       async put(key: string, value: unknown) { state.set(key, value); },
       async delete(key: string) { return state.delete(key); },
+      async getAlarm() { return alarm; },
+      async setAlarm(at: number) { alarm = at; },
+      async deleteAlarm() { alarm = null; },
     },
     acceptWebSocket(ws: FakeSocket) { sockets.push(ws); },
     getWebSockets() { return sockets; },
@@ -68,7 +74,7 @@ function fixture() {
       `SELECT json_extract(payload_json,'$.to') AS "to" FROM device_events
        WHERE kind='change' AND name='link' ORDER BY occurred_at, rowid`,
     ).all().map((row) => row.to);
-  return { relay, ctx, sockets, sqlite, state, events, link, env };
+  return { relay, ctx, sockets, sqlite, state, events, link, env, alarm: () => alarm, clearAlarm: () => { alarm = null; } };
 }
 
 /** Attach an agent socket the way an authenticated upgrade would. */
@@ -411,9 +417,10 @@ describe("MachineRelay Home Assistant watch", () => {
     const { relay, sockets, calls } = withHub();
     await relay.fetch(upgradeWithChannel());
     await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
-    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan"]]);
+    const session = (sockets[0]!.deserializeAttachment() as { session: string }).session;
+    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan", { session }]]);
     await relay.webSocketClose(sockets[0] as any, 1000, "");
-    expect(calls.at(-1)).toEqual(["offline", "shop-1", "machine-1"]);
+    expect(calls.at(-1)).toEqual(["offline", "shop-1", "machine-1", { session }]);
   });
 
   it("does not offer an IO that did not announce the feature", async () => {
@@ -434,7 +441,67 @@ describe("MachineRelay Home Assistant watch", () => {
     await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
     calls.length = 0;
     await relay.webSocketMessage(ws as any, beat);
-    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan"]]);
+    const session = (ws.deserializeAttachment() as { session: string }).session;
+    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan", { session, restart: true }]]);
+  });
+
+  it("uses the same heartbeat expiry to mark the IO offline and withdraw its HA assignment without a page refresh", async () => {
+    const { relay, sockets, calls, alarm, clearAlarm, state } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    const ws = sockets[0]!;
+    await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } }));
+    expect(alarm()).toBeGreaterThan(Date.now());
+    calls.length = 0;
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 150_001 });
+    clearAlarm();
+    await relay.alarm();
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: state.get("ha-session") }]]);
+    expect(state.get("online")).toBe(false);
+    expect((await relay.getCapabilities()).online).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(alarm()).toBeNull();
+    expect((await relay.watchHa({ term: 9, connections: [] })).ok).toBe(false);
+  });
+
+  it("cleans up a persisted HA assignment when a deployment lost every socket", async () => {
+    const { relay, state, calls } = withHub();
+    state.set("channel", { shopId: "shop-1", machineId: "machine-1", channel: "m_chan" });
+    state.set("online", true);
+    expect((await relay.getCapabilities()).online).toBe(false);
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: undefined }]]);
+  });
+
+  it("withdraws the HA assignment immediately when the IO socket errors", async () => {
+    const { relay, sockets, calls, state } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } }));
+    calls.length = 0;
+    await relay.webSocketError(sockets[0] as any);
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: state.get("ha-session") }]]);
+    expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("delivers a reconnect's watch to its new socket and ignores the previous socket's late heartbeat", async () => {
+    const { relay, sockets, calls } = withHub();
+    const hello = JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } });
+    await relay.fetch(upgradeWithChannel());
+    const old = sockets[0]!;
+    await relay.webSocketMessage(old as any, hello);
+    await relay.fetch(upgradeWithChannel());
+    const current = sockets[1]!;
+    await relay.webSocketMessage(current as any, hello);
+    const session = (current.deserializeAttachment() as { session: string }).session;
+    const watch = { term: 9, connections: [] };
+    const oldCount = old.sent.length;
+    expect((await relay.watchHa(watch, session)).ok).toBe(true);
+    expect(JSON.parse(current.sent.at(-1)!)).toEqual({ action: "HA_WATCH", body: watch });
+    expect(old.sent).toHaveLength(oldCount);
+    calls.length = 0;
+    await relay.webSocketMessage(old as any, JSON.stringify({ method: "io.heartbeat", params: { ha: [] } }));
+    expect(calls).toEqual([]);
+    await relay.webSocketClose(old as any, 1000, "");
+    expect(calls).toEqual([]);
+    expect((await relay.getCapabilities()).online).toBe(true);
   });
 
   it("passes the watch down and the reports up", async () => {

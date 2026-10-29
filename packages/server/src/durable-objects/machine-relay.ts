@@ -24,6 +24,8 @@ import {
 const STATE_KEY = "state-message";
 const CHANNEL_KEY = "channel";
 const CAPTURE_KEY = "card-capture";
+const ONLINE_KEY = "online";
+const HA_SESSION_KEY = "ha-session";
 /**
  * How long a silent machine is still believed alive.
  *
@@ -51,7 +53,7 @@ type Channel = { shopId: string; machineId: string; channel?: string };
  * object, because a hibernated object wakes with its fields reset while its
  * sockets and their attachments survive.
  */
-type Attachment = ClientCapabilities & { e2ee?: boolean; ha?: boolean; /** Last time this socket said anything, ms. */ seenAt?: number };
+type Attachment = ClientCapabilities & { e2ee?: boolean; ha?: boolean; session?: string; /** Last time this socket said anything, ms. */ seenAt?: number };
 
 /**
  * What the IO assigned to watch the shop's Home Assistants should subscribe to.
@@ -172,8 +174,12 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const [client, server] = Object.values(pair);
 
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment(capabilities satisfies Attachment);
-    if (capabilities.role === "agent") await this.setLink(true);
+    server.serializeAttachment({ ...capabilities, session: crypto.randomUUID(), seenAt: Date.now() } satisfies Attachment);
+    if (capabilities.role === "agent") {
+      await this.ctx.storage.put(ONLINE_KEY, true);
+      await this.setLink(true);
+      await this.syncPresence();
+    }
 
     // A reconnecting device cleared its card locally, so it must learn the card
     // it was still holding. Only while it would still hold it: a card replayed
@@ -219,7 +225,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const { cardProtocol, clientVersion } = this.socketCapabilities(ws);
       return { cardProtocol, clientVersion };
     });
-    const live = this.agents().filter((ws) => this.beatIsRecent(ws));
+    const live = await this.syncPresence();
     return {
       online: live.length > 0,
       e2ee: live.some((ws) => this.socketE2ee(ws)),
@@ -232,15 +238,60 @@ export class MachineRelay extends BaseDurableObject<Env> {
     // A socket that connected after the last beat is given the benefit of the
     // doubt: it has only just arrived and has not had its turn yet.
     const seen = (ws.deserializeAttachment() as Attachment | null)?.seenAt;
-    if (typeof seen !== "number") return true;
-    return Date.now() - seen <= BEAT_TIMEOUT_MS;
+    if (typeof seen !== "number") {
+      ws.serializeAttachment({ ...(ws.deserializeAttachment() as Attachment), seenAt: Date.now() } satisfies Attachment);
+      return true;
+    }
+    return Date.now() - seen < BEAT_TIMEOUT_MS;
+  }
+
+  private liveAgents(): WebSocket[] {
+    return this.agents().filter((ws) => ws.readyState === 1 && this.beatIsRecent(ws));
+  }
+
+  /** The board and HA assignments both use this IO presence decision. */
+  private async offline(): Promise<void> {
+    if ((await this.ctx.storage.get<boolean>(ONLINE_KEY)) === false) return;
+    const session = await this.ctx.storage.get<string>(HA_SESSION_KEY);
+    await this.setLink(false);
+    if (this.liveAgents().length) {
+      await this.setLink(true);
+      return;
+    }
+    const channel = await this.channel();
+    if (channel) await shopHub(this.env, channel.shopId)?.relayOffline(channel.shopId, channel.machineId, { session });
+    if (!this.liveAgents().length) await this.ctx.storage.put(ONLINE_KEY, false);
+    else await this.setLink(true);
+  }
+
+  private async syncPresence(): Promise<WebSocket[]> {
+    const live = this.liveAgents();
+    const times = live.map((ws) => (ws.deserializeAttachment() as Attachment).seenAt! + BEAT_TIMEOUT_MS);
+    if (!times.length) {
+      await this.offline();
+      return live;
+    }
+    const due = Math.min(...times);
+    const current = await this.ctx.storage.getAlarm?.();
+    if (current == null || current > due) await this.ctx.storage.setAlarm(due);
+    return live;
+  }
+
+  async alarm(): Promise<void> {
+    await this.syncPresence();
   }
 
   /** Record that this socket is alive; every message counts, not just the beat. */
   private async markSeen(ws: WebSocket): Promise<void> {
     const attachment = (ws.deserializeAttachment() ?? {}) as Attachment;
-    if (typeof attachment.seenAt === "number" && Date.now() - attachment.seenAt < BEAT_TIMEOUT_MS / 2) return;
     ws.serializeAttachment({ ...attachment, seenAt: Date.now() } satisfies Attachment);
+    if (this.socketCapabilities(ws).role === "agent") {
+      if ((await this.ctx.storage.get<boolean>(ONLINE_KEY)) !== true) {
+        await this.ctx.storage.put(ONLINE_KEY, true);
+        await this.setLink(true);
+      }
+      await this.syncPresence();
+    }
   }
 
   /**
@@ -376,15 +427,22 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const hello = parseClientHello(parsed);
     if (hello) {
       const ha = hello.features.includes("ha.watch");
-      ws.serializeAttachment({ ...this.socketCapabilities(ws), e2ee: hello.e2ee, ha, seenAt: Date.now() } satisfies Attachment);
+      const previous = ws.deserializeAttachment() as Attachment;
+      const session = previous.session ?? crypto.randomUUID();
+      ws.serializeAttachment({ ...previous, e2ee: hello.e2ee, ha, session, seenAt: Date.now() } satisfies Attachment);
       const channel = await this.channel();
       if (ha && channel?.channel) {
+        await this.ctx.storage.put(HA_SESSION_KEY, session);
         await shopHub(this.env, channel.shopId)
-          ?.relayOnline(channel.shopId, channel.machineId, channel.channel)
+          ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session })
           .catch((error) => console.error("Shop hub relayOnline failed", error));
       }
       return;
     }
+
+    const attachment = ws.deserializeAttachment() as Attachment | null;
+    const session = await this.ctx.storage.get<string>(HA_SESSION_KEY);
+    if (session && attachment?.ha && attachment.session !== session) return;
 
     // The beat says the IO is alive and, when it holds an assignment, what it
     // knows about each Home Assistant. That health is handed on under the same
@@ -392,18 +450,14 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const heartbeat = parseHeartbeat(parsed);
     if (heartbeat) {
       const channel = await this.channel();
-      if (channel?.channel && !heartbeat.ha.length && (ws.deserializeAttachment() as Attachment | null)?.ha) {
-        // A standby sharing a switched-off supply must prove it survived before
-        // the hub may choose it again. Assigned IOs retain their current term.
+      if (channel?.channel && attachment?.ha) {
+        // Reoffer after an outage; an empty HA list also says the IO lost its assignment.
         await shopHub(this.env, channel.shopId)
-          ?.relayOnline(channel.shopId, channel.machineId, channel.channel)
+          ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session: attachment.session, restart: !heartbeat.ha.length })
           .catch((error) => console.error("Shop hub relayOnline failed", error));
       }
       if (channel?.channel && heartbeat.ha.length) {
-        // A beat says the client is alive; it does not say the client is new. The
-        // candidate was registered when the socket said hello, and calling that
-        // again here would drop the assignment it already holds and rebuild it
-        // under a new term — a fresh subscription every beat.
+        // The same session keeps its assignment; only a reconnect or lost task gets a new term.
         for (const health of heartbeat.ha) {
           await shopHub(this.env, channel.shopId)
             ?.haReport(channel.shopId, channel.machineId, { method: "ha.status", params: health })
@@ -547,29 +601,32 @@ export class MachineRelay extends BaseDurableObject<Env> {
       // Already closed.
     }
     if (this.socketCapabilities(ws).role !== "agent") return;
-    if (!this.agents().some((other) => other !== ws)) await this.setLink(false);
+    const otherLive = this.liveAgents().some((other) => other !== ws);
+    if (!otherLive) await this.offline();
     const watching = (ws.deserializeAttachment() as Attachment | null)?.ha;
-    if (watching && !this.watchers().some((other) => other !== ws)) {
+    const session = (ws.deserializeAttachment() as Attachment | null)?.session;
+    if (otherLive && watching && (!this.watchers().some((other) => other !== ws) || session === await this.ctx.storage.get<string>(HA_SESSION_KEY))) {
       const channel = await this.channel();
       if (channel) {
         await shopHub(this.env, channel.shopId)
-          ?.relayOffline(channel.shopId, channel.machineId)
+          ?.relayOffline(channel.shopId, channel.machineId, { session })
           .catch((error) => console.error("Shop hub relayOffline failed", error));
       }
     }
+    await this.syncPresence();
   }
 
   /** Connected IOs that said they can watch Home Assistant. */
   private watchers(): WebSocket[] {
-    return this.agents().filter((ws) => (ws.deserializeAttachment() as Attachment | null)?.ha === true);
+    return this.liveAgents().filter((ws) => (ws.deserializeAttachment() as Attachment | null)?.ha === true);
   }
 
   /**
    * Hand this machine's IO the Home Assistant watch for the shop, or take it
    * away with `null`. Not stored: the shop hub sends it again on reconnect.
    */
-  async watchHa(watch: HaWatch | null): Promise<{ ok: boolean }> {
-    const [socket] = this.watchers();
+  async watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }> {
+    const socket = this.watchers().find((ws) => !session || (ws.deserializeAttachment() as Attachment | null)?.session === session);
     if (!socket) return { ok: false };
     try {
       socket.send(JSON.stringify(watch ? { action: "HA_WATCH", body: watch } : { action: "HA_UNWATCH", body: {} }));
@@ -579,7 +636,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     }
   }
 
-  async webSocketError(): Promise<void> {
-    // The runtime drops the socket; there is nothing to release.
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.webSocketClose(ws, 1011, "WebSocket error");
   }
 }

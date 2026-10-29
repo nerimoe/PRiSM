@@ -131,6 +131,7 @@ describe("a cabinet's card reports", () => {
   });
 
   class FakeSocket {
+    readyState = 1;
     readonly sent: string[] = [];
     private attachment: unknown = null;
     send(payload: string) { this.sent.push(payload); }
@@ -148,6 +149,8 @@ describe("a cabinet's card reports", () => {
         async get<T>(key: string) { return state.get(key) as T | undefined; },
         async put(key: string, value: unknown) { state.set(key, value); },
         async delete(key: string) { return state.delete(key); },
+        async setAlarm() {},
+        async deleteAlarm() {},
       },
       acceptWebSocket(ws: FakeSocket) { sockets.push(ws); },
       getWebSockets() { return sockets; },
