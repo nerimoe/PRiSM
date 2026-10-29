@@ -70,7 +70,7 @@ async function fixture(settings: unknown, options: { watched?: boolean } = {}) {
     ).all();
   const idle = () =>
     (sqlite.query("SELECT value_json FROM device_state WHERE key='idle'").get() as { value_json: string } | null)?.value_json ?? null;
-  return { sqlite, run, offs, idle, state, alarm: () => alarm };
+  return { hub, sqlite, run, offs, idle, state, alarm: () => alarm };
 }
 
 const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request) => {
@@ -82,7 +82,8 @@ const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url:
 
 describe("idle check in the shop hub", () => {
   it("switches an empty shop's machines off as the system once its time is up", async () => {
-    const { run, offs, sqlite } = await fixture({ shopEmpty: { enabled: true, minutes: 15 } });
+    const { hub, run, offs, sqlite } = await fixture({ shopEmpty: { enabled: true, minutes: 15 } });
+    const announced = spyOn(hub, "shopEvent");
     sqlite.run(
       "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z',?,'closed')",
       [new Date(Date.now() - 20 * MIN).toISOString()],
@@ -95,7 +96,8 @@ describe("idle check in the shop hub", () => {
       // The same empty period does not switch it off twice.
       await run();
       expect(offs()).toHaveLength(1);
-    } finally { spy.mockRestore(); sqlite.close(); }
+      expect(announced).not.toHaveBeenCalled();
+    } finally { announced.mockRestore(); spy.mockRestore(); sqlite.close(); }
   });
 
 

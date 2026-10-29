@@ -185,14 +185,12 @@ function doorRunner(runtime: DeviceRuntime): ActionRunner {
 
 /** What a successful platform action tells the shop's bots, if anything. */
 async function announceAction(runtime: DeviceRuntime, input: PerformInput, playerId: string | null, started: boolean) {
+  // Power is announced only when the HA watcher confirms the actual change.
+  if (input.action === "power.on" || input.action === "power.off") return;
   const viaBot = typeof input.payload?.viaBot === "string" ? input.payload.viaBot : null;
   const place = { resourceId: input.device.id, resourceName: input.device.name, ...(viaBot ? { botId: viaBot } : {}) };
   const player = () => eventPlayer(runtime.db, runtime.shopId, playerId);
-  if (input.action === "power.on" || input.action === "power.off") {
-    await announceShopEvent(runtime.env, runtime.shopId, {
-      kind: "power", ...place, state: input.action === "power.on" ? "on" : "off", by: input.actor.type, player: await player(),
-    });
-  } else if (input.action === "aime.scan") {
+  if (input.action === "aime.scan") {
     await announceShopEvent(runtime.env, runtime.shopId, { kind: "card", ...place, player: await player(), started });
   } else if (input.action === "coin") {
     await announceShopEvent(runtime.env, runtime.shopId, { kind: "coin", ...place, player: await player(), started });
@@ -246,7 +244,6 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
             console.error("Occupancy update failed", { shopId: runtime.shopId, deviceId: input.device.id, error });
             return { started: null };
           });
-        // The hub's own idle power-off (notifyHub false) is announced by the hub.
         if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
       }
       // The command was accepted, which is all this can know: Home Assistant

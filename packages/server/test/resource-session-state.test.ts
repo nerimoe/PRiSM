@@ -413,7 +413,7 @@ describe("board live channel", () => {
 });
 
 describe("telling bots what happened", () => {
-  it("announces a power action with who did it and the bot that asked, but leaves the hub's own idle power-off to the hub", async () => {
+  it("does not announce accepted power commands before HA confirms a transition, including Bot and idle commands", async () => {
     const { db, env, hub, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
@@ -421,13 +421,10 @@ describe("telling bots what happened", () => {
       const device = (await loadResource(db, "shop-id", "cab"))!;
       const bus = createRuntimeBus({ db, env, shopId: "shop-id" });
       await bus.perform({ device, action: "power.on", actor: { type: "player", playerId: "p1" }, payload: { viaBot: "bot-1" } });
-      expect(hub.events).toEqual([expect.objectContaining({
-        kind: "power", state: "on", by: "player", resourceId: "cab", resourceName: "Cabinet", botId: "bot-1",
-        player: { playerId: "p1", displayName: "Alice", identities: [] },
-      })]);
+      await bus.perform({ device, action: "power.off", actor: { type: "staff", staffId: "boss" } });
       await createRuntimeBus({ db, env, shopId: "shop-id", notifyHub: false })
         .perform({ device, action: "power.off", actor: { type: "system" } });
-      expect(hub.events).toHaveLength(1);
+      expect(hub.events).toEqual([]);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });

@@ -3,8 +3,8 @@
  *
  * Four things are told, each once:
  *
- * - `power`: a device was switched on or off through the platform: by a
- *   player, staff, or the idle rule (`by: "system"`).
+ * - `power`: HA confirmed an on/off transition, whether through the platform,
+ *   a physical switch, or an automation (`by: "ha"`).
  * - `card`: a card reached a cabinet. `started` says it also put its owner on
  *   the cabinet (上机), so one swipe is one announcement, never a swipe and a
  *   start apart.
@@ -13,8 +13,8 @@
  *
  * A card the platform sent is told when the platform sends it; the cabinet's
  * report of the same card afterwards is not told again. Which of these a bot
- * posts, and where, is its own setting; a bot also leaves out what it just did
- * itself, since it already answered the command.
+ * posts, and where, is its own setting; a bot leaves out its own card/coin
+ * commands, but power confirmation goes to every bot.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { Env } from "../bindings.js";
@@ -30,7 +30,7 @@ export type EventPlayer = {
 type Place = { resourceId: string; resourceName: string; botId?: string };
 
 export type ShopEvent =
-  | (Place & { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system"; player: EventPlayer | null })
+  | (Place & { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system" | "ha"; player: EventPlayer | null })
   | (Place & { kind: "card"; player: EventPlayer | null; started: boolean })
   | (Place & { kind: "coin"; player: EventPlayer | null; started: boolean })
   | (Place & { kind: "occupancy"; player: EventPlayer });

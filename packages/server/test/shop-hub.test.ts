@@ -122,6 +122,93 @@ const status = (term: number, connection: string, connected: boolean) => ({
   params: { term, connection, connected, error: connected ? null : "refused" },
 });
 
+describe("HA-confirmed power announcements", () => {
+  const connectBot = (sockets: any[], receive: (event: any) => void) => sockets.push({
+    tags: ["bot"],
+    deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: null }),
+    send(data: string) {
+      const frame = JSON.parse(data);
+      if (frame.event === "shop.event") receive(frame.data);
+    },
+  });
+
+  for (const shared of [false, true]) it(`announces confirmed on/off changes once to every Bot, with shared power=${shared}`, async () => {
+    const { hub, sockets, sqlite, connectionId, power } = await fixture();
+    const events: any[] = [];
+    const other: any[] = [];
+    connectBot(sockets, (event) => {
+      expect(power().filter((row) => JSON.parse(row.value_json) === event.state)).toHaveLength(shared ? 2 : 1);
+      events.push(event);
+    });
+    connectBot(sockets, (event) => other.push(event));
+    try {
+      if (shared) sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='m2' AND capability='power'",
+        [JSON.stringify({ connectionId, entityId: "switch.a" })]);
+      await hub.relayOnline(SHOP, "a", "chan-a");
+      await hub.relayOnline(SHOP, "b", "chan-b");
+      const initial: Entry = ["switch.a", "off", NOON];
+      await hub.haReport(SHOP, "a", states(1, connectionId, [initial]));
+      await hub.haReport(SHOP, "b", states(2, connectionId, [initial]));
+      expect(events).toEqual([]);
+      const on: Entry = ["switch.a", "on", "2026-10-21T09:01:00.000Z"];
+      await Promise.all([
+        hub.haReport(SHOP, "a", states(1, connectionId, [on], false)),
+        hub.haReport(SHOP, "b", states(2, connectionId, [on], false)),
+      ]);
+      // A delayed event and an attribute-only change do not announce again.
+      await hub.haReport(SHOP, "b", states(2, connectionId, [initial], false));
+      await hub.haReport(SHOP, "a", states(1, connectionId,
+        [[on[0], on[1], on[2], "2026-10-21T09:02:00.000Z", { friendly_name: "Power" }]], false));
+      await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
+      expect(events).toEqual(["on", "off"].map((state, index) => ({
+        kind: "power", resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", state, by: "ha", player: null,
+        at: `2026-10-21T09:0${index ? 3 : 1}:00.000Z`,
+      })));
+      expect(other).toEqual(events);
+    } finally { sqlite.close(); }
+  });
+
+  it("does not announce snapshots, unready or stale watchers, unknown states or changes during a disconnect", async () => {
+    const { hub, sockets, sqlite, connectionId } = await fixture();
+    const events: any[] = [];
+    connectBot(sockets, (event) => events.push(event));
+    try {
+      await hub.relayOnline(SHOP, "a", "chan-a");
+      const report = (state: string, minute: number, full = false, term = 1, watcher = "a") => hub.haReport(SHOP, watcher,
+        states(term, connectionId, [["switch.a", state, `2026-10-21T09:0${minute}:00.000Z`]], full));
+      await report("off", 0);
+      await report("on", 1);
+      await report("off", 2, true);
+      await report("on", 3, false, 0);
+      await report("on", 3, false, 1, "unassigned");
+      await hub.haReport(SHOP, "a", status(1, connectionId, false));
+      await hub.haReport(SHOP, "a", status(1, connectionId, true));
+      await report("on", 3, true);
+      await report("unavailable", 4);
+      await report("off", 5);
+      await report("unknown", 6);
+      await report("on", 7);
+      expect(events).toEqual([]);
+      await report("off", 8);
+      expect(events).toEqual([expect.objectContaining({ kind: "power", state: "off", by: "ha" })]);
+    } finally { sqlite.close(); }
+  });
+
+  it("does not announce a power change that failed to persist", async () => {
+    const { hub, sockets, sqlite, connectionId } = await fixture();
+    const events: any[] = [];
+    connectBot(sockets, (event) => events.push(event));
+    const quiet = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await hub.relayOnline(SHOP, "a", "chan-a");
+      await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", NOON]]));
+      sqlite.run("ALTER TABLE device_state RENAME TO device_state_away");
+      await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", "2026-10-21T09:01:00.000Z"]], false));
+      expect(events).toEqual([]);
+    } finally { quiet.mockRestore(); sqlite.close(); }
+  });
+});
+
 describe("ShopHub watchers", () => {
   it("reissues a persisted assignment immediately to a reconnect, but preserves the term on ordinary heartbeats", async () => {
     const { hub, assigned, state, connectionId } = await fixture();

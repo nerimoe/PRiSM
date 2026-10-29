@@ -7,6 +7,7 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
+import type { ShopEvent } from "../resources/shop-events.js";
 import {
   climateState,
   deviceView,
@@ -1086,7 +1087,8 @@ export class ShopHub extends BaseDurableObject<Env> {
 
     if (report.method === "ha.states") {
       // The facts are stored before the connection can be announced as watched.
-      const applied = await this.apply(connection, report.params.states);
+      const link = current.links[connection];
+      const applied = await this.apply(connection, report.params.states, !report.params.full && !!link?.connected && link.snapshot);
       if (applied === "failed") {
         await this.resync(machineId, term, connection);
         return;
@@ -1207,15 +1209,6 @@ export class ShopHub extends BaseDurableObject<Env> {
       // other power-off: same reason, same effect on its watch and its standing.
       for (const id of result.poweredOff) await this.poweredOff(shopId, id);
       if (result.notices.length) await this.notify(result.notices);
-      // The idle rule's own power-offs: the device bus left them to the hub to tell.
-      for (const id of result.poweredOff) {
-        const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
-          .bind(shopId, id).first<{ name: string }>();
-        await this.shopEvent({
-          kind: "power", resourceId: id, resourceName: resource?.name ?? id, state: "off", by: "system", player: null,
-          at: new Date().toISOString(),
-        });
-      }
     } catch (error) {
       console.error("Idle check failed", error);
     }
@@ -1487,7 +1480,7 @@ export class ShopHub extends BaseDurableObject<Env> {
    * second watcher saw the same event, or saw it later), changes nothing. False
    * when the facts could not be stored.
    */
-  private async apply(connectionId: string, reported: HaEntityState[]): Promise<"stored" | "failed" | "power-off"> {
+  private async apply(connectionId: string, reported: HaEntityState[], announcePower: boolean): Promise<"stored" | "failed" | "power-off"> {
     const shopId = await this.shopId();
     if (!shopId) return "stored";
     const states = await this.load<Record<string, WatchedState>>("states", {});
@@ -1495,6 +1488,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const applied: Record<string, WatchedState> = {};
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
+    const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
     let powerMoved = false;
     /** Machines this report says lost power: their watch is released, as on any power-off. */
     const lostPower: string[] = [];
@@ -1506,6 +1500,11 @@ export class ShopHub extends BaseDurableObject<Env> {
       const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
       applied[key] = next;
       const at = item.last_changed ? new Date(item.last_changed) : undefined;
+      if (announcePower && (previous?.state === "on" || previous?.state === "off")
+        && (next.state === "on" || next.state === "off") && previous.state !== next.state) {
+        const deviceIds = (targets[key] ?? []).filter((target) => target.capability === "power").map((target) => target.deviceId);
+        if (deviceIds.length) powerChanges.push({ deviceIds, state: next.state, at: (at ?? new Date()).toISOString() });
+      }
       for (const target of targets[key] ?? []) {
         const device = { id: target.deviceId };
         if (target.capability === "power") {
@@ -1540,6 +1539,21 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
+    for (const change of powerChanges) {
+      try {
+        const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+          .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
+        const names = new Map(rows.results.map((row) => [row.id, row.name]));
+        const event: ShopEvent = {
+          kind: "power", resourceId: change.deviceIds[0]!,
+          resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
+          state: change.state, by: "ha", player: null,
+        };
+        await this.shopEvent({ ...event, at: change.at });
+      } catch (error) {
+        console.error("HA power announcement failed", { shopId, error });
+      }
+    }
     // Pages and boards are told of a device's change only while the device is live, that is while
     // every Home Assistant connection it uses is announced. Until then a report is not yet the
     // device's state (a first snapshot, a held watcher); the announcement brings it once it is.
