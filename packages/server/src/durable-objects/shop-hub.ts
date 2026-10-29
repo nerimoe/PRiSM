@@ -39,8 +39,14 @@ try {
   } as any;
 }
 
-/** A watcher that has not reported for this long is presumed gone. */
-export const LEASE_MS = 90_000;
+/**
+ * A watcher that has not reported for this long is presumed gone.
+ *
+ * Two beats (60 s each, the same cadence for bots and machines) plus a little
+ * slack, so one late or lost beat does not cost a watcher its watch. Equal to
+ * `BEAT_TIMEOUT_MS`, which asks the same question of a machine's liveness.
+ */
+export const LEASE_MS = 150_000;
 /** A watcher that failed is not chosen again for this long, while others exist. */
 const BENCH_MS = 5 * 60_000;
 /** Bursts of activity are folded into one idle check this long after the first. */
@@ -73,8 +79,6 @@ type Candidate = {
   label?: string;
   /** Ranked after the others for this long after it failed to take the watch. */
   benchedUntil?: number;
-  /** Not chosen at all: the platform switched it off. Its next hello clears this. */
-  downUntil?: number;
 };
 /** What one watcher said about one Home Assistant connection. */
 type Link = {
@@ -90,9 +94,57 @@ type Watcher = {
   term: number;
   leaseUntil: number;
   links: Record<string, Link>;
+  /**
+   * The machine went dark and this IO has not yet shown it is still there.
+   *
+   * Its assignment is untouched — no `HA_UNWATCH`, no closed socket, no new
+   * term — but until a report arrives that could only have come after the
+   * power-off, what it says is not treated as evidence of the present.
+   *
+   * The value is the number of the report that placed the hold. Anything at or
+   * before that number — including the rest of the very report that revealed the
+   * power-off — cannot lift it; only a later report can.
+   */
+  held?: number;
 };
 type Watchers = Record<string, Watcher>;
 type Candidates = Record<string, Candidate>;
+
+/**
+ * One power-off this machine went through, and what its IO did afterwards.
+ *
+ * A power-off says the machine has no power; it does not say the IO does. So
+ * the platform keeps the assignment and watches what the IO actually does,
+ * rather than guessing from the fact that power was cut.
+ */
+type Observation = {
+  machineId: string;
+  /** The term the IO held when the power went off; a different term means a new assignment. */
+  term: number;
+  startedAt: number;
+  /** Home Assistant itself said the machine is off, not only that the command was accepted. */
+  confirmed: boolean;
+  /** Settled once: success, failure, or inconclusive. Absent while still running. */
+  result?: "success" | "failure" | "inconclusive";
+};
+type Observations = Record<string, Observation>;
+
+/**
+ * What this IO has shown about surviving its machine's power-off.
+ *
+ * Not inferred from how the machine is wired — the platform cannot see that,
+ * and the same shop may contain both kinds. Learned from behaviour only.
+ */
+type Reliability = {
+  trusted: boolean;
+  consecutiveFailures: number;
+};
+type Reliabilities = Record<string, Reliability>;
+
+/** A power-off is watched for this long before its IO is called steady or not. */
+const OBSERVE_MS = 3 * 60_000;
+/** Two in a row, and the machine is treated as one whose power-off takes its IO with it. */
+const FAILURES_BEFORE_DISTRUST = 2;
 /**
  * The last state applied for one entity. The hub keeps it only to recognise a
  * repeat or an older report from the second watcher; readers use `device_state`.
@@ -261,10 +313,21 @@ export class ShopHub extends BaseDurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** Every device of the shop with its stored facts, as the board's `states` frame; null if it cannot be read. */
-  private async boardSnapshot(shopId: string): Promise<{ type: "states"; states: Record<string, unknown> } | null> {
+  /**
+   * Every device of the shop with its stored facts, as the board's `states`
+   * frame; null if it cannot be read.
+   *
+   * `liveConnections` travels with it because liveness belongs to a Home
+   * Assistant connection, not to a device: one connection going quiet takes
+   * every device bound to it out of live mode at once, and a board that wants to
+   * react to that should see one change rather than one per device.
+   */
+  private async boardSnapshot(
+    shopId: string,
+  ): Promise<{ type: "states"; states: Record<string, unknown>; liveConnections: string[] } | null> {
     try {
-      return { type: "states", states: (await readBoardStates(this.env.DB, shopId)).states };
+      const { states, liveConnections } = await readBoardStates(this.env.DB, shopId);
+      return { type: "states", states, liveConnections };
     } catch (error) {
       console.error("Shop hub board snapshot failed", error);
       return null;
@@ -320,7 +383,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           ? { id: watcher.machineId, kind: "bot", name: watcher.label ?? DEFAULT_BOT_NAME, state }
           : { id: watcher.machineId, kind: "device", deviceId: watcher.machineId, state };
       });
-    const standby = Object.values(candidates).filter((candidate) => !watchers[candidate.machineId] && (candidate.downUntil ?? 0) <= now).length;
+    const standby = Object.values(candidates).filter((candidate) => !watchers[candidate.machineId]).length;
     return { type: "watchers", limit: await this.limit(), max: MAX_WATCHERS, watchers: list, standby };
   }
 
@@ -335,6 +398,33 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** How many clients watch at once in this shop. */
+  /**
+   * How many watchers this shop may have right now.
+   *
+   * One more than the shop's number while an IO with no track record is going
+   * through a power-off: its machine is dark, its IO may or may not be, and the
+   * shop should not be left with a hole in the meantime. One extra at most,
+   * however many machines go off at once, and never past the platform's ceiling.
+   */
+  private async effectiveLimit(watchers: Watchers): Promise<number> {
+    const limit = await this.limit();
+    if (limit >= MAX_WATCHERS) return limit;
+    const observations = await this.load<Observations>("observations", {});
+    const reliabilities = await this.load<Reliabilities>("reliability", {});
+    const now = Date.now();
+    const covering = Object.values(observations).some((entry) => {
+      if (entry.result !== undefined) return false;
+      if (now - entry.startedAt >= OBSERVE_MS) return false;
+      if (watchers[entry.machineId]?.term !== entry.term) return false;
+      // An IO that has been through this before and kept reporting does not need
+      // covering: it is expected to outlive the power-off, and the shop's other
+      // watcher is already there. Covering every time would make the extra slot
+      // permanent for the shops that need it least.
+      return !reliabilities[entry.machineId]?.trusted;
+    });
+    return covering ? Math.min(limit + 1, MAX_WATCHERS) : limit;
+  }
+
   private async limit(): Promise<number> {
     const stored = await this.ctx.storage.get<number>("limit");
     return typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= MAX_WATCHERS ? stored : DEFAULT_WATCHERS;
@@ -558,11 +648,17 @@ export class ShopHub extends BaseDurableObject<Env> {
   private async addCandidate(candidate: Candidate): Promise<void> {
     const candidates = await this.load<Candidates>("candidates", {});
     const key = candidate.machineId;
-    candidates[key] = { ...candidate, since: candidates[key]?.since ?? candidate.since };
+    const known = candidates[key];
+    candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
     await this.ctx.storage.put("candidates", candidates);
-    // A reconnecting client lost its assignment with the old connection.
+    // A reconnecting client lost its assignment with the old connection, so its
+    // watch has to be handed out again. One that is already here on the same
+    // connection has not lost anything, and taking its watch away would cost a
+    // fresh subscription for no reason.
     const watchers = await this.load<Watchers>("watchers", {});
-    if (watchers[key]) {
+    const watcher = watchers[key];
+    if (watcher && known && watcher.channel === candidate.channel) return;
+    if (watcher) {
       delete watchers[key];
       await this.ctx.storage.put("watchers", watchers);
     }
@@ -579,18 +675,137 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * The platform switched this IO off. It will not report again, so there is no
-   * point waiting out its lease: its watch moves now, and it is not chosen again
-   * until it says hello.
+   * A machine lost power. Whether its IO lost power too is not knowable from
+   * here, so this starts an observation instead of taking the watch away.
+   *
+   * The assignment is kept. The IO that keeps reporting proves it is still there
+   * and keeps its term; one that goes quiet loses its lease by the ordinary
+   * route. Until then the platform does not pretend to know, and — because the
+   * customer is standing at a machine that just went dark — another candidate is
+   * brought in to cover while the question is open.
+   *
+   * The same power-off may arrive twice, once as the command the platform sent
+   * and once as Home Assistant's own report of the state change. They are one
+   * observation, so the difference never shows up as two.
    */
-  async markDown(shopId: string, machineId: string): Promise<void> {
+  async poweredOff(shopId: string, machineId: string, options: { confirmed?: boolean } = {}): Promise<void> {
     await this.rememberShop(shopId);
-    const candidates = await this.load<Candidates>("candidates", {});
-    if (candidates[machineId]) {
-      candidates[machineId] = { ...candidates[machineId]!, downUntil: Date.now() + BENCH_MS };
-      await this.ctx.storage.put("candidates", candidates);
+    const watchers = await this.load<Watchers>("watchers", {});
+    const watcher = watchers[machineId];
+    // Nothing to observe: this machine is not watching. Its power state still
+    // matters to whoever is, through the facts the next report carries.
+    if (!watcher) return;
+
+    const observations = await this.load<Observations>("observations", {});
+    const open = observations[machineId];
+    // The same power-off, arriving a second time: the platform's command and Home
+    // Assistant's report of it are one event, and counting them twice would make
+    // one power-off look like two failures.
+    //
+    // "The same" means the same assignment — a watcher that has been given a new
+    // term since is on a new run, and its machine going off again is a new
+    // power-off even if the last one never settled. Without that check a machine
+    // switched off twice in three minutes would have its second power-off
+    // ignored, and its watch would never be held back.
+    const sameRun = !!open && open.result === undefined && open.term === watcher.term;
+    if (sameRun) {
+      // The second arrival of the same power-off only adds what it knows.
+      if (options.confirmed && !open.confirmed) {
+        observations[machineId] = { ...open, confirmed: true };
+        await this.ctx.storage.put("observations", observations);
+        await this.fill();
+      }
+      return;
     }
-    await this.drop(machineId);
+    // A fresh power-off: replace whatever was settled last time.
+    observations[machineId] = {
+      machineId,
+      term: watcher.term,
+      startedAt: Date.now(),
+      confirmed: !!options.confirmed,
+    };
+    await this.ctx.storage.put("observations", observations);
+    // Its assignment stays exactly as it is; only its word stops being taken for
+    // the present until it reports again, which a dead IO cannot do.
+    watchers[machineId] = { ...watcher, held: Date.now() };
+    await this.ctx.storage.put("watchers", watchers);
+    await this.publish(watchers);
+    await this.fill();
+  }
+
+  /** Whether this watcher is currently held after its own machine went dark. */
+  private async isHeld(machineId: string, term: number): Promise<boolean> {
+    const watcher = (await this.load<Watchers>("watchers", {}))[machineId];
+    return !!watcher && watcher.term === term && !!watcher.held;
+  }
+
+  /** One machine's learned record, defaulting to "nothing known yet". */
+  private async reliability(machineId: string): Promise<Reliability> {
+    return (await this.load<Reliabilities>("reliability", {}))[machineId] ?? { trusted: false, consecutiveFailures: 0 };
+  }
+
+  /**
+   * Settle every observation whose window has closed.
+   *
+   * Success means the IO kept the assignment it had when the power went off and
+   * kept reporting — the machine is off and the IO is plainly not. Failure means
+   * it stopped, and the lease eventually ran out; the platform does not claim to
+   * know why, only that this IO did not carry on. An observation cut short by
+   * the machine coming back says nothing either way and is not counted.
+   */
+  private async settleObservations(): Promise<boolean> {
+    const observations = await this.load<Observations>("observations", {});
+    const running = Object.values(observations).filter((entry) => entry.result === undefined);
+    if (!running.length) return false;
+    const watchers = await this.load<Watchers>("watchers", {});
+    const reliabilities = await this.load<Reliabilities>("reliability", {});
+    const now = Date.now();
+    let changed = false;
+    for (const entry of running) {
+      const watcher = watchers[entry.machineId];
+      const alive = !!watcher && watcher.term === entry.term && watcher.leaseUntil > now;
+      // Still the same assignment and still reporting: not settled yet, unless the
+      // window has closed, in which case this is exactly what success looks like.
+      if (alive && now - entry.startedAt < OBSERVE_MS) continue;
+      // A machine that came back has an unbroken IO either way; the observation
+      // says nothing about what a power-off would have done.
+      if (alive && !(await this.stillOff(entry.machineId))) {
+        observations[entry.machineId] = { ...entry, result: "inconclusive" };
+        changed = true;
+        continue;
+      }
+      const learned = reliabilities[entry.machineId] ?? { trusted: false, consecutiveFailures: 0 };
+      if (alive) {
+        // Reported all the way through a power-off, with Home Assistant agreeing
+        // the machine was off: this IO does not die with its machine.
+        reliabilities[entry.machineId] = { trusted: true, consecutiveFailures: 0 };
+        observations[entry.machineId] = { ...entry, result: "success" };
+      } else {
+        const failures = learned.consecutiveFailures + 1;
+        reliabilities[entry.machineId] = {
+          trusted: failures >= FAILURES_BEFORE_DISTRUST ? false : learned.trusted,
+          consecutiveFailures: failures,
+        };
+        observations[entry.machineId] = { ...entry, result: "failure" };
+      }
+      changed = true;
+    }
+    if (changed) {
+      await this.ctx.storage.put("observations", observations);
+      await this.ctx.storage.put("reliability", reliabilities);
+    }
+    return changed;
+  }
+
+  /** Whether the shop's own facts still say this machine has no power. */
+  private async stillOff(machineId: string): Promise<boolean> {
+    const shopId = await this.shopId();
+    if (!shopId) return false;
+    const row = await this.env.DB.prepare(
+      `SELECT json_extract(value_json, '$') AS value FROM device_state
+       WHERE shop_id = ? AND device_id = ? AND capability = 'power' AND key = 'power'`,
+    ).bind(shopId, machineId).first<{ value: string | null }>().catch(() => null);
+    return row?.value === "off";
   }
 
   private async drop(machineId: string) {
@@ -677,24 +892,52 @@ export class ShopHub extends BaseDurableObject<Env> {
    */
   private reports: Promise<unknown> = Promise.resolve();
 
+
   async haReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
-    const turn = this.reports.then(() => this.takeReport(shopId, machineId, report));
+    // When the report reached the hub, before it queued behind others: a hold
+    // placed after this moment cannot be lifted by this report.
+    // When it was handed to us, not when it got its turn: a hold placed while
+    // this report waits its turn belongs after it, and must not be lifted by it.
+    const arrivedAt = Date.now();
+    const turn = this.reports.then(() => this.takeReport(shopId, machineId, report, arrivedAt));
     this.reports = turn.catch(() => undefined);
     return turn;
   }
 
-  private async takeReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
+  private async takeReport(shopId: string, machineId: string, report: HaReport, arrivedAt: number): Promise<void> {
     await this.rememberShop(shopId);
     const current = (await this.load<Watchers>("watchers", {}))[machineId];
     // An earlier assignment, or a client that is not a watcher: not ours to trust.
     if (!current || current.term !== report.params.term) return;
     const { term } = current;
     const connection = report.params.connection;
+    // Held before this report started arriving. The rest of the batch that
+    // revealed the power-off is not evidence: it was written before the hold.
+    // A beat is the IO speaking for itself: it is sent on its own schedule, so one
+    // arriving while held can only have been sent after the power-off. A state
+    // report cannot say that — the one that revealed the power-off is itself a
+    // state report, and would vouch for itself.
+    const wasHeld = current.held !== undefined
+      && report.method === "ha.status"
+      && report.params.connected;
 
     if (report.method === "ha.states") {
       // The facts are stored before the connection can be announced as watched.
-      if (!(await this.apply(connection, report.params.states))) {
+      const applied = await this.apply(connection, report.params.states);
+      if (applied === "failed") {
         await this.resync(machineId, term, connection);
+        return;
+      }
+      // This very report announced a power-off of the machine this watcher runs
+      // on; it cannot also prove the IO survived one. A power-off of some other
+      // device on the same connection says nothing about this watcher.
+      if (applied === "power-off" && (await this.isHeld(machineId, term))) {
+        const settled = await this.load<Watchers>("watchers", {});
+        const entry = settled[machineId];
+        if (entry && entry.term === term) {
+          entry.leaseUntil = Date.now() + LEASE_MS;
+          await this.ctx.storage.put("watchers", settled);
+        }
         return;
       }
     }
@@ -704,6 +947,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     const watcher = watchers[machineId];
     if (!watcher || watcher.term !== term) return;
     watcher.leaseUntil = Date.now() + LEASE_MS;
+    // It spoke on the assignment it already had, after the machine went dark:
+    // that is the IO showing it is still there. The report that announced the
+    // power-off cannot count — it was not held when it arrived, so `wasHeld`
+    // was false and this line never ran for it.
+    if (wasHeld) delete watcher.held;
     const link = (watcher.links[connection] ??= { connected: false, snapshot: false });
     if (report.method === "ha.status") {
       link.connected = report.params.connected;
@@ -712,7 +960,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         // This client cannot reach Home Assistant; another one that is not watching yet may.
         const now = Date.now();
         const spare = Object.values(await this.load<Candidates>("candidates", {}))
-          .some((candidate) => !watchers[candidate.machineId] && (candidate.downUntil ?? 0) <= now);
+          .some((candidate) => !watchers[candidate.machineId]);
         if (spare) {
           await this.bench(machineId);
           delete watchers[machineId];
@@ -732,7 +980,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.publish(watchers);
     // A watcher that was outranked keeps going until the ones that stay have this; a snapshot may be
     // what lets it go.
-    if (Object.keys(watchers).length > (await this.limit())) await this.fill();
+    if (Object.keys(watchers).length > (await this.effectiveLimit(watchers))) await this.fill();
   }
 
   /**
@@ -765,6 +1013,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       lost = true;
     }
     if (lost) await this.ctx.storage.put("watchers", watchers);
+    if (await this.settleObservations()) await this.fill();
     if (idleDue) await this.checkIdle(idle);
     // Also retries a slot that was open because every IO had just failed.
     await this.fill();
@@ -791,14 +1040,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         reminderLeadMs: await this.reminderLead(),
       });
       await this.ctx.storage.put("idle", result.memory);
-      // An IO the idle rule switched off will not report again.
-      const candidates = await this.load<Candidates>("candidates", {});
-      for (const id of result.poweredOff) {
-        if (!candidates[id]) continue;
-        candidates[id] = { ...candidates[id]!, downUntil: Date.now() + BENCH_MS };
-        await this.ctx.storage.put("candidates", candidates);
-        await this.drop(id);
-      }
+      // A machine the idle rule switched off is released the same way as any
+      // other power-off: same reason, same effect on its watch and its standing.
+      for (const id of result.poweredOff) await this.poweredOff(shopId, id);
       if (result.notices.length) await this.notify(result.notices);
       // The idle rule's own power-offs: the device bus left them to the hub to tell.
       for (const id of result.poweredOff) {
@@ -846,16 +1090,21 @@ export class ShopHub extends BaseDurableObject<Env> {
    * Who may watch, best first. One that just failed goes last, unless it is watching fine right now
    * (it need not be swapped out for a newcomer); then bots before IOs; then the longest online.
    */
-  private ranked(candidates: Candidates, watchers: Watchers, now: number): Candidate[] {
+  private ranked(candidates: Candidates, watchers: Watchers, now: number, reliabilities: Reliabilities = {}): Candidate[] {
     const benched = (candidate: Candidate) =>
       (candidate.benchedUntil ?? 0) > now &&
       !Object.values(watchers[candidate.machineId]?.links ?? {}).some((link) => link.connected);
+    // An IO that has kept reporting through its own machine's power-offs is the
+    // safer pair of hands, so it goes ahead of an unknown one of the same kind.
+    // It never outranks a machine that is actually failed right now: `benched`
+    // is checked first and is about the present, not about history.
+    const trusted = (candidate: Candidate) => !isBot(candidate.machineId) && !!reliabilities[candidate.machineId]?.trusted;
     return Object.values(candidates)
-      .filter((candidate) => (candidate.downUntil ?? 0) <= now)
       .sort(
         (a, b) =>
           Number(benched(a)) - Number(benched(b)) ||
           Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) ||
+          Number(!trusted(a)) - Number(!trusted(b)) ||
           a.since - b.since,
       );
   }
@@ -896,13 +1145,13 @@ export class ShopHub extends BaseDurableObject<Env> {
     const candidates = await this.load<Candidates>("candidates", {});
     const shopId = await this.shopId();
     let changed = this.pruneBots(candidates, watchers);
-    const limit = await this.limit();
+    const limit = await this.effectiveLimit(watchers);
     const now = Date.now();
     const kept = new Set<string>();
     let built = false;
     let watch: Omit<HaWatch, "term"> | null = null;
     if (shopId) {
-      for (const candidate of this.ranked(candidates, watchers, now)) {
+      for (const candidate of this.ranked(candidates, watchers, now, await this.load<Reliabilities>("reliability", {}))) {
         if (kept.size >= limit) break;
         if (watchers[candidate.machineId]) {
           kept.add(candidate.machineId);
@@ -1070,15 +1319,17 @@ export class ShopHub extends BaseDurableObject<Env> {
    * second watcher saw the same event, or saw it later), changes nothing. False
    * when the facts could not be stored.
    */
-  private async apply(connectionId: string, reported: HaEntityState[]): Promise<boolean> {
+  private async apply(connectionId: string, reported: HaEntityState[]): Promise<"stored" | "failed" | "power-off"> {
     const shopId = await this.shopId();
-    if (!shopId) return true;
+    if (!shopId) return "stored";
     const states = await this.load<Record<string, WatchedState>>("states", {});
     const targets = await this.load<Targets>("targets", {});
     const applied: Record<string, WatchedState> = {};
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
     let powerMoved = false;
+    /** Machines this report says lost power: their watch is released, as on any power-off. */
+    const lostPower: string[] = [];
     for (const item of reported) {
       const key = entityKey(connectionId, item.entity_id);
       const previous = applied[key] ?? states[key];
@@ -1096,6 +1347,9 @@ export class ShopHub extends BaseDurableObject<Env> {
           writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
           pushes.push([target.deviceId, { type: "state", power }]);
           if (previous) powerMoved = true;
+          // Only a real on-to-off move: `unavailable` reads as null, and a Home
+          // Assistant hiccup must not release a working watch.
+          if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
         } else {
           const known = next.state !== "unavailable" && next.state !== "unknown";
           const view = known ? climateState(next.state, next.attributes) : null;
@@ -1114,7 +1368,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
       } catch (error) {
         console.error("Shop hub state write failed", error);
-        return false;
+        return "failed";
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
@@ -1132,7 +1386,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     // Switched on starts an idle countdown; switched off may end one.
     if (powerMoved) await this.touch(shopId);
-    return true;
+    // Home Assistant confirming the machine is off: the same observation the
+    // platform's own power-off opened, now with the machine's state as evidence
+    // rather than only the command having been accepted.
+    for (const deviceId of lostPower) await this.poweredOff(shopId, deviceId, { confirmed: true });
+    return lostPower.length ? "power-off" : "stored";
   }
 
   /**
@@ -1150,6 +1408,10 @@ export class ShopHub extends BaseDurableObject<Env> {
     const live = new Set<string>();
     for (const watcher of Object.values(watchers)) {
       if (watcher.leaseUntil <= now) continue;
+      // Held: the machine is off and this IO has not yet proved it is not. Its
+      // subscription is still running, but its last snapshot is from before the
+      // power-off, so the connection is not announced live on its say-so alone.
+      if (watcher.held) continue;
       for (const [id, link] of Object.entries(watcher.links)) if (link.connected && link.snapshot) live.add(id);
     }
     const previous = new Set(await this.load<string[]>("eventConnections", []));
@@ -1174,14 +1436,19 @@ export class ShopHub extends BaseDurableObject<Env> {
     const touchAt = await this.ctx.storage.get<number>("touchAt");
     const idle = await this.ctx.storage.get<IdleMemory>("idle");
     const candidates = await this.load<Candidates>("candidates", {});
-    // An open slot is retried when a benched or switched-off candidate becomes eligible again.
+    // An open slot is retried when a benched candidate becomes eligible again.
     const retry = Object.keys(watchers).length < (await this.limit())
       ? Object.values(candidates)
           .filter((candidate) => !watchers[candidate.machineId])
-          .flatMap((candidate) => [candidate.benchedUntil, candidate.downUntil])
+          .map((candidate) => candidate.benchedUntil)
           .filter((at): at is number => typeof at === "number" && at > now)
       : [];
-    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry]
+    // An open power-off needs waking when its window closes, or nothing settles it.
+    const observations = await this.load<Observations>("observations", {});
+    const closing = Object.values(observations)
+      .filter((entry) => entry.result === undefined)
+      .map((entry) => entry.startedAt + OBSERVE_MS);
+    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry, ...closing]
       .filter((at): at is number => typeof at === "number")
       .reduce<number | null>((earliest, at) => (earliest === null || at < earliest ? at : earliest), null);
     const getAlarm = this.ctx.storage.getAlarm?.bind(this.ctx.storage);

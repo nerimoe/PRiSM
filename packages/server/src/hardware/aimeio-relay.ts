@@ -158,10 +158,30 @@ export function parseClientHello(value: unknown): ClientHello | null {
   };
 }
 
-/** What an IO watching Home Assistant for the shop reports back. */
+/**
+ * One Home Assistant connection's health, as an IO reports it in its heartbeat.
+ *
+ * A machine's IO is the only one who can tell whether the shop's Home
+ * Assistant is reachable from inside the shop, and it says so on every beat
+ * rather than in a report of its own.
+ */
+export type HaConnectionHealth = {
+  connection: string;
+  term: number;
+  connected: boolean;
+  error: string | null;
+};
+
+/**
+ * What the hub is told about Home Assistant: each connection's health (carried
+ * by the IO's heartbeat) and the states themselves.
+ */
 export type HaReport =
-  | { method: "ha.status"; params: { term: number; connection: string; connected: boolean; error?: string | null } }
+  | { method: "ha.status"; params: HaConnectionHealth }
   | { method: "ha.states"; params: { term: number; connection: string; full: boolean; states: HaEntityState[] } };
+
+/** A heartbeat from a connected IO, with whatever Home Assistant health it holds. */
+export type IoHeartbeat = { ha: HaConnectionHealth[] };
 
 export type HaEntityState = {
   entity_id: string;
@@ -183,7 +203,35 @@ function changedAt(value: unknown): string | null {
   return null;
 }
 
-/** A Home Assistant report from a watching IO, or null for anything else. */
+/**
+ * The heartbeat a token-connected IO sends, whatever it is watching.
+ *
+ * Being connected is a fact the platform judges on its own, so every such IO
+ * beats, and the beat carries the Home Assistant health only when this IO holds
+ * an assignment. A beat with no `ha` says only "still here".
+ */
+export function parseHeartbeat(value: unknown): IoHeartbeat | null {
+  if (!isRecord(value) || value.method !== "io.heartbeat") return null;
+  if (value.id !== undefined && value.id !== null) return null;
+  const params = isRecord(value.params) ? value.params : {};
+  const ha: HaConnectionHealth[] = [];
+  for (const item of Array.isArray(params.ha) ? params.ha : []) {
+    if (!isRecord(item) || typeof item.connection !== "string" || typeof item.term !== "number") continue;
+    ha.push({
+      connection: item.connection,
+      term: item.term,
+      connected: item.connected === true,
+      error: typeof item.error === "string" ? item.error : null,
+    });
+  }
+  return { ha };
+}
+
+/**
+ * A Home Assistant report from a watching **bot**, which is told what to watch
+ * and reports through its own connection rather than through an IO heartbeat.
+ * Null for anything else.
+ */
 export function parseHaReport(value: unknown): HaReport | null {
   if (!isRecord(value) || (value.id !== undefined && value.id !== null)) return null;
   const params = isRecord(value.params) ? value.params : null;
@@ -199,6 +247,15 @@ export function parseHaReport(value: unknown): HaReport | null {
       },
     };
   }
+  if (value.method !== "ha.states" || !Array.isArray(params.states)) return null;
+  return parseHaStates(value);
+}
+
+/** A Home Assistant state report from a watching IO, or null for anything else. */
+export function parseHaStates(value: unknown): HaReport | null {
+  if (!isRecord(value) || (value.id !== undefined && value.id !== null)) return null;
+  const params = isRecord(value.params) ? value.params : null;
+  if (!params || typeof params.term !== "number" || typeof params.connection !== "string") return null;
   if (value.method !== "ha.states" || !Array.isArray(params.states)) return null;
   const states: HaEntityState[] = [];
   for (const item of params.states) {

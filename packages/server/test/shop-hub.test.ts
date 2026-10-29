@@ -334,21 +334,152 @@ describe("ShopHub watchers", () => {
     expect(watched()).toEqual([connectionId]);
   });
 
-  it("moves the watch off an IO the platform switched off, without waiting for its lease", async () => {
-    const { hub, assigned, watched, connectionId } = await fixture();
+  it("keeps the watch when a machine loses power, and brings in cover while it is out", async () => {
+    // Power off says the machine is dark, not that its IO is. Taking the watch
+    // away would throw away an assignment that may still be perfectly good, so
+    // it is kept and the IO's own reports decide what happens next.
+    const { hub, watches } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.relayOnline(SHOP, "b", "chan-b");
-    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
-    await hub.markDown(SHOP, "a");
-    expect((await hub.watching()).map((entry) => entry.machineId)).toEqual(["b"]);
-    // Only b is left and it has not delivered its state.
-    expect(watched()).toEqual([]);
-    // a is not handed the watch again while it is down, even with a free slot...
     await hub.relayOnline(SHOP, "c", "chan-c");
-    expect(assigned().map(([channel]) => channel)).toEqual(["chan-a", "chan-b", "chan-c"]);
-    // ...until it says hello again.
-    await hub.relayOffline(SHOP, "c");
+    console.log("DEBUG watchers before:", JSON.stringify((await hub.watching()).map((e) => e.machineId)));
+    await hub.poweredOff(SHOP, "a");
+        // Nobody was told to stop...
+    expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
+    // ...and a third watcher covers the machine that went dark.
+    expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("brings in cover when Home Assistant reports the power off, without taking the watch away", async () => {
+    // The same event whichever path noticed it: an observation opens, the
+    // assignment stays. m1 and m2 own the switches; m1 and m3 are watching.
+    const { hub, watches, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m3", "chan-b");
+    await hub.relayOnline(SHOP, "m2", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"]], false));
+    expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
+    // m2 comes in alongside m1 and m3 while m1's IO is unaccounted for.
+    expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("does not release the watch for unavailable, or for a machine that was already off", async () => {
+    const { hub, watches, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m3", "chan-b");
+    await hub.relayOnline(SHOP, "m2", "chan-c");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    // A Home Assistant hiccup is not a power-off.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "unavailable", "2026-10-21T10:00:00.000Z"]], false));
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null)).toHaveLength(0);
+    // Off, then off again: only the transition counts.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:10:00.000Z"]], false));
+    const released = watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null).length;
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:20:00.000Z"]], false));
+    expect(watches.filter((entry) => entry.channel === "chan-a" && entry.watch === null).length).toBe(released);
+  });
+
+  it("learns that an IO survives its machine being switched off, after watching it do so", async () => {
+    // The platform cannot see how an IO is powered, so it watches what the IO
+    // does across a power-off. Reporting throughout, with Home Assistant saying
+    // the machine is off, is what "does not die with its machine" looks like.
+    const { hub, state, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"]], false));
+    // Still reporting, still the same term: that is the whole observation.
+    await hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const observations = state.get("observations") as Record<string, { startedAt: number }>;
+    await hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    // Move the window's start back so the next alarm settles it.
+    observations.m1!.startedAt = Date.now() - 4 * 60_000;
+    state.set("observations", observations);
+    await hub.alarm();
+    expect((state.get("reliability") as Record<string, { trusted: boolean }>).m1!.trusted).toBe(true);
+  });
+
+  it("does not trust an IO that stopped reporting after its machine went off", async () => {
+    const { hub, state, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.relayOnline(SHOP, "m2", "chan-b");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON]]));
+    await hub.poweredOff(SHOP, "m1", { confirmed: true });
+    // The IO goes quiet and its lease runs out; that is a failure against the
+    // power-off, and the platform records it as such without claiming to know why.
+    const watchers = state.get("watchers") as Record<string, { leaseUntil: number }>;
+    watchers.m1!.leaseUntil = Date.now() - 1;
+    state.set("watchers", watchers);
+    const observations = state.get("observations") as Record<string, { startedAt: number }>;
+    observations.m1!.startedAt = Date.now() - 4 * 60_000;
+    state.set("observations", observations);
+    await hub.alarm();
+    const learned = (state.get("reliability") as Record<string, { trusted: boolean; consecutiveFailures: number }>).m1!;
+    expect(learned.consecutiveFailures).toBe(1);
+    expect(learned.trusted).toBe(false);
+  });
+
+  it("stops trusting the only watcher's word when its machine goes off, and trusts it again when it speaks", async () => {
+    // Not a release: the assignment and its term are kept and no unwatch is
+    // sent. What stops is treating its last snapshot as the present, because the
+    // machine it lives in just went dark.
+    const { hub, watches, watched, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    expect(watched()).toEqual([connectionId]);
+    // Home Assistant reports the power off. This very report must not count as
+    // proof of life.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"]], false));
+    expect(watched()).toEqual([]);
+    // Nothing was taken away: same watcher, same term, and no unwatch sent.
+    expect(watches.filter((entry) => entry.watch === null)).toHaveLength(0);
+    expect((await hub.watching()).map((entry) => entry.machineId)).toEqual(["m1"]);
+    // A later report on the same assignment puts it back.
+    await hub.haReport(SHOP, "m1", status(1, connectionId, true));
+    expect(watched()).toEqual([connectionId]);
+  });
+
+  it("counts one power-off once, however many times it is reported", async () => {
+    // The platform's own command and Home Assistant's report of the state change
+    // are the same power-off arriving twice; it must not become two observations
+    // or two failures.
+    const { hub, state, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.poweredOff(SHOP, "m1");
+    const first = (state.get("observations") as Record<string, { startedAt: number }>).m1!.startedAt;
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"]], false));
+    await hub.poweredOff(SHOP, "m1");
+    expect((state.get("observations") as Record<string, { startedAt: number }>).m1!.startedAt).toBe(first);
+  });
+
+  it("does not count a power-off as a success or a failure when the machine comes back", async () => {
+    const { hub, state, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.poweredOff(SHOP, "m1", { confirmed: true });
+    // Switched back on before the window closed.
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", "2026-10-21T10:00:00.000Z"]], false));
+    const observations = state.get("observations") as Record<string, { startedAt: number; result?: string }>;
+    observations.m1!.startedAt = Date.now() - 4 * 60_000;
+    state.set("observations", observations);
+    await hub.alarm();
+    const settled = (state.get("observations") as Record<string, { result?: string }>).m1!;
+    expect(settled.result).toBe("inconclusive");
+    // Nothing was learnt either way.
+    expect((state.get("reliability") as Record<string, unknown> | undefined)?.m1).toBeUndefined();
+  });
+
+  it("stops covering for a machine whose IO has already proved it survives power-offs", async () => {
+    // Covering every time would make the extra slot permanent exactly for the
+    // shops that need it least.
+    const { hub, state } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.relayOnline(SHOP, "b", "chan-b");
+    await hub.relayOnline(SHOP, "c", "chan-c");
+    state.set("reliability", { a: { trusted: true, consecutiveFailures: 0 } });
+    await hub.poweredOff(SHOP, "a");
     expect((await hub.watching()).map((entry) => entry.machineId).sort()).toEqual(["a", "b"]);
   });
 
@@ -515,7 +646,7 @@ describe("ShopHub device pages", () => {
   it("gives a board the whole shop when it connects, whether or not anything is watched", async () => {
     const { hub, sockets, connectionId } = await fixture({ climate: true });
     await openBoard(hub);
-    expect((sockets[0] as PageSocket).sent).toEqual([{ type: "states", states: { m1: idle, m2: idle, m3: idle } }]);
+    expect((sockets[0] as PageSocket).sent).toEqual([{ type: "states", states: { m1: idle, m2: idle, m3: idle }, liveConnections: [] }]);
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
     await openBoard(hub);
@@ -527,6 +658,7 @@ describe("ShopHub device pages", () => {
         m2: { watching: true, power: "off", climate: null },
         m3: { watching: true, power: null, climate: null },
       },
+      liveConnections: [connectionId],
     }]);
   });
 
@@ -540,14 +672,18 @@ describe("ShopHub device pages", () => {
     // Nothing is live until the connection is announced, so the first snapshot is not a change per
     // device: the board gets the whole shop, with the values, once.
     expect(board.sent.slice(1)).toEqual([
-      { type: "states", states: { m1: { watching: true, power: "on", climate: null }, m2: { watching: true, power: "off", climate: null } } },
+      {
+        type: "states",
+        states: { m1: { watching: true, power: "on", climate: null }, m2: { watching: true, power: "off", climate: null } },
+        liveConnections: [connectionId],
+      },
     ]);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
     expect(board.sent.at(-1)).toEqual({ type: "state", power: "off", deviceId: "m1" });
     expect(board.sent).toHaveLength(3);
     // The connection stops being watched: the board is told which devices are no longer live.
     await hub.relayOffline(SHOP, "a");
-    expect(board.sent.at(-1)).toEqual({ type: "states", states: { m1: idle, m2: idle } });
+    expect(board.sent.at(-1)).toEqual({ type: "states", states: { m1: idle, m2: idle }, liveConnections: [] });
   });
 
   it("pushes and records a change once when two watchers report it at the same moment", async () => {

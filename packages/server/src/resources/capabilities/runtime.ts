@@ -22,7 +22,7 @@ import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResu
 import type { HaEntityConfig } from "./catalog.js";
 import { doorConfigOf, hinataConfigOf, readSecret, type Resource } from "../resource.js";
 import { openHaConnection } from "./ha-connections.js";
-import { markWatcherDown } from "../../durable-objects/shop-hub-client.js";
+import { machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
 import { announceShopEvent, eventPlayer } from "../shop-events.js";
 import { readDeviceFacts } from "./state-view.js";
 
@@ -391,11 +391,13 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
         // The hub's own idle power-off (notifyHub false) is announced by the hub.
         if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
       }
-      // A HINATA IO that was just powered off will not report again; the hub
-      // need not wait out its lease to hand the watch to another.
+      // The command was accepted, which is all this can know: Home Assistant
+      // answers the same whether or not the machine actually went dark. The hub
+      // starts an observation and waits for the state to confirm it.
       if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
-        && input.device.capabilities.has("hinata_io"))
-        await markWatcherDown(runtime.env, runtime.shopId, input.device.id);
+        && input.device.capabilities.has("hinata_io")) {
+        await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
+      }
       return result;
     },
   };

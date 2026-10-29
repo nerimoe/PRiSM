@@ -10,7 +10,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { Database } from "bun:sqlite";
-import { closeSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { decryptSecret } from "../../packages/server/src/crypto.ts";
 
@@ -26,7 +26,7 @@ const { origin, shop, owner, admin, ha, devices } = cfg as {
   devices: Record<"a" | "b" | "lounge", { id: string; relayToken?: string }>;
 };
 const IO_BIN = process.env.IO_SIM ?? "/Users/neri/Projects/hinata-aimeio-rs/tools/mac-test/target/debug/io_sim";
-const LEASE_MS = 90_000;
+const LEASE_MS = 150_000;
 
 // ---------------------------------------------------------------- reporting
 
@@ -155,10 +155,21 @@ class Board {
   opened: Promise<void>;
   constructor() {
     const url = `${origin.replace("http", "ws")}/api/v1/merchant/machines/ws?shopId=${shop.id}`;
+    // No `origin` header: Bun's WebSocket client sets its own and ignores one
+    // passed here, so asking for a particular origin only made the platform
+    // reject the handshake. A failure now says so instead of hanging: `opened`
+    // is what every scenario waits on, and a promise that never settles turns a
+    // refused connection into a stalled run.
     this.ws = new (WebSocket as unknown as new (u: string, o: unknown) => WebSocket)(url, {
-      headers: { authorization: `Bearer ${owner.token}`, origin: "http://localhost:8787" },
+      headers: { authorization: `Bearer ${owner.token}` },
     });
-    this.opened = new Promise((done) => (this.ws.onopen = () => done()));
+    this.opened = new Promise((done, fail) => {
+      const timer = setTimeout(() => fail(new Error("the board's websocket did not open")), 10_000);
+      this.ws.onopen = () => {
+        clearTimeout(timer);
+        done();
+      };
+    });
     this.ws.onmessage = (event) => this.frames.push({ at: Date.now(), frame: JSON.parse(String(event.data)) });
     this.ws.onclose = () => (this.closed = true);
   }
@@ -350,9 +361,12 @@ scenarios.live = async () => {
   section("3 实时：HA 一变，看板立刻收到推送");
   let m = board.mark();
   let started = Date.now();
-  await haCall("switch", "turn_off", { entity_id: "switch.decorative_lights" });
-  const power = await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.power === "off", m);
-  check("机台A 电源推送", !!power, board.frames.slice(m));
+  // B's power, not A's: switching off the machine the watcher runs on is a
+  // power-off, which holds the watcher back until its next beat. That has its own
+  // scenario; here the subject is an ordinary state change reaching the board.
+  await haCall("switch", "turn_on", { entity_id: "switch.ac" });
+  const power = await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m);
+  check("机台B 电源推送", !!power, board.frames.slice(m));
   if (power) info(`HA 变化 → 看板 ${power.at - started} ms`);
   m = board.mark();
   started = Date.now();
@@ -360,9 +374,6 @@ scenarios.live = async () => {
   const climate = await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.climate?.temperature === 24, m);
   check("机台A 空调温度推送", !!climate);
   if (climate) info(`HA 变化 → 看板 ${climate.at - started} ms`);
-  m = board.mark();
-  await haCall("switch", "turn_on", { entity_id: "switch.ac" });
-  check("机台B 电源推送", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m)));
   m = board.mark();
   await haCall("input_boolean", "turn_on", { entity_id: "input_boolean.lounge_power" });
   check("休息室(非实时)的变化不推送", await board.quiet(aboutDevice(L), m));
@@ -499,37 +510,48 @@ scenarios.handover = async () => {
 };
 
 scenarios.poweroff = async () => {
-  section("10 平台把机台断电：这台 IO 的监听立刻让出，不等租约");
+  section("10 平台把机台断电：连接暂时非实时，但订阅保留，IO 一说它还在就回来");
   const board = new Board();
   await board.opened;
   check("只有机台A 的 IO 在线 → 实时", !!(await goLive(board, ioA)));
   let m = board.mark();
   let at = Date.now();
+  const assignmentsBefore = (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length;
   const off = await act("a", "power.off");
   check("平台 power.off 成功", off.status === 200, off);
   const down = await board.wait(watchingFrame(A, false), m, 8000);
   check("唯一的监听器被断电：立刻变成非实时", !!down);
-  if (down) info(`power.off → 看板收到非实时帧 ${down.at - at} ms（租约要 ${LEASE_MS / 1000}s）`);
+  if (down) info(`power.off → 看板收到非实时帧 ${down.at - at} ms`);
   check("D1 的实时连接被撤销", liveConnections().length === 0, liveConnections());
-  check("断电的 IO 进程虽然还连着，也不再监听（日志里没有被重新分配）", ioA.alive);
-  m = board.mark();
-  await haCall("switch", "turn_on", { entity_id: "switch.decorative_lights" });
-  check("之后 HA 的变化不推送", await board.quiet(aboutDevice(A), m, 3000));
-  check("断电的 IO 不会被立刻重新选中", liveConnections().length === 0, liveConnections());
+  // The whole point of the change: nothing was taken away from the IO.
+  check("订阅没有被撤掉：IO 既没收到 HA_UNWATCH，也没被重新下发", (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length === assignmentsBefore);
+  // It keeps reporting, so it proves it did not die with the machine and is taken at its word again.
+  const back = await board.wait(watchingFrame(A, true), board.mark(), 90_000);
+  check("IO 继续上报后自动回到实时", !!back);
+  if (back) info(`回到实时用了 ${back.at - at} ms`);
+  check("回来之后订阅仍然是原来那一次", (ioA.log.match(/Watching 1 Home Assistant/g) ?? []).length === assignmentsBefore);
 
   m = board.mark();
   await ioA.kill();
   at = Date.now();
+  // The machine is switched back on before its IO starts again.
+  await haCall("switch", "turn_on", { entity_id: "switch.decorative_lights" });
   check("机台重新上电（IO 重新启动并连接）→ 又变成实时", !!(await goLive(board, ioA)));
   check("重新实时后快照是当前值", board.seen(A).power === "on", board.seen(A));
 
   section("11 两个监听器时，只断一台的电：连接仍然实时");
+  // A holds one slot from section 10; the shop must allow two for B to get the other.
+  const twoSlots = await api(`/api/v1/merchant/ha-watchers?shopId=${shop.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ count: 2 }),
+  });
+  check("把监听名额设成 2", twoSlots.status === 200, twoSlots.status);
   ioB.start();
   await until("B 收到监听任务", () => /Watching 1 Home Assistant/.test(ioB.log), 15_000);
   await Bun.sleep(2000);
   m = board.mark();
   await act("a", "power.off");
-  check("A 被断电：连接仍然实时（B 在监听）", await board.quiet(watchingFrame(A, false), m, 3500));
+  check("A 被断电：B 还在听同一条连接，所以仍然实时", await board.quiet(watchingFrame(A, false), m, 3500));
   m = board.mark();
   await haCall("switch", "turn_on", { entity_id: "switch.ac" });
   check("B 继续推送", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m)));
@@ -537,8 +559,13 @@ scenarios.poweroff = async () => {
   at = Date.now();
   await act("b", "power.off");
   const both = await board.wait(watchingFrame(A, false), m, 8000);
-  check("再断 B 的电：立刻变成非实时", !!both);
+  check("两台都断电：短暂变成非实时", !!both);
   if (both) info(`power.off → 看板收到非实时帧 ${both.at - at} ms`);
+  // Both IO processes are still running here, so both go on reporting and are
+  // taken at their word again — which is the design: an IO that keeps talking is
+  // an IO that is still there, whatever happened to its machine.
+  const recovered = await board.wait(watchingFrame(A, true), board.mark(), 90_000);
+  check("两个 IO 都还在上报 → 又回到实时", !!recovered);
   board.close();
 };
 
@@ -558,7 +585,7 @@ scenarios.lease = async () => {
   check("租约到期：变成非实时", !!down);
   const waited = down ? down.at - frozen : -1;
   if (down) info(`冻结 → 非实时帧 ${(waited / 1000).toFixed(1)}s`);
-  check("到期时间落在租约之内（最后一次上报起算 ≤ 90s，加报警延迟）", waited > 40_000 && waited <= LEASE_MS + 30_000, waited);
+  check(`到期时间落在租约之内（最后一次上报起算 ≤ ${LEASE_MS / 1000}s，加报警延迟）`, waited > 40_000 && waited <= LEASE_MS + 30_000, waited);
   check("D1 的实时连接被撤销", liveConnections().length === 0, liveConnections());
   m = board.mark();
   ioA.signal("SIGCONT");
@@ -817,6 +844,11 @@ async function reset(): Promise<void> {
   await resetHa();
   const clear = await until("no live connections", () => liveConnections().length === 0, 15_000);
   if (!clear) failures.push(`reset: live connections remain ${JSON.stringify(liveConnections())}`);
+  // A power-off observation outlives the connection it belongs to, and so does
+  // the hold that goes with it: a scenario that ends with a machine dark would
+  // otherwise hand both to the next one. Clearing the hub's storage between
+  // scenarios keeps each one starting from a state it created itself.
+  rmSync(".e2e/state/v3/do/prism-platform-ShopHub", { recursive: true, force: true });
 }
 
 const wanted = process.argv.slice(2);

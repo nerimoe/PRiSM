@@ -51,6 +51,7 @@ import {
   applyBoardFrame,
   hasUnwatched,
   learnBoardState,
+  lostConnections,
   mergeBoardStates,
   type BoardFrame,
   type BoardState,
@@ -114,6 +115,8 @@ export function ResourcesPage() {
   const [watchers, setWatchers] = useState<BoardWatchers | null>(null);
   const [statesFailed, setStatesFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  /** The Home Assistant connections the hub last said are live. */
+  const liveNow = useRef<Set<string>>(new Set());
   // Whether the devices with no state of their own have been read since the board opened.
   const [firstRead, setFirstRead] = useState(false);
   const askedRef = useRef(false);
@@ -199,12 +202,35 @@ export function ResourcesPage() {
     hasStateDevices,
     useCallback((frame: BoardFrame) => {
       if (frame.type === "watchers") setWatchers(frame);
-      else setStates((previous) => applyBoardFrame(previous, frame));
+      else {
+        // Which Home Assistant connections are live rides on every board update; it is
+        // what says whether a device's silence is a connection going quiet.
+        if (frame.type === "states") liveNow.current = new Set(frame.liveConnections);
+        setStates((previous) => applyBoardFrame(previous, frame));
+      }
     }, []),
   );
   // A device with no state of its own is read once, as soon as the board knows which they are.
   useEffect(() => {
     if (states === null || askedRef.current || !hasUnwatched(states)) return;
+    void readStates();
+  }, [states, readStates]);
+  /**
+   * A Home Assistant connection going quiet leaves every device bound to it
+   * showing a value that was true a moment ago. The hub says which connections
+   * are live with each board update, so the change is noticed once, however many
+   * devices share that connection, and the shop is read once.
+   *
+   * A connection coming back needs no read: the hub is about to push what it
+   * sees. Nor does the first board update: it is what the board opened with.
+   */
+  const liveBefore = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (states === null) { liveBefore.current = null; return; }
+    const now = [...liveNow.current];
+    const lost = lostConnections(liveBefore.current, now);
+    liveBefore.current = now;
+    if (!lost.length) return;
     void readStates();
   }, [states, readStates]);
   // If the hub gives the board no state (it cannot connect, or says nothing), read it over HTTP.

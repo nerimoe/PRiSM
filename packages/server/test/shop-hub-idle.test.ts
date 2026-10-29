@@ -98,6 +98,8 @@ describe("idle check in the shop hub", () => {
     } finally { spy.mockRestore(); sqlite.close(); }
   });
 
+
+
   it("waits while the shop has players, and marks an idle machine when the owner chose only that", async () => {
     const { run, offs, idle, sqlite, state } = await fixture({ shopEmpty: { enabled: true, minutes: 15 }, device: { enabled: true, whileOccupied: "mark" } });
     sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");

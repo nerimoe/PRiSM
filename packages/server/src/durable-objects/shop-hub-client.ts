@@ -9,7 +9,7 @@ type ShopHubNamespace = {
   getByName(name: string): {
     relayOnline(shopId: string, machineId: string, channel: string): Promise<void>;
     relayOffline(shopId: string, machineId: string): Promise<void>;
-    markDown(shopId: string, machineId: string): Promise<void>;
+    poweredOff(shopId: string, machineId: string): Promise<void>;
     refresh(shopId: string): Promise<void>;
     watching(): Promise<Array<{ machineId: string; leaseUntil: number }>>;
     haReport(shopId: string, machineId: string, report: HaReport): Promise<void>;
@@ -44,12 +44,15 @@ export async function refreshShopHub(env: Env, shopId: string): Promise<void> {
   }
 }
 
-/** The platform switched this HINATA IO off: the hub need not wait for it. Never throws. */
-export async function markWatcherDown(env: Env, shopId: string, machineId: string): Promise<void> {
+/**
+ * A machine lost power: the hub starts watching what its IO does about it.
+ * Never throws.
+ */
+export async function machinePoweredOff(env: Env, shopId: string, machineId: string): Promise<void> {
   try {
-    await shopHub(env, shopId)?.markDown(shopId, machineId);
+    await shopHub(env, shopId)?.poweredOff(shopId, machineId);
   } catch (error) {
-    console.error("Shop hub mark down failed", error);
+    console.error("Shop hub power-off observation failed", error);
   }
 }
 

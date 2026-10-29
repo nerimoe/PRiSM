@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { lostConnections } from "../src/ui/merchant/board-state";
 import {
   applyBoardFrame,
   hasUnwatched,
@@ -43,6 +44,26 @@ describe("what the board shows of a device", () => {
   });
 });
 
+describe("which connections went quiet", () => {
+  test("one connection going quiet is one change, however many devices it carries", () => {
+    expect(lostConnections(["ha_1", "ha_2"], ["ha_2"])).toEqual(["ha_1"]);
+  });
+
+  test("nothing is lost when nothing changed, or when a connection came back", () => {
+    expect(lostConnections(["ha_1"], ["ha_1"])).toEqual([]);
+    expect(lostConnections(["ha_1"], ["ha_1", "ha_2"])).toEqual([]);
+  });
+
+  test("the first update is not a change", () => {
+    expect(lostConnections(null, [])).toEqual([]);
+    expect(lostConnections(null, ["ha_1"])).toEqual([]);
+  });
+
+  test("every connection going quiet at once is still just the ones that went", () => {
+    expect(lostConnections(["ha_1", "ha_2"], [])).toEqual(["ha_1", "ha_2"]);
+  });
+});
+
 describe("device board states", () => {
   test("a read fills what has no state of its own and leaves a live device as the hub keeps it", () => {
     // The read's copy of a live device is only what the database held when it was read.
@@ -77,8 +98,11 @@ describe("device board states", () => {
 
 describe("device board frames", () => {
   test("reads the hub's frames and ignores anything else", () => {
-    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on", climate: null }, b: { watching: false, power: null, climate: null } } })))
-      .toEqual({ type: "states", states: { a: watched("on"), b: nothing } });
+    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on", climate: null }, b: { watching: false, power: null, climate: null } }, liveConnections: ["ha_1"] })))
+      .toEqual({ type: "states", states: { a: watched("on"), b: nothing }, liveConnections: ["ha_1"] });
+    // An older hub that says nothing about connections reads as none, not as a failure.
+    expect(parseBoardFrame(JSON.stringify({ type: "states", states: { a: { watching: true, power: "on", climate: null } } })))
+      .toEqual({ type: "states", states: { a: watched("on") }, liveConnections: [] });
     expect(parseBoardFrame('{"type":"state","deviceId":"a","power":"off"}')).toEqual({ type: "state", deviceId: "a", power: "off" });
     // A key that was not said stays out; one that was said as null means unknown.
     expect(parseBoardFrame('{"type":"state","deviceId":"a","power":null}')).toEqual({ type: "state", deviceId: "a", power: null });
