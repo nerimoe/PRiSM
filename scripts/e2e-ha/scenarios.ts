@@ -10,7 +10,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { Database } from "bun:sqlite";
-import { closeSync, openSync, readFileSync, readdirSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { decryptSecret } from "../../packages/server/src/crypto.ts";
 
@@ -155,10 +155,21 @@ class Board {
   opened: Promise<void>;
   constructor() {
     const url = `${origin.replace("http", "ws")}/api/v1/merchant/machines/ws?shopId=${shop.id}`;
+    // No `origin` header: Bun's WebSocket client sets its own and ignores one
+    // passed here, so asking for a particular origin only made the platform
+    // reject the handshake. A failure now says so instead of hanging: `opened`
+    // is what every scenario waits on, and a promise that never settles turns a
+    // refused connection into a stalled run.
     this.ws = new (WebSocket as unknown as new (u: string, o: unknown) => WebSocket)(url, {
-      headers: { authorization: `Bearer ${owner.token}`, origin: "http://localhost:8787" },
+      headers: { authorization: `Bearer ${owner.token}` },
     });
-    this.opened = new Promise((done) => (this.ws.onopen = () => done()));
+    this.opened = new Promise((done, fail) => {
+      const timer = setTimeout(() => fail(new Error("the board's websocket did not open")), 10_000);
+      this.ws.onopen = () => {
+        clearTimeout(timer);
+        done();
+      };
+    });
     this.ws.onmessage = (event) => this.frames.push({ at: Date.now(), frame: JSON.parse(String(event.data)) });
     this.ws.onclose = () => (this.closed = true);
   }
@@ -350,9 +361,12 @@ scenarios.live = async () => {
   section("3 实时：HA 一变，看板立刻收到推送");
   let m = board.mark();
   let started = Date.now();
-  await haCall("switch", "turn_off", { entity_id: "switch.decorative_lights" });
-  const power = await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.power === "off", m);
-  check("机台A 电源推送", !!power, board.frames.slice(m));
+  // B's power, not A's: switching off the machine the watcher runs on is a
+  // power-off, which holds the watcher back until its next beat. That has its own
+  // scenario; here the subject is an ordinary state change reaching the board.
+  await haCall("switch", "turn_on", { entity_id: "switch.ac" });
+  const power = await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m);
+  check("机台B 电源推送", !!power, board.frames.slice(m));
   if (power) info(`HA 变化 → 看板 ${power.at - started} ms`);
   m = board.mark();
   started = Date.now();
@@ -360,9 +374,6 @@ scenarios.live = async () => {
   const climate = await board.wait((frame) => frame.type === "state" && frame.deviceId === A && frame.climate?.temperature === 24, m);
   check("机台A 空调温度推送", !!climate);
   if (climate) info(`HA 变化 → 看板 ${climate.at - started} ms`);
-  m = board.mark();
-  await haCall("switch", "turn_on", { entity_id: "switch.ac" });
-  check("机台B 电源推送", !!(await board.wait((frame) => frame.type === "state" && frame.deviceId === B && frame.power === "on", m)));
   m = board.mark();
   await haCall("input_boolean", "turn_on", { entity_id: "input_boolean.lounge_power" });
   check("休息室(非实时)的变化不推送", await board.quiet(aboutDevice(L), m));
@@ -529,6 +540,12 @@ scenarios.poweroff = async () => {
   check("重新实时后快照是当前值", board.seen(A).power === "on", board.seen(A));
 
   section("11 两个监听器时，只断一台的电：连接仍然实时");
+  // A holds one slot from section 10; the shop must allow two for B to get the other.
+  const twoSlots = await api(`/api/v1/merchant/ha-watchers?shopId=${shop.id}`, {
+    method: "PUT",
+    body: JSON.stringify({ count: 2 }),
+  });
+  check("把监听名额设成 2", twoSlots.status === 200, twoSlots.status);
   ioB.start();
   await until("B 收到监听任务", () => /Watching 1 Home Assistant/.test(ioB.log), 15_000);
   await Bun.sleep(2000);
@@ -827,6 +844,11 @@ async function reset(): Promise<void> {
   await resetHa();
   const clear = await until("no live connections", () => liveConnections().length === 0, 15_000);
   if (!clear) failures.push(`reset: live connections remain ${JSON.stringify(liveConnections())}`);
+  // A power-off observation outlives the connection it belongs to, and so does
+  // the hold that goes with it: a scenario that ends with a machine dark would
+  // otherwise hand both to the next one. Clearing the hub's storage between
+  // scenarios keeps each one starting from a state it created itself.
+  rmSync(".e2e/state/v3/do/prism-platform-ShopHub", { recursive: true, force: true });
 }
 
 const wanted = process.argv.slice(2);
