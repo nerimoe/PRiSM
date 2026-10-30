@@ -23,6 +23,12 @@ describe("player notices", () => {
     expect(errorNotice({ code: "CHECKIN_REQUIRED", message: "请先确认入场", status: 403 }, "zh")).toMatchObject({ display: "none", flow: "refresh" });
   });
 
+  it("explains redeemed gifts and exhausted public codes without suggesting a retry", () => {
+    expect(notice("PRESENT_ONCE_PER_PLAYER_REDEEMED", "zh")).toMatchObject({ body: "您已经领取过这份礼物", display: "inline", actions: [] });
+    expect(notice("REDEEM_CODE_MAX_USE_REACHED", "zh")).toMatchObject({ body: "兑换码已被领完", display: "inline", actions: [] });
+    expect(notice("PRESENT_GRANT_LIMIT_REACHED", "en")).toMatchObject({ body: "You have reached this gift's per-player limit.", actions: [] });
+  });
+
   it("offers a retry only where trying again can help", () => {
     const device = errorNotice({ code: "DEVICE_UNAVAILABLE", message: "设备连接失败", status: 502 }, "en");
     expect(device.actions.map((action) => action.kind)).toEqual(["dismiss", "retry"]);

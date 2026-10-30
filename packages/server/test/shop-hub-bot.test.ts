@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
-import { createD1DatabaseFromSqlite } from "../src/local-server.js";
+import { createD1DatabaseFromSqlite, type SqliteD1PreparedStatement } from "../src/local-server.js";
 import { sha256Hex } from "../src/crypto.js";
 import { ShopHub } from "../src/durable-objects/shop-hub.js";
 import { botRequestUrl, parseBotFrame } from "../src/durable-objects/shop-hub-bot.js";
@@ -33,7 +33,7 @@ afterEach(() => {
   delete (globalThis as any).WebSocketPair;
 });
 
-async function fixture() {
+async function fixture(options: { databaseLatency?: boolean } = {}) {
   const sqlite = new Database(":memory:");
   for (const name of readdirSync(migrations).filter((s) => s.endsWith(".sql")).sort())
     for (const sql of splitD1MigrationStatements(readFileSync(resolve(migrations, name), "utf8"))) sqlite.run(sql);
@@ -61,8 +61,28 @@ async function fixture() {
     getWebSockets() { return sockets; },
     waitUntil(task: Promise<unknown>) { tasks.push(task); },
   };
+  const db = createD1DatabaseFromSqlite(sqlite);
+  if (options.databaseLatency) {
+    const originalPrepare: (sql: string) => SqliteD1PreparedStatement = db.prepare;
+    db.prepare = (sql) => {
+      const statement = originalPrepare(sql);
+      const bind = statement.bind.bind(statement);
+      statement.bind = (...values) => {
+        const bound = bind(...values);
+        const first = bound.first.bind(bound);
+        bound.first = async <T>() => {
+          const result = await first<T>();
+          // D1 yields to other requests while a database round trip completes.
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return result;
+        };
+        return bound;
+      };
+      return statement;
+    };
+  }
   const env = {
-    DB: createD1DatabaseFromSqlite(sqlite),
+    DB: db,
     SESSION_SECRET: "s",
     RATE_LIMIT_5: { limit: async () => ({ success: true }) },
   };
@@ -80,6 +100,37 @@ async function fixture() {
 }
 
 describe("bot connection", () => {
+  for (const limit of [30, 5]) it(`answers concurrent public-code redemptions without rejecting valid players (limit=${limit})`, async () => {
+    const { hub, ws, sqlite } = await fixture({ databaseLatency: true });
+    try {
+      sqlite.run(`INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','coupon','gift','活动券',1,'active')`);
+      sqlite.run(`INSERT INTO presents(shop_id,id,name,once_per_player,grants_json) VALUES ('shop','gift','活动礼物',1,?)`,
+        [JSON.stringify([{ assetType: "coupon", assetCode: "gift", amount: 1, mergeStrategy: "stack" }])]);
+      sqlite.run(`INSERT INTO redeem_codes(shop_id,id,code,present_id,max_use_count) VALUES ('shop','shared','PUBLIC','gift',?)`, [limit]);
+      for (let i = 0; i < 20; i++) {
+        sqlite.run(`INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop',?,?,'active','2026-01-01')`, [`p${i}`, `P${i}`]);
+        sqlite.run(`INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop',?,'onebot',?,'2026-01-01')`, [`p${i}`, `player-${i}`]);
+      }
+      const redeem = (id: string, subject: string) => hub.webSocketMessage(ws as any, JSON.stringify({
+        type: "request", id, method: "POST", path: "integration/players/by-identity/redeem",
+        body: { identity: { provider: "onebot", subject }, code: "PUBLIC" },
+      }));
+      await Promise.all(Array.from({ length: 20 }, (_, i) => redeem(`redeem-${i}`, `player-${i}`)));
+      const replies = ws.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.type === "response");
+      expect(replies).toHaveLength(20);
+      expect(replies.filter((reply) => reply.status === 200)).toHaveLength(Math.min(limit, 20));
+      expect(replies.filter((reply) => reply.status !== 200).map((reply) => reply.body.error.code))
+        .toEqual(Array(Math.max(20 - limit, 0)).fill("REDEEM_CODE_MAX_USE_REACHED"));
+      const firstPlayer = (sqlite.query(`SELECT i.subject FROM redeem_records r JOIN player_identities i ON i.shop_id=r.shop_id AND i.player_id=r.player_id LIMIT 1`).get() as { subject: string }).subject;
+      await redeem("repeat", firstPlayer);
+      const repeat = JSON.parse(ws.sent.at(-1)!);
+      expect(repeat.body.error.code).toBe(limit === 5 ? "REDEEM_CODE_MAX_USE_REACHED" : "PRESENT_ONCE_PER_PLAYER_REDEEMED");
+      expect((sqlite.query("SELECT COUNT(*) AS n FROM redeem_records").get() as { n: number }).n).toBe(Math.min(limit, 20));
+      expect((sqlite.query("SELECT COUNT(*) AS n FROM asset_transactions").get() as { n: number }).n).toBe(Math.min(limit, 20));
+      expect((sqlite.query("SELECT COUNT(*) AS n FROM operation_locks").get() as { n: number }).n).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
   it("finds a legacy live socket without an HA watch and backfills its credential usage", async () => {
     const { hub, ws, sqlite } = await fixture();
     const bot = await ensureBotResource(createD1DatabaseFromSqlite(sqlite), "shop", { id: "t1", label: "bot" });

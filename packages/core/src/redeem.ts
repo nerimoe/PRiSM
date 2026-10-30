@@ -45,10 +45,12 @@ export type RedeemGiftInput = {
   code: RedeemCode;
   present: Present;
   existingHoldings: readonly AssetHolding[];
-  redeemRecords: readonly RedeemRecord[];
   now: Date;
   idFactory: () => string;
-};
+} & (
+  | { redeemRecords: readonly RedeemRecord[]; redemptionCounts?: never }
+  | { redemptionCounts: { codeUses: number; playerPresentUses: number }; redeemRecords?: never }
+);
 
 export type RedeemGiftResult = GrantAssetsResult & {
   redeemRecord: RedeemRecord;
@@ -71,7 +73,7 @@ export function redeemGift(input: RedeemGiftInput): RedeemGiftResult {
     throw new PrismDomainError("Present expired.", "PRESENT_EXPIRED");
   }
 
-  const codeUseCount = input.redeemRecords.filter(
+  const codeUseCount = input.redemptionCounts ? input.redemptionCounts.codeUses : input.redeemRecords.filter(
     (record) => record.codeId === input.code.id,
   ).length;
   if (codeUseCount >= input.code.maxUseCount) {
@@ -81,7 +83,7 @@ export function redeemGift(input: RedeemGiftInput): RedeemGiftResult {
     );
   }
 
-  const playerPresentRedeemCount = input.redeemRecords.filter(
+  const playerPresentRedeemCount = input.redemptionCounts ? input.redemptionCounts.playerPresentUses : input.redeemRecords.filter(
     (record) =>
       record.playerId === input.playerId &&
       record.presentId === input.present.id,
