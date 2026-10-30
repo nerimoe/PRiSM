@@ -41,10 +41,14 @@ export type IdleNotice = Omit<Reminder, "deviceIds" | "key"> & { devices: Array<
  */
 const HOLD_ACTIONS = Object.values(capabilities)
   .flatMap((spec) => Object.entries(spec.actions))
-  .filter(([name, spec]) => (spec?.countsAsPlay || name.startsWith("climate.")) && name !== "power.off" && name !== "climate.off")
+  .filter(([name, spec]) => spec?.countsAsPlay && name !== "power.off")
   .map(([name]) => name);
 /** Only recent activity can matter; idle times are at most a day. */
 const LOOKBACK_MS = 24 * 60 * 60_000;
+const IDLE_CAPABILITIES = Object.values(capabilities).filter((spec) =>
+  spec.id === "climate" || Object.values(spec.actions).some((action) => action?.countsAsPlay)
+  || heldProviders.some((provider) => provider.capability === spec.id),
+).map((spec) => spec.id);
 
 const parse = (value: string | null) => {
   try {
@@ -74,7 +78,9 @@ export async function runIdleCheck(input: {
   const anyRule = settings.shopEmpty.enabled || settings.device.enabled;
   if (!anyRule) return { memory: { ...emptyIdleMemory(), lastAutoOff: input.memory.lastAutoOff }, notices: [], poweredOff: [] };
 
-  const [visits, capabilityRows, idleRows, activityRows, occupancy] = await Promise.all([
+  // Settle held seats before reading their last usage, including seats just vacated.
+  const occupancy = await createOccupancy({ db, shopId, now: () => new Date(now) }).current();
+  const [visits, capabilityRows, idleRows, activityRows] = await Promise.all([
     db.prepare(
       `SELECT (SELECT COUNT(*) FROM sessions WHERE shop_id = ? AND status = 'active') AS active,
               (SELECT MAX(ended_at) FROM sessions WHERE shop_id = ? AND status = 'closed') AS last_end`,
@@ -88,21 +94,25 @@ export async function runIdleCheck(input: {
                    THEN 0 ELSE m.occupancy_minutes END AS occupancy_minutes
        FROM machines m
        JOIN device_capabilities c ON c.shop_id = m.shop_id AND c.device_id = m.id
-       WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN ('power', 'climate') ORDER BY m.id, c.capability`,
-    ).bind(JSON.stringify(heldProviders.map((provider) => provider.capability)), shopId)
-      .all<{ id: string; name: string; occupancy_minutes: number; capability: "power" | "climate"; config_json: string }>(),
-    // Room temperature updates the view constantly; only settings move a climate's idle clock.
+       WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN (SELECT value FROM json_each(?)) ORDER BY m.id, c.capability`,
+    ).bind(JSON.stringify(heldProviders.map((provider) => provider.capability)), shopId, JSON.stringify(IDLE_CAPABILITIES))
+      .all<{ id: string; name: string; occupancy_minutes: number; capability: string; config_json: string }>(),
+    // Climate follows cabinet usage, so no AC setting timestamps belong to idle planning.
     db.prepare(
-      "SELECT device_id, capability, key, value_json, changed_at FROM device_state WHERE shop_id = ? AND (key = 'idle' OR (capability = 'climate' AND key = 'climate'))",
-    ).bind(shopId).all<{ device_id: string; capability: string; key: string; value_json: string; changed_at: string }>(),
+      "SELECT device_id, capability, value_json FROM device_state WHERE shop_id = ? AND key = 'idle'",
+    ).bind(shopId).all<{ device_id: string; capability: string; value_json: string }>(),
     db.prepare(
-      `SELECT device_id, MAX(occurred_at) AS at FROM device_events
-       WHERE shop_id = ? AND occurred_at >= ?
-         AND kind = 'request' AND name IN (SELECT value FROM json_each(?)) AND (player_id IS NOT NULL OR staff_id IS NOT NULL)
-       GROUP BY device_id`,
-    ).bind(shopId, new Date(now - LOOKBACK_MS).toISOString(), JSON.stringify(HOLD_ACTIONS))
-      .all<{ device_id: string; at: string }>(),
-    createOccupancy({ db, shopId, now: () => new Date(now) }).current(),
+      `SELECT device_id, MAX(at) AS at, MAX(occupied_until) AS occupied_until FROM (
+         SELECT device_id, occurred_at AS at, NULL AS occupied_until FROM device_events
+         WHERE shop_id = ? AND occurred_at >= ?
+           AND kind = 'request' AND name IN (SELECT value FROM json_each(?)) AND (player_id IS NOT NULL OR staff_id IS NOT NULL)
+         UNION ALL
+         SELECT resource_id, last_seen_at, COALESCE(ended_at, expires_at) FROM resource_occupancies
+         WHERE shop_id = ? AND COALESCE(ended_at, expires_at, last_seen_at) >= ? AND (ended_at IS NOT NULL OR expires_at <= ?)
+       ) GROUP BY device_id`,
+    ).bind(shopId, new Date(now - LOOKBACK_MS).toISOString(), JSON.stringify(HOLD_ACTIONS),
+      shopId, new Date(now - LOOKBACK_MS).toISOString(), new Date(now).toISOString())
+      .all<{ device_id: string; at: string; occupied_until: string | null }>(),
   ]);
 
   const devices = new Map<string, IdleDevice>();
@@ -110,8 +120,8 @@ export async function runIdleCheck(input: {
     let entry = devices.get(id);
     if (!entry) {
       entry = {
-        id, name, minutes, hasPower: false, hasClimate: false, power: null, climate: null,
-        powerTarget: null, climateTarget: null, climateChangedAt: null,
+        id, name, minutes, hasPower: false, hasClimate: false, hasUsage: false, power: null, climate: null,
+        powerTarget: null, climateTarget: null,
         lastActivity: null, busyUntil: null, poweredOnAt: null, idle: false, lastAutoOff: input.memory.lastAutoOff[id] ?? null,
         lastClimateAutoOff: input.memory.lastAutoOff[`climate:${id}`] ?? null,
       };
@@ -125,6 +135,7 @@ export async function runIdleCheck(input: {
   const bound = new Map<string, { id: string; capabilities: Map<string, { config: Record<string, unknown> }> }>();
   for (const row of capabilityRows.results) {
     const entry = device(row.id, row.name, row.occupancy_minutes);
+    if (row.capability !== "power" && row.capability !== "climate") { entry.hasUsage = true; continue; }
     if (row.capability === "power") entry.hasPower = true;
     else entry.hasClimate = true;
     const target = bound.get(row.id) ?? { id: row.id, capabilities: new Map() };
@@ -149,22 +160,21 @@ export async function runIdleCheck(input: {
   for (const row of idleRows.results) {
     const entry = devices.get(row.device_id);
     if (!entry) continue;
-    if (row.key === "idle" && row.capability === (entry.hasPower ? "power" : "climate")) entry.idle = parse(row.value_json) === true;
-    else if (row.key === "climate" && entry.climate !== null) {
-      const at = Date.parse(row.changed_at);
-      if (Number.isFinite(at)) entry.climateChangedAt = at;
-    }
+    if (row.capability === (entry.hasPower ? "power" : "climate")) entry.idle = parse(row.value_json) === true;
   }
   for (const row of activityRows.results) {
     const entry = devices.get(row.device_id);
-    if (entry) entry.lastActivity = Date.parse(row.at);
+    if (entry) {
+      entry.lastActivity = Date.parse(row.at);
+      if (row.occupied_until) entry.busyUntil = Date.parse(row.occupied_until);
+    }
   }
   for (const resource of occupancy) {
     const entry = devices.get(resource.resourceId);
     if (!entry || !resource.occupants.length) continue;
     entry.busyUntil = resource.occupants.some((occupant) => occupant.expiresAt === null)
       ? Infinity
-      : Math.max(...resource.occupants.map((occupant) => occupant.expiresAt!.getTime()));
+      : Math.max(entry.busyUntil ?? 0, ...resource.occupants.map((occupant) => occupant.expiresAt!.getTime()));
     entry.lastActivity = Math.max(entry.lastActivity ?? 0, ...resource.occupants.map((occupant) => occupant.lastSeenAt.getTime()));
   }
 

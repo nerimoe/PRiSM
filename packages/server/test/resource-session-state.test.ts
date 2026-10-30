@@ -130,6 +130,24 @@ const homeAssistant = () => {
 };
 
 describe("device page state", () => {
+  for (const power of ["on", "off", null]) it(`accepts the merchant keep-on action and validates real power=${power}`, async () => {
+    const { call, watch, sqlite } = await fixture();
+    watch();
+    sqlite.run("UPDATE device_state SET value_json=? WHERE device_id='cab' AND key='power'", [JSON.stringify(power)]);
+    const ha = homeAssistant();
+    const operationId = crypto.randomUUID();
+    try {
+      const response = await call("/api/v1/merchant/machines/cab/actions", ADMIN, {
+        method: "POST", body: JSON.stringify({ operationId, action: "power.keep" }),
+      });
+      expect(response.status).toBe(power === "on" ? 200 : 502);
+      expect(sqlite.query("SELECT action,status,staff_id FROM device_operations WHERE id=?").get(operationId)).toEqual({
+        action: "power.keep", status: power === "on" ? "succeeded" : "failed", staff_id: "user:boss",
+      });
+      expect(ha.calls).toEqual([]);
+    } finally { ha.spy.mockRestore(); sqlite.close(); }
+  });
+
   it("answers a signed-out scan with the machine and no state", async () => {
     const { call, jsonAs, ticket, sqlite } = await fixture();
     const ha = homeAssistant();

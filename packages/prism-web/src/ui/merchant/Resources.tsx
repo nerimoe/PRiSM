@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { timestampDisplayParts } from "@prism/core";
 import {
   AirVent,
   ChevronRight,
@@ -22,6 +21,7 @@ import {
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
 import { ClimateControls, climateModeName, climateSummary, type ClimateState } from "../ClimateControls";
 import { useI18n } from "../../i18n";
+import { billTime } from "../bill-time";
 import {
   date,
   input,
@@ -522,13 +522,14 @@ function ResourceQR({ device }: { device: Resource }) {
 /** The idle power-off ahead: the time it happens and how long until then. */
 function IdleCountdown({ at }: { at: string }) {
   const { t } = useI18n();
+  const { timeZone } = useMerchant();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15_000);
     return () => clearInterval(timer);
   }, []);
   const minutes = Math.max(0, Math.ceil((Date.parse(at) - now) / 60_000));
-  const time = timestampDisplayParts(at)?.time ?? "";
+  const time = billTime(at, timeZone || undefined).time;
   return (
     <span className="flex items-center gap-1.5 tabular-nums text-amber-600" title={t("闲置自动关机")}>
       <Timer size={13} aria-hidden="true" />

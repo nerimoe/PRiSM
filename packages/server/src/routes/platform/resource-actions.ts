@@ -25,7 +25,7 @@ export const actionSchema=z.object({
   ticket:z.string().min(1),
   operationId:z.string().uuid(),
   action:z.enum([
-    "power.on","power.off","aime.scan","coin","door.open",
+    "power.on","power.off","power.keep","aime.scan","coin","door.open",
     "climate.on","climate.off","climate.set_mode","climate.set_temperature","climate.set_fan_mode",
     "mahjong.join","mahjong.leave","mahjong.seat","mahjong.unseat",
   ]),

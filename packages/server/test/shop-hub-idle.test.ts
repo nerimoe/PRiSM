@@ -134,6 +134,11 @@ describe("idle check in the shop hub", () => {
       sqlite.run(`INSERT INTO device_state SELECT shop_id,'m2',capability,key,value_json,authority,event_id,changed_at FROM device_state WHERE device_id='m1'`);
     }
     if (scenario.players) sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");
+    if (scenario.climate && scenario.players) {
+      sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,occupancy_minutes) VALUES ('game','game','shop','机台','',1)");
+      sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','game','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at) VALUES ('shop','game-use','game','hinata_io','request','coin','platform','p','{}',?)`, [new Date(start - MIN).toISOString()]);
+    }
     const spy = haCalls();
     try {
       await run();
@@ -169,9 +174,10 @@ describe("idle check in the shop hub", () => {
     sqlite.run("UPDATE machines SET occupancy_minutes=1 WHERE id='m1'");
     sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) SELECT shop_id,'m2',capability,config_json,secret_json,created_at,updated_at FROM device_capabilities WHERE device_id='m1'");
     sqlite.run("INSERT INTO device_state SELECT shop_id,'m2',capability,key,value_json,authority,event_id,changed_at FROM device_state WHERE device_id='m1'");
+    if (climate) sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','m2','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
     sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at)
       VALUES ('shop','e1','m2',?,'request',?,'platform','p','{}',?)`,
-      [climate ? "climate" : "power", climate ? "climate.set_temperature" : "power.keep", new Date(start - MIN).toISOString()]);
+      [climate ? "hinata_io" : "power", climate ? "coin" : "power.keep", new Date(start - MIN).toISOString()]);
     const spy = haCalls();
     try {
       await run();
@@ -208,6 +214,51 @@ describe("idle check in the shop hub", () => {
       await run();
       expect(offs()).toHaveLength(2);
       expect((state.get("idle") as any).emptyHandled).toBe(start - 20 * MIN);
+    } finally { spy.mockRestore(); clock.mockRestore(); sqlite.close(); }
+  });
+
+  for (const powered of [false, true]) it(`keeps climate on for another cabinet and cancels an old warning after renewed use, power binding=${powered}`, async () => {
+    const start = Date.now();
+    let now = start;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const { sqlite, run, offs, state, sockets, connectionId } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { climate: true });
+    const notices: any[] = [];
+    sockets.push({ tags: ["bot"], deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }), send: (data) => notices.push(JSON.parse(data)) });
+    const watchers = state.get("watchers") as any;
+    watchers.a.leaseUntil = start + 60 * MIN;
+    state.set("watchers", watchers);
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");
+    sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,capacity,occupancy_minutes) VALUES ('m2','p2','shop','舞萌','',1,1)");
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','m2','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
+    if (powered) {
+      sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','m2','power',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ connectionId, entityId: "switch.m2" })]);
+      sqlite.run(`INSERT INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at) VALUES ('shop','m2','power','power','"on"','observed',?)`, [new Date(start - 40 * MIN).toISOString()]);
+    }
+    sqlite.run(`INSERT INTO resource_occupancies(shop_id,id,resource_id,player_id,source,started_at,last_seen_at,expires_at)
+      VALUES ('shop','o1','m2','p','hinata_io',?,?,?)`, [new Date(start).toISOString(), new Date(start).toISOString(), new Date(start + MIN).toISOString()]);
+    const spy = haCalls();
+    try {
+      await run();
+      expect(offs()).toEqual([]);
+      expect((state.get("idle") as any).powerOffAt.m1).toBe(start + 11 * MIN);
+      now = start + 6 * MIN;
+      await run();
+      expect(notices.some((frame) => frame.data?.devices.some((device: any) => device.id === "m1"))).toBe(true);
+      expect(offs()).toEqual([]);
+      // A fresh cabinet action postpones climate too, after the old warning was sent.
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at)
+        VALUES ('shop','e1','m2','hinata_io','request','coin','platform','p','{}',?)`, [new Date(now).toISOString()]);
+      await run();
+      expect((state.get("idle") as any).powerOffAt.m1).toBe(start + 17 * MIN);
+      now = start + 11 * MIN;
+      // Even a fresh AC setting must not create its own idle timer.
+      sqlite.run("UPDATE device_state SET changed_at=?,value_json=? WHERE device_id='m1' AND capability='climate'", [new Date(now).toISOString(), JSON.stringify({ mode: "heat", temperature: 25 })]);
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at) VALUES ('shop','ac-setting','m1','climate','request','climate.set_temperature','platform','p','{}',?)`, [new Date(now).toISOString()]);
+      await run();
+      expect(offs()).toEqual([]);
+      now = start + 17 * MIN;
+      await run();
+      expect(offs().filter((operation) => operation.action === "climate.off")).toHaveLength(1);
     } finally { spy.mockRestore(); clock.mockRestore(); sqlite.close(); }
   });
 

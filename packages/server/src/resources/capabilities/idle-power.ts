@@ -6,8 +6,9 @@
  * Two rules, both off until the shop turns them on:
  * - **Shop empty**: no active entry for N minutes, then every free powered device
  *   and air conditioner is switched off, respecting occupancy and holds.
- * - **Device idle**: a powered device or air conditioner free for the shop's
- *   idle time. While the shop has players the owner chooses what happens: only
+ * - **Device idle**: a powered device free for the shop's idle time. Climate
+ *   follows the whole shop's devices, never the time since an AC setting. While
+ *   the shop has players the owner chooses what happens: only
  *   mark it idle or switch it off, with an optional advance warning by the bot.
  *
  * A device is busy while someone occupies it (see `occupancy/`). Being switched
@@ -75,6 +76,8 @@ export type IdleDevice = {
   name: string;
   hasPower: boolean;
   hasClimate: boolean;
+  /** Can be used without a power binding, for example an IO cabinet or held seats. */
+  hasUsage: boolean;
   /** The physical HA binding; unshared when a legacy binding has no connection id. */
   powerTarget: string | null;
   climateTarget: string | null;
@@ -93,7 +96,6 @@ export type IdleDevice = {
   busyUntil: number | null;
   /** When it was last seen switching on, in ms. */
   poweredOnAt: number | null;
-  climateChangedAt: number | null;
   idle: boolean;
   lastAutoOff: number | null;
   lastClimateAutoOff: number | null;
@@ -174,9 +176,14 @@ export function planIdle(input: IdleInputs): IdlePlan {
     if (now >= at && now < deadline && input.reminded[key] !== deadline) plan.remind.push({ key, reason, deviceIds, at: deadline });
     else if (now < at) wake(at);
   };
+  const freeAt = (device: IdleDevice, changedAt = 0, on = false) => Math.max(
+    (Math.max(device.lastActivity ?? 0, changedAt) || (on ? now : 0)) + device.minutes * 60_000,
+    device.busyUntil ?? 0,
+  );
+  const idleMs = settings.device.minutes * 60_000;
   const groups = idleGroups(input.devices).map((group) => {
     const power = group.devices.map((d) => group.capability === "power" ? d.power : climatePower(d.climate));
-    const changedAt = Math.max(...group.devices.map((d) => (group.capability === "power" ? d.poweredOnAt : d.climateChangedAt) ?? 0));
+    const changedAt = Math.max(...group.devices.map((d) => group.capability === "power" ? d.poweredOnAt ?? 0 : 0));
     const activity = Math.max(...group.devices.map((d) => d.lastActivity ?? 0));
     const attempted = Math.max(...group.devices.map((d) => (group.capability === "power" ? d.lastAutoOff : d.lastClimateAutoOff) ?? 0));
     const state = power.includes("on") ? "on" : power.every((state) => state === "off") ? "off" : null;
@@ -185,13 +192,19 @@ export function planIdle(input: IdleInputs): IdlePlan {
       ids: group.devices.map((d) => d.id),
       state,
       excluded: group.devices.some((d) => settings.devices[d.id]?.exclude),
-      free: Math.max(...group.devices.map((d) => Math.max(
-        (Math.max(d.lastActivity ?? 0, changedAt) || (state === "on" ? now : 0)) + d.minutes * 60_000, d.busyUntil ?? 0,
-      ))),
+      free: Math.max(...group.devices.map((d) => freeAt(d, changedAt, group.capability === "power" && state === "on"))),
       activity, attempted,
       canRetry: !attempted || now - attempted >= RETRY_OFF_MS,
     };
   });
+  // Climate serves the shop; only other devices' usage decides when it is idle.
+  // Unknown power without any activity cannot prove that a cabinet is idle.
+  const deviceDeadlines = [
+    ...groups.filter((group) => group.capability === "power").map((group) => group.state === "off" ? 0
+      : group.state === null && !group.activity ? Infinity : group.free + idleMs),
+    ...input.devices.filter((device) => device.hasUsage && !device.hasPower).map((device) => freeAt(device) + idleMs),
+  ];
+  const allDevicesIdleAt = deviceDeadlines.length ? Math.max(...deviceDeadlines) : Infinity;
   const turnOff = (group: typeof groups[number]) => {
     (group.capability === "power" ? plan.powerOff : plan.climateOff).push(...group.ids);
   };
@@ -235,17 +248,19 @@ export function planIdle(input: IdleInputs): IdlePlan {
     // is switched off once per stretch of idleness: nothing shows whether it took.
     const blind = group.state === null;
     const handled = blind && group.attempted > 0 && group.attempted >= group.activity;
-    if (group.excluded || group.state === "off" || !settings.device.enabled || (blind && (!group.activity || handled))) {
+    if (group.excluded || group.state === "off" || !settings.device.enabled || (group.capability === "power" && blind && (!group.activity || handled))) {
       plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
     // Never idle while occupied: an occupant without an expiry holds it indefinitely.
-    if (group.free === Infinity) {
+    if (group.free === Infinity || (group.capability === "climate" && !empty && allDevicesIdleAt === Infinity)) {
       plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
     // Free once nothing keeps it busy; idle after the idle time free.
-    const deadline = group.free + settings.device.minutes * 60_000;
+    const deadline = group.capability === "power" ? group.free + idleMs
+      : Math.max(group.free, empty ? (plan.emptySince ?? now) + idleMs : allDevicesIdleAt);
+    if (group.capability === "climate" && blind && group.attempted > 0 && group.attempted >= deadline) continue;
     const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
     if (now < deadline) {
       plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));

@@ -6,8 +6,8 @@ const NOW = 1_800_000_000_000;
 
 const device = (over: Partial<IdleDevice> = {}): IdleDevice => ({
   // 20 minutes busy after a sign of someone, then the shop's default 10 minutes free.
-  id: "m1", name: "舞萌", minutes: 20, hasPower: true, hasClimate: false, power: "on", climate: null,
-  powerTarget: null, climateTarget: null, climateChangedAt: null, lastClimateAutoOff: null,
+  id: "m1", name: "舞萌", minutes: 20, hasPower: true, hasClimate: false, hasUsage: false, power: "on", climate: null,
+  powerTarget: null, climateTarget: null, lastClimateAutoOff: null,
   lastActivity: null, busyUntil: null, poweredOnAt: NOW - 5 * MIN, idle: false, lastAutoOff: null, ...over,
 });
 const inputs = (over: Omit<Partial<IdleInputs>, "settings"> & { settings?: unknown } = {}): IdleInputs => ({
@@ -68,21 +68,80 @@ describe("idle power planning", () => {
     expect(planIdle(inputs({ settings, emptySince: NOW - 60 * MIN, devices, now: NOW + 4 * MIN })).powerOff).toEqual(["m1", "m2"]);
   });
 
-  it("warns and switches off shared air conditioners using their own settings clock", () => {
+  it("warns and switches off shared air conditioners from the cabinets' idle deadline", () => {
     const devices = ["m1", "m2"].map((id) => device({ id, hasPower: false, hasClimate: true, power: null,
-      climate: "cool", climateTarget: "ha-1|climate.shared", climateChangedAt: NOW - 25 * MIN }));
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
+      climate: "cool", climateTarget: "ha-1|climate.shared" }));
+    devices.push(device({ id: "game", poweredOnAt: NOW - 25 * MIN }));
+    const settings = { ...offSettings, devices: { game: { exclude: true } } };
+    const plan = planIdle(inputs({ settings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
     expect(plan).toMatchObject({ powerOff: [], climateOff: [], powerOffAt: { m1: NOW + 5 * MIN, m2: NOW + 5 * MIN } });
     expect(plan.remind).toEqual([{ key: "climate:m1", reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 5 * MIN }]);
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["m1", "m2"]);
+    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["m1", "m2"]);
     devices[1]!.lastClimateAutoOff = NOW;
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
+    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
   });
 
-  it("keeps a resource's power and air conditioner on separate idle clocks", () => {
-    const devices = [device({ hasClimate: true, climate: "heat", poweredOnAt: NOW - 60 * MIN, climateChangedAt: NOW - MIN })];
+  it("uses the cabinet's idle condition for climate instead of a separate AC clock", () => {
+    const devices = [device({ hasClimate: true, climate: "heat", poweredOnAt: NOW - 60 * MIN })];
     const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices }));
-    expect(plan).toMatchObject({ powerOff: ["m1"], climateOff: [] });
+    expect(plan).toMatchObject({ powerOff: ["m1"], climateOff: ["m1"] });
+  });
+
+  const airConditioner = () => device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool" });
+
+  it("waits for the empty-shop rule when there are no cabinets to observe", () => {
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [airConditioner()] })).climateOff).toEqual([]);
+  });
+
+  it("can switch unknown climate off once per observed stretch of cabinet idleness", () => {
+    const ac = { ...airConditioner(), climate: null };
+    const cabinet = device({ poweredOnAt: NOW - 60 * MIN });
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet] })).climateOff).toEqual(["ac"]);
+    ac.lastClimateAutoOff = NOW - 5 * MIN;
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet] })).climateOff).toEqual([]);
+    cabinet.lastActivity = NOW;
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet], now: NOW + 30 * MIN })).climateOff).toEqual(["ac"]);
+  });
+
+  it("keeps climate running until the last cabinet becomes idle, even if that cabinet is excluded from power-off", () => {
+    const devices = [airConditioner(), ...shared({ lastActivity: NOW - 25 * MIN })];
+    const settings = { ...offSettings, devices: { m2: { exclude: true } } };
+    const plan = planIdle(inputs({ settings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
+    expect(plan).toMatchObject({ powerOff: [], climateOff: [], powerOffAt: { ac: NOW + 5 * MIN }, nextWake: NOW + 5 * MIN });
+    expect(plan.remind).toEqual([expect.objectContaining({ deviceIds: ["ac"], at: NOW + 5 * MIN })]);
+    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["ac"]);
+    devices[2]!.lastActivity = NOW;
+    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
+  });
+
+  for (const other of [
+    device({ busyUntil: Infinity }),
+    device({ power: null, poweredOnAt: null }),
+    device({ hasPower: false, hasUsage: true, power: null, busyUntil: Infinity }),
+  ]) it(`does not shut climate off when usage cannot end yet: ${JSON.stringify(other)}`, () => {
+    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [airConditioner(), other], reminderLeadMs: 5 * MIN }));
+    expect(plan.climateOff).toEqual([]);
+    expect(plan.powerOffAt.ac).toBeUndefined();
+    expect(plan.remind.flatMap((r) => r.deviceIds)).not.toContain("ac");
+  });
+
+  it("uses a cabinet without a power binding as part of the all-idle deadline", () => {
+    const devices = [airConditioner(), device({ hasPower: false, hasUsage: true, power: null, lastActivity: NOW - 25 * MIN })];
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices })).powerOffAt.ac).toBe(NOW + 5 * MIN);
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["ac"]);
+  });
+
+  it("counts powered-off cabinets as idle and keeps the mark-only policy for climate", () => {
+    const devices = [airConditioner(), device({ power: "off" })];
+    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices })).climateOff).toEqual(["ac"]);
+    expect(planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "mark" } }, activeEntries: 1, devices })).climateOff).toEqual([]);
+  });
+
+  it("allows the empty-shop climate rule even before other cabinets are idle", () => {
+    const plan = planIdle(inputs({ settings: { shopEmpty: { enabled: true, minutes: 15 } }, emptySince: NOW - 20 * MIN,
+      devices: [airConditioner(), device({ lastActivity: NOW })] }));
+    expect(plan.climateOff).toEqual(["ac"]);
+    expect(plan.powerOff).toEqual([]);
   });
 
   it("does nothing until the shop turns a rule on", () => {
@@ -92,7 +151,7 @@ describe("idle power planning", () => {
 
   it("switches everything off, air conditioners included, once the shop has been empty long enough", () => {
     const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const devices = [device({ poweredOnAt: NOW - 40 * MIN }), device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool", climateChangedAt: NOW - 40 * MIN }), device({ id: "off", power: "off" })];
+    const devices = [device({ poweredOnAt: NOW - 40 * MIN }), device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool", }), device({ id: "off", power: "off" })];
     const early = planIdle(inputs({ settings, devices, emptySince: NOW - 10 * MIN }));
     expect(early.powerOff).toEqual([]);
     expect(early.nextWake).toBe(NOW + 5 * MIN);

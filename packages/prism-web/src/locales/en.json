@@ -1748,6 +1748,7 @@
   "按座位开桌计费。": "Bills seats once the table fills.",
   "提示内容": "Prompt",
   "有人占用的设备不会被关闭；开机或延迟关机后，在资源的占用时长内也算有人。设置为不自动关机的设备不受影响。": "A device someone occupies is never switched off; switching it on or keeping it counts as someone there for the resource's occupancy time. Devices set never to switch off are left alone.",
+  "空调还会等待店内无人或所有机台都已闲置；机台恢复使用会重新计算空调的关机时间。": "Air conditioners also wait until the shop is empty or every cabinet is idle. Renewed cabinet use reschedules their shutdown.",
   "添加 Bot": "Add a bot",
   "添加能力": "Add capability",
   "玩家进店前如何确认身份、绑定提示、新玩家礼物与平台标识转换。": "How players confirm who they are, the binding prompt, the new player gift and platform identity conversion.",

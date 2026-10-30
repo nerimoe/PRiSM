@@ -51,6 +51,7 @@ export function IdlePowerSettings() {
       <h4 className="mb-1 font-semibold">{t("闲置自动关机")}</h4>
       <p className="mb-4 text-sm leading-relaxed text-ink/60">
         {t("有人占用的设备不会被关闭；开机或延迟关机后，在资源的占用时长内也算有人。设置为不自动关机的设备不受影响。")}
+        {" "}{t("空调还会等待店内无人或所有机台都已闲置；机台恢复使用会重新计算空调的关机时间。")}
       </p>
       <ActionForm
         label="保存闲置设置"
