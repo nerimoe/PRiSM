@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { convertPrismNeoSnapshot, normalizePrismNeoTimestamp } from "./prism-neo-convert";
 import { pricingPreview } from "./ui/merchant/pricing-preview";
@@ -93,6 +94,43 @@ const snapshot = {
 };
 
 describe("convertPrismNeoSnapshot", () => {
+  it("keeps a snapshot without billing rules as a device-only shop", () => {
+    const converted = convertPrismNeoSnapshot({ ...snapshot, billingRules: [] }, { timeZone: "Asia/Shanghai" });
+    expect(converted.settings).toMatchObject({ entryPricingIds: [] });
+    expect(converted.tables.pricing_configs).toEqual([]);
+  });
+
+  it("stores present grants in stored units and keeps per-item limits", () => {
+    const converted = convertPrismNeoSnapshot(
+      {
+        ...snapshot,
+        presents: [
+          {
+            id: 62,
+            name: "First top-up",
+            oncePerUser: false,
+            body: [
+              { assetType: "CURRENCY", assetId: 10001, count: 12.5, mergeStrategy: "STACK" },
+              { assetType: "TICKET", assetId: 10001, count: 3, mergeStrategy: "EXTEND_TIME", durationMs: 3_600_000, oncePerUser: true },
+            ],
+          },
+        ],
+      },
+      { shopName: "x" },
+    );
+    expect(JSON.parse(String(converted.tables.presents[0]!.grants_json))).toEqual([
+      expect.objectContaining({ assetType: "currency", assetCode: "paid", amount: 1250, mergeStrategy: "stack" }),
+      expect.objectContaining({
+        assetType: "ticket",
+        assetCode: "legacy.ticket.10001",
+        amount: 3,
+        mergeStrategy: "extend-time",
+        durationMs: 3_600_000,
+        maxPerPlayer: 1,
+      }),
+    ]);
+  });
+
   const backup = convertPrismNeoSnapshot(snapshot, { shopName: "云谷", timeZone: "Asia/Shanghai" });
 
   it("maps legacy ids, money and hidden assets like the CLI importer", () => {
@@ -161,13 +199,23 @@ describe("convertPrismNeoSnapshot", () => {
     ]);
   });
 
-  it("ships a disabled legacy pricing release pinning unpaid sessions", () => {
-    expect(backup.tables.pricing_configs[0]).toMatchObject({ id: "legacy:pricing-config:time-priority", enabled: 0 });
+  it("bills the default group by an enabled legacy pricing release pinning unpaid sessions", () => {
+    expect(backup.settings).toMatchObject({
+      cashierEnabled: false,
+      entryPricingIds: ["legacy:pricing-config:time-priority"],
+    });
+    expect(backup.tables.pricing_configs[0]).toMatchObject({ id: "legacy:pricing-config:time-priority", enabled: 1 });
+    expect(backup.tables.pricing_config_versions[0]).toMatchObject({ enabled: 1 });
+    expect(
+      backup.tables.asset_definitions.filter((d) => d.type === "currency" && d.status === "active").map((d) => d.code),
+    ).toEqual(expect.arrayContaining(["paid", "free"]));
     const provider = JSON.parse(String(backup.tables.pricing_configs[0]!.provider_json));
+    // neo's Fri/Sat 20:00-04:00 Shanghai night rate, stored in UTC.
+    expect(provider.timeZone).toBe("UTC");
     expect(provider.rules[0]).toMatchObject({
       id: "legacy.rule.2",
       weekdays: [5, 6],
-      timeRange: { start: "20:00", end: "04:00" },
+      timeRange: { start: "12:00", end: "20:00" },
       pricing: { unitPrice: 4000, priceCap: 16000 },
     });
     expect(backup.tables.pricing_releases[0]!.time_zone).toBe("UTC");
@@ -196,10 +244,23 @@ describe("convertPrismNeoSnapshot", () => {
     ]);
   });
 
-  it("emits a v3 header with shopProfile and no extra keys", () => {
-    expect(backup.shopProfile).toMatchObject({ name: "云谷", heroData: null, radiusMeters: 80 });
+  it("matches the server's import fixture, so its end-to-end restore test covers what this writes", () => {
+    const converted = convertPrismNeoSnapshot({
+      exportedAt: "2026-06-01T00:00:00Z",
+      users: [{ id: 7, createdAt: "2026-01-01T00:00:00Z", isBanned: false }],
+      billingRules: [{ id: 2, name: "Night", priority: 20, matchDate: { weekdays: [5, 6] }, timeRange: { start: "20:00", end: "04:00" },
+        pricing: { unitMinutes: 30, unitPrice: 40, priceCap: 160, roundGraceMinutes: 5 } }],
+    } as never, { shopName: "云谷店", timeZone: "Asia/Shanghai" });
+    const { counts: _counts, ...file } = converted;
+    const fixture = JSON.parse(readFileSync(new URL("../../server/test/fixtures/prism-neo-converted.json", import.meta.url), "utf8"));
+    expect(JSON.parse(JSON.stringify(file))).toEqual(fixture);
+  });
+
+  it("emits a partial v3 header that leaves the importing shop's profile alone", () => {
+    expect(backup.partial).toBe(true);
+    expect(backup).not.toHaveProperty("shopProfile");
     expect(Object.keys(backup).sort()).toEqual(
-      ["counts", "exportedAt", "format", "scope", "settings", "shopProfile", "source", "storage", "tables", "version"].sort(),
+      ["counts", "exportedAt", "format", "partial", "scope", "settings", "source", "storage", "tables", "version"].sort(),
     );
   });
 

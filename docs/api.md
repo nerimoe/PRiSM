@@ -7,11 +7,35 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 ```json
 {
   "error": {
-    "code": "ERROR_CODE",
-    "message": "易读的错误说明文本。"
+    "code": "INSUFFICIENT_BALANCE",
+    "message": "余额不足，请充值后再结账，计费会继续",
+    "reason": "Insufficient currency holdings for this operation.",
+    "notice": {
+      "code": "INSUFFICIENT_BALANCE",
+      "level": "warning",
+      "display": "dialog",
+      "flow": "none",
+      "title": "余额不足",
+      "body": "余额不足，请充值后再结账，计费会继续",
+      "actions": [{ "kind": "dismiss", "label": "知道了" }]
+    }
   }
 }
 ```
+
+### 给玩家看的提示（`notice`）
+
+给玩家看什么、怎么展示，统一由服务端决定（`packages/server/src/notices.ts` 的一张按错误码索引的表），客户端只负责照着渲染。所以新增一种错误、改一句文案、给某个错误加「重试」，都只改服务端，App Clip 不用发版。
+
+- **语言**：按请求头 `Accept-Language` 选中文或英文（第一语言是英文才用英文）。网页按自己的语言设置发送，App Clip 用系统语言。
+- **`message`** 与 `notice.body` 相同，旧客户端原样显示它也能看到正确的提示。服务端原来的措辞（例如核心层的英文诊断）放在 **`reason`**，只给后台员工界面和排查用，玩家端不显示。
+- **`display`**：`dialog` 打断用户，只用于意外且需要玩家读完处理的情况（封号、余额不足、设备连不上、没有定位权限等）；`inline` 显示在玩家刚操作的地方（投币冷却、请先开机、兑换码无效、定位不准或不在店内、开门密码获取失败等正常流程里的结果）；`none` 不显示，只执行 `flow`。表里没有的错误码：路由写给玩家的中文 4xx 文案原样 `inline` 显示（按规则拒绝了刚才的操作），其余（5xx、开发者文案）换成通用文案并 `dialog`。设备操作的成功响应也可以带 `notices`：投币成功返回 `COIN_SENT`（「已投币」），显示在投币按钮下。
+- **`flow`**：客户端内置的几种后续动作。`expired`：会话失效，回到重新扫码；`refresh`：重新读取页面状态（如需要先入场、先绑定身份）；`signin`：重新登录；`none`：无。
+- **`actions`**：只在 `dialog` 时出现，`dismiss`（关闭）和 `retry`（重试，客户端能重试时才显示）。客户端不认识的动作当作关闭处理。
+- **`level`**：`success` / `info` / `warning` / `error`，决定颜色。
+- 表里没有的错误码：路由自己写的中文文案原样使用；英文开发者文本和服务器内部错误一律显示「操作失败，请稍后重试」，不让内部措辞出现在玩家面前。
+- 成功响应也可以带提示：扫码刷卡（`/machines/login`）返回 `notices` 数组，`CARD_NOT_READ` / `CARD_SENT` 和投币结果（含投币失败、未确认）全部是 `inline`：投币是刷卡的附带动作，不打断刷卡。客户端把每条提示按各自的 `level` 着色（success 用项目强调色蓝，warning 橙，error 红，info 灰）、用「 · 」拼在卡片那一行的说明文字里，并在行尾显示对应图标；不给整行染色，提示显示期间也不锁定任何操作，成功 3 秒、其它 5 秒后恢复原样。投币按钮的结果直接显示在按钮上（「已投币」「请稍后再投币」），同样几秒后恢复「投币」。入场顺便开门时门锁失败，`door.notice` 为 `DOOR_CODE_FAILED`。
+- 错误码与状态码由一个共享的处理函数映射（`http-errors.ts`），所有路由一致。封号为 `ACCOUNT_BANNED`，封禁表限制为 `ACCESS_RESTRICTED`，玩家资格停用统一为 403 `PLAYER_DISABLED`。
 
 ## 身份认证 (Authentication)
 
@@ -71,7 +95,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `GET` | `/rpc/player/assets` | 查询当前可用且可显示的资产持有及历史流水记录。 |
 | `GET` | `/rpc/player/sessions/history` | 查询历史结账场次。 |
 | `GET` | `/rpc/player/sessions/:sessionId/history` | 查询指定场次的收费明细项及折扣调整项。 |
-| `POST` | `/rpc/player/session/start` | 启动包时结算场次。 |
+| `POST` | `/rpc/player/session/start` | 确认使用扫码的资源：开始该资源的计费方案及其依赖的方案，结束与之互斥的方案。请求带扫码 `ticket`、`consent: true`，以及扫码页预览给出的 `expectedRevision`；状态已变化时返回 `PRICING_STATE_REVISION_MISMATCH`。响应为 `{session, billing: {changed, created, started, stopped, kept}}`，`billing` 里是方案名。带 `openDoor: true` 时同时为扫码设备获取开门密码，响应多一个 `door`；只有计费开始成功才返回密码，门锁失败时 `door.error` 说明原因、计费仍然有效。见 [资源与资源组](resources.md)。 |
 | `POST` | `/rpc/player/device-commands` | 申请设备动作。动作使用明确类型：`door.open`、`power.on`、`power.off`、`ac.set_temperature`、`coin`、`aime.scan`，并通过 `target.kind` 区分设施设备和游戏机器。 |
 | `POST` | `/rpc/player/checkout/preview` | 预览当前场次结账费用，不关单。 |
 | `POST` | `/rpc/player/checkout/confirm` | 确认当前场次结账，扣减余额并关单。 |
@@ -158,7 +182,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `PATCH` | `/rpc/staff/players/:playerId/status` | 设置玩家状态（`active` / `disabled` / `banned`）。 |
 | `POST` | `/rpc/staff/players/:playerId/identities` | 绑定玩家外部物理卡或 平台身份。 |
 | `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定；删除后该 平台身份、卡号或扫码身份不再自动指向此玩家。 |
-| `POST` | `/rpc/staff/players/:playerId/session/start` | 管理员为玩家开启一个计费 session；同一玩家可同时拥有多个平级 active session，请求体可带 `pricingConfigIds` 指定这条计时使用哪些计费方案。 |
+| `POST` | `/rpc/staff/players/:playerId/session/preview` | 预览为玩家开始一个方案会新增、结束、保留哪些方案。请求 `{pricingConfigId}`，必须指定（没有默认方案，不传返回 `PRICING_TARGET_REQUIRED`）；响应 `{pricingConfigId, planName, revision, changed, started, stopped, kept}`（方案名）。 |
+| `POST` | `/rpc/staff/players/:playerId/session/start` | 店员为玩家开始一个方案的计费，请求 `{pricingConfigId?, expectedRevision?}`（旧的 `pricingConfigIds` 最多一个）；必须指定方案，不传返回 `PRICING_TARGET_REQUIRED`。带预览的 `expectedRevision` 时，状态已变化返回 `409 PRICING_STATE_REVISION_MISMATCH`。一条 session 只计一个方案；同一方案最多一条，再次开始已在计费的方案返回原 session（`billing.created: false`）。响应 `{session, billing}`，`billing` 同扫码确认。与扫码、前台收银、机器人走同一个入口，见 [计费状态编排](pricing-sessions.md)。 |
 | `GET` | `/rpc/staff/players/:playerId/assets` | 检查并审计指定玩家的资产持有和变更流水。 |
 | `POST` | `/rpc/staff/players/:playerId/assets/grants` | 给玩家赠送/分发资产（货币、道具、月卡等）。 |
 | `POST` | `/rpc/staff/players/:playerId/assets/adjustments` | 按 `holdingId` 精确调整/扣减/ revoke 某条玩家持有记录，避免同类资产的不同有效期记录互相混淆。 |
@@ -169,8 +194,9 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players/:playerId/checkout/preview` | 预览该玩家所有 active session 和未结 closed session 的统一结算结果；不关单、不扣款。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/confirm` | 关闭该玩家所有 active session，并统一结算所有未结 session。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/override` | 后台特权改单结算：指定最终金额与改单备注，存入审计项。 |
-| `POST` | `/rpc/staff/players/:playerId/sessions/:sessionId/stop` | 只停止指定 session 的计时，保留为待结算，不立即扣款。 |
-| `GET` | `/rpc/staff/live-players` | 获取在店玩家和 `billingSnapshot` 只读计费快照；浏览器后台线程复用引擎生成预估与时间轴。默认 `estimatedTotal` 为 `null`；显式 `?playerId=...` 返回单玩家后端预估。 |
+| `POST` | `/rpc/staff/players/:playerId/sessions/:sessionId/stop` | 停止指定 session 的计时，保留为待结算，不立即扣款；依赖该 session 方案的其他 active session 在同一时间点一并停止。 |
+| `GET` | `/rpc/staff/live-players` | 获取在店玩家（含只剩未结账单的玩家）和 `billingSnapshot` 只读计费快照；浏览器后台线程复用引擎生成预估与时间轴。每条 session 带 `pricingConfigId`，响应带 `roster`（同 `staff/roster`），网页「在店」页的「按位置分组」使用它。默认 `estimatedTotal` 为 `null`；显式 `?playerId=...` 返回单玩家后端预估。 |
+| `GET` | `/rpc/staff/roster` | 在店的人与人数（`total`），每人只列在一处。带 `?name=` 时按资源名、别名或方案名只列一项，找不到返回 404 `ROSTER_TARGET_NOT_FOUND`。见下文「在店的人」。 |
 | `GET` | `/rpc/staff/sessions/active` | 获取全场当前的活跃场次。 |
 | `POST` | `/rpc/staff/sessions/active/checkout` | 一键结账/清理全场所有活跃场次。 |
 | `GET` | `/rpc/staff/pricing-effects` | 列出可绑定到资产的计费效果，如免时费、固定抵扣或比例折扣。 |
@@ -182,7 +208,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/asset-definitions/:assetType/:assetCode/archive` | 软归档某项资产定义（保护历史引用不丢失）。 |
 | `POST` | `/rpc/staff/asset-definitions/:assetType/:assetCode/restore` | 恢复已归档的资产定义，使其恢复可用。 |
 | `GET` | `/rpc/staff/presents` | 查看所有礼物定义，包括已归档的定义和有效期。 |
-| `POST` | `/rpc/staff/presents` | 创建一个礼物定义，可包含多项发放内容，每项内容可单独设置有效期。 |
+| `POST` | `/rpc/staff/presents` | 创建一个礼物定义，可包含多项发放内容，每项内容可单独设置有效期和 `maxPerPlayer`（正整数，该内容每位玩家最多领取的次数，不填为不限）。 |
 | `POST` | `/rpc/staff/presents/:presentId/archive` | 软归档礼物。 |
 | `POST` | `/rpc/staff/presents/:presentId/restore` | 恢复已归档的礼物。 |
 | `GET` | `/rpc/staff/business-items` | 查看非计时商品定义列表。 |
@@ -192,18 +218,18 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/business-item-orders` | 查看全场玩家的商品订单列表。 |
 | `POST` | `/rpc/staff/business-item-orders/:orderId/fulfill` | 确认订单核销履行（Fulfill）。 |
 | `POST` | `/rpc/staff/business-item-orders/:orderId/cancel` | 取消已支付商品订单，不执行物理删除，不包含自动退款。 |
-| `GET` | `/rpc/staff/redeem-codes` | 获取 CDK 码清单，返回每个码绑定的礼物、使用上限、已使用次数，以及已使用码的兑换人和兑换时间。已使用次数由 `redeem_records` 聚合而来，因此迁移过来的已兑换记录会在 Staff Web 中显示为已用。Staff Web 不会把全量结果一次性铺开，只展示汇总和最近少量预览，并支持按绑定礼物和使用状态筛选；大量码的查询/导出应走专门筛选或批次工具。 |
+| `GET` | `/rpc/staff/redeem-codes` | 获取 CDK 码清单，返回每个码绑定的礼物、使用上限、已使用次数，以及已使用码的兑换人和兑换时间。已使用次数由 `redeem_records` 聚合而来，因此迁移过来的已兑换记录会在 Staff Web 中显示为已用。Staff Web 不会把全量结果一次性铺开，只展示汇总和最近少量预览，并支持按绑定礼物和使用状态筛选；大量码的查询/导出应走专门筛选或批次工具。Staff Web「资产与兑换 → 兑换码」页的「导出兑换码」基于这份清单在浏览器本地导出，不新增接口：可按绑定礼物、使用状态（未使用/部分使用/已用完/已撤销）、有效状态（有效/未生效/已过期）、兑换码包含的文字（如批次前缀）、到期日期范围（按店铺时区、含首尾两天，永不过期的码不在范围内）和最多导出数量组合筛选，格式为 CSV（可选列，带 UTF-8 BOM 便于 Excel 打开）或纯文本（每行一个兑换码）；CSV 中以 `=`、`+`、`-`、`@` 开头的礼物名会加前缀避免被当作公式，兑换码列保持原样。 |
 | `POST` | `/rpc/staff/redeem-codes` | 生成单个 CDK。 |
 | `POST` | `/rpc/staff/redeem-codes/batch` | 批量生成 CDK 兑换码，可指定前缀、数量、礼物、可用次数和有效期。 |
 | `POST` | `/rpc/staff/redeem-codes/:codeId/revoke` | 作废指定的 CDK 兑换码。 |
 | `GET` | `/rpc/staff/pricing-configs` | 获取系统已创建的计费规则配置，包含按时计费和固定收费方案。 |
 | `GET` | `/rpc/staff/pricing-extensions` | 获取已注册的运行时插件扩展（展示其需要资产的状态）。 |
-| `POST` | `/rpc/staff/pricing-configs` | 创建新的计费方案规则；`time.priority` 使用多条 `provider.rules`，`time.cap` 使用封顶 `provider.rules` 与 `provider.includedPricingConfigIds`，`charge.fixed` 使用 `provider.label` 和 `provider.amount`。 |
-| `PATCH` | `/rpc/staff/pricing-configs/:pricingConfigId` | 修改现有计费方案；计费方案类型不可在更新时切换，后台会按原方案类型校验并提交完整 provider 内容。 |
+| `POST` | `/rpc/staff/pricing-configs` | 创建新的计费方案规则；`time.priority` 使用多条 `provider.rules`，并可带 `relations: { requires, conflicts }`（方案 ID 列表）；`time.cap` 使用封顶 `provider.rules`（管店里所有按时计费的方案，请求里的 `provider.includedPricingConfigIds` 保存时清空），`charge.fixed` 使用 `provider.label` 和 `provider.amount`。关系无法满足（循环、矛盾、未知方案、非计时方案）时拒绝保存，错误码为 `PRICING_RELATION_*`。不带 `provider.id` 时取新规则的 ID：计费历史和封顶按它记账，缺了它结账会失败。 |
+| `PATCH` | `/rpc/staff/pricing-configs/:pricingConfigId` | 修改现有计费方案；计费方案类型不可在更新时切换，后台会按原方案类型校验并提交完整 provider 内容。省略 `relations` 时保留原关系。管理视图对计时方案总是返回 `relations`。 |
 | `POST` | `/rpc/staff/pricing-configs/:pricingConfigId/archive` | 软归档计费方案。 |
 | `POST` | `/rpc/staff/pricing-configs/:pricingConfigId/restore` | 恢复已归档计费方案（默认处于禁用状态，需重新开启）。 |
 | `GET` | `/rpc/staff/pricing-configs/:pricingConfigId/timeline?date=YYYY-MM-DD` | 获取指定日期下该方案的可视化 24 小时时间轴分段明细。 |
-| `POST` | `/rpc/staff/pricing-timeline/preview` | 发送未保存的计费规则草稿，计算并预览其 24 小时时间轴；普通计费草稿发送 `pricing`，全局封顶草稿发送 `priceCap` 与可选 `includedPricingConfigIds`。 |
+| `POST` | `/rpc/staff/pricing-timeline/preview` | 发送未保存的计费规则草稿，计算并预览其 24 小时时间轴；普通计费草稿发送 `pricing`，全局封顶草稿发送 `priceCap` 与 `includedPricingConfigIds: []`。 |
 | `GET` | `/rpc/staff/settings` | 读取店铺通用和硬件设置。 |
 | `PUT` | `/rpc/staff/settings` | 更改店铺配置、投币冷却时间、新用户注册礼物包、Home Assistant、TTLock 和 Hinata IO 设置；`registration.defaultPresentId` 填现有礼物 ID，填 `null` 表示关闭。 |
 | `GET` | `/rpc/staff/device-states` | 获取设施设备上报状态，用于门禁、电源、空调、灯光等 Home Assistant 或设施网关视图。 |
@@ -217,15 +243,36 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/reports/checkouts/:checkoutId/archive` | 店主/manager 输入 archived 布尔值归档或恢复；同步调整营业额，其他统计、玩家历史和余额不变。 |
 | `GET` | `/rpc/staff/reports/players?from=<iso>&to=<iso>&limit=20&offset=0` | 分页查询特定时段内玩家消费贡献榜；返回 `players` 和 `{ limit, offset, hasMore }`。 |
 
-已归档的资产定义、计费效果、礼物、商品项目和计费配置都会保留供历史账单与审计视图查阅。新员工赠送和新礼物不能使用已归档或不在有效期内的资产定义；已归档或过期的礼物不能被兑换；兑换码过期也会拒绝兑换。礼物过期但兑换码没过期、礼物没过期但兑换码过期，都会无法兑换；礼物和兑换码都有效但礼物内容过期时，兑换会成功记录，但过期内容不会到账。现有的兑换码、商品项目、插件和账本历史流水保持可读。已归档的资产定义、计费效果、礼物、商品项目和计费配置可以从 Staff Web 还原；已归档计费方案允许编辑并保存到原记录，但会继续保持归档和禁用，直到员工显式还原并开启。错误的草稿规则会从当前编辑列表中物理移除。导入的礼物授予日期会在仓储层恢复为 `Date | null`，避免旧 JSON 字符串破坏员工接口。导入的提供商有效负载可能仍包含退役的时间规则行或整段日期时间范围，以供迁移上下文使用；结算报价、会话启动营业时间验证、已启用配置验证和时间轴渲染会按领域规则处理这些历史行。
+已归档的资产定义、计费效果、礼物、商品项目和计费配置都会保留供历史账单与审计视图查阅。新员工赠送和新礼物不能使用已归档或不在有效期内的资产定义；已归档或过期的礼物不能被兑换；兑换码过期也会拒绝兑换。礼物过期但兑换码没过期、礼物没过期但兑换码过期，都会无法兑换；礼物和兑换码都有效但礼物内容过期时，兑换会成功记录，但过期内容不会到账。礼物可重复兑换（`oncePerPlayer` 为否）时，带 `maxPerPlayer` 的内容只在该玩家兑换此礼物的次数未超过上限时到账，超过后兑换仍然成功并记录，只是跳过该内容，可用于首充类优惠；如果所有有效内容都已达到上限，兑换会以 `PRESENT_GRANT_LIMIT_REACHED` 拒绝，不消耗兑换码次数。现有的兑换码、商品项目、插件和账本历史流水保持可读。已归档的资产定义、计费效果、礼物、商品项目和计费配置可以从 Staff Web 还原；已归档计费方案允许编辑并保存到原记录，但会继续保持归档和禁用，直到员工显式还原并开启。错误的草稿规则会从当前编辑列表中物理移除。导入的礼物授予日期会在仓储层恢复为 `Date | null`，避免旧 JSON 字符串破坏员工接口。导入的提供商有效负载可能仍包含退役的时间规则行或整段日期时间范围，以供迁移上下文使用；结算报价、会话启动营业时间验证、已启用配置验证和时间轴渲染会按领域规则处理这些历史行。
 
 员工用户因审计需求而被保留。禁用员工用户可阻止登录，但会保留旧场次、指令和资产操作记录可读。PRiSM 会拒绝禁用或降权最后一名制造的所有者（owner）。
+
+### 在店的人（查人）
+
+在店的人是有任意进行中 session 的玩家，加上正在占用资源的人（包括本店不认识的卡）。每个人只列一次：列在他正在占用的资源，否则列在他最具体的计费方案。规则见 [卡片、占用与查人](occupancy.md#4-查人)。
+
+`GET roster` 的响应：
+
+```json
+{
+  "total": 3,
+  "groups": [
+    { "kind": "plan", "id": "rhythm", "name": "音游", "members": [{ "playerId": "p1", "displayName": "Bob", "identities": [{ "provider": "onebot", "subject": "202" }], "startedAt": "2026-10-24T18:00:00.000+08:00" }] },
+    { "kind": "resource", "id": "cab", "name": "maimai", "capacity": 2, "members": [
+      { "playerId": "p2", "displayName": "Dave", "identities": [], "startedAt": "2026-10-24T18:05:00.000+08:00" },
+      { "playerId": null, "displayName": null, "identities": [], "startedAt": "2026-10-24T18:06:00.000+08:00" }
+    ] }
+  ]
+}
+```
+
+已停止但未付款的 session 不算在店；`staff/live-players` 仍然列出这些玩家，方便结账。
 
 现场运营页以玩家为一级对象。`/rpc/staff/live-players` 会把同一玩家名下的多个未结 session 聚合为一行，并把每个 session 作为平级明细返回；这里的未结 session 包括 active session，以及已停止但 `payment_status = unpaid` 的 closed session。active session 的 `endedAt` 为 `null`，closed/unpaid session 会返回停止时写入的 `endedAt`，并且 `elapsedMinutes` 按 `startedAt` 到 `endedAt` 计算而不是继续滚到当前时间。若 session 没有标签，明细中的可选 `label` 字段会省略，而不是返回 `null`。`stayDurationMinutes` 按该玩家当前最久的未结 session 计算。统一平台默认响应包含 `billingSnapshot`，浏览器据此生成预估、时间轴、`globalCapWindows`、`pricingSegments` 与 `pricingCharges`；详见[在店预估快照](live-billing-performance.md)。自定义运行时无快照能力和显式 `?playerId=...` 请求保留后端预估。计算完成后的 `pricingCharges` 字段包含 `pricingConfigId`、`planName`、`ruleLabel` 和 `amount`，用于紧凑地说明这一条计时实际用了哪些计费方案。
 
 同一条 session 的 `pricingSegments` 是可展开的逐段计费解释；每段包含 `pricingConfigId`、`planName`、`providerId`、`ruleId`、`ruleLabel`、`actualStartedAt`、`actualEndedAt`、`ruleTimeRange`、`amount`、`intervalCap` 和 `intervalCapReached`。`actualStartedAt` 与 `actualEndedAt` 是后端以带明确偏移的 ISO 8601 时间戳（按店铺时区，UTC 可用 `Z`）返回的这次实际计费边界，不是仅有时钟的规则配置；`ruleTimeRange` 才是匹配规则的 `{ start, end }` 时钟范围。只有 `intervalCapReached = true` 时客户端才应显示该段的区间封顶状态，未达到时仍保留该段的真实金额而不显示封顶徽标。
 
-玩家级 `globalCapWindows` 按全局封顶规则的锚定窗口分组，而不是按 session 或单次调整分组。每项包含稳定的 `key`、`capConfigId`、`capRuleId`、`ruleLabel`、窗口完整带偏移 ISO 8601 范围 `windowStartedAt` / `windowEndedAt`、`priceCap`、历史已计入金额 `paidBefore`、本次参与封顶前的 `currentAmount`、本次最终计入封顶的 `amountApplied`、`priceCapReached` 以及按 session/计费方案列出的 `contributions`。历史结账会进入同一个窗口的 `paidBefore`，因此客户端必须用这些 history-aware 值解释窗口余量；达到封顶时应展示 `priceCap` 这个封顶后的最终金额，未达到时展示 `amountApplied` 这个当前计入金额，不应把封顶产生的调整差额当成应收金额。`stop` 是独立的现场动作，只结束某个 session 的计时并保留待结算状态；停止后的 session 仍应显示在现场账单中，状态为已停止，直到玩家级 `confirm-all` 执行统一扣款。这样可以支持“音游计时 + 麻将服务叠加”等门店自定义计费方式，同时不把某个 session 设定成业务上的主从关系。
+玩家级 `globalCapWindows` 按全局封顶规则的锚定窗口分组，而不是按 session 或单次调整分组。每项包含稳定的 `key`、`capConfigId`、`capRuleId`、`ruleLabel`、窗口完整带偏移 ISO 8601 范围 `windowStartedAt` / `windowEndedAt`、`priceCap`、历史已计入金额 `paidBefore`、本次参与封顶前的 `currentAmount`、本次最终计入封顶的 `amountApplied`、`priceCapReached`、这个封顶对应的调整金额 `heldBack`（各封顶的调整相加等于报价减实收），以及按 session/计费方案列出的 `contributions`（`amount` 为所有封顶之后的实收）。所有封顶（含时段封顶）一起按实际收的钱结算，见 [计费流程](billing-flow.md)。历史结账会进入同一个窗口的 `paidBefore`，因此客户端必须用这些 history-aware 值解释窗口余量；达到封顶时应展示 `priceCap` 这个封顶后的最终金额，未达到时展示 `amountApplied` 这个当前计入金额，不应把封顶产生的调整差额当成应收金额。`stop` 是独立的现场动作，只结束某个 session 的计时并保留待结算状态；停止后的 session 仍应显示在现场账单中，状态为已停止，直到玩家级 `confirm-all` 执行统一扣款。这样可以支持“音游计时 + 麻将服务叠加”等门店自定义计费方式，同时不把某个 session 设定成业务上的主从关系。
 
 资产计费效果的 `config` 可包含 `applicableSessionLabels`、`applicablePricingConfigIds`、`applicableRuleIds` 以及最低消费门槛 `minSubtotal`（消费未达门槛时不触发减免）。结算时只有当前计时名称、费用项所属计费方案和费用项所属规则匹配且达到最低消费门槛时，效果才会作用到费用；针对特定方案的多张卡券叠加时，系统会跟踪并限制在目标费用项的剩余额度内，不会超出目标方案费用穿透到其他费用。资产持有量在扣减为 0 后不会在多场次结账中重复享受优惠；多张相同卡券生成的调整明细会带有持有唯一标识避免主键冲突；比例折扣按分保留两位小数；卡券有效窗口在开台时间或当前结算时间任一处于有效期内均可生效。后台 UI 会用中文控件生成这些配置，员工不需要手写 JSON。
 
@@ -233,7 +280,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 `time.priority` 规则允许负数 `unitPrice`，用于“在另一条 active session 上叠加抵扣”的场景。例如麻将 B 桌可用独立计时 session 按每小时 `-2` 生成负费用项，最终和玩家的标准入场计时一起统一结算。每个 session 的 `subtotal` / `total` 保留其真实正负计费贡献；后端只在汇总本次统一结账覆盖的全部 session、session 调整、全局封顶和整单调整后，将玩家级最终 `total` 限制为不低于 `0`。统一结账会持久化一条 `player_checkouts` 记录，并通过 `settlements.checkout_id` 关联各 session；营业汇总直接使用该批次的最终金额，不会提前把负数 session 单独归零，也不再依赖玩家和结账时间推断批次。
 
-计费支持两级封顶。`time.priority` 规则里的 `pricing.priceCap` 仍表示方案内封顶，按玩家、计费方案、provider、规则和规则锚点累计；不同计费方案不会再意外共享方案内封顶。`time.cap` 是全局封顶时间轴，不产生费用项，只在后置优惠前对 `provider.includedPricingConfigIds` 中选中的普通按时计费方案合计做二次封顶。全局封顶历史写入独立的 `pricing_cap_history_entries`，按玩家、cap 配置、cap 规则和 cap 锚点累计；月卡、优惠券和手动改单不减少该历史。
+计费支持两级封顶。`time.priority` 规则里的 `pricing.priceCap` 仍表示方案内封顶，按玩家、计费方案、provider、规则和规则锚点累计；不同计费方案不会再意外共享方案内封顶。`time.cap` 是全局封顶时间轴，不产生费用项，只在后置优惠前对店里所有普通按时计费方案的合计做二次封顶；时段封顶和跨方案封顶按单位开始时间一起结算，都按实际收的钱计数，方案内封顶的历史也记实收金额。全局封顶历史写入独立的 `pricing_cap_history_entries`，按玩家、cap 配置、cap 规则和 cap 锚点累计；月卡、优惠券和手动改单不减少该历史。
 
 金额相关字段均按 JSON number 处理，可以传小数，不会按整数截断。包括资产发放 `amount`、资产调整 `quantityDelta`、固定收费 `provider.amount`、时间计费 `pricing.unitPrice` / `pricing.priceCap`、全局封顶 `time.cap` 规则的 `priceCap`、计费效果 `value`、服务项目 `price`、改单最终金额以及结算返回的 `subtotal` / `total` / `chargeItems.amount` / `adjustments.amount`。分页 `limit`、使用次数、计费单位分钟、宽限分钟、优先级等字段仍为整数。
 
@@ -285,20 +332,29 @@ curl -X POST http://localhost:8787/rpc/staff/pricing-configs \
 
 Integration RPC 面向聊天机器人、自助入口、扫码入口等可信外部入口。调用方只持有 `integration` API Token，可以通过 聊天平台、Aime、Telegram 等外部身份直接完成玩家动作；不需要再先调用员工接口拿玩家 ID，也不需要共享 Player Token。
 
+所有 Integration 路由共用一道检查（`guardIntegration`）：
+
+- 只校验 Bot 凭据。店铺没有整店计费开关，没有资源计费的店铺也能让玩家绑定身份、查询钱包；开始计费等动作是否可行由目标资源决定（免费资源返回 `RESOURCE_NOT_BILLED`）。
+
+Bot 向玩家开放哪些命令由 Bot 自己配置，后台不做限制：后台分不清一条请求是管理员还是玩家发的（管理员白名单只在 Bot 里），而凭据本身就在店家自己的 Bot 里。Koishi 插件的 `playerCommands: "readonly"` 让玩家只能绑定、查询和兑换，见插件 README。
+
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
 | `POST` | `/rpc/integration/players/by-identity/resolve` | 按外部身份查找已绑定玩家。 |
 | `POST` | `/rpc/integration/players/by-identity/register` | 按外部身份查找或注册玩家，并自动绑定该身份。 |
-| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开启一条计费 session，可传 `pricingConfigIds` 与 `label`。 |
+| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。请求带 `pricingConfigIds` 时开始其中第一个方案（`label` 作为场次显示名），这是给麻将还没交给平台的旧版 Bot 的兼容路径：旧版 Bot 上桌时按桌的方案开始计费、下桌时停止返回的那个场次，所以只结束麻将方案、不影响玩家的其他计费；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
+| `POST` | `/rpc/integration/players/by-identity/presence` | 一位玩家是否在店：`{inShop, plans, occupying}`，`plans` 为在计费的方案，`occupying` 为正在占用的资源。只剩未结账单的玩家 `inShop: false`。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/preview` | 按外部身份预览玩家当前 session 结算。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/confirm` | 按外部身份确认玩家当前 session 结算。 |
-| `POST` | `/rpc/integration/players/by-identity/sessions/:sessionId/stop` | 按外部身份停止这名玩家名下的单条 session，只结束计时并保留待结算，不立即扣款。授权按玩家归属校验，不区分 session 由哪个渠道开启。 |
+| `POST` | `/rpc/integration/players/by-identity/sessions/:sessionId/stop` | 按外部身份停止这名玩家名下的单条 session，只结束计时并保留待结算，不立即扣款；依赖该方案的 session 一并停止。授权按玩家归属校验，不区分 session 由哪个渠道开启。 |
 | `POST` | `/rpc/integration/players/by-identity/wallet` | 按外部身份读取玩家钱包总览。 |
 | `POST` | `/rpc/integration/players/by-identity/assets` | 按外部身份读取玩家资产持有与流水。 |
 | `POST` | `/rpc/integration/players/by-identity/history` | 按外部身份读取玩家计时记录。 |
 | `POST` | `/rpc/integration/players/by-identity/redeem` | 按外部身份为玩家兑换礼物码。 |
 | `POST` | `/rpc/integration/players/by-identity/device-actions` | 按外部身份申请设备动作，例如启机、投币或 Aime 扫卡；后端会先解析玩家并检查 active session、投币冷却等规则。 |
-| `GET` | `/rpc/integration/sessions/active` | 机器人列出在场所有活跃 session，含玩家对外身份（聊天平台等）以便从聊天平台拉取昵称。 |
+| `GET` | `/rpc/integration/bot` | Bot 自己的设置、店铺编号和店铺知识（店员、货币名称、门锁、麻将桌），只经连接可达。`shop: { code, name }` 让插件不必自己配置店铺编号。`settings` 是 Bot 资源上的店家设置。 |
+| `GET` | `/rpc/integration/roster` | 同 `staff/roster`；Bot 的 `list` 使用它。 |
+| `GET` | `/rpc/integration/sessions/active` | 机器人列出在场所有活跃 session，含玩家对外身份（聊天平台等）以便从聊天平台拉取昵称。每条 session 带 `pricingConfigId` 与 `planName`。 |
 | `GET` | `/rpc/integration/device-states` | 机器人列出当前所有设备上报的电源/状态，供 `/show` 一类查询。`deviceStates[].state` 是普通字符串（如 `on`、`off`），不得再包装为 JSON 字符串。 |
 
 Integration body 支持结构化身份和简写身份：
@@ -324,7 +380,7 @@ Integration body 支持结构化身份和简写身份：
 }
 ```
 
-`autoRegister` 为 `false` 或未传时，身份不存在会返回 `PLAYER_IDENTITY_NOT_FOUND` 和 HTTP 404。`autoRegister: true` 会创建玩家并绑定外部身份，然后继续执行这次动作；如果后台配置了 `registration.defaultPresentId`，新玩家会按该礼物当前有效的内容自动获得资产。未配置、已归档、已过期或找不到的默认礼物只会跳过发放，不会阻断注册；后台手动创建玩家也使用同一规则。
+请求体里的 `autoRegister` 不再生效：每个按身份调用的 Integration 接口都以店铺设置的 `autoRegister` 为准（服务端统一覆盖，见 `routes/shops/integration.ts` 的 `botRequest`）。店铺不允许自动建档时，身份不存在会返回 `PLAYER_IDENTITY_NOT_FOUND` 和 HTTP 404；允许时会创建玩家并绑定外部身份，然后继续执行这次动作；如果后台配置了 `registration.defaultPresentId`，新玩家会按该礼物当前有效的内容自动获得资产。未配置、已归档、已过期或找不到的默认礼物只会跳过发放，不会阻断注册；后台手动创建玩家也使用同一规则。
 
 机器人或自助入口请求机器动作时，不需要先查玩家 ID。以 平台用户触发 maimai 投币为例：
 
@@ -356,7 +412,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 }
 ```
 
-`coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Integration 的游戏机目标使用 `target.ref`，按设备 ID、`public_id`、名称或别名匹配，设备必须绑定可用的 HINATA IO 能力，否则返回 `DEVICE_ACTION_UNSUPPORTED`。`status` 为 `acked`（已执行）、`pending`（结果未知，例如网络超时）或 `expired`（执行失败，原因在 `payload.executorFailure.message`）。`aime.scan` 的 payload 只需提供 `provider`（默认 `aime`），后端会读取该玩家已绑定的对应身份；没有绑定时返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
+`coin`、`aime.scan`、`power.on` 和 `power.off` 必须对应玩家已有至少一条 active session；没有入场会返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。Integration 的游戏机目标使用 `target.ref`，按设备 ID、`public_id`、名称或别名匹配，设备必须绑定可用的 HINATA IO 能力，否则返回 `DEVICE_ACTION_UNSUPPORTED`。`status` 为 `acked`（已执行）、`pending`（结果未知，例如网络超时）或 `expired`（执行失败，原因在 `payload.executorFailure.message`）。`aime.scan` 的 payload 只需提供 `provider`（默认 `aime`），后端取该玩家在本店最近用过的卡（加密存放，见 [卡片](occupancy.md#1-卡片)）；指明了 `subject` 时只有这张卡属于该玩家才会使用；没有卡时返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。身份不存在且未显式允许注册时仍返回 `PLAYER_IDENTITY_NOT_FOUND`。受信任集成可为开关机请求附加 `staffOverride: true`，后端会将其记录为员工动作；其他动作使用该字段会返回 `INTEGRATION_STAFF_OVERRIDE_ACTION_NOT_ALLOWED`。
 
 ## 实时活动推送 (Live Activity)
 
@@ -366,7 +422,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 | --- | --- | --- |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
-| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`previousEvent`、`nextEvent`、`asOfUnix`，以及可选的 `billable` / `remainingToCapCents`。事件为 `{ atUnix, label }` 或 null，时间均为 Unix 秒；下一事件统一取最近收费或规则切换，上一事件不随快照刷新改变。 |
+| `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`previousEvent`、`nextEvent`、`asOfUnix`，以及可选的 `billable` / `remainingToCapCents`。事件为 `{ atUnix, label }` 或 null，时间均为 Unix 秒；事件与账单时间轴的事件一致（开始计费、结束计费、切换计费规则、封顶结束、已封顶、新的一天），另加单位收费节点「计费」/「下次计费」；上一事件不随快照刷新改变，详见 live-activity-push.md。 |
 
 注册请求体：
 
@@ -385,7 +441,9 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 ## 机台直连 (`/io/ws`)
 
-HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请求带 `Authorization: Bearer <deviceToken>`。令牌在设备看板把 HINATA IO 设为直连后签发、只显示一次；令牌无效或设备停用返回 401。平台通过这条连接下发 `SET_CARD`、`KEY_PRESS`，机台回报 `event.cardStateChanged`、`event.cardConsumed`、`event.ledSet`。协议、能力模型和设备日志见 [集成与设备](integrations-and-machines.md)。
+HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请求带 `Authorization: Bearer <deviceToken>`。令牌在设备看板把 HINATA IO 设为直连后签发、只显示一次；令牌无效或设备停用返回 401。平台通过这条连接下发 `SET_CARD`、`KEY_PRESS`，机台回报 `event.cardStateChanged`、`event.cardConsumed`、`event.ledSet`。扫码刷卡在直连机台上会等到游戏取走卡再返回（不等读卡器结果灯），响应的 `card` 字段为 `read`／`not_read`（外部中继为 `sent`）。协议、能力模型和设备日志见 [集成与设备](integrations-and-machines.md)。
+
+机台回报的卡片事件不保存卡号：平台认出卡主人后记在事件的玩家上，日志里只留卡类型和来源。扫码页可以在直连机台的读卡器上添加卡片：`POST /api/v1/devices/session/cards/capture`（`{ticket, location?}`）打开 60 秒的窗口，`GET /api/v1/devices/session/cards/capture/:id?ticket=` 读取结果（`waiting`、`added`、`bound`、`exists`、`taken`、`unsupported`、`expired`）。扫码确认页（`state.gate` 为 `entry`）的 `state.billing.rules.caps` 给出未结账账单到现在的金额 `unsettled`、每个方案当前时段的封顶（封顶为 0 的时段不封顶，不列出）和包含这些方案的跨方案封顶，各带 `priceCap` 与此前已计的 `paidBefore`，见 [资源与资源组](resources.md)。资源的 `capacity`（容量）与 `occupancyMinutes`（占用时长）在商户资源接口里读写；麻将桌的开桌人数就是 `capacity`（2–8，否则 `MAHJONG_CAPACITY_INVALID`；有人在座时修改返回 `MAHJONG_IN_USE`），麻将能力的配置只剩 `pricingConfigIds`；当前占用 `GET /api/v1/merchant/machines/occupancy?shopId=`，占用记录 `GET /api/v1/merchant/machines/:id/occupancy`。见 [卡片、占用与查人](occupancy.md)。
 
 原先只在本地 Bun 服务端提供的 `GET /rpc/machine/ws`（`hello`/`ack`/`ping` 协议、`machine_ws` 执行器）已移除。
 
@@ -396,6 +454,10 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 同一网页账号在同店可绑定多个平台，每个平台最多一个身份，均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。同一外部身份不能被其他网页账号认领，已有不同玩家档案不自动合并。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
 
 ### 店铺绑定要求与身份转换
+
+新店铺（无论是否启用计费）创建时写入 `identityBindingRequired: true`、`autoRegister: true`：要求绑定平台身份，第一次通过 Bot 绑定时自动建档。`autoRegister` 只影响 Bot 绑定与 Bot 命令的建档；不要求绑定时，网页账号第一次进店总会自动建档。
+
+`settings.botContact` 是玩家绑定身份时看到的**绑定提示**（最多 500 字）：逐行显示，包含 `{code}` 的那一行替换为绑定码并作为可复制的命令；为空时客户端显示「向店铺 Bot 发送 bind 绑定码」（Koishi 插件的绑定命令是 `bind`，旧命令 `prism.bind` 仍可用）。旧数据里不含 `{code}` 的联系文字照常保存与显示（客户端在其后补上标准命令）；修改为新的非空内容时必须包含 `{code}`，否则返回 `400 BINDING_PROMPT_CODE_REQUIRED`。`POST /api/v1/shops/:shopCode/platform-binding` 的响应同样带 `botContact`，网页和 App Clip 按同一规则渲染。
 
 店铺 `settings` 的 `identityBindingRequired` 默认 `true`，省略时保留原设置。开启后入场和设备操作须有任意一个已验证的平台绑定；关闭后登录网页账号即可创建店内玩家档案，之后可追加外部身份。已在店玩家仍可读取账单和结账，避免重新开启开关后无法离场。该开关独立于 Bot 的自动注册设置和店铺位置校验。
 
@@ -416,7 +478,7 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 ## React 店铺计费初始化
 
-已有非计费店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并启用计费。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 Bot 凭据；启用计费的设置校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。
+默认资源组还没有方案的店铺可由 owner 调用 `POST /api/v1/shops/:shopCode/billing/setup`，通过一次事务补齐余额资产、创建标准入场方案并设为默认资源组的方案（快速创建计费）。请求带收费标准、可选的 `cashierEnabled` 和 UUID `operationId`，重试不会重复创建规则。新建店铺的 `billingSetup.createBotToken` 默认为 `false`，只有显式选择才创建 Bot 凭据；`billingSetup.cashierEnabled`（默认 `false`）为 `true` 时同时开启前台收银；`billingSetup.autoRegister` 默认 `true`；选定计费方案的校验不要求 Bot 凭据。向导操作、完整参数及数据保留策略见[店铺计费初始化](billing-setup.md)。
 
 设备状态接口的身份门控统一为 `gate: "binding"`，业务错误为 `PLATFORM_BINDING_REQUIRED`。React 与 Koishi 已同步采用新契约；其他调用旧 `qq-binding` 或旧门控名的客户端需一起更新。
 

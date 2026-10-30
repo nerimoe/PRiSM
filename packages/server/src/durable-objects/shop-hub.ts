@@ -1,0 +1,1661 @@
+import type { DurableObject } from "cloudflare:workers";
+import type { Env } from "../bindings.js";
+import { decryptSecret, sha256Hex } from "../crypto.js";
+import type { DeviceBus } from "../resources/capabilities/bus.js";
+import { createRuntimeBus } from "../resources/capabilities/runtime.js";
+import { listHaConnections } from "../resources/capabilities/ha-connections.js";
+import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
+import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
+import { loadResource } from "../resources/resource.js";
+import type { ShopEvent } from "../resources/shop-events.js";
+import { climatePower } from "../resources/capabilities/idle-power.js";
+import {
+  climateState,
+  deviceView,
+  haConnectionsOf,
+  readDeviceState,
+  readLiveState,
+  readShopLiveStates,
+  statefulDevices,
+  writeEventConnections,
+  type DeviceState,
+  type DeviceView,
+} from "../resources/capabilities/device-state.js";
+
+/** How many devices that are not live the hub asks Home Assistant about at once for the boards. */
+const BOARD_READ_CONCURRENCY = 4;
+/** How long one Home Assistant read of a device answers everyone else who asks for it. */
+const READ_SHARED_MS = 2000;
+import type { Resource } from "../resources/resource.js";
+import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
+import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
+import type { HaWatch } from "./machine-relay.js";
+import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
+import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, type BotResponse } from "./shop-hub-bot.js";
+import { app } from "../app.js";
+
+/**
+ * A shop bot's connection, kept on the socket so it survives hibernation. `id` tells this connection
+ * from another bot's; `ha` and `name` come from its hello, and a bot that never said it can watch
+ * Home Assistant is never given a watch.
+ */
+type BotAttachment = { kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string };
+/** A player's device page, listening for that device's state and for changes to its own page. */
+type PageAttachment = { kind: "page"; deviceId: string; userId: string };
+/** A merchant's device board, listening for the state of every device in the shop. */
+type BoardAttachment = { kind: "board" };
+/** A write a bot sent is answered from here if it arrives again (a resend after a lost reply). */
+const REPLAY_MS = 10 * 60_000;
+
+let BaseDurableObject: typeof DurableObject;
+try {
+  // @ts-ignore
+  const cf = await import("cloudflare:workers");
+  BaseDurableObject = cf.DurableObject;
+} catch {
+  BaseDurableObject = class MockDurableObject {
+    constructor(public ctx: any, public env: any) {}
+  } as any;
+}
+
+/**
+ * A watcher that has not reported for this long is presumed gone.
+ *
+ * Two beats (60 s each, the same cadence for bots and machines) plus a little
+ * slack, so one late or lost beat does not cost a watcher its watch. Equal to
+ * `BEAT_TIMEOUT_MS`, which asks the same question of a machine's liveness.
+ */
+export const LEASE_MS = 150_000;
+/** A watcher that failed is not chosen again for this long, while others exist. */
+const BENCH_MS = 5 * 60_000;
+/** Bursts of activity are folded into one idle check this long after the first. */
+const TOUCH_DELAY_MS = 2000;
+/**
+ * The default number of clients watching at once. The second keeps the state flowing while the first
+ * is replaced, so losing one never leaves a gap. A shop's own number is the platform administrator's
+ * to set (`ha-watchers.ts`).
+ */
+export const WATCHERS = DEFAULT_WATCHERS;
+/** A failed state write restarts the watch, but not more often than this. */
+const RESYNC_MS = 30_000;
+
+/** A bot's key among candidates and watchers; an IO's is its machine id. */
+const BOT_PREFIX = "bot:";
+const botKey = (id: string) => `${BOT_PREFIX}${id}`;
+const isBot = (key: string) => key.startsWith(BOT_PREFIX);
+
+/**
+ * Something online that can watch Home Assistant for the shop: a HINATA IO, keyed by its machine id, or
+ * a shop bot, keyed by `bot:<connection id>`. `machineId` is that key either way, so records written
+ * before bots existed read as what they were.
+ */
+type Candidate = {
+  machineId: string;
+  /** The relay channel an IO is reached through; a bot is reached on its own socket. */
+  channel: string;
+  session?: string;
+  since: number;
+  /** A bot's name for the board. */
+  label?: string;
+  /** Ranked after the others for this long after it failed to take the watch. */
+  benchedUntil?: number;
+};
+/** What one watcher said about one Home Assistant connection. */
+type Link = {
+  /** The watcher is subscribed to it. */
+  connected: boolean;
+  /** Its full state was stored, so the stored facts are complete. */
+  snapshot: boolean;
+};
+type Watcher = {
+  machineId: string;
+  channel: string;
+  session?: string;
+  label?: string;
+  term: number;
+  leaseUntil: number;
+  links: Record<string, Link>;
+  /**
+   * The machine went dark and this IO has not yet shown it is still there.
+   *
+   * Its assignment is untouched — no `HA_UNWATCH`, no closed socket, no new
+   * term — but until a report arrives that could only have come after the
+   * power-off, what it says is not treated as evidence of the present.
+   *
+   * Reports and holds share an ordered timestamp. A report already waiting
+   * when the hold was placed cannot lift it.
+   */
+  held?: number;
+};
+type Watchers = Record<string, Watcher>;
+type Candidates = Record<string, Candidate>;
+
+/**
+ * One power-off this machine went through, and what its IO did afterwards.
+ *
+ * A power-off says the machine has no power; it does not say the IO does. So
+ * the platform keeps the assignment and watches what the IO actually does,
+ * rather than guessing from the fact that power was cut.
+ */
+type Observation = {
+  machineId: string;
+  /** The term the IO held when the power went off; a different term means a new assignment. */
+  term: number;
+  startedAt: number;
+  /** Home Assistant itself said the machine is off, not only that the command was accepted. */
+  confirmed: boolean;
+  /** Settled once: success, failure, or inconclusive. Absent while still running. */
+  result?: "success" | "failure" | "inconclusive";
+};
+type Observations = Record<string, Observation>;
+
+/**
+ * What this IO has shown about surviving its machine's power-off.
+ *
+ * Not inferred from how the machine is wired — the platform cannot see that,
+ * and the same shop may contain both kinds. Learned from behaviour only.
+ */
+type Reliability = {
+  trusted: boolean;
+  consecutiveFailures: number;
+};
+type Reliabilities = Record<string, Reliability>;
+
+/** A power-off is watched for this long before its IO is called steady or not. */
+const OBSERVE_MS = 3 * 60_000;
+/** Two in a row, and the machine is treated as one whose power-off takes its IO with it. */
+const FAILURES_BEFORE_DISTRUST = 2;
+/**
+ * The last state applied for one entity. The hub keeps it only to recognise a
+ * repeat or an older report from the second watcher; readers use `device_state`.
+ */
+export type WatchedState = {
+  state: string;
+  attributes: Record<string, unknown>;
+  lastChanged: string | null;
+  /** Home Assistant's `last_updated` (else `last_changed`) in ms; orders reports. */
+  stamp: number | null;
+};
+/** Which capabilities an entity drives, by `connectionId|entityId`. */
+type Targets = Record<string, Array<{ deviceId: string; capability: "power" | "climate" }>>;
+
+const entityKey = (connectionId: string, entityId: string) => `${connectionId}|${entityId}`;
+const connectionOf = (key: string) => key.slice(0, key.indexOf("|"));
+
+/** Only what a setting is made of; room temperature drifts on its own. */
+const settingOf = (state: WatchedState) => ({
+  mode: state.state,
+  temperature: typeof state.attributes.temperature === "number" ? state.attributes.temperature : null,
+  fanMode: typeof state.attributes.fan_mode === "string" ? state.attributes.fan_mode : null,
+});
+
+const stampOf = (item: HaEntityState): number | null => {
+  const at = Date.parse(item.last_updated ?? item.last_changed ?? "");
+  return Number.isNaN(at) ? null : at;
+};
+const sameState = (previous: WatchedState, item: HaEntityState) =>
+  previous.state === item.state && JSON.stringify(previous.attributes) === JSON.stringify(item.attributes);
+/** A report that adds nothing: a repeat, or older than what is already applied. */
+const superseded = (previous: WatchedState, item: HaEntityState, stamp: number | null) => {
+  if (previous.stamp !== null && stamp !== null) {
+    if (stamp < previous.stamp) return true;
+    if (stamp > previous.stamp) return false;
+  }
+  return sameState(previous, item);
+};
+
+type StateWrite = Parameters<DeviceBus["reportMany"]>[0][number];
+/** `reportMany` is one batch; a snapshot of a large shop is split to stay within D1's limits. */
+const WRITE_CHUNK = 40;
+
+/**
+ * One per shop, named by shop id. It decides which online clients watch the shop's Home Assistants,
+ * keeps their reports in `device_state`, and tells the rest of the platform which Home Assistant
+ * connections can be believed.
+ *
+ * A watcher is a shop bot or a HINATA IO. Up to the shop's number of them (two unless the platform
+ * administrator changed it) watch at once, and bots come first: while a bot is online it holds a slot,
+ * and a second bot takes the other one. An IO fills a slot no bot wants, and is sent home when a bot
+ * arrives once the watchers that stay have delivered what it carried, so the handover has no gap. A
+ * candidate that just failed (it cannot reach Home Assistant, or went quiet) ranks behind healthy
+ * ones for a while, whatever it is. Each watcher holds a lease renewed by every report. Power-offs
+ * keep the assignment pending outside the shop's slots until a later heartbeat proves it survived;
+ * leaving, failing or going quiet past the lease releases it. Every report carries the term of the
+ * assignment it answers, so a replaced watcher's reports are ignored.
+ *
+ * A connection is *watched* when some live watcher has it subscribed and has
+ * delivered its full state. Only then does `ha_event_connections` hold it, and
+ * readers take `device_state` as fact without asking Home Assistant. The
+ * snapshot is stored before the connection is announced, and the announcement
+ * is withdrawn when the last such watcher goes, so the table never promises
+ * more than is stored.
+ */
+export class ShopHub extends BaseDurableObject<Env> {
+  /** Requests running now, so a resend while the first is in flight is not run twice. */
+  private readonly running = new Set<string>();
+  private shop: string | null = null;
+  private lastResync = 0;
+  /** The last watcher list sent to the boards, so a board hears only about a change. */
+  private lastWatchers = "";
+  /**
+   * Home Assistant reads by device, under way or just answered: a page and a
+   * board, or several pages, asking within a moment share one read instead of
+   * asking Home Assistant again.
+   */
+  private reading = new Map<string, Promise<DeviceState>>();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // A bot's keep-alive is answered without waking the object.
+    try {
+      ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    } catch {
+      // Not available outside the Workers runtime; the message handler answers instead.
+    }
+  }
+
+  /**
+   * A bot or a device page connecting. The Worker route has already checked
+   * the token or the user and ticket and passes the shop on in headers.
+   */
+  async fetch(request: Request): Promise<Response> {
+    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected Upgrade: websocket", { status: 426 });
+    const pageDevice = request.headers.get("x-prism-hub-device");
+    if (pageDevice) return this.acceptPage(request, pageDevice);
+    if (request.headers.get("x-prism-hub-board")) return this.acceptBoard(request);
+    const shopId = request.headers.get("x-prism-hub-shop");
+    const shopCode = request.headers.get("x-prism-hub-shop-code");
+    const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
+    if (!shopId || !shopCode || !token) return new Response("Missing bot channel", { status: 400 });
+    await this.rememberShop(shopId);
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server!, ["bot"]);
+    server!.serializeAttachment({ kind: "bot", token, shopCode, reminderLeadMs: null, id: crypto.randomUUID() } satisfies BotAttachment);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private bots(): WebSocket[] {
+    return this.ctx.getWebSockets("bot");
+  }
+
+  /** Live sockets, including bots connected before credential usage was recorded. */
+  async connectedBots(): Promise<string[]> {
+    const shopId = await this.shopId();
+    if (!shopId) return [];
+    const hashes = await Promise.all(this.bots().filter((ws) => ws.readyState === 1).map(async (ws) => {
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      return attachment?.kind === "bot" ? sha256Hex(attachment.token) : "";
+    }));
+    if (!hashes.length) return [];
+    const rows = await this.env.DB.prepare(
+      `SELECT m.id, t.id AS tokenId, t.last_used_at FROM api_tokens t
+       JOIN device_capabilities c ON c.shop_id=t.shop_id AND c.capability='bot'
+         AND json_extract(c.config_json,'$.tokenId')=t.id
+       JOIN machines m ON m.shop_id=c.shop_id AND m.id=c.device_id
+       WHERE t.shop_id=? AND t.role='integration' AND t.status='active' AND m.enabled=1
+         AND t.token_hash IN (SELECT value FROM json_each(?))`,
+    ).bind(shopId, JSON.stringify(hashes)).all<{ id: string; tokenId: string; last_used_at: string | null }>();
+    const now = new Date().toISOString();
+    const missing = rows.results.filter((row) => !row.last_used_at);
+    if (missing.length) await this.env.DB.batch(missing.map((row) => this.env.DB.prepare(
+      "UPDATE api_tokens SET last_used_at=? WHERE shop_id=? AND id=? AND last_used_at IS NULL",
+    ).bind(now, shopId, row.tokenId)));
+    return rows.results.map((row) => row.id);
+  }
+
+  /** A device page connecting; the Worker route has checked its user and ticket. */
+  private async acceptPage(request: Request, deviceId: string): Promise<Response> {
+    const shopId = request.headers.get("x-prism-hub-shop");
+    if (!shopId) return new Response("Missing page channel", { status: 400 });
+    const userId = request.headers.get("x-prism-hub-user") ?? "";
+    await this.rememberShop(shopId);
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server!, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
+    server!.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
+    // The greeting never waits on Home Assistant: a live device's stored state goes with it at once,
+    // and one that is not live is asked for afterwards and sent when Home Assistant answers.
+    const greeting = await this.pageGreeting(shopId, deviceId);
+    server!.send(JSON.stringify({ type: "hello", ...greeting.frame }));
+    if (greeting.ask) this.later(this.askPage(shopId, greeting.ask, server!));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * What a device page is greeted with, from storage only: a live device's power
+   * and climate, or for one that is not live nothing yet and the device to ask
+   * Home Assistant about. `watching` is only for App Clip builds that still
+   * decide for themselves; the web page ignores it.
+   */
+  private async pageGreeting(shopId: string, deviceId: string): Promise<{ frame: { watching: boolean } & DeviceView; ask: Resource | null }> {
+    try {
+      const device = await loadResource(this.env.DB, shopId, deviceId);
+      if (!device) return { frame: { watching: false }, ask: null };
+      const state = await readLiveState(this.env.DB, shopId, device);
+      return state.watching
+        ? { frame: { watching: true, ...deviceView(device, state) }, ask: null }
+        : { frame: { watching: false }, ask: device };
+    } catch (error) {
+      console.error("Shop hub page greeting failed", error);
+      return { frame: { watching: false }, ask: null };
+    }
+  }
+
+  /** A device's state for its pages after its liveness changed: stored if it is live, else Home Assistant's answer. */
+  private async pageState(shopId: string | null, deviceId: string): Promise<{ watching: boolean } & DeviceView> {
+    try {
+      const device = shopId ? await loadResource(this.env.DB, shopId, deviceId) : null;
+      if (!device) return { watching: false };
+      const state = await this.readDevice(shopId!, device);
+      return { watching: state.watching, ...deviceView(device, state) };
+    } catch (error) {
+      console.error("Shop hub page state failed", error);
+      return { watching: false };
+    }
+  }
+
+  /** A device that is not live, read for one page that just connected; a read under way is shared. */
+  private async askPage(shopId: string, device: Resource, ws: WebSocket) {
+    try {
+      const state = await this.readDevice(shopId, device);
+      // It became live meanwhile: the announcement told the page, and this answer is older.
+      if (state.watching || (await this.liveNow(device))) return;
+      ws.send(JSON.stringify({ type: "state", ...deviceView(device, state) }));
+    } catch {
+      // The page left, or Home Assistant could not be read; the page reads for itself if it hears nothing.
+    }
+  }
+
+  /**
+   * One device as every reader reads it (stored while live, else Home Assistant),
+   * shared with any read of it already under way in this object.
+   */
+  private readDevice(shopId: string, device: Resource): Promise<DeviceState> {
+    const pending = this.reading.get(device.id);
+    if (pending) return pending;
+    const read = readDeviceState({ db: this.env.DB, env: this.env, shopId }, device);
+    this.reading.set(device.id, read);
+    const forget = () => {
+      if (this.reading.get(device.id) === read) this.reading.delete(device.id);
+    };
+    // A live device's stored state moves with every report, so only Home Assistant's answer is kept a moment.
+    read.then((state) => (state.watching ? forget() : setTimeout(forget, READ_SHARED_MS)), forget);
+    return read;
+  }
+
+  /** Whether a device is live by the connections this object announced, as of now. */
+  private async liveNow(device: Resource): Promise<boolean> {
+    const connections = haConnectionsOf(device);
+    if (!connections.length || connections.includes("")) return false;
+    const live = new Set(await this.load<string[]>("eventConnections", []));
+    return connections.every((id) => live.has(id));
+  }
+
+  /** Work that goes on after a reply, such as asking Home Assistant for a page that just connected. */
+  private later(work: Promise<unknown>) {
+    try {
+      this.ctx.waitUntil(work);
+    } catch {
+      void work;
+    }
+  }
+
+  private toPages(deviceId: string, frame: Record<string, unknown>) {
+    const encoded = JSON.stringify(frame);
+    for (const ws of this.ctx.getWebSockets(`page:${deviceId}`)) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // A page that left is reaped by the runtime.
+      }
+    }
+  }
+
+  /** A merchant's device board connecting; the Worker route has checked the user is a member of the shop. */
+  private async acceptBoard(request: Request): Promise<Response> {
+    const shopId = request.headers.get("x-prism-hub-shop");
+    if (!shopId) return new Response("Missing board channel", { status: 400 });
+    await this.rememberShop(shopId);
+    const [client, server] = Object.values(new WebSocketPair());
+    this.ctx.acceptWebSocket(server!, ["board"]);
+    server!.serializeAttachment({ kind: "board" } satisfies BoardAttachment);
+    // What is stored now, then what Home Assistant says of the devices nothing watches.
+    const snapshot = await this.boardSnapshot(shopId);
+    if (snapshot) {
+      server!.send(JSON.stringify(snapshot.frame));
+      this.later(this.askBoards(shopId, snapshot.unknown, [server!]));
+    }
+    try {
+      server!.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
+    } catch (error) {
+      console.error("Shop hub watcher list failed", error);
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /**
+   * Every device of the shop as the board's `states` frame, from storage, and
+   * the devices that are not live, which have nothing stored to show; null if it
+   * cannot be read. A live device carries its power and climate; one that is not
+   * carries only its label, and its values follow once Home Assistant has been
+   * asked (`askBoards`).
+   *
+   * `liveConnections` travels with it because liveness belongs to a Home
+   * Assistant connection, not to a device.
+   */
+  private async boardSnapshot(
+    shopId: string,
+  ): Promise<{ frame: { type: "states"; states: Record<string, unknown>; liveConnections: string[] }; unknown: Resource[] } | null> {
+    try {
+      const devices = await statefulDevices(this.env.DB, shopId);
+      const { states, liveConnections } = await readShopLiveStates(this.env.DB, shopId, devices);
+      const shown: Record<string, unknown> = {};
+      const unknown: Resource[] = [];
+      for (const device of devices) {
+        const state = states[device.id]!;
+        if (state.watching) shown[device.id] = { watching: true, ...deviceView(device, state) };
+        else {
+          shown[device.id] = { watching: false };
+          unknown.push(device);
+        }
+      }
+      return { frame: { type: "states", states: shown, liveConnections }, unknown };
+    } catch (error) {
+      console.error("Shop hub board snapshot failed", error);
+      return null;
+    }
+  }
+
+  /**
+   * Ask Home Assistant for devices that are not live and tell the given boards
+   * what it said. A device that became live meanwhile is left to its watcher.
+   */
+  private async askBoards(shopId: string, devices: readonly Resource[], boards: readonly WebSocket[]) {
+    if (!devices.length || !boards.length) return;
+    const shown: Record<string, unknown> = {};
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(BOARD_READ_CONCURRENCY, devices.length) }, async () => {
+      while (next < devices.length) {
+        const device = devices[next++]!;
+        try {
+          const state = await this.readDevice(shopId, device);
+          // One that became live while Home Assistant was asked has had the live snapshot; this answer is older.
+          if (!state.watching && !(await this.liveNow(device))) shown[device.id] = { watching: false, ...deviceView(device, state) };
+        } catch (error) {
+          console.error("Shop hub board read failed", error);
+        }
+      }
+    }));
+    if (!Object.keys(shown).length) return;
+    const encoded = JSON.stringify({ type: "states", states: shown });
+    for (const ws of boards) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // A board that left is reaped by the runtime.
+      }
+    }
+  }
+
+  private toBoards(frame: Record<string, unknown>) {
+    const boards = this.ctx.getWebSockets("board");
+    if (!boards.length) return;
+    const encoded = JSON.stringify(frame);
+    for (const ws of boards) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // A board that left is reaped by the runtime.
+      }
+    }
+  }
+
+  /**
+   * Send every open board the whole shop again. Done when a Home Assistant
+   * connection starts or stops being watched: which devices are live changed.
+   * A device on a connection that stopped being watched still shows a value that
+   * was true a moment ago, so Home Assistant is asked for it once and the boards
+   * are told.
+   */
+  private async announceBoards(lost: ReadonlySet<string>) {
+    const boards = this.ctx.getWebSockets("board");
+    if (!boards.length) return;
+    const shopId = await this.shopId();
+    const snapshot = shopId ? await this.boardSnapshot(shopId) : null;
+    if (!snapshot) return;
+    this.toBoards(snapshot.frame);
+    const dropped = snapshot.unknown.filter((device) => haConnectionsOf(device).some((id) => lost.has(id)));
+    await this.askBoards(shopId!, dropped, boards);
+  }
+
+  /**
+   * Who is watching Home Assistant right now, for the board: each watcher by kind (a bot by name, a
+   * device by id), how far it has got, the shop's number of slots, and how many more are online and
+   * waiting their turn. A watcher whose lease has lapsed is not listed.
+   */
+  private async watchersFrame(watchers: Watchers): Promise<Record<string, unknown>> {
+    const now = Date.now();
+    const candidates = await this.load<Candidates>("candidates", {});
+    const list = Object.values(watchers)
+      .filter((watcher) => watcher.leaseUntil > now)
+      .sort((a, b) => Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) || a.machineId.localeCompare(b.machineId))
+      .map((watcher) => {
+        const links = Object.values(watcher.links);
+        const state = watcher.held !== undefined
+          ? "confirming"
+          : links.some((link) => link.connected && link.snapshot)
+            ? "watching"
+            : links.some((link) => link.connected)
+              ? "subscribing"
+              : links.length
+                ? "unreachable"
+                : "starting";
+        return isBot(watcher.machineId)
+          ? { id: watcher.machineId, kind: "bot", name: watcher.label ?? DEFAULT_BOT_NAME, state }
+          : { id: watcher.machineId, kind: "device", deviceId: watcher.machineId, state };
+      });
+    const standby = Object.values(candidates).filter((candidate) => !watchers[candidate.machineId]).length;
+    return { type: "watchers", limit: await this.limit(), max: MAX_WATCHERS, watchers: list, standby };
+  }
+
+  /** Tell the open boards who is watching, when that changed. */
+  private async announceWatchers(watchers: Watchers) {
+    if (!this.ctx.getWebSockets("board").length) return;
+    const frame = await this.watchersFrame(watchers);
+    const encoded = JSON.stringify(frame);
+    if (encoded === this.lastWatchers) return;
+    this.lastWatchers = encoded;
+    this.toBoards(frame);
+  }
+
+  /** How many confirmed watchers this shop aims to keep, excluding pending power-offs. */
+  private async limit(): Promise<number> {
+    const stored = await this.ctx.storage.get<number>("limit");
+    return typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= MAX_WATCHERS ? stored : DEFAULT_WATCHERS;
+  }
+
+  /** Tell the open device pages of one user that something they show changed. */
+  /** Something a bot is told about changed (its settings, staff, tables): each rereads it. */
+  async botsChanged(): Promise<void> {
+    const frame = JSON.stringify({ type: "config.changed" });
+    for (const ws of this.bots()) {
+      try {
+        ws.send(frame);
+      } catch {
+        // A bot that left is reaped by the runtime.
+      }
+    }
+  }
+
+  /**
+   * Something happened at the shop that bots may announce (a device switched on
+   * or off, a card, someone starting on a resource). Each bot decides from its
+   * own settings whether and where to say it.
+   */
+  async shopEvent(event: Record<string, unknown>): Promise<void> {
+    const frame = JSON.stringify({ type: "event", event: "shop.event", data: event });
+    for (const ws of this.bots()) {
+      try {
+        ws.send(frame);
+      } catch {
+        // A bot that left misses it.
+      }
+    }
+  }
+
+  async notifyUser(userId: string, frame: Record<string, unknown>): Promise<void> {
+    const encoded = JSON.stringify(frame);
+    for (const ws of this.ctx.getWebSockets(`user:${userId}`)) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
+  /**
+   * Tell pages whose device uses a connection that just started or stopped being
+   * watched what their device shows now: the stored state when it became live,
+   * Home Assistant's answer when it stopped, since nobody will report its changes.
+   */
+  private async announce(live: ReadonlySet<string>, changed: ReadonlySet<string>) {
+    const pages = this.ctx.getWebSockets().filter((ws) => (ws.deserializeAttachment() as PageAttachment | null)?.kind === "page");
+    if (!pages.length) return;
+    const shopId = await this.shopId();
+    const targets = await this.load<Targets>("targets", {});
+    const connections = new Map<string, Set<string>>();
+    for (const [key, list] of Object.entries(targets)) {
+      for (const target of list) {
+        const set = connections.get(target.deviceId) ?? new Set<string>();
+        set.add(connectionOf(key));
+        connections.set(target.deviceId, set);
+      }
+    }
+    const snapshots = new Map<string, Promise<Record<string, unknown>>>();
+    for (const ws of pages) {
+      const { deviceId } = ws.deserializeAttachment() as PageAttachment;
+      const mine = connections.get(deviceId);
+      if (!mine || ![...mine].some((id) => changed.has(id))) continue;
+      // Once per device however many pages show it, and only for devices that have one open.
+      let pending = snapshots.get(deviceId);
+      if (!pending) {
+        pending = this.pageState(shopId, deviceId).then((state) => ({ type: "watching", ...state }));
+        snapshots.set(deviceId, pending);
+      }
+      const frame = await pending;
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (typeof message !== "string") return;
+    const attachment = ws.deserializeAttachment() as BotAttachment | null;
+    if (attachment?.kind !== "bot") return;
+    if (message === "ping") {
+      ws.send("pong");
+      return;
+    }
+    const frame = parseBotFrame(message);
+    if (!frame) return;
+    if (frame.type === "hello") {
+      // A bot that rereads its settings says hello again; one no longer
+      // allowed to watch hands its watch on first.
+      if (attachment.ha && !frame.ha) await this.botGone(ws);
+      const id = attachment.id ?? crypto.randomUUID();
+      ws.serializeAttachment({
+        ...attachment,
+        id,
+        reminderLeadMs: frame.reminderLeadSeconds === undefined ? null : frame.reminderLeadSeconds * 1000,
+        ha: frame.ha === true,
+        ...(frame.name ? { name: frame.name } : {}),
+      } satisfies BotAttachment);
+      const shopId = (await this.shopId()) ?? "";
+      if (frame.ha) await this.botOnline(shopId, id, frame.name);
+      // Reminders may now be due earlier than the next planned check.
+      await this.touch(shopId);
+      return;
+    }
+    if (frame.type === "ha") {
+      // Only a bot that said it can watch has anything to report; a stale or unassigned one is ignored.
+      const shopId = await this.shopId();
+      if (shopId && attachment.ha && attachment.id) await this.haReport(shopId, botKey(attachment.id), frame.report);
+      return;
+    }
+    const replayKey = `req:${frame.id}`;
+    const replay = await this.ctx.storage.get<BotResponse & { at: number }>(replayKey);
+    if (replay) {
+      const { at: _at, ...response } = replay;
+      ws.send(JSON.stringify(response));
+      return;
+    }
+    if (this.running.has(frame.id)) return;
+    this.running.add(frame.id);
+    let response: BotResponse;
+    try {
+      response = await runBotRequest({
+        app,
+        env: this.env,
+        waitUntil: (promise) => this.ctx.waitUntil(promise),
+        token: attachment.token,
+        shopCode: attachment.shopCode,
+        frame,
+      });
+    } catch (error) {
+      response = { type: "response", id: frame.id, status: 500, body: { error: { code: "INTERNAL_ERROR", message: error instanceof Error ? error.message : "服务器错误" } } };
+    } finally {
+      this.running.delete(frame.id);
+    }
+    if (frame.method !== "GET") await this.remember(replayKey, response);
+    try {
+      ws.send(JSON.stringify(response));
+    } catch {
+      // The bot left; a resend gets the remembered answer.
+    }
+    if (revokedCredentials(response)) {
+      try {
+        ws.close(4003, "credentials revoked");
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+
+  private async remember(key: string, response: BotResponse) {
+    const now = Date.now();
+    await this.ctx.storage.put(key, { ...response, at: now });
+    const list = (this.ctx.storage as { list?: (options: { prefix: string }) => Promise<Map<string, { at?: number }>> }).list;
+    if (!list) return;
+    const stale = [...(await list.call(this.ctx.storage, { prefix: "req:" })).entries()]
+      .filter(([, value]) => (value.at ?? 0) < now - REPLAY_MS)
+      .map(([name]) => name);
+    if (stale.length) await this.ctx.storage.delete(stale as never);
+  }
+
+  async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
+    try {
+      ws.close([1005, 1006, 1015].includes(code) ? 1000 : code, reason);
+    } catch {
+      // Already closed.
+    }
+    await this.botGone(ws);
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.botGone(ws);
+  }
+
+  /** A bot that was a candidate has left: its watch, if it had one, moves to the next. */
+  private async botGone(ws: WebSocket): Promise<void> {
+    const attachment = ws.deserializeAttachment() as BotAttachment | null;
+    if (attachment?.kind !== "bot" || !attachment.ha || !attachment.id) return;
+    const key = botKey(attachment.id);
+    const candidates = await this.load<Candidates>("candidates", {});
+    if (candidates[key]) {
+      delete candidates[key];
+      await this.ctx.storage.put("candidates", candidates);
+    }
+    await this.drop(key);
+  }
+
+  private async load<T>(key: string, fallback: T): Promise<T> {
+    return ((await this.ctx.storage.get<T>(key)) ?? fallback) as T;
+  }
+
+  private async shopId(): Promise<string | null> {
+    return this.shop ?? (this.shop = (await this.ctx.storage.get<string>("shop")) ?? null);
+  }
+
+  /** Remember the shop this object belongs to; written once, not on every report. */
+  private async rememberShop(shopId: string): Promise<void> {
+    if ((await this.shopId()) === shopId) return;
+    this.shop = shopId;
+    await this.ctx.storage.put("shop", shopId);
+  }
+
+  /** An IO announcing it can watch Home Assistant has connected. */
+  async relayOnline(shopId: string, machineId: string, channel: string, options: { session?: string; restart?: boolean } = {}): Promise<void> {
+    await this.rememberShop(shopId);
+    await this.addCandidate({ machineId, channel, session: options.session, since: Date.now() }, options.restart);
+  }
+
+  /** A bot that can watch Home Assistant has said hello. */
+  private async botOnline(shopId: string, id: string, name: string | undefined): Promise<void> {
+    await this.rememberShop(shopId);
+    await this.addCandidate({ machineId: botKey(id), channel: "", since: Date.now(), ...(name ? { label: name } : {}) });
+  }
+
+  /** A client that can watch has connected: it is a candidate, and may take a slot at once. */
+  private async addCandidate(candidate: Candidate, restart = false): Promise<void> {
+    const candidates = await this.load<Candidates>("candidates", {});
+    const key = candidate.machineId;
+    const known = candidates[key];
+    // Standby heartbeats must not reset their priority or failure cooldown.
+    if (known?.channel !== candidate.channel || known?.label !== candidate.label || known?.session !== candidate.session) {
+      candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
+      await this.ctx.storage.put("candidates", candidates);
+    }
+    // A reconnecting client lost its assignment with the old connection, so its
+    // watch has to be handed out again. One that is already here on the same
+    // connection has not lost anything, and taking its watch away would cost a
+    // fresh subscription for no reason.
+    const watchers = await this.load<Watchers>("watchers", {});
+    const watcher = watchers[key];
+    if (watcher && known && watcher.channel === candidate.channel && known.session === candidate.session && !restart) return;
+    if (watcher) {
+      delete watchers[key];
+      await this.ctx.storage.put("watchers", watchers);
+    }
+    await this.fill();
+  }
+
+  /** That IO is gone. Its watch, if it had one, moves to another. */
+  async relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void> {
+    await this.rememberShop(shopId);
+    const candidates = await this.load<Candidates>("candidates", {});
+    // A late close or expiry from the previous socket must not remove its replacement.
+    if (options && candidates[machineId]?.session !== options.session) return;
+    delete candidates[machineId];
+    await this.ctx.storage.put("candidates", candidates);
+    await this.drop(machineId);
+  }
+
+  /**
+   * The backend read a device that is not live (after an action on it): pass
+   * what it shows to the device's pages and the boards. A device that is live is
+   * reported by its watcher, and an older read must not overtake that.
+   */
+  async deviceRead(shopId: string, deviceId: string, view: DeviceView): Promise<void> {
+    await this.rememberShop(shopId);
+    const device = await loadResource(this.env.DB, shopId, deviceId);
+    if (!device || (await readLiveState(this.env.DB, shopId, device)).watching) return;
+    // Newer than any read this object still shares.
+    this.reading.delete(deviceId);
+    this.toPages(deviceId, { type: "state", ...view });
+    this.toBoards({ type: "state", deviceId, ...view });
+  }
+
+  /**
+   * A machine lost power. Whether its IO lost power too is not knowable from
+   * here, so this starts an observation instead of taking the watch away.
+   *
+   * The assignment is kept. The IO that keeps reporting proves it is still there
+   * and keeps its term; one that goes quiet loses its lease by the ordinary
+   * route. Until then the platform does not pretend to know, and — because the
+   * customer is standing at a machine that just went dark — another candidate is
+   * brought in to cover while the question is open.
+   *
+   * The same power-off may arrive twice, once as the command the platform sent
+   * and once as Home Assistant's own report of the state change. They are one
+   * observation, so the difference never shows up as two.
+   */
+  async poweredOff(shopId: string, machineId: string, options: { confirmed?: boolean } = {}): Promise<void> {
+    await this.rememberShop(shopId);
+    const heldAt = this.reportTime();
+    const watchers = await this.load<Watchers>("watchers", {});
+    const candidates = await this.load<Candidates>("candidates", {});
+    const targets = await this.load<Targets>("targets", {});
+    const group = Object.values(targets).find((list) => list.some((target) => target.deviceId === machineId && target.capability === "power"));
+    const affected = new Set([machineId, ...(group ?? []).filter((target) => target.capability === "power").map((target) => target.deviceId)]);
+    const observations = await this.load<Observations>("observations", {});
+    let changed = false;
+    for (const id of affected) {
+      const watcher = watchers[id];
+      if (!watcher) {
+        // A standby on the same supply is not cover. Its next heartbeat or
+        // hello may offer it again, proving that its IO survived the power-off.
+        if (candidates[id]) {
+          delete candidates[id];
+          changed = true;
+        }
+        continue;
+      }
+      const open = observations[id];
+      // The command and HA confirmation of the same assignment count once.
+      if (open && open.result === undefined && open.term === watcher.term) {
+        if (options.confirmed && !open.confirmed) {
+          observations[id] = { ...open, confirmed: true };
+          changed = true;
+        }
+        continue;
+      }
+      observations[id] = { machineId: id, term: watcher.term, startedAt: Date.now(), confirmed: !!options.confirmed };
+      watchers[id] = { ...watcher, held: heldAt };
+      changed = true;
+    }
+    if (!changed) return;
+    // Mark the whole supply before selecting cover, not one machine at a time.
+    await this.ctx.storage.put("candidates", candidates);
+    await this.ctx.storage.put("observations", observations);
+    await this.ctx.storage.put("watchers", watchers);
+    await this.publish(watchers);
+    await this.fill();
+  }
+
+  /** Whether this watcher is currently held after its own machine went dark. */
+  private async isHeld(machineId: string, term: number): Promise<boolean> {
+    const watcher = (await this.load<Watchers>("watchers", {}))[machineId];
+    return !!watcher && watcher.term === term && !!watcher.held;
+  }
+
+  /** One machine's learned record, defaulting to "nothing known yet". */
+  private async reliability(machineId: string): Promise<Reliability> {
+    return (await this.load<Reliabilities>("reliability", {}))[machineId] ?? { trusted: false, consecutiveFailures: 0 };
+  }
+
+  /**
+   * Settle every observation whose window has closed.
+   *
+   * Success means the IO kept the assignment it had when the power went off and
+   * kept reporting — the machine is off and the IO is plainly not. Failure means
+   * it stopped, and the lease eventually ran out; the platform does not claim to
+   * know why, only that this IO did not carry on. An observation cut short by
+   * the machine coming back says nothing either way and is not counted.
+   */
+  private async settleObservations(): Promise<boolean> {
+    const observations = await this.load<Observations>("observations", {});
+    const running = Object.values(observations).filter((entry) => entry.result === undefined);
+    if (!running.length) return false;
+    const watchers = await this.load<Watchers>("watchers", {});
+    const reliabilities = await this.load<Reliabilities>("reliability", {});
+    const now = Date.now();
+    let changed = false;
+    for (const entry of running) {
+      const watcher = watchers[entry.machineId];
+      const alive = !!watcher && watcher.term === entry.term && watcher.leaseUntil > now;
+      // Still the same assignment and still reporting: not settled yet, unless the
+      // window has closed, in which case this is exactly what success looks like.
+      if (alive && now - entry.startedAt < OBSERVE_MS) continue;
+      // A machine that came back has an unbroken IO either way; the observation
+      // says nothing about what a power-off would have done.
+      if (alive && !(await this.stillOff(entry.machineId))) {
+        observations[entry.machineId] = { ...entry, result: "inconclusive" };
+        changed = true;
+        continue;
+      }
+      const learned = reliabilities[entry.machineId] ?? { trusted: false, consecutiveFailures: 0 };
+      if (alive) {
+        // Reported all the way through a power-off, with Home Assistant agreeing
+        // the machine was off: this IO does not die with its machine.
+        reliabilities[entry.machineId] = { trusted: true, consecutiveFailures: 0 };
+        observations[entry.machineId] = { ...entry, result: "success" };
+      } else {
+        const failures = learned.consecutiveFailures + 1;
+        reliabilities[entry.machineId] = {
+          trusted: failures >= FAILURES_BEFORE_DISTRUST ? false : learned.trusted,
+          consecutiveFailures: failures,
+        };
+        observations[entry.machineId] = { ...entry, result: "failure" };
+      }
+      changed = true;
+    }
+    if (changed) {
+      await this.ctx.storage.put("observations", observations);
+      await this.ctx.storage.put("reliability", reliabilities);
+    }
+    return changed;
+  }
+
+  /** Whether the shop's own facts still say this machine has no power. */
+  private async stillOff(machineId: string): Promise<boolean> {
+    const shopId = await this.shopId();
+    if (!shopId) return false;
+    const row = await this.env.DB.prepare(
+      `SELECT json_extract(value_json, '$') AS value FROM device_state
+       WHERE shop_id = ? AND device_id = ? AND capability = 'power' AND key = 'power'`,
+    ).bind(shopId, machineId).first<{ value: string | null }>().catch(() => null);
+    return row?.value === "off";
+  }
+
+  private async drop(machineId: string) {
+    const watchers = await this.load<Watchers>("watchers", {});
+    if (watchers[machineId]) {
+      delete watchers[machineId];
+      await this.ctx.storage.put("watchers", watchers);
+    }
+    await this.fill();
+  }
+
+  /** Devices, connections or the shop's number of watchers changed: rebuild what is watched and tell the watchers. */
+  async refresh(shopId: string): Promise<void> {
+    await this.rememberShop(shopId);
+    // The platform administrator's number for this shop; this object keeps its own copy.
+    await this.ctx.storage.put("limit", await readWatcherLimit(this.env.DB, shopId));
+    // Which devices an entity drives may have changed; the next full snapshot rewrites every fact.
+    await this.ctx.storage.put("states", {});
+    const watchers = await this.load<Watchers>("watchers", {});
+    const watch = await this.buildWatch(shopId);
+    if (!watch) {
+      await this.release(watchers);
+      return;
+    }
+    for (const watcher of Object.values(watchers)) {
+      if (!(await this.reassign(watcher, watch, true))) delete watchers[watcher.machineId];
+    }
+    await this.ctx.storage.put("watchers", watchers);
+    await this.fill();
+  }
+
+  /** Stop every watcher: nothing is left to watch. */
+  private async release(watchers: Watchers) {
+    for (const watcher of Object.values(watchers)) await this.tell(watcher, null);
+    await this.ctx.storage.put("watchers", {});
+    await this.schedule();
+    await this.publish({});
+  }
+
+  /**
+   * Hand a watcher what to watch, or with null take it away. An IO is reached through its relay, a bot
+   * on its own socket. False when it could not be told.
+   */
+  private async tell(watcher: Pick<Watcher, "machineId" | "channel" | "session">, watch: HaWatch | null): Promise<boolean> {
+    if (isBot(watcher.machineId)) {
+      const socket = this.botSocket(watcher.machineId);
+      if (!socket) return false;
+      try {
+        socket.send(JSON.stringify(watch ? { type: "ha.watch", watch } : { type: "ha.unwatch" }));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    const relay = machineRelayNamespace(this.env);
+    if (!relay) return false;
+    try {
+      return (await relay.getByName(watcher.channel).watchHa(watch, watcher.session)).ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** The connection of the bot with this key, if it is still there. */
+  private botSocket(key: string): WebSocket | undefined {
+    return this.bots().find((ws) => {
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      return !!attachment?.id && botKey(attachment.id) === key;
+    });
+  }
+
+  /** Whether some IO is watching right now. */
+  async watching(): Promise<Array<{ machineId: string; leaseUntil: number }>> {
+    const now = Date.now();
+    return Object.values(await this.load<Watchers>("watchers", {}))
+      .filter((watcher) => watcher.leaseUntil > now)
+      .map(({ machineId, leaseUntil }) => ({ machineId, leaseUntil }));
+  }
+
+  /**
+   * Reports are handled one at a time. Two watchers deliver the same event together, and the second
+   * must find what the first stored before it decides whether the event is new; the storage and
+   * database calls in between would otherwise let both think so and push it twice.
+   */
+  private reports: Promise<unknown> = Promise.resolve();
+  private reportClock = 0;
+
+  private reportTime(): number {
+    return (this.reportClock = Math.max(Date.now(), this.reportClock + 1));
+  }
+
+  async haReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
+    // When it was handed to us, not when it got its turn: a hold placed while
+    // this report waits its turn belongs after it, and must not be lifted by it.
+    const arrivedAt = this.reportTime();
+    const turn = this.reports.then(() => this.takeReport(shopId, machineId, report, arrivedAt));
+    this.reports = turn.catch(() => undefined);
+    return turn;
+  }
+
+  private async takeReport(shopId: string, machineId: string, report: HaReport, arrivedAt: number): Promise<void> {
+    await this.rememberShop(shopId);
+    const current = (await this.load<Watchers>("watchers", {}))[machineId];
+    // An earlier assignment, or a client that is not a watcher: not ours to trust.
+    if (!current || current.term !== report.params.term) return;
+    const { term } = current;
+    const connection = report.params.connection;
+    // Held before this report started arriving. The rest of the batch that
+    // revealed the power-off is not evidence: it was written before the hold.
+    // A beat is the IO speaking for itself: it is sent on its own schedule, so one
+    // arriving while held can only have been sent after the power-off. A state
+    // report cannot say that — the one that revealed the power-off is itself a
+    // state report, and would vouch for itself.
+    const wasHeld = current.held !== undefined
+      && arrivedAt > current.held
+      && report.method === "ha.status"
+      && report.params.connected;
+
+    if (report.method === "ha.states") {
+      // The facts are stored before the connection can be announced as watched.
+      const link = current.links[connection];
+      const applied = await this.apply(connection, report.params.states, !report.params.full && !!link?.connected && link.snapshot);
+      if (applied === "failed") {
+        await this.resync(machineId, term, connection);
+        return;
+      }
+      // This very report announced a power-off of the machine this watcher runs
+      // on; it cannot also prove the IO survived one. A power-off of some other
+      // device on the same connection says nothing about this watcher.
+      if (applied === "power-off" && (await this.isHeld(machineId, term))) {
+        const settled = await this.load<Watchers>("watchers", {});
+        const entry = settled[machineId];
+        if (entry && entry.term === term) {
+          entry.leaseUntil = Date.now() + LEASE_MS;
+          await this.ctx.storage.put("watchers", settled);
+        }
+        return;
+      }
+    }
+
+    // Storage and D1 calls above may have let another report in: change the freshest copy.
+    const watchers = await this.load<Watchers>("watchers", {});
+    const watcher = watchers[machineId];
+    if (!watcher || watcher.term !== term) return;
+    watcher.leaseUntil = Date.now() + LEASE_MS;
+    // It spoke on the assignment it already had, after the machine went dark:
+    // that is the IO showing it is still there. The report that announced the
+    // power-off cannot count — it was not held when it arrived, so `wasHeld`
+    // was false and this line never ran for it.
+    if (wasHeld) delete watcher.held;
+    const link = (watcher.links[connection] ??= { connected: false, snapshot: false });
+    if (report.method === "ha.status") {
+      link.connected = report.params.connected;
+      if (!link.connected) {
+        link.snapshot = false;
+        // This client cannot reach Home Assistant; another one that is not watching yet may.
+        const now = Date.now();
+        const spare = Object.values(await this.load<Candidates>("candidates", {}))
+          .some((candidate) => !watchers[candidate.machineId]);
+        if (spare) {
+          await this.bench(machineId);
+          delete watchers[machineId];
+          await this.ctx.storage.put("watchers", watchers);
+          // It is not coming back soon, and left alone it would go on trying in the background.
+          await this.tell(watcher, null);
+          await this.fill();
+          return;
+        }
+      }
+    } else {
+      link.connected = true;
+      if (report.params.full) link.snapshot = true;
+    }
+    await this.ctx.storage.put("watchers", watchers);
+    await this.schedule();
+    await this.publish(watchers);
+    // A watcher that was outranked keeps going until the ones that stay have this; a snapshot may be
+    // what lets it go.
+    if (Object.keys(watchers).length > (await this.limit())) await this.fill();
+  }
+
+  /**
+   * Something that may change idle state happened: activity, an entry or a
+   * checkout, a settings change. The check runs shortly after, once per burst.
+   */
+  async touch(shopId: string): Promise<void> {
+    await this.rememberShop(shopId);
+    const at = Date.now() + TOUCH_DELAY_MS;
+    const pending = await this.ctx.storage.get<number>("touchAt");
+    if (pending === undefined || pending > at) await this.ctx.storage.put("touchAt", at);
+    await this.schedule();
+  }
+
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    // What is due is settled before anything calls `schedule()`. It would otherwise find the work still
+    // pending and set an alarm in the past, which fires again at once, and a runtime may drop an alarm
+    // set to the time of the one that is running, leaving nothing to wake for the next lease.
+    const touchAt = await this.ctx.storage.get<number>("touchAt");
+    const idle = await this.load<IdleMemory>("idle", emptyIdleMemory());
+    const idleDue = (touchAt !== undefined && touchAt <= now) || (idle.wakeAt !== null && idle.wakeAt <= now);
+    if (idleDue) await this.ctx.storage.delete("touchAt");
+    const watchers = await this.load<Watchers>("watchers", {});
+    let lost = false;
+    for (const watcher of Object.values(watchers)) {
+      if (watcher.leaseUntil > now) continue;
+      await this.bench(watcher.machineId);
+      delete watchers[watcher.machineId];
+      lost = true;
+    }
+    if (lost) await this.ctx.storage.put("watchers", watchers);
+    if (await this.settleObservations()) await this.fill();
+    if (idleDue) await this.checkIdle(idle);
+    // Also retries a slot that was open because every IO had just failed.
+    await this.fill();
+    await this.schedule();
+  }
+
+  /** When the idle rules will switch devices off, by device, for the board. Times already past are left out. */
+  async idleSchedule(): Promise<Record<string, number>> {
+    const now = Date.now();
+    const { powerOffAt = {} } = await this.load<IdleMemory>("idle", emptyIdleMemory());
+    return Object.fromEntries(Object.entries(powerOffAt).filter(([, at]) => at > now));
+  }
+
+  private async checkIdle(memory: IdleMemory) {
+    const shopId = await this.shopId();
+    if (!shopId) return;
+    try {
+      const result = await runIdleCheck({
+        env: this.env,
+        shopId,
+        now: Date.now(),
+        memory,
+        eventConnections: new Set(await this.load<string[]>("eventConnections", [])),
+        reminderLeadMs: await this.reminderLead(),
+      });
+      await this.ctx.storage.put("idle", result.memory);
+      // A machine the idle rule switched off is released the same way as any
+      // other power-off: same reason, same effect on its watch and its standing.
+      for (const id of result.poweredOff) await this.poweredOff(shopId, id);
+      if (result.notices.length) await this.notify(result.notices);
+    } catch (error) {
+      console.error("Idle check failed", error);
+    }
+  }
+
+  /** How long before a power-off the shop's bots want to hear about it; null without one. */
+  private async reminderLead(): Promise<number | null> {
+    const leads = this.bots()
+      .map((ws) => (ws.deserializeAttachment() as BotAttachment | null)?.reminderLeadMs)
+      .filter((lead): lead is number => typeof lead === "number");
+    return leads.length ? Math.max(...leads) : null;
+  }
+
+  private async notify(notices: IdleNotice[]): Promise<void> {
+    for (const notice of notices) {
+      const frame = JSON.stringify({ type: "event", event: "idle.reminder", data: notice });
+      for (const ws of this.bots()) {
+        try {
+          ws.send(frame);
+        } catch {
+          // A bot that left misses it; the power-off happens regardless.
+        }
+      }
+    }
+  }
+
+  private async bench(machineId: string) {
+    const candidates = await this.load<Candidates>("candidates", {});
+    if (!candidates[machineId]) return;
+    candidates[machineId] = { ...candidates[machineId]!, benchedUntil: Date.now() + BENCH_MS };
+    await this.ctx.storage.put("candidates", candidates);
+  }
+
+  /**
+   * Who may watch, best first. One that just failed goes last, unless it is watching fine right now
+   * (it need not be swapped out for a newcomer); then bots before IOs; then the longest online.
+   */
+  private ranked(candidates: Candidates, watchers: Watchers, now: number, reliabilities: Reliabilities = {}): Candidate[] {
+    const benched = (candidate: Candidate) =>
+      (candidate.benchedUntil ?? 0) > now &&
+      !Object.values(watchers[candidate.machineId]?.links ?? {}).some((link) => link.connected);
+    // An IO that has kept reporting through its own machine's power-offs is the
+    // safer pair of hands, so it goes ahead of an unknown one of the same kind.
+    // It never outranks a machine that is actually failed right now: `benched`
+    // is checked first and is about the present, not about history.
+    const trusted = (candidate: Candidate) => !isBot(candidate.machineId) && !!reliabilities[candidate.machineId]?.trusted;
+    return Object.values(candidates)
+      .sort(
+        (a, b) =>
+          Number(benched(a)) - Number(benched(b)) ||
+          Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) ||
+          Number(!trusted(a)) - Number(!trusted(b)) ||
+          a.since - b.since,
+      );
+  }
+
+  /** Forget bots whose connection is gone without a close (a deploy drops them silently). True if anything changed. */
+  private pruneBots(candidates: Candidates, watchers: Watchers): boolean {
+    const live = new Set(
+      this.bots()
+        .map((ws) => ws.deserializeAttachment() as BotAttachment | null)
+        .filter((attachment): attachment is BotAttachment & { id: string } => !!attachment?.ha && !!attachment.id)
+        .map((attachment) => botKey(attachment.id)),
+    );
+    let changed = false;
+    for (const key of Object.keys(candidates)) {
+      if (isBot(key) && !live.has(key)) {
+        delete candidates[key];
+        changed = true;
+      }
+    }
+    for (const key of Object.keys(watchers)) {
+      if (isBot(key) && !live.has(key)) {
+        delete watchers[key];
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Make the watchers match the ranking: the first `limit` candidates watch, bots ahead of IOs. One
+   * that cannot be told is ranked last for a while and the next is tried. A watcher that is no
+   * longer among them (a bot came online, the number came down) is sent home, but only once the ones
+   * that stay hold a full state for every connection announced as watched; until then it keeps going,
+   * so a handover has no gap, and the next snapshot that arrives calls this again.
+   */
+  private async fill(): Promise<void> {
+    const watchers = await this.load<Watchers>("watchers", {});
+    const candidates = await this.load<Candidates>("candidates", {});
+    const shopId = await this.shopId();
+    let changed = this.pruneBots(candidates, watchers);
+    const limit = await this.limit();
+    const now = Date.now();
+    // Keep pending assignments so their original heartbeat can restore them,
+    // but refill their slots even if an earlier replacement also went dark.
+    const held = Object.values(watchers).filter((watcher) => watcher.held !== undefined);
+    const kept = new Set(held.map((watcher) => watcher.machineId));
+    let built = false;
+    let watch: Omit<HaWatch, "term"> | null = null;
+    if (shopId) {
+      for (const candidate of this.ranked(candidates, watchers, now, await this.load<Reliabilities>("reliability", {}))) {
+        if (kept.size >= limit + held.length) break;
+        if (kept.has(candidate.machineId)) continue;
+        if (watchers[candidate.machineId]) {
+          kept.add(candidate.machineId);
+          continue;
+        }
+        if (!built) {
+          watch = await this.buildWatch(shopId);
+          built = true;
+        }
+        if (!watch) {
+          // Nothing to watch: no Home Assistant has a read-only account yet.
+          await this.release(watchers);
+          return;
+        }
+        const watcher: Watcher = {
+          machineId: candidate.machineId,
+          channel: candidate.channel,
+          session: candidate.session,
+          ...(candidate.label ? { label: candidate.label } : {}),
+          term: 0,
+          leaseUntil: 0,
+          links: {},
+        };
+        if (await this.reassign(watcher, watch, false)) {
+          watchers[candidate.machineId] = watcher;
+          kept.add(candidate.machineId);
+        } else {
+          candidates[candidate.machineId] = { ...candidate, benchedUntil: Date.now() + BENCH_MS };
+        }
+        changed = true;
+      }
+      if (await this.retire(watchers, kept)) changed = true;
+    }
+    if (changed) {
+      await this.ctx.storage.put("candidates", candidates);
+      await this.ctx.storage.put("watchers", watchers);
+    }
+    await this.schedule();
+    await this.publish(watchers);
+  }
+
+  /** Send outranked watchers home when the ones that stay already hold everything announced as watched. */
+  private async retire(watchers: Watchers, kept: ReadonlySet<string>): Promise<boolean> {
+    const excess = Object.keys(watchers).filter((key) => !kept.has(key));
+    if (!excess.length) return false;
+    const now = Date.now();
+    const announced = await this.load<string[]>("eventConnections", []);
+    const covered = announced.every((connection) =>
+      [...kept].some((key) => {
+        const link = watchers[key]?.links[connection];
+        return !!watchers[key] && watchers[key]!.held === undefined && watchers[key]!.leaseUntil > now && !!link?.connected && link.snapshot;
+      }),
+    );
+    if (!covered) return false;
+    for (const key of excess) {
+      await this.tell(watchers[key]!, null);
+      delete watchers[key];
+    }
+    return true;
+  }
+
+  /**
+   * Send the watch to one watcher under a new term. False when it could not be told.
+   * With `keepSnapshots` the connections it already delivered stay announced
+   * while its new term catches up; they are dropped if they left the watch.
+   */
+  private async reassign(watcher: Watcher, watch: Omit<HaWatch, "term">, keepSnapshots: boolean): Promise<boolean> {
+    const term = (await this.load<number>("term", 0)) + 1;
+    await this.ctx.storage.put("term", term);
+    if (!(await this.tell(watcher, { ...watch, term }))) return false;
+    const wanted = new Set(watch.connections.map((connection) => connection.id));
+    watcher.links = Object.fromEntries(
+      Object.entries(watcher.links)
+        .filter(([id]) => wanted.has(id))
+        .map(([id, link]) => [id, { connected: link.connected, snapshot: keepSnapshots && link.snapshot }]),
+    );
+    watcher.term = term;
+    // It has one lease period to report; its first report is the full state.
+    watcher.leaseUntil = Date.now() + LEASE_MS;
+    return true;
+  }
+
+  /** Storing a report failed: have the IO subscribe again so a full state arrives to store. */
+  private async resync(machineId: string, term: number, connection: string) {
+    const now = Date.now();
+    if (now - this.lastResync < RESYNC_MS) return;
+    this.lastResync = now;
+    const shopId = await this.shopId();
+    const watchers = await this.load<Watchers>("watchers", {});
+    const watcher = watchers[machineId];
+    if (!shopId || !watcher || watcher.term !== term) return;
+    if (watcher.links[connection]) watcher.links[connection]!.snapshot = false;
+    const watch = await this.buildWatch(shopId);
+    if (!watch || !(await this.reassign(watcher, watch, true))) return;
+    await this.ctx.storage.put("watchers", watchers);
+    await this.publish(watchers);
+  }
+
+  private async buildWatch(shopId: string): Promise<Omit<HaWatch, "term"> | null> {
+    const key = this.env.URL_ENCRYPTION_KEY;
+    if (!key) return null;
+    const rows = (
+      await this.env.DB.prepare(
+        `SELECT c.device_id, c.capability,
+                json_extract(c.config_json, '$.connectionId') AS connection_id,
+                json_extract(c.config_json, '$.entityId') AS entity_id
+         FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
+         WHERE c.shop_id = ? AND c.capability IN ('power', 'climate') AND m.enabled = 1`,
+      ).bind(shopId).all<{ device_id: string; capability: "power" | "climate"; connection_id: string | null; entity_id: string | null }>()
+    ).results;
+    const targets: Targets = {};
+    for (const row of rows) {
+      if (!row.connection_id || !row.entity_id) continue;
+      (targets[entityKey(row.connection_id, row.entity_id)] ??= []).push({ deviceId: row.device_id, capability: row.capability });
+    }
+    await this.ctx.storage.put("targets", targets);
+    const connections: HaWatch["connections"] = [];
+    for (const connection of await listHaConnections(this.env.DB, shopId)) {
+      const entities = [...new Set(rows.filter((row) => row.connection_id === connection.id && row.entity_id).map((row) => row.entity_id!))];
+      if (!entities.length) continue;
+      if (!connection.readToken) {
+        // Saved before read-only accounts existed, so nobody ever tried; nothing else would.
+        if (connection.readAccess === null) this.makeReadAccess(shopId, connection.id);
+        continue;
+      }
+      let token: string;
+      try {
+        token = await decryptSecret(connection.readToken, key);
+      } catch {
+        continue;
+      }
+      // Inside the shop the local address is usually the one that works.
+      const urls = [...new Set([connection.internalUrl, connection.url].filter((url): url is string => !!url))];
+      connections.push({ id: connection.id, urls, token, entities });
+    }
+    return connections.length ? { connections } : null;
+  }
+
+  /** Connections a read-only account is being made for right now. */
+  private makingReadAccess = new Set<string>();
+  /** What makes the account; a test replaces it. */
+  private provision: typeof provisionReadAccess = provisionReadAccess;
+
+  /**
+   * Make the read-only account for a connection that never had one, once an IO is here to use it,
+   * and start the watch when it is ready. Done here and not in a request because this object is
+   * the one place per shop that can see it already running: two runs would each create a user in
+   * Home Assistant and leave the first with a token that still works. A connection that ends up
+   * `needs_admin` or `failed` is not tried again; the board's editor says why.
+   */
+  private makeReadAccess(shopId: string, connectionId: string) {
+    const key = this.env.URL_ENCRYPTION_KEY;
+    const origin = this.env.APP_ORIGIN;
+    if (!key || !origin || this.makingReadAccess.has(connectionId)) return;
+    this.makingReadAccess.add(connectionId);
+    const run = this.provision(this.env.DB, shopId, connectionId, key, { origin })
+      .then((result) => (result.access === "ready" ? this.refresh(shopId) : undefined))
+      .catch((error) => console.error("Home Assistant read access failed", error))
+      .finally(() => this.makingReadAccess.delete(connectionId));
+    this.ctx.waitUntil?.(run);
+  }
+
+  /**
+   * Store what a watcher reported and push it to the pages of the devices it
+   * drives. A report that is a repeat, or older than what is already applied (the
+   * second watcher saw the same event, or saw it later), changes nothing. False
+   * when the facts could not be stored.
+   */
+  private async apply(connectionId: string, reported: HaEntityState[], announcePower: boolean): Promise<"stored" | "failed" | "power-off"> {
+    const shopId = await this.shopId();
+    if (!shopId) return "stored";
+    const states = await this.load<Record<string, WatchedState>>("states", {});
+    const targets = await this.load<Targets>("targets", {});
+    const applied: Record<string, WatchedState> = {};
+    const writes: StateWrite[] = [];
+    const pushes: Array<[string, Record<string, unknown>]> = [];
+    const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
+    let powerMoved = false;
+    /** Machines this report says lost power: their watch is released, as on any power-off. */
+    const lostPower: string[] = [];
+    for (const item of reported) {
+      const key = entityKey(connectionId, item.entity_id);
+      const previous = applied[key] ?? states[key];
+      const stamp = stampOf(item);
+      if (previous && superseded(previous, item, stamp)) continue;
+      const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
+      applied[key] = next;
+      const at = item.last_changed ? new Date(item.last_changed) : undefined;
+      if (announcePower && previous) {
+        const deviceIds: string[] = [];
+        let state: "on" | "off" | null = null;
+        for (const target of targets[key] ?? []) {
+          const before = target.capability === "climate" ? climatePower(previous.state)
+            : previous.state === "on" || previous.state === "off" ? previous.state : null;
+          const after = target.capability === "climate" ? climatePower(next.state)
+            : next.state === "on" || next.state === "off" ? next.state : null;
+          if (before && after && before !== after) { deviceIds.push(target.deviceId); state = after; }
+        }
+        if (state) powerChanges.push({ deviceIds: [...new Set(deviceIds)], state, at: (at ?? new Date()).toISOString() });
+      }
+      for (const target of targets[key] ?? []) {
+        const device = { id: target.deviceId };
+        if (target.capability === "power") {
+          // A repeat of the same state (an attribute-only update) has nothing new to say.
+          if (previous?.state === next.state) continue;
+          const power = next.state === "on" || next.state === "off" ? next.state : null;
+          writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
+          pushes.push([target.deviceId, { type: "state", power }]);
+          if (previous) powerMoved = true;
+          // Only a real on-to-off move: `unavailable` reads as null, and a Home
+          // Assistant hiccup must not release a working watch.
+          if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
+        } else {
+          const known = next.state !== "unavailable" && next.state !== "unknown";
+          const view = known ? climateState(next.state, next.attributes) : null;
+          // The page shows room temperature too, so it gets every change and the
+          // log only gets the setting.
+          writes.push({ device, capability: "climate", key: "view", value: view, quiet: true, ...(at ? { at } : {}) });
+          if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next))) {
+            // HA leaves last_changed alone when only temperature or fan settings change.
+            const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
+            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
+            if (previous) powerMoved = true;
+          }
+          pushes.push([target.deviceId, { type: "state", climate: view }]);
+        }
+      }
+    }
+    if (writes.length) {
+      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, notifyHub: false });
+      try {
+        for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
+      } catch (error) {
+        console.error("Shop hub state write failed", error);
+        return "failed";
+      }
+    }
+    if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
+    for (const change of powerChanges) {
+      try {
+        const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+          .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
+        const names = new Map(rows.results.map((row) => [row.id, row.name]));
+        const event: ShopEvent = {
+          kind: "power", resourceId: change.deviceIds[0]!,
+          resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
+          state: change.state, by: "ha", player: null,
+        };
+        await this.shopEvent({ ...event, at: change.at });
+      } catch (error) {
+        console.error("HA power announcement failed", { shopId, error });
+      }
+    }
+    // Pages and boards are told of a device's change only while the device is live, that is while
+    // every Home Assistant connection it uses is announced. Until then a report is not yet the
+    // device's state (a first snapshot, a held watcher); the announcement brings it once it is.
+    const announced = new Set(await this.load<string[]>("eventConnections", []));
+    const connectionsOf = new Map<string, string[]>();
+    for (const [key, list] of Object.entries(targets))
+      for (const target of list) connectionsOf.set(target.deviceId, [...(connectionsOf.get(target.deviceId) ?? []), connectionOf(key)]);
+    const live = (deviceId: string) => (connectionsOf.get(deviceId) ?? []).every((id) => announced.has(id));
+    for (const [deviceId, frame] of pushes) {
+      if (!live(deviceId)) continue;
+      this.toPages(deviceId, frame);
+      this.toBoards({ ...frame, deviceId });
+    }
+    // Switched on starts an idle countdown; switched off may end one.
+    if (powerMoved) await this.touch(shopId);
+    // Home Assistant confirming the machine is off: the same observation the
+    // platform's own power-off opened, now with the machine's state as evidence
+    // rather than only the command having been accepted.
+    for (const deviceId of lostPower) await this.poweredOff(shopId, deviceId, { confirmed: true });
+    return lostPower.length ? "power-off" : "stored";
+  }
+
+  /**
+   * Make `ha_event_connections` match the watchers: a connection is in it when a
+   * live watcher has it subscribed and has delivered its full state. Called after
+   * every change; the table is only written, and pages only told, when the set
+   * moved. A failed write is retried by the next call.
+   */
+  private async publish(watchers: Watchers) {
+    // Who is watching is told to the boards on its own: it changes without a connection starting or stopping.
+    await this.announceWatchers(watchers);
+    const shopId = await this.shopId();
+    if (!shopId) return;
+    const now = Date.now();
+    const live = new Set<string>();
+    for (const watcher of Object.values(watchers)) {
+      if (watcher.leaseUntil <= now) continue;
+      // Held: the machine is off and this IO has not yet proved it is not. Its
+      // subscription is still running, but its last snapshot is from before the
+      // power-off, so the connection is not announced live on its say-so alone.
+      if (watcher.held) continue;
+      for (const [id, link] of Object.entries(watcher.links)) if (link.connected && link.snapshot) live.add(id);
+    }
+    const previous = new Set(await this.load<string[]>("eventConnections", []));
+    const add = [...live].filter((id) => !previous.has(id));
+    const remove = [...previous].filter((id) => !live.has(id));
+    if (!add.length && !remove.length) return;
+    try {
+      await writeEventConnections(this.env.DB, shopId, { add, remove });
+    } catch (error) {
+      console.error("Shop hub watch mode write failed", error);
+      return;
+    }
+    await this.ctx.storage.put("eventConnections", [...live]);
+    // A read from before the change may say a device is not live when it now is.
+    this.reading.clear();
+    await this.announce(live, new Set([...add, ...remove]));
+    await this.announceBoards(new Set(remove));
+  }
+
+  /** Wake for the earliest thing that needs checking. */
+  private async schedule() {
+    const now = Date.now();
+    const watchers = await this.load<Watchers>("watchers", {});
+    const touchAt = await this.ctx.storage.get<number>("touchAt");
+    const idle = await this.ctx.storage.get<IdleMemory>("idle");
+    const candidates = await this.load<Candidates>("candidates", {});
+    // An open slot is retried when a benched candidate becomes eligible again.
+    const retry = Object.values(watchers).filter((watcher) => watcher.held === undefined).length < (await this.limit())
+      ? Object.values(candidates)
+          .filter((candidate) => !watchers[candidate.machineId])
+          .map((candidate) => candidate.benchedUntil)
+          .filter((at): at is number => typeof at === "number" && at > now)
+      : [];
+    // An open power-off needs waking when its window closes, or nothing settles it.
+    const observations = await this.load<Observations>("observations", {});
+    const closing = Object.values(observations)
+      .filter((entry) => entry.result === undefined)
+      .map((entry) => entry.startedAt + OBSERVE_MS);
+    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry, ...closing]
+      .filter((at): at is number => typeof at === "number")
+      .reduce<number | null>((earliest, at) => (earliest === null || at < earliest ? at : earliest), null);
+    const getAlarm = this.ctx.storage.getAlarm?.bind(this.ctx.storage);
+    const current = getAlarm ? await getAlarm() : null;
+    if (due === null) {
+      if (current !== null) await this.ctx.storage.deleteAlarm?.();
+      return;
+    }
+    // A heartbeat only pushes the lease later, so an earlier alarm is left to fire
+    // and set the next one: that is one wake per lease period, not one per report.
+    if (current === null || current > due) await this.ctx.storage.setAlarm(due);
+  }
+}

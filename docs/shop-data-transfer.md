@@ -18,7 +18,9 @@ v2／v3 业务备份支持**覆盖已有店铺**，无需创建空店铺。原�
 
 v2／v3 恢复来源店铺的资料及设置，保留目标店铺的编号、所属店铺 ID 和当前管理员。导入完成后后台刷新店铺资料、运营开关和设置。店铺时区继续跟随恢复后的位置。若在**同一数据库**复制店铺，设备 ID／公开链接与来源冲突时生成新编号，并更新座位、会话、设备能力、操作、事件和状态中的对应引用；跨库无冲突时保留设备编号。直连机台的中继通道与设备令牌是全平台唯一的：已被其他店铺使用时，导入的副本会获得新通道且令牌作废，需在设备看板重新签发；恢复到原店铺时保持不变。恢复后直连链路状态一律记为断开，机台重连后更新。
 
-后台导入区还可选择 **prism-neo** 来源：选择旧系统的 `pg_dump` 备份（`.sql`）或 `@prism/migration` CLI 导出的 JSON 快照后，浏览器先在本地转换成 v3 业务备份（转换规则与 `@prism/migration` 的映射一致，见 [从 prism-neo 数据迁移指引](migration-from-prism-neo.md)），再走同一条分片上传与覆盖导入流程。转换后的旧计费规则以停用状态导入，入场方案指向该停用方案；启用前须在计费设置中核对时区。
+后台导入区还可选择 **prism-neo** 来源：选择旧系统的 `pg_dump` 备份（`.sql`）或 `@prism/migration` CLI 导出的 JSON 快照后，浏览器先在本地转换成 v3 业务备份（转换规则与 `@prism/migration` 的映射一致，见 [从 prism-neo 数据迁移指引](migration-from-prism-neo.md)），再走同一条分片上传与覆盖导入流程。快照带有旧计费规则时，旧规则按当前店铺时区换算为 UTC 后以启用状态导入并设为默认资源组的方案，`paid` / `free` 余额货币缺失时自动补齐；没有计费规则时不设方案，资源免费使用。
+
+prism-neo 转换出的文件头带 `"partial": true`、不带 `shopProfile`：它只有玩家、身份、余额、计费方案、礼物与兑换码、会话与账单、出币记录，没有店铺资料、资源、Bot 和设置。导入这种**部分备份**时，只替换上述业务数据和随玩家一起清除的平台数据（玩家账号关联、平台身份绑定、设备操作记录等），保留目标店铺的名称、封面、位置与时区、`app_settings`、`shop_billing_settings`、资源、资源组、设备能力、Bot 凭据和店员。目标店铺原有的计费方案被替换，资源组和资源上指向已不存在方案的设置清空（变为免费），文件里的方案成为默认资源组的方案。
 
 不复制平台全局的用户登录凭据、Passkey、OAuth 密钥、玩家个人卡片库、登录会话、设备扫码 Ticket、短期绑定码、请求去重与操作锁、实时活动推送 Token，也不复制全局封禁及登录审计。它们属于平台账号或短期运行状态，不属于店铺的业务备份。店铺范围中的禁用玩家、归档配置、已结账单和未结会话均包含在内。
 
@@ -28,7 +30,7 @@ v2／v3 恢复来源店铺的资料及设置，保留目标店铺的编号、所
 
 业务备份记录店铺账号与玩家／员工的关系，以及已验证登录身份的 `provider:subject`。导入不创建全局用户，也不安装登录密钥。账号访问店铺时按同一账号 ID 或已验证登录身份重新关联，平台绑定与原玩家必须一致；无法匹配的关系继续保存，并随下一次备份导出，可通过原外部平台身份重新绑定。跨库新建的纯 Passkey 账号没有可匹配的外部登录身份时，需要重新建立关联，不能凭昵称猜测。
 
-设备能力的密钥（`device_capabilities.secret_json` 中的每个值）在下载时使用来源环境密钥解密，导入暂存时使用目标环境密钥重新加密，所以不同 `URL_ENCRYPTION_KEY` 不会破坏连接。文件中的连接信息可包含明文密码和控制 Token；应当像保存数据库备份一样保管。Bot/API Token 的哈希验证记录保留，原 Token 值无法从哈希还原，接入时仍需持有原值并更新环境／店铺地址。
+设备能力的密钥（`device_capabilities.secret_json` 中的每个值）以及店铺 Home Assistant 连接（`app_settings` 中 `devices.ha_connection:*` 的 `token`、`readToken`）在下载时使用来源环境密钥解密，导入暂存时使用目标环境密钥重新加密，所以不同 `URL_ENCRYPTION_KEY` 不会破坏连接。文件中的连接信息可包含明文密码和控制 Token；应当像保存数据库备份一样保管。Bot/API Token 的哈希验证记录保留，原 Token 值无法从哈希还原，接入时仍需持有原值并更新环境／店铺地址。
 
 恢复过程不发送收款、赠送余额或硬件控制指令。历史设备命令保留；待执行命令改为已过期，设备在线状态恢复为离线，随后由实际设备重新报告状态，避免旧控制指令重复执行。
 
@@ -39,7 +41,7 @@ v2／v3 恢复来源店铺的资料及设置，保留目标店铺的编号、所
 ```json
 {
   "format": "prism-shop-data",
-  "version": 3,
+  "version": 4,
   "scope": "business",
   "exportedAt": "2026-10-06T00:00:00.000Z",
   "source": {
@@ -61,9 +63,11 @@ v2／v3 恢复来源店铺的资料及设置，保留目标店铺的编号、所
 
 上述是结构示意，不能直接导入。每行省略 `shop_id`，其余字段是数据库原始列和值；`device_capabilities.secret_json` 中的密钥以明文导出。
 
-当前导出 **v3**：设备身份在 `machines`，能力在 `device_capabilities`，历史在 `device_operations`、`device_events`、`device_state`（迁移 0037 引入）。导入仍接受 v1 与 v2 文件。v2 文件的 `machines` 带连接列（`hinata_url`、`hinata_password`、`ha_binding_json`、`ttlock_lock_id`、`coin_key`、`coin_after_swipe`、`mahjong_config_json`），并带 `device_commands`、`device_states`、`machine_connections` 三张表；导入时按迁移 0037 的同一规则转换：连接列变成能力，命令变成操作及其请求／结果事件（未完成的保持未完成，计费结果不变），电源状态变成观测值，`machine_connections` 丢弃。`account_links` 表包含账号关联资料。导入归属当前经鉴权的目标店铺，不接受文件指定任意店铺、表或列。
+当前导出 **v4**：设备身份在 `machines`（含所属资源组 `resource_group_id`、专属计费方案 `pricing_config_override_id`、容量 `capacity` 与占用时长 `occupancy_minutes`；早先的 v4 文件没有后两列时取默认值 0 与 15；麻将能力配置里还带人数 `capacity` 的旧文件，导入时把它搬到麻将桌的容量上），资源组在 `resource_groups`，能力在 `device_capabilities`，历史在 `device_operations`、`device_events`、`device_state`。设备引用了文件中不存在的资源组时导入检查拒绝。导入仍接受 v1–v3 文件；v3 文件没有资源组，其中的设备都属于默认资源组，见[资源与资源组](resources.md)。v2 文件的 `machines` 带连接列（`hinata_url`、`hinata_password`、`ha_binding_json`、`ttlock_lock_id`、`coin_key`、`coin_after_swipe`、`mahjong_config_json`），并带 `device_commands`、`device_states`、`machine_connections` 三张表；导入时按迁移 0037 的同一规则转换：连接列变成能力，命令变成操作及其请求／结果事件（未完成的保持未完成，计费结果不变），电源状态变成观测值，`machine_connections` 丢弃。`account_links` 表包含账号关联资料。玩家在店铺的卡片（`player_cards`，用平台密钥加密）和占用记录不导出，`aime` 类型的旧卡片身份也不再导出；恢复后玩家再次刷卡时卡片重新绑定，见 [卡片、占用与查人](occupancy.md)。导入归属当前经鉴权的目标店铺，不接受文件指定任意店铺、表或列。
 
 事件时间、UTC 规则、JSON 时间轴和金额保持存储原值。货币使用整数分；数量和百分比保持原值。历史计费版本与发布时区不再次转换。下载附件及分页中的 `payload_json`／`headerJson` 不进行展示时区转换。
+
+`settings` 摘要不再包含 `billingEnabled`：店铺没有整店计费开关，哪里计费只看资源组和资源上的方案（见[资源与资源组](resources.md)）。旧文件里的该字段仍被接受；为 `false` 时（来源店铺当时不计费），导入会清空目标店铺所有资源组（含默认资源组）的方案和资源专属方案，让所有资源保持免费；为 `true` 或缺省时按文件里的方案恢复。旧文件的 `settings.entryPricingIds`（当时的「默认计费方案」）导入时成为默认资源组的方案；它非空时，导入检查要求文件里有有效的 `paid`／`free` 余额货币，且该方案启用、未归档、不是封顶方案。新导出不再写 `entryPricingIds`，默认资源组随 `resource_groups` 表一起导出；文件里没有默认资源组时，导入会补一个（带旧文件的方案，或免费）。开着前台收银却没有前台资源的旧文件，导入时补建「前台」资源。
 
 新版 UI 同时支持 **v1 和 v2** 文件。v1 文件只能恢复其中已有的业务数据和设置摘要，并保留目标店铺资料，无法补回当时没有导出的设备或账号关联。
 

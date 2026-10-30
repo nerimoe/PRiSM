@@ -6,7 +6,7 @@ import { splitD1MigrationStatements } from "@prism/storage-sql";
 import { createApp } from "../src/app.js";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { sha256, encryptSecret } from "../src/crypto.js";
-import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
+import { mintResourceTicket } from "../src/routes/platform/resource-ticket.js";
 import type { Env } from "../src/bindings.js";
 
 const migrations=resolve(import.meta.dir,"../../../migrations");
@@ -42,7 +42,7 @@ async function fixture(){
     SESSION_SECRET:"session-test-secret",URL_ENCRYPTION_KEY:secret,
     RATE_LIMIT_5:limiter,RATE_LIMIT_20:limiter,RATE_LIMIT_30:limiter,
   } as unknown as Env;
-  const {ticket}=await mintMachineTicket(env.SESSION_SECRET,"shop-code","cabinet-code");
+  const {ticket}=await mintResourceTicket(env.SESSION_SECRET,"shop-code","cabinet-code");
   return {sqlite,app:createApp(),env,ticket,token};
 }
 
@@ -57,9 +57,11 @@ describe("pre-fork authenticated Aime machine login",()=>{
         body:JSON.stringify({ticket,cardId:"card-one"}),
       }),env);
       expect(res.status).toBe(200);
-      const reply=(await res.json()) as {data:{ok:boolean;status:string;operationId:string}};
+      const reply=(await res.json()) as {data:{ok:boolean;status:string;operationId:string;card:string}};
       expect(reply.data.ok).toBe(true);
       expect(reply.data.status).toBe("completed");
+      // An external relay reports nothing back, so the card is only known as sent.
+      expect(reply.data.card).toBe("sent");
       const sent=responseFetch.mock.calls;
       expect(sent).toHaveLength(1);
       expect(sent[0]?.[0]).toBe("https://hinata.example/scan");
@@ -119,5 +121,48 @@ describe("pre-fork authenticated Aime machine login",()=>{
       expect(responseFetch).not.toHaveBeenCalled();
       expect((sqlite.query("SELECT COUNT(*) AS n FROM device_operations").get() as {n:number}).n).toBe(0);
     }finally{responseFetch.mockRestore(); sqlite.close();}
+  });
+});
+
+describe("direct-connect card login result",()=>{
+  async function embedded(login:string){
+    const ctx=await fixture();
+    ctx.sqlite.run(
+      `UPDATE device_capabilities SET config_json='{"transport":"embedded","channel":"m_test","coinKey":32,"coinAfterSwipe":true}',secret_json='{}'
+       WHERE device_id='machine-id' AND capability='hinata_io'`,
+    );
+    const cards:Array<Record<string,unknown>>=[],presses:unknown[]=[];
+    (ctx.env as any).MACHINE_RELAY={getByName:()=>({
+      async sendCard(input:Record<string,unknown>){cards.push(input);return {ok:true,login};},
+      async sendKeyPress(input:unknown){presses.push(input);return {ok:true};},
+    })};
+    const res=await ctx.app.fetch(new Request("https://prism.test/api/v1/machines/login",{
+      method:"POST",headers:{authorization:`Bearer ${ctx.token}`,"content-type":"application/json"},
+      body:JSON.stringify({ticket:ctx.ticket,cardId:"card-one"}),
+    }),ctx.env);
+    const reply=(await res.json()) as {data:{card:string;coin?:{status:string;reason?:string}}};
+    ctx.sqlite.close();
+    return {res,reply:reply.data,cards,presses};
+  }
+
+  it("waits for the game to take the card, not for its reader light",async()=>{
+    const {res,reply,cards,presses}=await embedded("read");
+    expect(res.status).toBe(200);
+    expect(reply.card).toBe("read");
+    // The row shows both outcomes; neither interrupts.
+    expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([
+      ["CARD_SENT","inline","已刷卡"],["COIN_SENT","inline","已投币"],
+    ]);
+    expect(cards[0]?.wait).toEqual({readMs:4500});
+    // Coins follow a card the game took.
+    expect(reply.coin?.status).toBe("sent");
+    expect(presses).toHaveLength(1);
+  });
+
+  it("does not insert coins for a card the game never took",async()=>{
+    const {reply,presses}=await embedded("not_read");
+    expect(reply.card).toBe("not_read");
+    expect(reply.coin).toMatchObject({status:"skipped",reason:"CARD_NOT_READ"});
+    expect(presses).toEqual([]);
   });
 });

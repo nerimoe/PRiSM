@@ -56,8 +56,8 @@ const labels: Record<string, string> = {
   app_settings: "店铺设置",
   shop_billing_settings: "计费设置",
   api_tokens: "接入凭据",
-  machines: "设备",
-  device_capabilities: "设备能力与连接",
+  machines: "资源",
+  device_capabilities: "硬件能力与连接",
   mahjong_seats: "麻将座位",
   device_operations: "设备操作记录",
   device_events: "设备事件",
@@ -412,7 +412,7 @@ export function ShopDataTransfer() {
             <p>
               {t("玩家")}: {exported.counts.players ?? 0} · {t("前台玩家")}:{" "}
               {exported.counts.cashier_profiles ?? 0} · {t("结账记录")}:{" "}
-              {exported.counts.player_checkouts ?? 0} · {t("设备")}:{" "}
+              {exported.counts.player_checkouts ?? 0} · {t("资源")}:{" "}
               {exported.counts.machines ?? 0}
             </p>
             {JSON.parse(exported.headerJson).scope === "business" &&
@@ -481,7 +481,7 @@ export function ShopDataTransfer() {
         <p className="text-xs text-ink/60">
           {t(
             importSource === "prism-neo"
-              ? "支持 prism-neo 的 pg_dump 备份（.sql）或 CLI 导出的 JSON 快照，上传前在浏览器转换为 PRiSM 备份；旧计费规则将以停用状态导入，请先在计费设置中核对时区再启用。"
+              ? "支持 prism-neo 的 pg_dump 备份（.sql）或 CLI 导出的 JSON 快照，上传前在浏览器转换为 PRiSM 备份。只导入玩家、余额、计费规则和历史记录；店铺资料、时区、设置、资源、资源组、Bot 与店员保留不变。旧计费规则按本店时区换算，成为默认资源组的方案。"
               : "支持 PRiSM v1／v2 JSON 备份，分片传输，无 10 MiB 文件大小限制。",
           )}
         </p>
@@ -522,7 +522,7 @@ export function ShopDataTransfer() {
       )}
       {success && (
         <p role="status" className="text-sm text-mint">
-          {t("导入完成，请核对玩家、余额、账单及设备设置后再营业。")}
+          {t("导入完成，请核对玩家、余额、账单及资源设置后再营业。")}
         </p>
       )}
       {confirm && pending && (() => {
@@ -540,9 +540,11 @@ export function ShopDataTransfer() {
             <div className="grid gap-4 p-5">
               <p>
                 {t(
-                  scope === "business"
-                    ? "业务备份将覆盖目标店铺现有数据，而不是追加。"
-                    : "将覆盖同编号配置并补充新配置，保留玩家和账单。",
+                  importSource === "prism-neo"
+                    ? "将替换玩家、余额、计费方案和历史记录；店铺资料、设置、资源、资源组、Bot 与店员保留。"
+                    : scope === "business"
+                      ? "业务备份将覆盖目标店铺现有数据，而不是追加。"
+                      : "将覆盖同编号配置并补充新配置，保留玩家和账单。",
                 )}
               </p>
               <p className="font-medium">

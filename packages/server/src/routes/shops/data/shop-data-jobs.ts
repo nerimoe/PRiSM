@@ -1,3 +1,4 @@
+import { HA_CONNECTION_PREFIX, HA_CONNECTION_SECRETS } from "../../../resources/capabilities/ha-connections.js";
 import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import type { LegacyD1Database } from "./compat.js";
 import { registerShopExportRoutes, sourceColumns, importAttemptStatement, shopExportError } from "./shop-data-export.js";
@@ -9,6 +10,11 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import { requireUser } from "../../../middleware/auth.js";
 import { type BillingShop } from "./compat.js";
+import { freeShopStatements } from "../../../resources/billed-sql.js";
+import { ensureDefaultGroupStatement } from "../../../resources/repository.js";
+import { DEFAULT_RESOURCE_GROUP_ID } from "../../../resources/billing.js";
+import { missingFrontDeskStatements } from "../../platform/shops.js";
+import { notifyBotsChangedAfter } from "../../../durable-objects/shop-hub-client.js";
 import { encryptSecret, sha256 } from "../../../crypto.js";
 import { jsonError } from "../../../http.js";
 import { owner, targetState, snapshotSql, snapshotBindings, snapshotKey } from "./shop-data.js";
@@ -158,6 +164,14 @@ async function stage(
         else delete secrets[name];
       row.secret_json = JSON.stringify(secrets);
     }
+  if (table === "app_settings")
+    for (const row of input.rows) {
+      if (!String(row.key).startsWith(HA_CONNECTION_PREFIX)) continue;
+      const connection = JSON.parse(String(row.value_json)) as Record<string, unknown>;
+      for (const name of HA_CONNECTION_SECRETS)
+        if (typeof connection[name] === "string" && connection[name]) connection[name] = await seal(connection[name]);
+      row.value_json = JSON.stringify(connection);
+    }
   const json = JSON.stringify(input.rows),
     schema = schemasFor(header.version)[table],
     seq = input.part * 100000;
@@ -274,13 +288,16 @@ async function previewJob(
     FROM shop_data_rows WHERE job_id=? AND table_name='pricing_configs'
     AND json_extract(payload_json,'$.id') IN (SELECT value FROM json_each(?))`,
     )
-      .bind(job.id, JSON.stringify(header.settings.entryPricingIds))
+      .bind(job.id, JSON.stringify(header.settings.entryPricingIds ?? []))
       .all<DataRow>()
   ).results;
   const configs = new Map(configRows.map((r) => [r.id, r] as const));
   const settings = header.settings;
-  if (settings.entryPricingIds.some((id) => !configs.has(id))) errors.push("入场规则引用了不存在的计费方案");
-  if (settings.billingEnabled) {
+  // Older files name the default group's plan here; newer ones store the group.
+  const entryPricingIds = settings.entryPricingIds ?? [];
+  if (entryPricingIds.some((id) => !configs.has(id))) errors.push("入场规则引用了不存在的计费方案");
+  // A retired non-billing file drops the plan on import, so it is not checked.
+  if (settings.billingEnabled !== false && entryPricingIds.length) {
     const assets = (
       await (c.env.DB as LegacyD1Database).prepare(
         `SELECT json_extract(payload_json,'$.type') AS type,json_extract(payload_json,'$.code') AS code,json_extract(payload_json,'$.status') AS status
@@ -294,17 +311,15 @@ async function previewJob(
         (code) => !assets.some((a) => a.type === "currency" && a.code === code && a.status === "active"),
       )
     )
-      errors.push("已启用计费但缺少有效余额资产");
+      errors.push("默认计费方案需要有效余额资产");
     if (
-      !settings.entryPricingIds.length ||
-      settings.entryPricingIds.some((id) => {
+      entryPricingIds.some((id) => {
         const row = configs.get(id);
         return !row || row.enabled !== 1 || row.status !== "active" || row.kind === "time.cap";
       })
     )
-      errors.push("已启用计费但入场规则不可用");
+      errors.push("默认计费方案不可用");
   }
-  if (settings.cashierEnabled && !settings.billingEnabled) errors.push("前台收银要求启用入场计费");
   if (
     settings.defaultPresentId &&
     !(await (c.env.DB as LegacyD1Database).prepare(
@@ -347,15 +362,18 @@ async function previewJob(
         .bind(job.id)
         .all<DataRow>()
     ).results;
+    // The retired billing switch is not compared, and the default group's plan
+    // only when the file names it: either may be missing.
     const expected = {
-      billingEnabled: !!raw.billing_enabled,
       autoRegister: !!raw.auto_register,
       identityBindingRequired:
         raw.identity_binding_required === undefined ? true : !!raw.identity_binding_required,
       checkinGeo: !!raw.checkin_geo,
       checkoutGeo: !!raw.checkout_geo,
       machineGeo: !!raw.machine_geo,
-      entryPricingIds: JSON.parse(String(raw.entry_pricing_ids_json ?? "[]")) as string[],
+      ...(settings.entryPricingIds === undefined
+        ? {}
+        : { entryPricingIds: JSON.parse(String(raw.entry_pricing_ids_json ?? "[]")) as string[] }),
       botContact: raw.bot_contact ?? "",
       cashierEnabled: !!settingRows.find((r) => r.key === "cashier.settings")?.enabled,
       coinCooldownMs: settingRows.find((r) => r.key === "venue.operations")?.cooldown ?? 60000,
@@ -455,11 +473,11 @@ async function previewJob(
     warnings: [
       header.scope === "business"
         ? "业务备份将替换目标店铺现有玩家、余额、账单和计费配置；此操作不能撤销，请先保留原店铺备份。"
-        : "仅配置导入会覆盖同编号配置并新增文件中的配置和设备，保留玩家、余额、账单及其他配置。",
+        : "仅配置导入会覆盖同编号配置并新增文件中的配置和资源，保留玩家、余额、账单及其他配置。",
       header.version >= 2
         ? header.scope === "business"
           ? "将恢复完整店铺资料、设置、设备连接及业务记录。目标店铺编号和当前管理员保留。"
-          : "将恢复店铺资料和设置，并覆盖或新增配置及设备；目标店铺编号和当前管理员保留。"
+          : "将恢复店铺资料和设置，并覆盖或新增配置及资源；目标店铺编号和当前管理员保留。"
         : "此为 v1 备份，仅恢复文件已有内容，目标店铺资料保留。",
       "备份包含连接密钥、平台身份、卡片和财务数据，请妥善保管。",
       "账号按同一账号 ID 或已验证登录身份恢复关联；无法匹配的关联保留，需重新绑定。",
@@ -537,6 +555,27 @@ function v2DeviceStatements(db: D1Database, shopId: string, jobId: string, merge
   return { capabilities, history };
 }
 
+/**
+ * A partial import replaced the shop's plans but kept its resource groups and
+ * resources, so their plan references may point at plans that are gone: those
+ * become free. The file's own plan, if it names one, bills the default group,
+ * as the shop it came from billed every visit by it.
+ */
+function partialPricingStatements(db: D1Database, shopId: string, planId: string | null) {
+  const gone = (column: string) =>
+    `${column} IS NOT NULL AND ${column} NOT IN (SELECT id FROM pricing_configs WHERE shop_id=?)`;
+  return [
+    db.prepare(`UPDATE resource_groups SET default_pricing_config_id=NULL WHERE shop_id=? AND ${gone("default_pricing_config_id")}`)
+      .bind(shopId, shopId),
+    db.prepare(`UPDATE machines SET pricing_config_override_id=NULL WHERE shop_id=? AND ${gone("pricing_config_override_id")}`)
+      .bind(shopId, shopId),
+    ...(planId
+      ? [db.prepare("UPDATE resource_groups SET default_pricing_config_id=?,updated_at=? WHERE shop_id=? AND id=?")
+          .bind(planId, new Date().toISOString(), shopId, DEFAULT_RESOURCE_GROUP_ID)]
+      : []),
+  ];
+}
+
 async function applyJob(
   c: C,
   shop: BillingShop,
@@ -604,7 +643,9 @@ async function applyJob(
   if (header.scope === "business" && triggers.length !== restoreTriggerNames.length)
     jsonError(409, "计费数据库结构不完整，无法恢复历史版本", "IMPORT_SCHEMA_MISMATCH");
   statements.push(...triggers.map((t) => db.prepare(`DROP TRIGGER ${t.name}`)));
-  if (header.scope === "business") statements.push(...replaceBusinessStatements(db, shop.id, requireUser(c).id, header.version >= 2));
+  // A partial file replaces business data only; a full one restores the whole shop.
+  const partial = header.partial === true;
+  if (header.scope === "business") statements.push(...replaceBusinessStatements(db, shop.id, requireUser(c).id, header.version >= 2 && !partial));
   // Machines have global IDs. The preflight stores collision mappings in D1, not Worker memory.
   if (rowsCount.machines) {
     const cols = sourceColumns("machines"),
@@ -613,7 +654,10 @@ async function applyJob(
           ? "d.id"
           : col === "public_id"
             ? "d.public_id"
-            : `json_extract(r.payload_json,'$.${col}')`,
+            // A file written before these existed restores the defaults.
+            : col === "capacity" || col === "occupancy_minutes"
+              ? `COALESCE(json_extract(r.payload_json,'$.${col}'),${col === "capacity" ? 0 : 15})`
+              : `json_extract(r.payload_json,'$.${col}')`,
       );
     statements.push(
       db
@@ -695,6 +739,13 @@ async function applyJob(
     );
   }
   if (v2Devices) statements.push(...v2Devices.history);
+  // A mahjong table's size used to live in its capability; it is the resource's capacity now.
+  statements.push(db.prepare(
+    `UPDATE machines SET capacity=(SELECT json_extract(c.config_json,'$.capacity') FROM device_capabilities c
+       WHERE c.shop_id=machines.shop_id AND c.device_id=machines.id AND c.capability='mahjong')
+     WHERE shop_id=? AND EXISTS(SELECT 1 FROM device_capabilities c WHERE c.shop_id=machines.shop_id AND c.device_id=machines.id
+       AND c.capability='mahjong' AND json_type(c.config_json,'$.capacity')='integer')`,
+  ).bind(shop.id));
   const profile = header.shopProfile;
   const timeZone = profile ? resolveLocationTimeZone(profile.latitude, profile.longitude) : shop.time_zone;
   if (profile)
@@ -714,7 +765,7 @@ async function applyJob(
           shop.id,
         ),
     );
-  statements.push(
+  if (!partial) statements.push(
     db
       .prepare(
         `INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,'store.profile',?,?)
@@ -728,18 +779,16 @@ async function applyJob(
     statements.push(
       db
         .prepare(
-          `INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)
-      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,checkin_geo=excluded.checkin_geo,
-      checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,bot_contact=excluded.bot_contact,identity_binding_required=excluded.identity_binding_required`,
+          `INSERT INTO shop_billing_settings(shop_id,auto_register,checkin_geo,checkout_geo,machine_geo,bot_contact,identity_binding_required)
+      VALUES (?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET auto_register=excluded.auto_register,checkin_geo=excluded.checkin_geo,
+      checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,bot_contact=excluded.bot_contact,identity_binding_required=excluded.identity_binding_required`,
         )
         .bind(
           shop.id,
-          +s.billingEnabled,
           +s.autoRegister,
           +s.checkinGeo,
           +s.checkoutGeo,
           +s.machineGeo,
-          JSON.stringify(s.entryPricingIds),
           s.botContact,
           +s.identityBindingRequired,
         ),
@@ -758,6 +807,12 @@ async function applyJob(
           .bind(shop.id, key, JSON.stringify(value), now),
       );
   }
+  // The default group: stored by newer files, otherwise made here with the plan
+  // older files kept as the shop's default plan.
+  statements.push(ensureDefaultGroupStatement(db, shop.id, header.settings.entryPricingIds?.[0] ?? null));
+  if (partial) statements.push(...partialPricingStatements(db, shop.id, header.settings.entryPricingIds?.[0] ?? null));
+  statements.push(...missingFrontDeskStatements(db, shop.id));
+  if (header.settings.billingEnabled === false) statements.push(...freeShopStatements(db, shop.id));
   if (rowsCount.account_links) {
     const cols = schemas.account_links.columns.map((c) => c.name);
     statements.push(
@@ -794,6 +849,8 @@ async function applyJob(
       jsonError(409, "数据校验失败，导入已全部回滚，请重试", "IMPORT_CONSTRAINT_FAILED");
     throw error;
   }
+  // Restored resources, groups and plans change what entering through each bot starts.
+  notifyBotsChangedAfter(c, shop.id);
   return result;
 }
 

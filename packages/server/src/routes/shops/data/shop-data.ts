@@ -9,6 +9,10 @@ import { withOperationLease } from "@prism/application";
 import { requireUser } from "../../../middleware/auth.js";
 import { getBillingShop, staffPrincipal, type BillingShop } from "./compat.js";
 import { sha256 } from "../../../crypto.js";
+import { freeShopStatements } from "../../../resources/billed-sql.js";
+import { DEFAULT_RESOURCE_GROUP_ID } from "../../../resources/billing.js";
+import { missingFrontDeskStatements } from "../../platform/shops.js";
+import { notifyBotsChangedAfter } from "../../../durable-objects/shop-hub-client.js";
 import { jsonError } from "../../../http.js";
 import { enforceRateLimits } from "./compat.js";
 import type { AppBindings } from "./compat.js";
@@ -21,7 +25,7 @@ type C = Context<AppBindings, any, any>;
 const limits = { fileBytes: maxFileBytes, rowBytes: maxChunkBytes };
 const warnings = [
   "仅导入空店铺，保留目标店铺的名称、位置、时区、封面和管理员。",
-  "不包含网页登录账号关联、登录凭据、Bot 凭据或设备连接；导入后需要重新绑定和配置设备。",
+  "不包含网页登录账号关联、登录凭据、Bot 凭据、玩家卡片或设备连接；导入后需要重新绑定账号并配置硬件连接，玩家再次刷卡时卡片重新绑定。",
   "业务备份包含玩家平台身份、卡片标识及财务数据，请妥善保管文件。",
 ];
 const settingsState = `(SELECT json_array(
@@ -30,7 +34,7 @@ const settingsState = `(SELECT json_array(
   json_array(s.name,s.latitude,s.longitude,s.radius_meters,s.hero_data,s.hero_hash,s.updated_at)) FROM shops s WHERE s.id=?)`;
 const billingState = `(SELECT COALESCE(json_group_array(json_array(billing_enabled,auto_register,checkin_geo,checkout_geo,
   machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)),'[]') FROM shop_billing_settings WHERE shop_id=?)`;
-const emptyTables = [...businessTables, "api_tokens", "machines", "shop_player_accounts", "shop_platform_bindings", "mahjong_seats", "device_capabilities", "device_operations", "device_events", "device_state"];
+const emptyTables = [...businessTables, "api_tokens", "machines", "resource_groups", "shop_player_accounts", "shop_platform_bindings", "mahjong_seats", "device_capabilities", "device_operations", "device_events", "device_state", "player_cards", "resource_occupancies"];
 // One statement captures all target state and is reused as the atomic apply condition.
 export const snapshotSql = `SELECT (${emptyTables.map(table => `(SELECT COUNT(*) FROM ${table} WHERE shop_id=?)`).join("+")})
   +(SELECT COUNT(*) FROM staff_users WHERE shop_id=? AND id NOT LIKE 'account:%')
@@ -80,7 +84,7 @@ function parseBody<T>(schema: z.ZodType<T>, input: unknown): T {
 async function inspect(c: C, shop: BillingShop, backup: ShopBackup) {
   const errors = validateBackup(backup);
   const state = await targetState(c, shop.id);
-  if (state.rows) errors.push("目标店铺已有玩家、账单、配置或设备，请选择空店铺导入");
+  if (state.rows) errors.push("目标店铺已有玩家、账单、配置或资源，请选择空店铺导入");
   const fingerprint = await sha256(JSON.stringify({ shopId: shop.id, backup, state }));
   return { canImport: errors.length === 0, errors, fingerprint, warnings, limits,
     scope: backup.scope, source: backup.source,
@@ -90,23 +94,27 @@ async function exportBackup(c: C, shop: BillingShop, scope: ShopBackup["scope"])
   const tables = tablesFor(scope);
   const result = await (c.env.DB as LegacyD1Database).batch<DataRow>([
     ...tables.map(table => (c.env.DB as LegacyD1Database).prepare(`SELECT ${tableSchemas[table].columns.map(column => column.name).join(",")} FROM ${table}
-      WHERE shop_id=? ${table === "player_identities" ? "AND provider!='web-account'" : ""} ORDER BY rowid`).bind(shop.id)),
+      WHERE shop_id=? ${table === "player_identities" ? "AND provider NOT IN ('web-account','aime')" : ""} ORDER BY rowid`).bind(shop.id)),
     (c.env.DB as LegacyD1Database).prepare("SELECT key,value_json FROM app_settings WHERE shop_id=? AND key IN ('venue.operations','player.registration','cashier.settings')").bind(shop.id),
     (c.env.DB as LegacyD1Database).prepare("SELECT * FROM shop_billing_settings WHERE shop_id=?").bind(shop.id),
   ]);
   const settings = new Map(result[tables.length]!.results.map(row => [row.key, JSON.parse(String(row.value_json))]));
   const billing = result[tables.length + 1]!.results[0];
   const flag = (key: string, fallback: boolean) => billing ? !!billing[key] : fallback;
+  const defaultGroupPlan = (await (c.env.DB as LegacyD1Database).prepare(
+    "SELECT default_pricing_config_id AS plan FROM resource_groups WHERE shop_id=? AND id=?",
+  ).bind(shop.id, DEFAULT_RESOURCE_GROUP_ID).first<{ plan: string | null }>())?.plan ?? null;
   const backup: ShopBackup = {
     format: "prism-shop-data", version: 1, scope, exportedAt: new Date().toISOString(),
     source: { publicId: shop.public_id, name: shop.name, timeZone: shop.time_zone, origin: new URL(c.req.url).origin,
       location: { latitude: shop.latitude, longitude: shop.longitude, radiusMeters: shop.radius_meters } },
     storage: { timeZone: "UTC", money: "minor-units" },
     settings: {
-      billingEnabled: flag("billing_enabled", false), cashierEnabled: !!settings.get("cashier.settings")?.enabled,
+      cashierEnabled: !!settings.get("cashier.settings")?.enabled,
       autoRegister: flag("auto_register", false), identityBindingRequired: flag("identity_binding_required", true),
       checkinGeo: flag("checkin_geo", false), checkoutGeo: flag("checkout_geo", false), machineGeo: flag("machine_geo", false),
-      entryPricingIds: billing ? JSON.parse(String(billing.entry_pricing_ids_json)) : [], botContact: String(billing?.bot_contact ?? ""),
+      // v1 files have no resource groups: the default group's plan travels here, as it always did.
+      entryPricingIds: defaultGroupPlan ? [defaultGroupPlan] : [], botContact: String(billing?.bot_contact ?? ""),
       coinCooldownMs: settings.get("venue.operations")?.coinCooldownMs ?? 60_000,
       defaultPresentId: settings.get("player.registration")?.defaultPresentId ?? null,
     },
@@ -186,16 +194,22 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
       }
       statements.push(...triggers.map(trigger => (c.env.DB as LegacyD1Database).prepare(trigger.sql)));
       const s = backup.settings;
-      statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,checkin_geo,checkout_geo,machine_geo,entry_pricing_ids_json,bot_contact,identity_binding_required)
-        VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET billing_enabled=excluded.billing_enabled,auto_register=excluded.auto_register,
-        checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,entry_pricing_ids_json=excluded.entry_pricing_ids_json,
+      statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO shop_billing_settings(shop_id,auto_register,checkin_geo,checkout_geo,machine_geo,bot_contact,identity_binding_required)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(shop_id) DO UPDATE SET auto_register=excluded.auto_register,
+        checkin_geo=excluded.checkin_geo,checkout_geo=excluded.checkout_geo,machine_geo=excluded.machine_geo,
         bot_contact=excluded.bot_contact,identity_binding_required=excluded.identity_binding_required`)
-        .bind(shop.id, +s.billingEnabled, +s.autoRegister, +s.checkinGeo, +s.checkoutGeo, +s.machineGeo, JSON.stringify(s.entryPricingIds), s.botContact, +s.identityBindingRequired));
+        .bind(shop.id, +s.autoRegister, +s.checkinGeo, +s.checkoutGeo, +s.machineGeo, s.botContact, +s.identityBindingRequired));
+      // v1 files carry the default group's plan as the shop's default plan.
+      statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at)
+        VALUES (?,?,'默认资源组',1,?,?,?) ON CONFLICT(shop_id,id) DO UPDATE SET default_pricing_config_id=excluded.default_pricing_config_id`)
+        .bind(shop.id, DEFAULT_RESOURCE_GROUP_ID, s.entryPricingIds?.[0] ?? null, now, now));
+      if (s.billingEnabled === false) statements.push(...freeShopStatements(c.env.DB as LegacyD1Database, shop.id));
       for (const [key, value] of [
         ["venue.operations", { timeZone: "UTC", coinCooldownMs: s.coinCooldownMs }],
         ["player.registration", { defaultPresentId: s.defaultPresentId }], ["cashier.settings", { enabled: s.cashierEnabled }],
       ] as const) statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,?,?,?)
         ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`).bind(shop.id, key, JSON.stringify(value), now));
+      statements.push(...missingFrontDeskStatements(c.env.DB as LegacyD1Database, shop.id));
       try { await (c.env.DB as LegacyD1Database).batch(statements); }
       catch (error) {
         const message = String(error);
@@ -205,6 +219,7 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
           jsonError(409, "数据关联或约束校验失败，导入已全部回滚", "IMPORT_CONSTRAINT_FAILED");
         throw error;
       }
+      notifyBotsChangedAfter(c, shop.id);
       return c.json(result);
     });
   });

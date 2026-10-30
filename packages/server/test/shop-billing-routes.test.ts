@@ -11,7 +11,7 @@ import { shopRouter } from "../src/routes/shops/index.js";
 import { createApp } from "../src/app.js";
 import { billingSetupStatements } from "../src/routes/platform/shops.js";
 import { sha256, sha256Hex } from "../src/crypto.js";
-import { mintMachineTicket } from "../src/routes/platform/machine-session.js";
+import { mintResourceTicket } from "../src/routes/platform/resource-ticket.js";
 import { LiveBilling } from "../src/durable-objects/live-billing.js";
 import { activityBill } from "../src/durable-objects/live-activity-billing.js";
 
@@ -170,8 +170,27 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       coin_after_swipe INTEGER NOT NULL DEFAULT 0 CHECK(coin_after_swipe IN (0,1)),
       mahjong_config_json TEXT,
       aliases_json TEXT NOT NULL DEFAULT '[]',
+      resource_group_id TEXT,
+      pricing_config_override_id TEXT,
+      capacity INTEGER NOT NULL DEFAULT 0,
+      occupancy_minutes INTEGER NOT NULL DEFAULT 15,
       PRIMARY KEY(shop_id,id),
       UNIQUE(shop_id,public_id)
+    );
+    CREATE TABLE IF NOT EXISTS mahjong_seats (
+      shop_id TEXT NOT NULL, player_id TEXT NOT NULL, machine_id TEXT NOT NULL, session_id TEXT NOT NULL,
+      entry_session_id TEXT, entry_owned INTEGER NOT NULL DEFAULT 0, joined_at TEXT NOT NULL,
+      PRIMARY KEY (shop_id, player_id)
+    );
+    CREATE TABLE IF NOT EXISTS resource_groups (
+      shop_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_pricing_config_id TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (shop_id, id)
     );
   `);
 
@@ -240,8 +259,10 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       "UPDATE shop_billing_settings SET identity_binding_required = 0, checkin_geo = 0, checkout_geo = 0, machine_geo = 0 WHERE shop_id = ?",
       [shopId],
     );
+    // The front desk is a resource in the default group: its check-ins bill the setup's plan.
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?,'front-desk','front-desk','前台','machine',1)", [shopId]);
     sqlite.run(
-      "INSERT INTO app_settings (shop_id, key, value_json, updated_at) VALUES (?, 'cashier.settings', '{\"enabled\":true}', CURRENT_TIMESTAMP)",
+      "INSERT INTO app_settings (shop_id, key, value_json, updated_at) VALUES (?, 'cashier.settings', '{\"enabled\":true,\"resourceId\":\"front-desk\"}', CURRENT_TIMESTAMP)",
       [shopId],
     );
 
@@ -357,6 +378,37 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     } finally { sqlite.close(); }
   });
 
+  it("names the live activity's events as the bill names them", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { shopId } = await setupShopFixture(db, sqlite);
+    const start = new Date("2026-10-15T06:00:00.000Z");
+    const at = (minutes: number) => +start + minutes * 60_000;
+    // Two-minute units of 2.00 with a two-minute grace, the period capped at 4.00.
+    sqlite.run(`UPDATE pricing_configs SET provider_json=json_set(provider_json,
+      '$.rules[0].pricing.unitMinutes',2,'$.rules[0].pricing.unitPrice',200,
+      '$.rules[0].pricing.roundGraceMinutes',2,'$.rules[0].pricing.priceCap',400) WHERE shop_id=? AND kind='time.priority'`, [shopId]);
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'events','Player','active',?)", [shopId, start.toISOString()]);
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES (?,'events-visit','events',?,'active','unpaid','[]')", [shopId, start.toISOString()]);
+    try {
+      const entered = await activityBill(env, shopId, "events", start);
+      expect(entered?.bill.previousEvent).toEqual({ atUnix: at(0) / 1000, label: "开始计费" });
+      expect(entered?.bill.nextEvent).toEqual({ atUnix: at(2) / 1000, label: "下次计费" });
+
+      // The second unit, charged at 4 minutes, fills the cap; the third would have been charged at 6.
+      const filling = await activityBill(env, shopId, "events", new Date(at(5)));
+      expect(filling?.bill.amountCents).toBe(400);
+      expect(filling?.bill.previousEvent).toEqual({ atUnix: at(4) / 1000, label: "计费" });
+      expect(filling?.bill.nextEvent).toEqual({ atUnix: at(6) / 1000, label: "已封顶" });
+      expect(filling?.nextBill?.amountCents).toBe(400);
+
+      // The bill dates the fill at the unit it stopped; the plan is capped until its period ends.
+      const capped = await activityBill(env, shopId, "events", new Date(at(7)));
+      expect(capped?.bill.previousEvent).toEqual({ atUnix: at(4) / 1000, label: "已封顶" });
+      expect(capped?.bill.nextEvent).toEqual({ atUnix: Date.parse("2026-10-16T00:00:00.000Z") / 1000, label: "封顶结束" });
+      expect(Number(capped?.bill.remainingToCapCents)).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
   for (const checkout of ["player", "staff", "override", "recharge", "bulk", "cashier"] as const) {
     it(`pushes the final App Clip bill promptly after ${checkout} checkout`, async () => {
       const { db, sqlite, env } = createTestContext();
@@ -400,7 +452,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       };
       // Start through the QR-confirmed native API, then register its per-activity token.
       sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?,'entry','entry','Entry','machine',1)", [shopId]);
-      const { ticket } = await mintMachineTicket(env.SESSION_SECRET, publicId, "entry");
+      const { ticket } = await mintResourceTicket(env.SESSION_SECRET, publicId, "entry");
       const started = await post("player/session/start", { ticket, consent: true, operationId: crypto.randomUUID() });
       const sessionId = started.session.id as string;
       sqlite.run("UPDATE sessions SET started_at=? WHERE shop_id=? AND id=?", [new Date(Date.now() - 90 * 60_000).toISOString(), shopId, sessionId]);
@@ -913,7 +965,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     // The real player entry requires a QR-derived, shop-scoped machine ticket
     // and affirmative acknowledgement of the billing terms.
     sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,kind,enabled) VALUES (?, 'entry-machine', 'entry-machine', 'Entry Machine', 'machine', 1)", [shopId]);
-    const ticket = (await mintMachineTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
+    const ticket = (await mintResourceTicket(env.SESSION_SECRET, publicId, "entry-machine")).ticket;
     // 1. Player session start
     const startRes = await app.fetch(
       new Request(`https://prism.test/api/v1/shops/${publicId}/player/session/start`, {
@@ -1401,6 +1453,21 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       const playerId = registeredBody.player.id;
       expect(registeredBody.player.displayName).toBe("Koishi Guest");
 
+      const entryPlanId = (sqlite.query(
+        "SELECT default_pricing_config_id AS id FROM resource_groups WHERE shop_id=? AND id='default'",
+      ).get(shopId) as { id: string }).id;
+      // The table bills its own plan. It is published before the visit starts,
+      // so it belongs to the release the visit is pinned to.
+      sqlite.run(
+        `INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at)
+         SELECT shop_id,'mahjong-table-a',kind,'麻将 A 桌',enabled,status,provider_json,created_at,updated_at
+         FROM pricing_configs WHERE shop_id=? AND id=?`,
+        [shopId, entryPlanId!],
+      );
+
+      // The bot becomes a resource on first use; the shared fixture predates
+      // encrypted machine fields.
+      sqlite.run("ALTER TABLE machines ADD COLUMN hinata_url_encrypted TEXT");
       const entry = await post("/players/by-identity/session/start", {
         identity, label: "音游区间", entry: true,
       });
@@ -1408,17 +1475,29 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       const entryBody = await entry.json() as { session: { id: string; playerId: string } };
       expect(entryBody.session.playerId).toBe(playerId);
 
-      const table = await post("/players/by-identity/session/start", {
-        identity, label: "麻将 A 桌", entry: false,
-        // Even overlapping admission pricing must not hijack the table session.
-        pricingConfigIds: JSON.parse((sqlite.query(
-          "SELECT entry_pricing_ids_json AS ids FROM shop_billing_settings WHERE shop_id=?",
-        ).get(shopId) as { ids: string }).ids),
+      // A bot from before platform mahjong starts a table by naming its plan:
+      // that plan starts as a session of its own, beside the visit.
+      const named = await post("/players/by-identity/session/start", {
+        identity, label: "麻将 A 桌", entry: false, pricingConfigIds: ["mahjong-table-a"],
       });
-      expect(table.status).toBe(200);
-      const tableBody = await table.json() as { session: { id: string; playerId: string } };
+      expect(named.status).toBe(200);
+      const tableBody = await named.json() as { session: { id: string; playerId: string }; created: boolean };
+      expect(tableBody.created).toBe(true);
       expect(tableBody.session.playerId).toBe(playerId);
       expect(tableBody.session.id).not.toBe(entryBody.session.id);
+
+      // A plan bills a player once: a login on a bot whose own plan is the table's
+      // reuses that session instead of charging the plan a second time.
+      sqlite.run(
+        `UPDATE machines SET pricing_config_override_id='mahjong-table-a'
+         WHERE shop_id=? AND id IN (SELECT device_id FROM device_capabilities WHERE shop_id=? AND capability='bot')`,
+        [shopId, shopId],
+      );
+      const again = await post("/players/by-identity/session/start", { identity });
+      expect(again.status).toBe(200);
+      const againBody = await again.json() as { session: { id: string }; created: boolean };
+      expect(againBody.session.id).toBe(tableBody.session.id);
+      expect(againBody.created).toBe(false);
 
       const active = await app.fetch(new Request(prefix + "/sessions/active", { headers }), env);
       expect(active.status).toBe(200);
@@ -1426,7 +1505,8 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
         sessions: Array<{ id: string; playerId: string; label?: string; identities?: Array<{ provider: string; subject: string }> }>;
       };
       expect(activeBody.sessions).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: entryBody.session.id, playerId, label: "entry" }),
+        // Labelled by its plan: there is no default plan to call "entry".
+        expect.objectContaining({ id: entryBody.session.id, playerId, label: "标准入场" }),
         expect.objectContaining({ id: tableBody.session.id, playerId, label: "麻将 A 桌" }),
       ]));
       expect(activeBody.sessions.some(s => s.playerId === playerId
@@ -1543,6 +1623,74 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(bindingRow?.subject).toBe("99887766");
   });
 
+  it("lets the shop, never the bot request, decide registration on every bot command", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, botToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    sqlite.run("UPDATE shop_billing_settings SET auto_register=0 WHERE shop_id=?", [shopId]);
+    const before = (sqlite.query("SELECT COUNT(*) AS n FROM players WHERE shop_id=?").get(shopId) as { n: number }).n;
+    for (const path of ["wallet", "redeem", "history", "assets"]) {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/${path}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${botToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ identity: { provider: "onebot", subject: `stranger-${path}` }, autoRegister: true, code: "NOPE" }),
+      }), env);
+      expect(res.status).not.toBe(200);
+    }
+    const after = (sqlite.query("SELECT COUNT(*) AS n FROM players WHERE shop_id=?").get(shopId) as { n: number }).n;
+    expect(after).toBe(before);
+    sqlite.close();
+  });
+
+  it("lets a bot bind identities and read wallets for a shop where no resource bills", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, botToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const headers = { Authorization: `Bearer ${botToken}`, "Content-Type": "application/json" };
+    const wallet = () => app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/integration/players/by-identity/wallet`, {
+      method: "POST", headers, body: JSON.stringify({ identity: { provider: "onebot", subject: "1" } }),
+    }), env);
+    const bind = async (user: string) => {
+      const token = `token_${user}`;
+      sqlite.run("INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", [user]);
+      sqlite.run("INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, datetime('now','+1 day'), CURRENT_TIMESTAMP)",
+        [`sess_${user}`, user, await sha256(token)]);
+      const code = await (await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, {
+        method: "POST", headers: { Authorization: `Bearer ${token}` },
+      }), env)).json() as { code: string };
+      return app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/integration/platform-binding/confirm`, {
+        method: "POST", headers, body: JSON.stringify({ code: code.code, provider: "onebot", subject: `qq-${user}` }),
+      }), env);
+    };
+    sqlite.run("UPDATE shop_billing_settings SET entry_pricing_ids_json='[]' WHERE shop_id=?", [shopId]);
+    clearShopDependenciesCache();
+    // There is no shop-wide billing switch to refuse it.
+    expect((await wallet()).status).toBe(200);
+    expect((await bind("user_no_billing")).status).toBe(200);
+    sqlite.close();
+  });
+
+  it("only accepts a changed binding prompt that shows the code", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const url = `https://prism.test/api/v1/shops/${publicId}/settings`;
+    const headers = { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" };
+    const current = await (await app.fetch(new Request(url, { headers }), env)).json() as Record<string, unknown>;
+    // The fixture's legacy contact text has no {code}; untouched, it still saves.
+    expect(current).toMatchObject({ botContact: "bot-contact" });
+    const save = (patch: Record<string, unknown>) => app.fetch(new Request(url, {
+      method: "PUT", headers, body: JSON.stringify({ ...current, ...patch }),
+    }), env);
+    expect((await save({ locationEnabled: false })).status).toBe(200);
+    const missing = await save({ botContact: "加群 123456 后私聊 Bot" });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toMatchObject({ error: { code: "BINDING_PROMPT_CODE_REQUIRED" } });
+    expect((await save({ botContact: "在 QQ 群 123456 里发送\n/绑定 {code}" })).status).toBe(200);
+    expect(await (await app.fetch(new Request(url, { headers }), env)).json()).toMatchObject({ botContact: "在 QQ 群 123456 里发送\n/绑定 {code}" });
+    sqlite.close();
+  });
+
   it("saves the unified location toggle despite stale legacy flags from the settings form", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
@@ -1570,7 +1718,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
   });
 
   for (const invalid of ["pricing", "balance"] as const) {
-    it(`allows location edits with invalid existing ${invalid} while still validating billing changes`, async () => {
+    it(`allows settings edits with invalid existing ${invalid}, and requires a front-desk resource`, async () => {
       const { db, sqlite, env } = createTestContext();
       const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
       const app = createTestApp();
@@ -1579,24 +1727,21 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       if (invalid === "pricing") sqlite.run("UPDATE pricing_configs SET enabled=0 WHERE shop_id=?", [shopId]);
       else sqlite.run("UPDATE asset_definitions SET status='archived' WHERE shop_id=? AND type='currency'", [shopId]);
       const current = await (await app.fetch(new Request(url, { headers }), env)).json() as Record<string, unknown>;
+      // Settings no longer hold a plan: billing is set on resource groups.
+      expect(current).not.toHaveProperty("entryPricingIds");
+      expect(current).toMatchObject({ cashierResourceId: "front-desk", billingConfiguration: { ready: invalid === "pricing" } });
       const save = (patch: Record<string, unknown>) => app.fetch(new Request(url, {
         method: "PUT", headers, body: JSON.stringify({ ...current, ...patch }),
       }), env);
       const location = await save({ locationEnabled: false });
       expect(location.status).toBe(200);
-      expect(await location.json()).toMatchObject({ locationEnabled: false, billingEnabled: true, billingConfiguration: { ready: false } });
-      const changed = await save({ entryPricingIds: ["missing-rule"] });
-      expect(changed.status).toBe(409);
-      expect(await changed.json()).toMatchObject({ error: { code: "BILLING_CONFIGURATION_REQUIRED" } });
-      expect((await save({ billingEnabled: false, cashierEnabled: false })).status).toBe(200);
-      const enable = await save({ billingEnabled: true });
-      expect(enable.status).toBe(409);
-      expect(await enable.json()).toMatchObject({ error: { code: "BILLING_CONFIGURATION_REQUIRED" } });
-      // Re-enabling cashier also requires a valid billing configuration.
-      sqlite.run("UPDATE shop_billing_settings SET billing_enabled=1 WHERE shop_id=?", [shopId]);
-      const cashier = await save({ cashierEnabled: true });
-      expect(cashier.status).toBe(409);
-      expect(await cashier.json()).toMatchObject({ error: { code: "BILLING_CONFIGURATION_REQUIRED" } });
+      expect(await location.json()).not.toHaveProperty("billingEnabled");
+      // The front desk bills through a resource, so it cannot be on without one.
+      const noDesk = await save({ cashierResourceId: null });
+      expect(noDesk.status).toBe(409);
+      expect(await noDesk.json()).toMatchObject({ error: { code: "CASHIER_RESOURCE_REQUIRED" } });
+      expect((await save({ cashierResourceId: "missing" })).status).toBe(404);
+      expect((await save({ cashierEnabled: false, cashierResourceId: null })).status).toBe(200);
       sqlite.close();
     });
   }
@@ -1624,7 +1769,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
           checkoutGeo: false,
           machineGeo: true,
           entryPricingIds: JSON.parse(config!.entry_pricing_ids_json),
-          botContact: "owner@example.test",
+          botContact: "联系 owner@example.test 发送 {code}",
         }),
       }),
       env,

@@ -1,6 +1,7 @@
 import { parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
-import { Plus } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { Download, Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { displayDateTime } from "../bill-time";
 import { useScrollFade } from "../use-scroll-fade";
@@ -14,6 +15,7 @@ import {
   effectSummary,
 } from "./AssetDetails";
 import type { Effect, Grant, Present, RedeemCode } from "./asset-types";
+import { RedeemCodeExport } from "./RedeemCodeExport";
 import {
   ActionForm,
   Field,
@@ -41,13 +43,23 @@ export function AssetsPage() {
   const effects = useResource<{ pricingEffects: Effect[] }>("pricing-effects");
   const presents = useResource<{ presents: Present[] }>("presents");
   const codes = useResource<{ redeemCodes: RedeemCode[] }>("redeem-codes");
-  const [tab, setTab] = useState("assets");
+  // The tab is in the URL so other pages can link straight to gifts or codes.
+  const [params, setParams] = useSearchParams();
+  const tabs = ["assets", "effects", "gifts", "codes"];
+  const tab = tabs.includes(params.get("tab") ?? "") ? params.get("tab")! : "assets";
+  const setTab = (next: string) => {
+    const query = new URLSearchParams(params);
+    if (next === "assets") query.delete("tab");
+    else query.set("tab", next);
+    setParams(query, { replace: true });
+  };
   const tabRef = useScrollFade<HTMLElement>();
   const [creatingAsset, setCreatingAsset] = useState(false);
   const [editing, setEditing] = useState<Asset | null>(null);
   const [effect, setEffect] = useState<Effect | null>(null);
   const [gift, setGift] = useState(false);
   const [code, setCode] = useState(false);
+  const [exportingCodes, setExportingCodes] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [detail, setDetail] = useState<
     | { kind: "asset"; item: Asset }
@@ -89,40 +101,42 @@ export function AssetsPage() {
         : tab === "gifts"
           ? "新建礼物"
           : "生成兑换码";
+  function startCreate() {
+    if (tab === "assets") {
+      setCreatingAsset(true);
+      setEditing({
+        type: "coupon",
+        code: crypto.randomUUID(),
+        name: "",
+        stackable: true,
+        pricingEffectId: null,
+        status: "active",
+        metadata: null,
+      });
+    } else if (tab === "effects")
+      setEffect({
+        id: "",
+        name: "",
+        type: "discount",
+        scope: "unified",
+        value: 1,
+        consumable: true,
+        limitPerDay: null,
+        status: "active",
+        config: null,
+      });
+    else if (tab === "gifts") setGift(true);
+    else setCode(true);
+  }
+  const activePresents = presents.data?.presents.some((p) => p.status !== "archived") ?? false;
   return (
-    <div className="grid gap-5">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="text-xl font-semibold">{t("资产与兑换")}</h2>
         {canWrite && (
           <button
             className={primary}
-            onClick={() => {
-              if (tab === "assets") {
-                setCreatingAsset(true);
-                setEditing({
-                  type: "coupon",
-                  code: crypto.randomUUID(),
-                  name: "",
-                  stackable: true,
-                  pricingEffectId: null,
-                  status: "active",
-                  metadata: null,
-                });
-              } else if (tab === "effects")
-                setEffect({
-                  id: "",
-                  name: "",
-                  type: "discount",
-                  scope: "unified",
-                  value: 1,
-                  consumable: true,
-                  limitPerDay: null,
-                  status: "active",
-                  config: null,
-                });
-              else if (tab === "gifts") setGift(true);
-              else setCode(true);
-            }}
+            onClick={startCreate}
           >
             <Plus size={16} />
             {t(createLabel)}
@@ -163,12 +177,22 @@ export function AssetsPage() {
             {t("显示已归档")}
           </label>
         )}
+        {tab === "codes" && visibleCodes.length > 0 && (
+          <button className={button} onClick={() => setExportingCodes(true)}>
+            <Download size={16} />
+            {t("导出兑换码")}
+          </button>
+        )}
       </div>
       {tab === "assets" &&
         (!assets.data ? (
           <State error={assets.error} />
         ) : !visibleAssets.length ? (
-          <Empty title="还没有资产" />
+          <Empty
+            title="还没有资产"
+            hint="资产是玩家账户里能持有的东西，比如余额和优惠券。"
+            action={canWrite ? { label: createLabel, run: startCreate } : undefined}
+          />
         ) : (
           <Table
             headers={["名称", "类型", "关联优惠", "有效期", "状态", "操作"]}
@@ -246,7 +270,11 @@ export function AssetsPage() {
         (!effects.data ? (
           <State error={effects.error} />
         ) : !visibleEffects.length ? (
-          <Empty title="还没有优惠" />
+          <Empty
+            title="还没有优惠"
+            hint="优惠决定结账时怎么抵扣：免单、减固定金额或打折。把优惠关联到一种资产，玩家持有这种资产时结账自动抵扣。"
+            action={canWrite ? { label: createLabel, run: startCreate } : undefined}
+          />
         ) : (
           <Table headers={["名称", "优惠方式", "使用限制", "状态", "操作"]}>
             {visibleEffects.map((e) => (
@@ -308,7 +336,11 @@ export function AssetsPage() {
         (!presents.data ? (
           <State error={presents.error} />
         ) : !visiblePresents.length ? (
-          <Empty title="还没有礼物" />
+          <Empty
+            title="还没有礼物"
+            hint="礼物把几种资产打包发放，可以设为新玩家礼物，也可以通过兑换码让玩家自己领。"
+            action={canWrite ? { label: createLabel, run: startCreate } : undefined}
+          />
         ) : (
           <Table headers={["礼物", "内容", "领取限制", "状态", "操作"]}>
             {visiblePresents.map((p) => (
@@ -322,6 +354,8 @@ export function AssetsPage() {
                             a.type === g.assetType && a.code === g.assetCode,
                         )?.name ?? g.assetCode}{" "}
                         × {g.amount}
+                        {g.maxPerPlayer !== undefined &&
+                          ` (${t("每位玩家限领 {count} 次", { count: g.maxPerPlayer })})`}
                       </p>
                     ))}
                   </td>
@@ -360,7 +394,17 @@ export function AssetsPage() {
         (!codes.data ? (
           <State error={codes.error} />
         ) : !visibleCodes.length ? (
-          <Empty title="还没有兑换码" />
+          <Empty
+            title="还没有兑换码"
+            hint={activePresents ? "兑换码让玩家自己领取礼物。" : "兑换码让玩家自己领取礼物，先创建一个礼物。"}
+            action={
+              !canWrite
+                ? undefined
+                : activePresents
+                  ? { label: createLabel, run: startCreate }
+                  : { label: "创建礼物", run: () => setTab("gifts") }
+            }
+          />
         ) : (
           <Table headers={["兑换码", "礼物", "使用次数", "到期", "操作"]}>
             {visibleCodes.map((c) => (
@@ -417,6 +461,14 @@ export function AssetsPage() {
             ))}
           </Table>
         ))}
+      {exportingCodes && (
+        <RedeemCodeExport
+          codes={visibleCodes}
+          presents={presents.data?.presents ?? []}
+          timeZone={timeZone}
+          close={() => setExportingCodes(false)}
+        />
+      )}
       {detail && (
         <Modal
           title={
@@ -499,7 +551,7 @@ export function AssetsPage() {
                     {(
                       [
                         ["currency", "余额", "玩家充值得到的钱，结账时扣除"],
-                        ["coupon", "权益", "券或次数，按用途发放"],
+                        ["coupon", "优惠券", "券或次数，可关联优惠在结账时抵扣"],
                       ] as const
                     ).map(([value, label, hint]) => (
                       <label
@@ -605,30 +657,7 @@ export function AssetsPage() {
                 defaultValue={effect.name}
               />
             </Field>
-            <Field label="优惠方式">
-              <select className={input} name="type" defaultValue={effect.type}>
-                {[
-                  ["free", "免费"],
-                  ["discount", "减免金额"],
-                  ["percentage-discount", "折扣比例"],
-                  ["surcharge", "加收金额"],
-                ].map(([key, label]) => (
-                  <option key={key} value={key}>
-                    {t(label!)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="数值（比例减免使用 0～100）">
-              <input
-                className={input}
-                type="number"
-                min="0"
-                step="0.01"
-                name="value"
-                defaultValue={effect.value ?? 0}
-              />
-            </Field>
+            <EffectValueFields key={effect.id} effect={effect} />
             <Field label="范围">
               <select
                 className={input}
@@ -761,12 +790,70 @@ export function AssetsPage() {
     </div>
   );
 }
-function Empty({ title }: { title: string }) {
+function Empty({
+  title,
+  hint,
+  action,
+}: {
+  title: string;
+  hint: string;
+  action?: { label: string; run: () => void };
+}) {
   const { t } = useI18n();
   return (
     <div className="rounded-xl border border-dashed border-ink/20 px-6 py-14 text-center">
       <p className="font-medium">{t(title)}</p>
+      <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink/55">
+        {t(hint)}
+      </p>
+      {action && (
+        <button type="button" className={`${primary} mt-5`} onClick={action.run}>
+          <Plus size={16} />
+          {t(action.label)}
+        </button>
+      )}
     </div>
+  );
+}
+
+const effectTypes = [
+  ["free", "免费"],
+  ["discount", "减免金额"],
+  ["percentage-discount", "折扣比例"],
+  ["surcharge", "加收金额"],
+] as const;
+
+function EffectValueFields({ effect }: { effect: Effect }) {
+  const { t } = useI18n();
+  const [type, setType] = useState(effect.type);
+  return (
+    <>
+      <Field label="优惠方式">
+        <select
+          className={input}
+          name="type"
+          value={type}
+          onChange={(e) => setType(e.target.value as Effect["type"])}
+        >
+          {effectTypes.map(([key, label]) => (
+            <option key={key} value={key}>
+              {t(label)}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="数值" unit={type === "percentage-discount" ? "%" : type === "free" ? undefined : "元"}>
+        <input
+          className={input}
+          type="number"
+          min="0"
+          step="0.01"
+          name="value"
+          disabled={type === "free"}
+          defaultValue={effect.value ?? 0}
+        />
+      </Field>
+    </>
   );
 }
 
@@ -805,7 +892,7 @@ function GiftForm({ assets, done }: { assets: Asset[]; done: () => void }) {
       </label>
       {grants.map((g, index) => (
         <div
-          className="grid grid-cols-[1fr_6rem_auto] items-end gap-2"
+          className="grid grid-cols-[1fr_6rem_7rem_auto] items-end gap-2"
           key={index}
         >
           <Field label="资产">
@@ -852,6 +939,27 @@ function GiftForm({ assets, done }: { assets: Asset[]; done: () => void }) {
                   grants.map((v, i) =>
                     i === index ? { ...v, amount: Number(e.target.value) } : v,
                   ),
+                )
+              }
+            />
+          </Field>
+          <Field label="每位玩家限领次数">
+            <input
+              className={input}
+              type="number"
+              min="1"
+              step="1"
+              placeholder={t("不限")}
+              value={g.maxPerPlayer ?? ""}
+              onChange={(e) =>
+                setGrants(
+                  grants.map((v, i) => {
+                    if (i !== index) return v;
+                    const { maxPerPlayer: _drop, ...rest } = v;
+                    return e.target.value === ""
+                      ? rest
+                      : { ...rest, maxPerPlayer: Number(e.target.value) };
+                  }),
                 )
               }
             />

@@ -1,22 +1,17 @@
 import {
-  applyTimeCapPricing,
   createPricingProviderFromConfig,
-  explainTimeCapPricing,
   isApiInstant,
-  maxCents,
   previewSessionSettlement,
   PrismDomainError,
-  sumCents,
   yuanOf,
-  ZERO_CENTS,
   type BillTimeline,
   type ChargeItem,
   type PricingConfig,
-  type SettlementAdjustment,
   type Session,
-  type TimeCapPricingWindow,
 } from "@prism/core";
 import { buildBillTimeline } from "./bill-timeline";
+import { capProviderConfig, capTimePlanIds } from "./versioned-pricing";
+import { settleSessionsWithCaps } from "./session-billing";
 
 export type BillingSimulationSession = {
   startedAt: string;
@@ -105,26 +100,18 @@ export async function simulateBilling(input: {
     });
   }
 
-  const charges = timelineSessions.flatMap(session => session.chargeItems.map(item =>
-    item.sessionId ? item : { ...item, sessionId: session.sessionId },
-  ));
-  const capAdjustments: SettlementAdjustment[] = [];
-  const capWindows: TimeCapPricingWindow[] = [];
-  for (const config of enabled) {
-    if (config.kind !== "time.cap") continue;
-    const cap = {
-      ...config.provider,
-      name: config.name,
-      pricingConfigId: config.id,
-      timeZone: config.provider.timeZone ?? input.timeZone ?? "UTC",
-      paidHistory: {},
-    };
-    capWindows.push(...explainTimeCapPricing({ config: cap, chargeItems: charges }));
-    capAdjustments.push(...applyTimeCapPricing({ config: cap, chargeItems: charges }));
-  }
-
-  const subtotal = sumCents(charges.map(item => item.amount));
-  const total = maxCents(ZERO_CENTS, sumCents([subtotal, ...capAdjustments.map(item => item.amount)]));
+  // The same settlement checkout uses: a cap counts every time plan, not the
+  // list it stores (which is empty), and the total is capped quote minus held-back.
+  const timeZone = input.timeZone ?? "UTC";
+  const timePlanIds = capTimePlanIds(enabled);
+  const settled = settleSessionsWithCaps({
+    sessions: timelineSessions,
+    caps: enabled.flatMap(config => config.kind === "time.cap"
+      ? [capProviderConfig(config, config.provider.timeZone ?? timeZone, timePlanIds)]
+      : []),
+  });
+  const { chargeItems: charges, windows: capWindows, adjustments: capAdjustments, subtotal } = settled;
+  const total = settled.total;
   return {
     admissionAt: admission.toISOString(),
     departureAt: departure.toISOString(),

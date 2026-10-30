@@ -154,6 +154,7 @@ function createTestEnvironment(): { db: D1DatabaseLike; sqlite: Database; env: E
       token_hash TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL,
+      last_used_at TEXT,
       PRIMARY KEY (shop_id, id)
     );
     CREATE TABLE IF NOT EXISTS asset_definitions (
@@ -193,8 +194,28 @@ function createTestEnvironment(): { db: D1DatabaseLike; sqlite: Database; env: E
     );
     CREATE TABLE IF NOT EXISTS machines (
       id TEXT PRIMARY KEY,
+      public_id TEXT,
       shop_id TEXT NOT NULL,
-      name TEXT NOT NULL
+      name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'machine',
+      aliases_json TEXT NOT NULL DEFAULT '[]', hinata_url_encrypted TEXT DEFAULT '',
+      resource_group_id TEXT, pricing_config_override_id TEXT,
+      capacity INTEGER NOT NULL DEFAULT 0, occupancy_minutes INTEGER NOT NULL DEFAULT 15
+    );
+    CREATE TABLE IF NOT EXISTS device_capabilities (
+      shop_id TEXT NOT NULL, device_id TEXT NOT NULL, capability TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}', secret_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT, updated_at TEXT,
+      PRIMARY KEY (shop_id, device_id, capability)
+    );
+    CREATE TABLE IF NOT EXISTS resource_groups (
+      shop_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      default_pricing_config_id TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      PRIMARY KEY (shop_id, id)
     );
     CREATE TABLE IF NOT EXISTS players (
       id TEXT PRIMARY KEY,
@@ -265,11 +286,13 @@ async function authenticatedTestUser(
 describe("Platform & System Routes", () => {
   let env: Env;
   let app: Hono<AppBindings>;
+  let sqlite: Database;
 
   beforeEach(() => {
     const ctx = createTestEnvironment();
     env = ctx.env;
     app = ctx.app;
+    sqlite = ctx.sqlite;
   });
 
   describe("System Routes: Health & Version", () => {
@@ -536,6 +559,46 @@ describe("Platform & System Routes", () => {
       expect(res.status).toBe(401);
     });
 
+    it("lets a new shop's first binding create the player, with or without billing", async () => {
+      for (const billingSetup of [undefined, {
+        paidName: "余额", freeName: "赠送余额", hourlyPrice: 12, graceMinutes: 5, dailyCap: 60,
+      }]) {
+        const res = await app.request("https://prism.test/api/v1/shops", {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie: ownerCookie },
+          body: JSON.stringify({ name: "Default Shop", latitude: 31.23, longitude: 121.47, billingSetup }),
+        }, env);
+        expect(res.status).toBe(201);
+        const { shop } = await res.json() as { shop: { id: string } };
+        const row = await env.DB.prepare(
+          "SELECT auto_register, identity_binding_required FROM shop_billing_settings WHERE shop_id=?",
+        ).bind(shop.id).first();
+        expect(row).toEqual({ auto_register: 1, identity_binding_required: 1 });
+        // Every shop has its default group; billing setup gives it a plan, otherwise its resources are free.
+        const group = await env.DB.prepare(
+          "SELECT default_pricing_config_id IS NOT NULL AS priced FROM resource_groups WHERE shop_id=? AND id='default'",
+        ).bind(shop.id).first();
+        expect(group).toEqual({ priced: billingSetup ? 1 : 0 });
+      }
+    });
+
+    it("opens a front-desk shop with the cashier already enabled", async () => {
+      const res = await app.request("https://prism.test/api/v1/shops", {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: ownerCookie },
+        body: JSON.stringify({ name: "Desk Shop", latitude: 31.23, longitude: 121.47, billingSetup: {
+          paidName: "余额", freeName: "赠送余额", hourlyPrice: 12, graceMinutes: 5, dailyCap: 60, cashierEnabled: true,
+        } }),
+      }, env);
+      expect(res.status).toBe(201);
+      const { shop } = await res.json() as { shop: { id: string } };
+      const row = await env.DB.prepare("SELECT value_json FROM app_settings WHERE shop_id=? AND key='cashier.settings'").bind(shop.id).first<{ value_json: string }>();
+      // The front desk is a resource from the start, in the default group.
+      expect(JSON.parse(row!.value_json)).toEqual({ enabled: true, resourceId: `desk-${shop.id}` });
+      const desk = await env.DB.prepare("SELECT name, resource_group_id FROM machines WHERE id=?").bind(`desk-${shop.id}`).first();
+      expect(desk).toEqual({ name: "前台", resource_group_id: null });
+    });
+
     it("creates a shop with billing setup and bot integration token", async () => {
       const res = await app.request(
         "https://prism.test/api/v1/shops",
@@ -575,6 +638,10 @@ describe("Platform & System Routes", () => {
       expect(data.shop.timeZone).toBe("Asia/Shanghai");
       expect(data.shop.radiusMeters).toBe(100);
       expect(data.botToken).toMatch(/^prism_integration_/);
+      // The bot is a resource from the start, in the default group, so the shop
+      // sees it before it ever connects and its credential names one resource.
+      const bot = sqlite.query("SELECT m.id, m.resource_group_id AS grp FROM machines m JOIN device_capabilities c ON c.device_id=m.id AND c.capability='bot'").get() as { id: string; grp: string | null };
+      expect(bot.grp).toBeNull();
 
       // Verify owner can list the shop
       const listRes = await app.request(
@@ -724,6 +791,29 @@ describe("Platform & System Routes", () => {
       expect(isAssetEligiblePath("/health")).toBe(false);
       expect(isAssetEligiblePath("/version")).toBe(false);
       expect(isAssetEligiblePath("/t/shop1/mach1")).toBe(false);
+    });
+
+    it("has Cloudflare run the Worker first on every path it answers itself", async () => {
+      // Static assets with an SPA fallback answer before the Worker unless the path is
+      // listed: a bot's /integration/ws upgrade otherwise got index.html with a 200.
+      const config = await Bun.file(new URL("../../../wrangler.jsonc", import.meta.url)).json() as {
+        assets: { run_worker_first: string[] };
+      };
+      // A glob's `*` matches anything; every other character matches itself.
+      const literal = (text: string) => text.replace(/[.+?^${}()|[\]\\]/g, (char) => `\\${char}`);
+      const patterns = config.assets.run_worker_first.map((glob) =>
+        new RegExp(`^${glob.split("*").map(literal).join(".*")}$`));
+      const workerPaths = [
+        "/api/v1/shops/x", "/rpc/integration/bot", "/io/ws", "/integration/ws", "/.well-known/assetlinks.json",
+        "/callback", "/health", "/version", "/t/shop/resource",
+      ];
+      for (const path of workerPaths) {
+        expect(isAssetEligiblePath(path)).toBe(false);
+        expect(patterns.some((pattern) => pattern.test(path))).toBe(true);
+      }
+      // The web app's own pages still come from the assets.
+      for (const path of ["/", "/merchant/shop", "/t/shop", "/assets/app.js"])
+        expect(patterns.some((pattern) => pattern.test(path))).toBe(false);
     });
 
     it("serves static assets via Fetcher when ASSETS is configured", async () => {

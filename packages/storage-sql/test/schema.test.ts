@@ -54,8 +54,10 @@ describe("sqliteSchema", () => {
       "device_operations",
       "device_state",
       "device_states",
+      "ha_event_connections",
       "machine_connections",
       "operation_locks",
+      "player_cards",
       "player_checkouts",
       "player_identities",
       "player_sessions",
@@ -71,6 +73,7 @@ describe("sqliteSchema", () => {
       "prism_data_migrations",
       "redeem_codes",
       "redeem_records",
+      "resource_occupancies",
       "session_pricing_releases",
       "sessions",
       "settlement_adjustments",
@@ -184,7 +187,7 @@ describe("sqliteSchema", () => {
     const runtimeColumns = (table: string) =>
       runtime.query<{ name: string }, [string]>("SELECT name FROM pragma_table_info(?) ORDER BY cid")
         .all(table).map((row) => row.name);
-    for (const table of ["device_capabilities", "device_events", "device_operations", "device_state"]) {
+    for (const table of ["device_capabilities", "device_events", "device_operations", "device_state", "ha_event_connections"]) {
       expect(runtimeColumns(table)).toEqual(columns(table));
     }
     runtime.close();

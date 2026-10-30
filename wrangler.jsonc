@@ -14,6 +14,10 @@
       {
         "name": "MACHINE_RELAY",
         "class_name": "MachineRelay"
+      },
+      {
+        "name": "SHOP_HUB",
+        "class_name": "ShopHub"
       }
     ]
   },
@@ -29,6 +33,12 @@
       "new_sqlite_classes": [
         "MachineRelay"
       ]
+    },
+    {
+      "tag": "shop-hub-v1",
+      "new_sqlite_classes": [
+        "ShopHub"
+      ]
     }
   ],
   "compatibility_date": "2026-06-07",
@@ -40,10 +50,14 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": [
       "/api/*",
+      "/rpc*",
       "/t/*/*",
       "/.well-known/*",
       "/callback*",
-      "/io/*"
+      "/io/*",
+      "/integration/*",
+      "/health*",
+      "/version*"
     ],
     "binding": "ASSETS"
   },

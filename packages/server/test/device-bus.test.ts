@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { DeviceEvent, DeviceEventRepository, DeviceOperation, DeviceRecord, DeviceStateValue } from "@prism/core";
-import { createDeviceBus, type ActionRunner, type StateReader } from "../src/devices/bus.js";
-import type { BoundCapability, Device } from "../src/devices/device.js";
-import type { CapabilityId } from "../src/devices/capabilities.js";
+import { createDeviceBus, type ActionRunner, type StateReader } from "../src/resources/capabilities/bus.js";
+import type { BoundCapability, Resource } from "../src/resources/resource.js";
+import type { CapabilityId } from "../src/resources/capabilities/catalog.js";
 
 /** In-memory repository that applies a record the way the SQL one does. */
 function memoryRepository() {
@@ -27,8 +27,8 @@ function memoryRepository() {
         const key = `${write.deviceId}/${write.capability}/${write.key}`;
         const previous = state.get(key);
         if (previous && JSON.stringify(previous.value) === JSON.stringify(write.value)) continue;
-        events.push(event);
-        state.set(key, { value: write.value, changedAt: event.occurredAt });
+        if (event) events.push(event);
+        state.set(key, { value: write.value, changedAt: event?.occurredAt ?? write.at ?? new Date(0) });
       }
     },
     async listEvents() { return [...events].reverse(); },
@@ -40,12 +40,12 @@ function memoryRepository() {
   return { repo, events, operations, state };
 }
 
-function device(bound: Partial<Record<CapabilityId, Partial<BoundCapability>>>, enabled = true): Device {
+function device(bound: Partial<Record<CapabilityId, Partial<BoundCapability>>>, enabled = true): Resource {
   const capabilities = new Map<CapabilityId, BoundCapability>();
   for (const [id, value] of Object.entries(bound) as [CapabilityId, Partial<BoundCapability>][]) {
     capabilities.set(id, { id, config: {}, secretNames: new Set(), credentialHash: null, ...value });
   }
-  return { id: "m1", shopId: "shop", publicId: "pub", name: "Cabinet", aliases: [], enabled, kind: "machine", capabilities };
+  return { id: "m1", shopId: "shop", publicId: "pub", name: "Cabinet", aliases: [], enabled, kind: "machine", capacity: 1, occupancyMinutes: 15, capabilities };
 }
 
 const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) =>
@@ -137,18 +137,32 @@ describe("device bus: perform", () => {
     expect(stored).toContain("card-1");
   });
 
-  it("re-reads power after acting rather than assuming the effect", async () => {
-    let live = "off";
+  it("does not read the state back after acting", async () => {
+    let reads = 0;
     const { bus, events } = busWith({
       runners: { "power.on": async () => ({ outcome: "ok" }) },
-      readers: { "power.power": async () => live },
+      readers: { "power.power": async () => { reads += 1; return "on"; } },
     });
-    // The switch accepted the request but the outlet stayed off.
+    // Home Assistant accepting the request is the outcome; the state that follows
+    // arrives as a watcher's event, or is not known at all.
     await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
-    expect(events.filter((e) => e.kind === "change").map((e) => e.payload.to)).toEqual(["off"]);
-    live = "on";
-    await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
-    expect(events.filter((e) => e.kind === "change").map((e) => e.payload.to)).toEqual(["off", "on"]);
+    expect(reads).toBe(0);
+    expect(events.filter((e) => e.kind === "change")).toEqual([]);
+  });
+
+  it("reports watched states in one batch and stores a quiet one without a change event", async () => {
+    const { bus, events, state } = busWith();
+    const at = new Date("2026-10-21T09:00:00.000Z");
+    await bus.reportMany([
+      { device: { id: "m1" }, capability: "power", key: "power", value: "on", at },
+      { device: { id: "m1" }, capability: "climate", key: "view", value: { mode: "cool" }, quiet: true, at },
+    ]);
+    expect(events.filter((e) => e.kind === "change").map((e) => [e.name, e.origin, e.occurredAt.toISOString()]))
+      .toEqual([["power", "observer", "2026-10-21T09:00:00.000Z"]]);
+    expect(state.get("m1/climate/view")?.value).toEqual({ mode: "cool" });
+    // Reporting the same value again adds nothing.
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on", at }]);
+    expect(events.filter((e) => e.kind === "change")).toHaveLength(1);
   });
 
   it("refuses an action the device's configuration cannot perform", async () => {

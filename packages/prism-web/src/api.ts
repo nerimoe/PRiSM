@@ -1,3 +1,4 @@
+import { activeLocale, rememberPlayerText } from "./i18n";
 import { PlayerReadCache, subscribeRead } from "./player-read-cache";
 import type {
   AuthenticationResponseJSON,
@@ -23,11 +24,15 @@ export type Card = {
   disabledAt?: string | null;
 };
 
-export type PublicMachine = {
+export type PublicResource = {
   coinAfterSwipe: boolean;
+  /** A card can be added at this cabinet's reader. */
+  cardCapture?: boolean;
   kind: "machine" | "door";
-  capabilities: { power: boolean; coin: boolean; card: boolean; door: boolean; mahjong?: boolean };
+  capabilities: { power: boolean; climate?: boolean; coin: boolean; card: boolean; door: boolean; mahjong?: boolean };
   webOnly?: boolean;
+  /** Using it needs its pricing plan running; a free resource needs nothing. */
+  billed?: boolean;
   publicId: string;
   name: string;
   shop: {
@@ -35,7 +40,6 @@ export type PublicMachine = {
     publicId?: string;
     locationEnabled?: boolean;
     machineGeo?: boolean;
-    billingEnabled?: boolean;
     webUrl?: string;
     heroUrl?: string | null;
     latitude: number;
@@ -46,6 +50,13 @@ export type PublicMachine = {
 
 export type MachineLoginResult = {
   ok: true;
+  /**
+   * Direct-connect machines report whether the game took the card or never
+   * read it. Others only say sent.
+   */
+  card?: "read" | "not_read" | "sent";
+  /** What to show: inline ones on the card row, dialogs only when something went wrong. */
+  notices?: Notice[];
   coin?: {
     status: "sent" | "skipped" | "failed" | "unknown";
     operationId: string;
@@ -53,10 +64,10 @@ export type MachineLoginResult = {
   };
 };
 
-export type MachineSession = {
+export type ResourceSession = {
   ticket: string;
   expiresIn: number;
-  machine: PublicMachine;
+  machine: PublicResource;
 };
 
 export type Shop = {
@@ -89,15 +100,43 @@ export type DeviceEvent = {
   payload: Record<string, unknown>;
 };
 
-export type Machine = {
+/** Who is on a resource now, as the resources page shows it. */
+export type ResourceOccupancyView = {
+  resourceId: string;
+  capacity: number;
+  /** The capability that decides who is on it, e.g. `hinata_io` or `mahjong`. */
+  source: string;
+  occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null }>;
+};
+
+/** One stay on a resource, newest first in the history. */
+export type OccupancyHistoryEntry = {
+  id: string;
+  playerId: string;
+  displayName: string | null;
+  source: string;
+  startedAt: string;
+  lastSeenAt: string;
+  endedAt: string | null;
+  endReason: "timeout" | "replaced" | "left" | "billing_ended" | null;
+};
+
+export type Resource = {
   mahjong?: { capacity: number; pricingConfigIds: string[] } | null;
+  /** How many people can use it at once; 0 for one nobody occupies. A mahjong table's is its size. */
+  capacity?: number;
+  /** How long someone counts as on it after the last sign of them; also its idle time. */
+  occupancyMinutes?: number;
   /** Actions this device can perform now, tagged with their capability. */
   actions?: { name: string; capability: string }[];
   coinAfterSwipe: boolean;
   hasHinata: boolean;
   kind: "machine" | "door";
   hinataUrl: string | null;
-  homeAssistant: { url: string; entityId: string } | null;
+  /** `connectionId` names the shop Home Assistant; null for a binding not yet moved onto one. */
+  homeAssistant: { connectionId?: string | null; url: string; entityId: string } | null;
+  /** A Home Assistant `climate.*` entity, such as an air conditioner. */
+  climate?: { connectionId?: string | null; url: string; entityId: string } | null;
   ttlockLockId: number | null;
   coinKey: number;
   coinEnabled?: boolean;
@@ -119,6 +158,49 @@ export type Machine = {
   relayOnline?: boolean | null;
   /** The connected IO still encrypts payloads, which embedded mode cannot read. */
   relayE2ee?: boolean | null;
+  /** A shop bot's settings; null for a resource that is not a bot. Its token is only shown when issued. */
+  bot?: BotSettings | null;
+  /** Whether the bot has an active credential, as a device has a relay token. */
+  hasBotToken?: boolean;
+  /** First authenticated use of the current bot credential, not its live connection status. */
+  botLastUsedAt?: string | null;
+  /** A current authenticated Bot WebSocket; null when the hub cannot be queried. */
+  botOnline?: boolean | null;
+  /** The group whose default plan this resource bills; "default" for the shop's default group. */
+  resourceGroupId?: string;
+  /** A plan of its own that replaces the group's; null to follow the group. */
+  pricingConfigOverrideId?: string | null;
+};
+
+/** What a shop bot offers players and staff; everything else it is told comes from the platform. */
+export type BotSettings = {
+  playerCommands: "all" | "readonly";
+  readOnlyNotice: string;
+  staffCommands: boolean;
+  powerOffStaffOnly: boolean;
+  doorResourceId: string | null;
+  receiptsToStaff: boolean;
+  /** `login`/`入场` also hands out the door code. */
+  doorPasswordOnEntry: boolean;
+  /** Channels the bot says everything in: idle warnings and what happens at the shop. */
+  announceChannelIds: string[];
+  idleReminderMinutes: number;
+  /** Which news is told, each on its own. */
+  announceIdle: boolean;
+  announcePower: boolean;
+  announceStarts: boolean;
+  announceCards: boolean;
+  announceCoins: boolean;
+};
+
+/** A set of resources that bill the same default plan. The default group is the shop's own. */
+export type ResourceGroup = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  isDefault: boolean;
+  defaultPricingConfigId: string | null;
+  resourceCount: number;
 };
 
 export type UserSummary = {
@@ -181,6 +263,23 @@ export type Passkey = {
   lastUsedAt?: string | null;
 };
 
+/**
+ * What the server wants the player told, and how: `dialog` interrupts, `inline`
+ * belongs next to what they touched, `none` only runs `flow`.
+ */
+export type Notice = {
+  code: string;
+  level: "success" | "info" | "warning" | "error";
+  display: "dialog" | "inline" | "none";
+  flow: "none" | "expired" | "refresh" | "signin";
+  title: string | null;
+  body: string;
+  actions: { kind: "dismiss" | "retry"; label: string }[];
+};
+
+/** A problem found on this device that is part of normal use (no location fix yet): shown inline. */
+export class InlineError extends Error {}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -188,13 +287,18 @@ export class ApiError extends Error {
     readonly code?: string,
     readonly details?: unknown,
     readonly retryAfterMs?: number,
+    readonly notice?: Notice,
+    /** The server's own wording, for staff screens. */
+    readonly reason?: string,
   ) {
-    super(code === "INSUFFICIENT_BALANCE" ? "余额不足，请充值后重试" : message);
+    super(notice?.body ?? message);
+    if (notice) rememberPlayerText(notice.body);
   }
 
   get sessionExpired(): boolean {
     return (
       this.code === "TICKET_EXPIRED" ||
+      this.notice?.flow === "expired" ||
       this.message === "本次会话已失效" ||
       this.message === "缺少会话凭证"
     );
@@ -227,6 +331,8 @@ async function fetchApi<T>(
     credentials: "include",
     headers: {
       "content-type": "application/json",
+      // Player-facing text comes back in this language.
+      "accept-language": activeLocale(),
       ...options.headers,
     },
   });
@@ -240,7 +346,7 @@ async function fetchApi<T>(
   }
   const payload = (await response.json().catch(() => ({}))) as {
     data?: T;
-    error?: { code: string; message: string; details?: unknown };
+    error?: { code: string; message: string; details?: unknown; notice?: Notice; reason?: string };
   };
   if (!response.ok)
     throw new ApiError(
@@ -249,6 +355,8 @@ async function fetchApi<T>(
       payload.error?.code,
       payload.error?.details,
       parseRetryAfter(response.headers.get("retry-after")),
+      payload.error?.notice,
+      payload.error?.reason,
     );
   return payload.data as T;
 }
@@ -296,8 +404,18 @@ export const Api = {
       authorizationRequired: boolean;
       syncError: string | null;
     }>("/api/v1/cards"),
-  startMachineSession: (shopCode: string, publicId: string) =>
-    api<MachineSession>("/api/v1/machines/session/start", {
+  /** Open a short window in which the card put on this cabinet's reader is added to the account. */
+  startCardCapture: (input: { ticket: string; location?: unknown }) =>
+    api<{ captureId: string; expiresAt: string }>("/api/v1/devices/session/cards/capture", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  cardCaptureResult: (captureId: string, ticket: string) =>
+    api<{ status: "waiting" | "expired" | "added" | "bound" | "exists" | "taken" | "unsupported"; cardType?: string }>(
+      `/api/v1/devices/session/cards/capture/${encodeURIComponent(captureId)}?ticket=${encodeURIComponent(ticket)}`,
+    ),
+  startResourceSession: (shopCode: string, publicId: string) =>
+    api<ResourceSession>("/api/v1/machines/session/start", {
       method: "POST",
       body: JSON.stringify({ shopCode, publicId }),
     }),
@@ -316,12 +434,21 @@ export const Api = {
     }),
   deleteCard: (id: string) =>
     api<{ ok: true }>(`/api/v1/cards/${id}`, { method: "DELETE" }),
-  publicMachine: (ticketOrPublicId: string, ticket?: string) => {
+  publicResource: (ticketOrPublicId: string, ticket?: string) => {
     const url = ticket
       ? `/api/v1/machines/${encodeURIComponent(ticketOrPublicId)}?ticket=${encodeURIComponent(ticket)}`
       : `/api/v1/machines/session?ticket=${encodeURIComponent(ticketOrPublicId)}`;
-    return api<{ machine: PublicMachine }>(url);
+    return api<{ machine: PublicResource }>(url);
   },
+  /**
+   * The machine and, for a signed-in player, the page state in one request: what
+   * the page needs before it can show anything. `state` is the device page's
+   * state shape, which the page that reads it defines.
+   */
+  bootstrap: <S>(ticket: string) =>
+    api<{ machine: PublicResource; state: S | null }>(
+      `/api/v1/devices/session/bootstrap?ticket=${encodeURIComponent(ticket)}`,
+    ),
   loginMachine: (
     inputOrPublicId:
       | {
@@ -383,21 +510,43 @@ export const Api = {
   deleteShop: (id: string) =>
     api<{ ok: true }>(`/api/v1/merchant/shops/${id}`, { method: "DELETE" }),
   machines: (shopId: string) =>
-    api<{ machines: Machine[] }>(
+    api<{ machines: Resource[] }>(
       `/api/v1/merchant/machines?shopId=${encodeURIComponent(shopId)}`,
     ),
-  createMachine: (input: {
+  resourceGroups: (shopId: string) =>
+    api<{ resourceGroups: ResourceGroup[] }>(
+      `/api/v1/merchant/resource-groups?shopId=${encodeURIComponent(shopId)}`,
+    ),
+  createResourceGroup: (input: { shopId: string; name: string; defaultPricingConfigId: string | null }) =>
+    api<{ resourceGroup: ResourceGroup }>("/api/v1/merchant/resource-groups", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateResourceGroup: (
+    id: string,
+    input: { shopId: string; name?: string; enabled?: boolean; defaultPricingConfigId?: string | null },
+  ) =>
+    api<{ resourceGroup: ResourceGroup }>(`/api/v1/merchant/resource-groups/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  deleteResourceGroup: (shopId: string, id: string) =>
+    api<{ ok: true }>(
+      `/api/v1/merchant/resource-groups/${encodeURIComponent(id)}?shopId=${encodeURIComponent(shopId)}`,
+      { method: "DELETE" },
+    ),
+  createResource: (input: {
     shopId: string;
     name: string;
     hinataUrl: string;
     hinataPassword?: string | undefined;
     enabled: boolean;
   }) =>
-    api<{ machine: Machine }>("/api/v1/merchant/machines", {
+    api<{ machine: Resource }>("/api/v1/merchant/machines", {
       method: "POST",
       body: JSON.stringify(input),
     }),
-  updateMachine: (
+  updateResource: (
     id: string,
     input: {
       name?: string | undefined;
@@ -410,7 +559,7 @@ export const Api = {
       method: "PATCH",
       body: JSON.stringify(input),
     }),
-  deleteMachine: (id: string) =>
+  deleteResource: (id: string) =>
     api<{ ok: true }>(`/api/v1/merchant/machines/${id}`, { method: "DELETE" }),
   shopMembers: (shopId: string) =>
     api<{ members: ShopMember[] }>(
@@ -468,7 +617,19 @@ export const Api = {
     api<{ ok: true }>(`/api/v1/admin/bans/${id}`, { method: "DELETE" }),
 };
 
-/** Keep the request ID through network errors and page reloads. */
+/**
+ * Device actions: a swipe, a coin, power. The server keeps whatever it answered
+ * under the request ID, failures included, so a retry with the same ID only
+ * replays that answer; and the next action is a new request, not one to hold
+ * back until the last is settled.
+ */
+const isDeviceAction = (path: string) =>
+  /\/(merchant\/machines\/[^/]+|devices\/session)\/actions$/.test(path);
+
+/**
+ * Keep the request ID through network errors and page reloads. A device action
+ * keeps it only while no answer came back, and a different action replaces it.
+ */
 export async function playerOperation<T>(
   path: string,
   body: Record<string, unknown>,
@@ -476,9 +637,11 @@ export async function playerOperation<T>(
   const key = `prism.pending:${sessionStorage.getItem("prism.user") ?? ""}:${path}${path === "/api/v1/devices/session/actions" ? `:${body.ticket}:${body.action}` : path.endsWith("/player/session/start") ? `:${body.ticket}` : ""}`;
   const { location: _location, ...payload } = body;
   const fingerprint = JSON.stringify(payload);
+  const device = isDeviceAction(path);
   const stored = sessionStorage.getItem(key);
-  const pending = stored
-    ? (JSON.parse(stored) as { id: string; fingerprint: string })
+  const kept = stored ? (JSON.parse(stored) as { id: string; fingerprint: string }) : null;
+  const pending = kept && (kept.fingerprint === fingerprint || !device)
+    ? kept
     : { id: crypto.randomUUID(), fingerprint };
   if (pending.fingerprint !== fingerprint)
     throw new ApiError(
@@ -497,7 +660,7 @@ export async function playerOperation<T>(
   } catch (error) {
     if (
       error instanceof ApiError &&
-      error.status < 500 &&
+      (error.status < 500 || device) &&
       error.code !== "OPERATION_PENDING"
     )
       sessionStorage.removeItem(key);

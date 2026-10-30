@@ -1,3 +1,4 @@
+import { errorResponse } from "./http-errors.js";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -15,11 +16,14 @@ import { userRouter } from "./routes/platform/user.js";
 import { shopsRouter } from "./routes/platform/shops.js";
 import { adminManagementRouter } from "./routes/platform/admin-management.js";
 import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
-import { merchantMachineRouter } from "./routes/platform/merchant-machines.js";
+import { merchantResourceRouter } from "./routes/platform/merchant-resources.js";
+import { merchantResourceGroupRouter } from "./routes/platform/merchant-resource-groups.js";
+import { merchantHaRouter } from "./routes/platform/merchant-ha.js";
+import { merchantIdleRouter } from "./routes/platform/merchant-idle.js";
 import { cardsRouter } from "./routes/platform/cards.js";
-import { machineSessionRouter, machineTicketRouter } from "./routes/platform/machine-session.js";
+import { resourceTicketRouter, resourceQrRouter } from "./routes/platform/resource-ticket.js";
 import { machineLoginRouter } from "./routes/platform/machine-login.js";
-import { deviceSessionRouter, merchantMachineActionRouter } from "./routes/platform/device-session.js";
+import { resourceSessionRouter, merchantResourceActionRouter } from "./routes/platform/resource-session.js";
 import { appleAppSiteAssociationResponse, androidAssetLinksResponse } from "./routes/platform/apple.js";
 import { munetAuthRouter, appclipAuthRouter, munetCallbackRouter } from "./routes/platform/munet-routes.js";
 import { healthRouter } from "./routes/system/health.js";
@@ -27,6 +31,7 @@ import { versionRouter } from "./routes/system/version.js";
 
 // Multi-tenant shop router
 import { shopRouter } from "./routes/shops/index.js";
+import { integrationSocketRouter } from "./routes/shops/integration.js";
 import { shopDataAdminRouter } from "./routes/shops/data/index.js";
 
 // Legacy fallback router
@@ -36,65 +41,7 @@ export function createApp(): Hono<AppBindings> {
   const app = new Hono<AppBindings>();
 
   // Centralized error handler
-  app.onError((err, c) => {
-    if (err instanceof Response) {
-      return err;
-    }
-    if (err instanceof HTTPException) {
-      return err.getResponse();
-    }
-    if (err instanceof PrismDomainError) {
-      const status =
-        err.code === "CHECKOUT_NOT_FOUND" ||
-        err.code === "SESSION_NOT_FOUND" ||
-        err.code === "PLAYER_NOT_FOUND" ||
-        err.code === "PLAYER_IDENTITY_NOT_FOUND" ||
-        err.code === "PRICING_CONFIG_NOT_FOUND" ||
-        err.code === "INTEGRATION_SESSION_NOT_FOUND" ||
-        err.code === "SHOP_NOT_FOUND"
-          ? 404
-          : err.code === "UNAUTHORIZED"
-          ? 401
-          : err.code === "FORBIDDEN"
-          ? 403
-          : err.code === "INSUFFICIENT_BALANCE" ||
-            err.code === "CHECKIN_CONSENT_REQUIRED" ||
-            err.code === "PRISM_ALREADY_INSTALLED"
-          ? 409
-          : 400;
-      return c.json(
-        {
-          error: {
-            code: err.code,
-            message: err.message,
-          },
-        },
-        status as any,
-      );
-    }
-    if (err instanceof z.ZodError) {
-      return c.json(
-        {
-          error: {
-            code: "VALIDATION_FAILED",
-            message: err.issues?.[0]?.message || "Validation failed",
-            details: err.issues,
-          },
-        },
-        422,
-      );
-    }
-    console.error("[app] unhandled error:", err);
-    return c.json(
-      {
-        error: {
-          code: "INTERNAL_ERROR",
-          message: "An unexpected error occurred.",
-        },
-      },
-      500,
-    );
-  });
+  app.onError((err, c) => errorResponse(c, err, "app"));
 
   // Preserve original universal-link and Android-app-link association endpoints.
   app.get("/.well-known/apple-app-site-association", (c) => {
@@ -110,6 +57,8 @@ export function createApp(): Hono<AppBindings> {
   app.use("*", async (c, next) => {
     const start = performance.now();
     await next();
+    // Setting a header rebuilds the response, which a WebSocket handshake (101) cannot survive.
+    if (c.res.status === 101) return;
     const durationMs = Math.round(performance.now() - start);
     c.header("x-response-time", `${durationMs}ms`);
   });
@@ -154,15 +103,21 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1", userRouter);
   app.route("/api/v1/merchant/shops", shopsRouter);
   app.route("/api/v1/merchant", merchantMembersRouter);
-  app.route("/api/v1/merchant", merchantMachineRouter);
+  app.route("/api/v1/merchant", merchantResourceRouter);
+  app.route("/api/v1/merchant", merchantResourceGroupRouter);
+  app.route("/api/v1/merchant", merchantHaRouter);
+  app.route("/api/v1/merchant", merchantIdleRouter);
   app.route("/api/v1/admin", adminManagementRouter);
   app.route("/api/v1/admin", shopDataAdminRouter);
   app.route("/api/v1/cards", cardsRouter);
-  app.route("/api/v1/machines", machineSessionRouter);
+  app.route("/api/v1/machines", resourceTicketRouter);
   app.route("/api/v1/machines", machineLoginRouter);
-  app.route("/api/v1/devices", deviceSessionRouter);
-  app.route("/api/v1/merchant", merchantMachineActionRouter);
-  app.route("/t", machineTicketRouter);
+  app.route("/api/v1/devices", resourceSessionRouter);
+  app.route("/api/v1/merchant", merchantResourceActionRouter);
+  app.route("/t", resourceQrRouter);
+
+  // A bot's connection names its shop in its credential, as a device's does.
+  app.route("/integration", integrationSocketRouter);
 
   // Multi-tenant shop routes (/api/v1/shops/:shopCode)
   app.route("/api/v1/shops/:shopCode", shopRouter);

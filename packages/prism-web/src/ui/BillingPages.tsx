@@ -4,12 +4,14 @@ import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api";
+import { Api, api, InlineError } from "../api";
 import { useI18n } from "../i18n";
 import { BillingConversionWizard } from "./merchant/BillingSetup";
+import { IdentityPolicyPicker } from "./merchant/IdentityPolicyPicker";
+import { identityPolicy, identityPolicySettings } from "./merchant/setup-guide";
+import { primary, useMerchant } from "./merchant/shared";
 
 export type Settings = {
-  billingEnabled: boolean;
   cashierEnabled: boolean;
   autoRegister: boolean;
   identityBindingRequired: boolean;
@@ -17,13 +19,13 @@ export type Settings = {
   checkinGeo: boolean;
   checkoutGeo: boolean;
   machineGeo: boolean;
-  entryPricingIds: string[];
+  /** The resource a front-desk check-in bills through: its group's plan, or its own. */
+  cashierResourceId?: string | null;
+  /** The binding instructions shown to players; the line with `{code}` is the command. */
   botContact: string;
   billingConfiguration?: {
     ready: boolean;
     balanceAssetsReady: boolean;
-    entryPricingReady: boolean;
-    invalidEntryPricingIds: string[];
   };
 };
 type EntryRule = Pick<Pricing, "id" | "name" | "kind" | "enabled" | "status">;
@@ -111,7 +113,9 @@ export async function operationLocation(required: boolean) {
   const position = await new Promise<GeolocationPosition>((resolve, reject) =>
     navigator.geolocation.getCurrentPosition(
       resolve,
-      () => reject(new Error("未能获取定位，请授权后重试；未结消费仍在计时")),
+      (error) => reject(error.code === error.PERMISSION_DENIED
+        ? new Error("需要定位权限才能确认你在店内")
+        : new InlineError("定位获取失败，请重试")),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
     ),
   );
@@ -132,39 +136,43 @@ export function BillingSettings({
   section?: "billing" | "players" | "devices" | null;
 }) {
   const { t } = useI18n();
+  const { shopId } = useMerchant();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rules, setRules] = useState<EntryRule[]>([]);
+  const [resources, setResources] = useState<{ id: string; name: string }[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [savedSection, setSavedSection] = useState<typeof section>(null);
   const [errorSection, setErrorSection] = useState<typeof section>(null);
-  const [billingActive, setBillingActive] = useState(false);
   const [converting, setConverting] = useState(false);
   const load = useCallback(async () => {
-    const [s, r] = await Promise.all([
+    const [s, r, m] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
       api<{ pricingConfigs: EntryRule[] }>(
         shopApi(shopCode, "staff/pricing-configs"),
       ),
+      shopId ? Api.machines(shopId).then((result) => result.machines).catch(() => []) : Promise.resolve([]),
     ]);
+    setResources(m.map((machine) => ({ id: machine.id, name: machine.name })));
     setSettings({
       ...s,
       cashierEnabled: s.cashierEnabled ?? false,
       identityBindingRequired: s.identityBindingRequired ?? true,
     });
-    setBillingActive(s.billingEnabled);
     setRules(r.pricingConfigs);
-  }, [shopCode]);
+  }, [shopCode, shopId]);
   useEffect(() => {
     void load().catch((e) => setError(e.message));
   }, [load]);
   if (!settings)
     return section ? <p role="status">{error || t("加载中...")}</p> : null;
   const flags = {
-    billingEnabled: "启用入场计费",
-    autoRegister: "允许自动创建玩家档案",
     locationEnabled: "启用位置校验",
   } as const;
+  // A shop bills wherever a resource group or resource has a plan. Without a
+  // balance asset nothing can bill yet, so quick setup creates one together
+  // with a full-day plan for the default group.
+  const needsConversion = !settings.billingConfiguration?.balanceAssetsReady;
   return (
     <>
       <form
@@ -183,9 +191,8 @@ export function BillingSettings({
             const patch =
               savingSection === "billing"
                 ? {
-                    billingEnabled: settings.billingEnabled,
                     cashierEnabled: settings.cashierEnabled,
-                    entryPricingIds: settings.entryPricingIds,
+                    cashierResourceId: settings.cashierResourceId ?? null,
                   }
                 : savingSection === "players"
                   ? {
@@ -197,7 +204,6 @@ export function BillingSettings({
               method: "PUT",
               body: JSON.stringify({ ...current, ...patch }),
             });
-            setBillingActive(result.billingEnabled);
             setSettings(previous => previous && { ...previous, billingConfiguration: result.billingConfiguration });
             setSavedSection(savingSection);
             window.dispatchEvent(new Event("prism-shop-settings"));
@@ -212,60 +218,37 @@ export function BillingSettings({
           <h4 className="font-semibold">
             {t(
               section === "players"
-                ? "注册与身份绑定"
+                ? "玩家如何进店"
                 : section === "devices"
                   ? "位置校验"
                   : "入场与收银",
             )}
           </h4>
-          {section === "billing" && !billingActive && !settings.billingConfiguration?.ready && (
+          {section === "billing" && needsConversion && (
             <div className="grid gap-3 rounded-lg bg-ink/5 p-4 text-sm">
-              <p>{t("通过向导设置收费标准，一次完成基础配置并启用计费。")}</p>
+              <p>{t("按时长向玩家收费，管理玩家余额和离店结账。向导会一次建好余额资产和一条全天计费方案，并设为默认资源组的方案。")}</p>
               <button
                 type="button"
-                className={`${control} justify-self-start`}
+                className={`${primary} justify-self-start`}
                 onClick={() => setConverting(true)}
               >
-                {t("转换为计费店铺")}
+                {t("快速创建计费")}
               </button>
-              <div className="flex flex-wrap gap-3">
-                <Link className="underline" to={`/merchant/${shopCode}/assets`}>
-                  {t("配置基础资产")}
-                </Link>
-                <Link
-                  className="underline"
-                  to={`/merchant/${shopCode}/pricing`}
-                >
-                  {t("配置入场规则")}
-                </Link>
-              </div>
             </div>
           )}
-          {section === "billing" && (
+          {section === "billing" && !needsConversion && (
             <>
-              <label className="grid gap-2">
-                <span className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={settings.billingEnabled}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        billingEnabled: e.target.checked,
-                        cashierEnabled:
-                          e.target.checked && settings.cashierEnabled,
-                      })
-                    }
-                  />
-                  {t(flags.billingEnabled)}
-                </span>
-              </label>
+              <p className="text-sm leading-relaxed text-ink/60">
+                {t("给资源组或资源设置计费方案，那里就开始计费；不设置方案的资源免费使用。")}{" "}
+                <Link className="underline" to={`/merchant/${encodeURIComponent(shopCode)}/resources`}>
+                  {t("资源组与计费")}
+                </Link>
+              </p>
               <label className="grid gap-2">
                 <span className="flex items-center gap-3">
                   <input
                     type="checkbox"
                     checked={settings.cashierEnabled}
-                    disabled={!settings.billingEnabled}
                     onChange={(e) =>
                       setSettings({
                         ...settings,
@@ -281,51 +264,34 @@ export function BillingSettings({
                   )}
                 </span>
               </label>
+              {settings.cashierEnabled && (
+                <label className="grid gap-2 pl-7 text-sm">
+                  <span className="font-medium">{t("前台资源")}</span>
+                  <select
+                    className="focus-ring min-h-11 rounded-lg border border-ink/20 bg-panel px-3 py-2"
+                    value={settings.cashierResourceId ?? ""}
+                    onChange={(e) => setSettings({ ...settings, cashierResourceId: e.target.value || null })}
+                  >
+                    <option value="">{t("请选择")}</option>
+                    {resources.map((resource) => (
+                      <option key={resource.id} value={resource.id}>{resource.name}</option>
+                    ))}
+                  </select>
+                  <span className="text-ink/60">
+                    {t("前台刷卡入场按这个资源计费：它自己的方案，否则是它所在资源组的方案。")}
+                  </span>
+                </label>
+              )}
             </>
           )}
           {section === "players" && (
-            <>
-              <label className="grid gap-2">
-                <span className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={settings.identityBindingRequired}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        identityBindingRequired: e.target.checked,
-                      })
-                    }
-                  />
-                  {t("要求绑定平台身份")}
-                </span>
-                <span className="pl-7 text-sm leading-relaxed text-ink/60">
-                  {t(
-                    "开启后，绑定任意一个 Bot 平台身份即可入场和使用设备；关闭后，登录网页账号即可使用。",
-                  )}
-                </span>
-              </label>
-              <label className="grid gap-2">
-                <span className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={settings.autoRegister}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        autoRegister: e.target.checked,
-                      })
-                    }
-                  />
-                  {t(flags.autoRegister)}
-                </span>
-                <span className="pl-7 text-sm leading-relaxed text-ink/60">
-                  {t(
-                    "开启后，验证平台身份可创建新玩家档案；关闭后，仅可认领已有平台身份档案。",
-                  )}
-                </span>
-              </label>
-            </>
+            <IdentityPolicyPicker
+              name="settings-identity-policy"
+              value={identityPolicy(settings)}
+              change={(policy) =>
+                setSettings({ ...settings, ...identityPolicySettings(policy) })
+              }
+            />
           )}
           {section === "devices" && (
             <label className="grid gap-2">
@@ -344,72 +310,29 @@ export function BillingSettings({
               </span>
               <span className="pl-7 text-sm leading-relaxed text-ink/60">
                 {t(
-                  "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。范围使用店铺地图设置。",
-                )}
+                  "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。",
+                )}{" "}
+                <Link className="underline" to="?group=general">
+                  {t("调整店铺范围")}
+                </Link>
               </span>
             </label>
           )}
 
-          {section === "billing" && (
-            <fieldset>
-              <legend>{t("普通入场计费规则")}</legend>
-              <p className="mt-2 text-sm text-ink/60">
-                {t("创建规则后，还需在这里选中入场时使用的方案。消费封顶不能单独作为入场规则。")}
-              </p>
-              {!rules.some(availableEntryRule) && (
-                <p className="mt-2 text-sm text-ink/60">
-                  {t("暂无启用的入场规则，请先在计费管理中配置。")}
-                </p>
+          {error && errorSection === section && <p role="alert" className="text-sm text-coral">{error}</p>}
+          {savedSection === section && <p role="status" className="text-sm text-mint">{t("已保存")}</p>}
+          {!(section === "billing" && needsConversion) && (
+            <button className={`${primary} justify-self-start`} disabled={busy}>
+              {t(
+                section === "players"
+                  ? "保存身份设置"
+                  : section === "devices"
+                    ? "保存位置校验"
+                    : "保存计费设置",
               )}
-              {rules
-                .filter((r) => availableEntryRule(r) || settings.entryPricingIds.includes(r.id))
-                .map((rule) => (
-                  <label className="mt-2 flex gap-3" key={rule.id}>
-                    <input
-                      type="checkbox"
-                      checked={settings.entryPricingIds.includes(rule.id)}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          entryPricingIds: e.target.checked
-                            ? [...settings.entryPricingIds, rule.id]
-                            : settings.entryPricingIds.filter(
-                                (id) => id !== rule.id,
-                              ),
-                        })
-                      }
-                    />
-                    {rule.name}
-                    {!availableEntryRule(rule) && <span className="text-coral">{t("不可用，请取消选择")}</span>}
-                  </label>
-                ))}
-              {settings.entryPricingIds.filter(id => !rules.some(rule => rule.id === id)).map(id => (
-                <label className="mt-2 flex gap-3 text-coral" key={id}>
-                  <input type="checkbox" checked onChange={() => setSettings({ ...settings,
-                    entryPricingIds: settings.entryPricingIds.filter(selected => selected !== id) })} />
-                  {t("入场规则不存在，请取消选择")}
-                  <code>{id}</code>
-                </label>
-              ))}
-            </fieldset>
+            </button>
           )}
-          {error && errorSection === section && <p role="alert">{error}</p>}
-          {savedSection === section && <p role="status">{t("已保存")}</p>}
-          <button className={`${control} justify-self-start`} disabled={busy}>
-            {t(
-              section === "players"
-                ? "保存身份设置"
-                : section === "devices"
-                  ? "保存位置校验"
-                  : "保存计费设置",
-            )}
-          </button>
         </fieldset>
-        {section === "billing" && (
-          <Link className="underline" to={`/merchant/${shopCode}/pricing`}>
-            {t("打开计费管理")}
-          </Link>
-        )}
       </form>
       {converting && (
         <BillingConversionWizard
@@ -425,7 +348,6 @@ export function BillingSettings({
               locationEnabled:
                 previous?.locationEnabled ?? value.locationEnabled,
             }));
-            setBillingActive(value.billingEnabled);
             setConverting(false);
             setSavedSection("billing");
             setError("");
@@ -566,10 +488,13 @@ export function EntryPricing({ info }: { info: ShopInfo }) {
                       </p>
                       {rule.pricing && (
                         <p className="text-xs text-ink/60">
-                          {rule.pricing.priceCap < Number.MAX_SAFE_INTEGER &&
-                            `${t("时段封顶")} ${rule.pricing.priceCap.toFixed(2)}`}
-                          {rule.pricing.roundGraceMinutes > 0 &&
-                            ` · ${t("每计费单位宽限")} ${rule.pricing.roundGraceMinutes} ${t("分钟")}`}
+                          {[
+                            // A cap of 0 leaves the period uncapped.
+                            rule.pricing.priceCap > 0 && rule.pricing.priceCap < Number.MAX_SAFE_INTEGER &&
+                              `${t("时段封顶")} ${rule.pricing.priceCap.toFixed(2)}`,
+                            rule.pricing.roundGraceMinutes > 0 &&
+                              `${t("每计费单位宽限")} ${rule.pricing.roundGraceMinutes} ${t("分钟")}`,
+                          ].filter(Boolean).join(" · ")}
                         </p>
                       )}
                     </div>

@@ -1,3 +1,4 @@
+import { HA_CONNECTION_PREFIX, HA_CONNECTION_SECRETS } from "../../../resources/capabilities/ha-connections.js";
 import type { LegacyD1Database } from "./compat.js";
 import type { LegacyD1Database as D1Database, LegacyD1PreparedStatement as D1PreparedStatement } from "./compat.js";
 import type { Context, Hono } from "hono";
@@ -7,7 +8,7 @@ import type { BillingShop } from "./compat.js";
 import { decryptSecret } from "../../../crypto.js";
 import { jsonError } from "../../../http.js";
 import { owner } from "./shop-data.js";
-import { schemas, v3TablesFor, type FullTable } from "./shop-data-v2-format.js";
+import { schemas, currentTablesFor, type FullTable } from "./shop-data-v2-format.js";
 import type { AppBindings } from "./compat.js";
 
 type C = Context<AppBindings, any, any>;
@@ -213,20 +214,19 @@ const accountBindings = (shopId: string) => Array(5).fill(shopId) as string[];
 const validJobSql =
   "SELECT 1 AS valid FROM shop_data_exports WHERE id=? AND status='active' AND expires_at>? AND cursor=?";
 async function metadata(c: C, shop: BillingShop, job: ExportJob) {
-  const tables = v3TablesFor(job.scope);
+  const tables = currentTablesFor(job.scope);
   const result = await (c.env.DB as LegacyD1Database).batch<Record<string, string | number>>([
     (c.env.DB as LegacyD1Database).prepare(
-      `SELECT json_object('format','prism-shop-data','version',3,'scope',?,'exportedAt',?,
+      `SELECT json_object('format','prism-shop-data','version',4,'scope',?,'exportedAt',?,
       'source',json_object('publicId',s.public_id,'name',s.name,'timeZone',?,'origin',?,'location',json_object('latitude',s.latitude,'longitude',s.longitude,'radiusMeters',s.radius_meters)),
       'storage',json_object('timeZone','UTC','money','minor-units'),
       'shopProfile',json_object('name',s.name,'latitude',s.latitude,'longitude',s.longitude,'radiusMeters',s.radius_meters,'heroData',s.hero_data),
-      'settings',json_object('billingEnabled',json(CASE WHEN COALESCE(b.billing_enabled,0) THEN 'true' ELSE 'false' END),
-      'autoRegister',json(CASE WHEN COALESCE(b.auto_register,0) THEN 'true' ELSE 'false' END),
+      'settings',json_object('autoRegister',json(CASE WHEN COALESCE(b.auto_register,0) THEN 'true' ELSE 'false' END),
       'identityBindingRequired',json(CASE WHEN COALESCE(b.identity_binding_required,1) THEN 'true' ELSE 'false' END),
       'checkinGeo',json(CASE WHEN COALESCE(b.checkin_geo,0) THEN 'true' ELSE 'false' END),
       'checkoutGeo',json(CASE WHEN COALESCE(b.checkout_geo,0) THEN 'true' ELSE 'false' END),
       'machineGeo',json(CASE WHEN COALESCE(b.machine_geo,0) THEN 'true' ELSE 'false' END),
-      'entryPricingIds',json(COALESCE(b.entry_pricing_ids_json,'[]')),'botContact',COALESCE(b.bot_contact,''),
+      'botContact',COALESCE(b.bot_contact,''),
       'cashierEnabled',json(CASE WHEN COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='cashier.settings'),0) THEN 'true' ELSE 'false' END),
       'coinCooldownMs',COALESCE((SELECT json_extract(value_json,'$.coinCooldownMs') FROM app_settings WHERE shop_id=s.id AND key='venue.operations'),60000),
       'defaultPresentId',(SELECT json_extract(value_json,'$.defaultPresentId') FROM app_settings WHERE shop_id=s.id AND key='player.registration'))) AS header_json
@@ -315,7 +315,7 @@ async function page(c: C, job: ExportJob, after: number) {
   }
 }
 async function readPage(c: C, job: ExportJob, after: number) {
-  const tables = v3TablesFor(job.scope),
+  const tables = currentTablesFor(job.scope),
     rows: { seq: number; table_name: FullTable; payload_json: string }[] = [];
   const counts = JSON.parse(job.counts_json) as Record<string, number>;
   let rowCursor = job.row_cursor,
@@ -426,6 +426,17 @@ async function readPage(c: C, job: ExportJob, after: number) {
             secrets[name] = await decryptSecret(sealed, c.env.URL_ENCRYPTION_KEY!);
         value.secret_json = JSON.stringify(secrets);
         payload = JSON.stringify(value);
+      }
+      if (table === "app_settings") {
+        const value = JSON.parse(payload) as Record<string, unknown>;
+        if (String(value.key).startsWith(HA_CONNECTION_PREFIX)) {
+          const connection = JSON.parse(String(value.value_json)) as Record<string, unknown>;
+          for (const name of HA_CONNECTION_SECRETS)
+            if (typeof connection[name] === "string" && connection[name])
+              connection[name] = await decryptSecret(String(connection[name]), c.env.URL_ENCRYPTION_KEY!);
+          value.value_json = JSON.stringify(connection);
+          payload = JSON.stringify(value);
+        }
       }
       const size = rowEncoder.encode(payload).length;
       if (rows.length && bytes + size > exportPageBytes) break;

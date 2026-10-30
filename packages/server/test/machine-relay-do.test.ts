@@ -23,6 +23,7 @@ afterEach(() => {
 
 /** Minimal hibernation-socket double that records what the DO sends. */
 class FakeSocket {
+  readyState = 1;
   readonly sent: string[] = [];
   readonly attachment = { ref: null as unknown };
   closed: { code?: number; reason?: string } | null = null;
@@ -31,6 +32,7 @@ class FakeSocket {
     this.sent.push(payload);
   }
   close(code?: number, reason?: string) {
+    this.readyState = 3;
     this.closed = { code, reason };
   }
   serializeAttachment(value: unknown) {
@@ -47,11 +49,15 @@ function fixture() {
   for (const statement of deviceEventSchema) sqlite.run(statement);
   const state = new Map<string, unknown>();
   const sockets: FakeSocket[] = [];
+  let alarm: number | null = null;
   const ctx = {
     storage: {
       async get<T>(key: string) { return state.get(key) as T | undefined; },
       async put(key: string, value: unknown) { state.set(key, value); },
       async delete(key: string) { return state.delete(key); },
+      async getAlarm() { return alarm; },
+      async setAlarm(at: number) { alarm = at; },
+      async deleteAlarm() { alarm = null; },
     },
     acceptWebSocket(ws: FakeSocket) { sockets.push(ws); },
     getWebSockets() { return sockets; },
@@ -68,7 +74,7 @@ function fixture() {
       `SELECT json_extract(payload_json,'$.to') AS "to" FROM device_events
        WHERE kind='change' AND name='link' ORDER BY occurred_at, rowid`,
     ).all().map((row) => row.to);
-  return { relay, ctx, sockets, sqlite, state, events, link, env };
+  return { relay, ctx, sockets, sqlite, state, events, link, env, alarm: () => alarm, clearAlarm: () => { alarm = null; } };
 }
 
 /** Attach an agent socket the way an authenticated upgrade would. */
@@ -78,6 +84,58 @@ function attachAgent(sockets: FakeSocket[]) {
   sockets.push(ws);
   return ws;
 }
+
+const OP = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+const upgradeRequest = () =>
+  new Request("https://prism.test/io/ws?role=agent", {
+    headers: { Upgrade: "websocket", "x-prism-relay-shop": "shop-1", "x-prism-relay-machine": "machine-1" },
+  });
+const consumed = (source: string, unit?: number) =>
+  JSON.stringify({
+    jsonrpc: "2.0",
+    method: "event.cardConsumed",
+    params: { interface: "aimeio", ...(unit === undefined ? {} : { unit_no: unit }), card: { source } },
+  });
+const led = (unit: number, r: number, g: number, b: number) =>
+  JSON.stringify({ jsonrpc: "2.0", method: "event.ledSet", params: { interface: "aimeio", unit_no: unit, r, g, b } });
+const LIMITS = { readMs: 30 };
+
+describe("MachineRelay card login", () => {
+  it("settles as soon as the game takes the card, without waiting for the reader light", async () => {
+    const { relay, sockets, sqlite } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.fetch(upgradeRequest());
+    const result = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: { readMs: 5000 } });
+    await relay.webSocketMessage(ws as any, consumed(OP, 1));
+    expect(await result).toEqual({ ok: true, login: "read" });
+    // A later reader colour is not recorded as a verdict.
+    await relay.webSocketMessage(ws as any, led(1, 0, 0, 255));
+    await Bun.sleep(5);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE name='card.login'").get()).toEqual({ n: 0 });
+  });
+
+  it("ignores reader colours while the game has not taken the card", async () => {
+    const { relay, sockets } = fixture();
+    const ws = attachAgent(sockets);
+    const result = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: LIMITS });
+    await relay.webSocketMessage(ws as any, led(0, 0, 0, 255));
+    expect((await result).login).toBe("not_read");
+  });
+
+  it("ends an older wait when a newer card replaces it on the IO", async () => {
+    const { relay, sockets } = fixture();
+    attachAgent(sockets);
+    const first = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: { readMs: 5000 } });
+    await relay.sendCard({ accessCode: "99887766554433221100" });
+    expect((await first).login).toBe("not_read");
+  });
+
+  it("does not wait for a card that never reached a device", async () => {
+    const { relay } = fixture();
+    expect(await relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: LIMITS }))
+      .toEqual({ ok: false, error: "机台未在线或连接地址不正确。" });
+  });
+});
 
 describe("MachineRelay delivery", () => {
   it("refuses an upgrade that did not come through the authenticated gateway", async () => {
@@ -173,8 +231,35 @@ describe("MachineRelay delivery", () => {
     attachAgent(sockets);
     await relay.sendCard({ accessCode: "01234567890123456789" });
     await relay.sendCard({ accessCode: "99887766554433221100" });
-    expect((state.get("state-message") as { body: { value: string } }).body.value)
+    expect((state.get("state-message") as { message: { body: { value: string } } }).message.body.value)
       .toBe("99887766554433221100");
+  });
+
+  it("does not replay a card the IO would already have dropped", async () => {
+    // Replaying it on a later boot would sign the previous player in again.
+    const { relay, sockets, state } = fixture();
+    attachAgent(sockets);
+    await relay.sendCard({ accessCode: "01234567890123456789", source: "op-1" });
+    (state.get("state-message") as { expiresAt: number }).expiresAt = Date.now() - 1;
+    sockets.length = 0;
+    await relay.fetch(upgradeRequest());
+    expect(sockets[0]!.sent).toEqual([]);
+    expect(state.has("state-message")).toBe(false);
+  });
+
+  it("drops a card stored by an older version, which had no lifetime", async () => {
+    const { relay, sockets, state } = fixture();
+    state.set("state-message", { action: "SET_CARD", body: { type: "aime", value: "01234567890123456789" } });
+    await relay.fetch(upgradeRequest());
+    expect(sockets[0]!.sent).toEqual([]);
+  });
+
+  it("forgets the stored card once the game has taken it", async () => {
+    const { relay, sockets, state } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.sendCard({ accessCode: "01234567890123456789", source: OP });
+    await relay.webSocketMessage(ws as any, consumed(OP, 0));
+    expect(state.has("state-message")).toBe(false);
   });
 
   it("does not store a key press as channel state", async () => {
@@ -305,6 +390,139 @@ describe("MachineRelay link state", () => {
   });
 });
 
+describe("MachineRelay Home Assistant watch", () => {
+  const upgradeWithChannel = () =>
+    new Request("https://prism.test/io/ws", {
+      headers: {
+        Upgrade: "websocket",
+        "x-prism-relay-shop": "shop-1",
+        "x-prism-relay-machine": "machine-1",
+        "x-prism-relay-channel": "m_chan",
+      },
+    });
+  function withHub() {
+    const ctx = fixture();
+    const calls: unknown[][] = [];
+    (ctx.env as any).SHOP_HUB = {
+      getByName: () => ({
+        async relayOnline(...args: unknown[]) { calls.push(["online", ...args]); },
+        async relayOffline(...args: unknown[]) { calls.push(["offline", ...args]); },
+        async haReport(...args: unknown[]) { calls.push(["report", ...args]); },
+      }),
+    };
+    return { ...ctx, calls };
+  }
+
+  it("offers an IO that can watch Home Assistant to the shop hub, and withdraws it on close", async () => {
+    const { relay, sockets, calls } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
+    const session = (sockets[0]!.deserializeAttachment() as { session: string }).session;
+    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan", { session }]]);
+    await relay.webSocketClose(sockets[0] as any, 1000, "");
+    expect(calls.at(-1)).toEqual(["offline", "shop-1", "machine-1", { session }]);
+  });
+
+  it("does not offer an IO that did not announce the feature", async () => {
+    const { relay, sockets, calls } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [] } }));
+    expect(calls).toEqual([]);
+    expect((await relay.watchHa({ term: 1, connections: [] })).ok).toBe(false);
+  });
+
+  it("offers a surviving standby again on an unassigned heartbeat, but only if it can watch", async () => {
+    const { relay, sockets, calls } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    const ws = sockets[0]!;
+    const beat = JSON.stringify({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } });
+    await relay.webSocketMessage(ws as any, beat);
+    expect(calls).toEqual([]);
+    await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
+    calls.length = 0;
+    await relay.webSocketMessage(ws as any, beat);
+    const session = (ws.deserializeAttachment() as { session: string }).session;
+    expect(calls).toEqual([["online", "shop-1", "machine-1", "m_chan", { session, restart: true }]]);
+  });
+
+  it("uses the same heartbeat expiry to mark the IO offline and withdraw its HA assignment without a page refresh", async () => {
+    const { relay, sockets, calls, alarm, clearAlarm, state } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    const ws = sockets[0]!;
+    await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } }));
+    expect(alarm()).toBeGreaterThan(Date.now());
+    calls.length = 0;
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 150_001 });
+    clearAlarm();
+    await relay.alarm();
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: state.get("ha-session") }]]);
+    expect(state.get("online")).toBe(false);
+    expect((await relay.getCapabilities()).online).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(alarm()).toBeNull();
+    expect((await relay.watchHa({ term: 9, connections: [] })).ok).toBe(false);
+  });
+
+  it("cleans up a persisted HA assignment when a deployment lost every socket", async () => {
+    const { relay, state, calls } = withHub();
+    state.set("channel", { shopId: "shop-1", machineId: "machine-1", channel: "m_chan" });
+    state.set("online", true);
+    expect((await relay.getCapabilities()).online).toBe(false);
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: undefined }]]);
+  });
+
+  it("withdraws the HA assignment immediately when the IO socket errors", async () => {
+    const { relay, sockets, calls, state } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } }));
+    calls.length = 0;
+    await relay.webSocketError(sockets[0] as any);
+    expect(calls).toEqual([["offline", "shop-1", "machine-1", { session: state.get("ha-session") }]]);
+    expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("delivers a reconnect's watch to its new socket and ignores the previous socket's late heartbeat", async () => {
+    const { relay, sockets, calls } = withHub();
+    const hello = JSON.stringify({ action: "CLIENT_HELLO", body: { features: ["ha.watch"] } });
+    await relay.fetch(upgradeWithChannel());
+    const old = sockets[0]!;
+    await relay.webSocketMessage(old as any, hello);
+    await relay.fetch(upgradeWithChannel());
+    const current = sockets[1]!;
+    await relay.webSocketMessage(current as any, hello);
+    const session = (current.deserializeAttachment() as { session: string }).session;
+    const watch = { term: 9, connections: [] };
+    const oldCount = old.sent.length;
+    expect((await relay.watchHa(watch, session)).ok).toBe(true);
+    expect(JSON.parse(current.sent.at(-1)!)).toEqual({ action: "HA_WATCH", body: watch });
+    expect(old.sent).toHaveLength(oldCount);
+    calls.length = 0;
+    await relay.webSocketMessage(old as any, JSON.stringify({ method: "io.heartbeat", params: { ha: [] } }));
+    expect(calls).toEqual([]);
+    await relay.webSocketClose(old as any, 1000, "");
+    expect(calls).toEqual([]);
+    expect((await relay.getCapabilities()).online).toBe(true);
+  });
+
+  it("passes the watch down and the reports up", async () => {
+    const { relay, sockets, calls } = withHub();
+    await relay.fetch(upgradeWithChannel());
+    const ws = sockets[0]!;
+    await relay.webSocketMessage(ws as any, JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch"] } }));
+    const watch = { term: 4, connections: [{ id: "ha_1", urls: ["http://ha.local"], token: "r", entities: ["switch.a"] }] };
+    expect((await relay.watchHa(watch)).ok).toBe(true);
+    expect(JSON.parse(ws.sent.at(-1)!)).toEqual({ action: "HA_WATCH", body: watch });
+    // Home Assistant health rides the IO's beat now, not a report of its own.
+    await relay.webSocketMessage(ws as any, JSON.stringify({
+      jsonrpc: "2.0", method: "io.heartbeat",
+      params: { ha: [{ term: 4, connection: "ha_1", connected: true }] },
+    }));
+    expect(calls.at(-1)).toEqual(["report", "shop-1", "machine-1", { method: "ha.status", params: { term: 4, connection: "ha_1", connected: true, error: null } }]);
+    await relay.watchHa(null);
+    expect(JSON.parse(ws.sent.at(-1)!)).toEqual({ action: "HA_UNWATCH", body: {} });
+  });
+});
+
 describe("MachineRelay capabilities", () => {
   it("reports the connected agent and its protocol", async () => {
     const { relay, sockets } = fixture();
@@ -319,5 +537,34 @@ describe("MachineRelay capabilities", () => {
   it("reports offline with no agent connected", async () => {
     const { relay } = fixture();
     expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("stops calling a machine online once its beats stop", async () => {
+    // The machine was switched off at the wall: its process is gone, so nothing
+    // closes the socket and the runtime may take minutes to notice.
+    const { relay, sockets } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.webSocketMessage(ws as any, JSON.stringify({ method: "io.heartbeat", params: { ha: [] } }));
+    expect((await relay.getCapabilities()).online).toBe(true);
+    // Two beats missed (the IO beats every 60 s).
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 151_000 });
+    expect((await relay.getCapabilities()).online).toBe(false);
+  });
+
+  it("counts any message as proof of life, not only the beat", async () => {
+    const { relay, sockets } = fixture();
+    const ws = attachAgent(sockets);
+    await relay.fetch(upgradeRequest());
+    ws.serializeAttachment({ ...(ws.deserializeAttachment() as object), seenAt: Date.now() - 140_000 });
+    // A card report from the reader: the machine is evidently alive.
+    await relay.webSocketMessage(ws as any, consumed(OP, 1));
+    expect((await relay.getCapabilities()).online).toBe(true);
+  });
+
+  it("gives a socket that has never beaten the benefit of the doubt", async () => {
+    // It has only just connected and has not had a turn yet.
+    const { relay, sockets } = fixture();
+    attachAgent(sockets);
+    expect((await relay.getCapabilities()).online).toBe(true);
   });
 });

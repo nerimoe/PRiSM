@@ -1,8 +1,12 @@
 import { PricingRing } from "./PricingRing";
+import { PlanRelationGraph } from "./PlanRelationGraph";
+import { useResourceGroups } from "./ResourceGroups";
 import { BillingSimulator } from "./BillingSimulator";
 import { pricingInZone } from "./pricing-clock";
 import { billTime } from "../bill-time";
 import { useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { BillingManualButton } from "./BillingExplainer";
 import { ChevronDown, Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
 import {
@@ -56,12 +60,15 @@ export type Pricing = {
     rules?: Rule[];
     includedPricingConfigIds?: string[];
   };
+  /** How a time plan runs alongside others; only `time.priority` carries it. */
+  relations?: { requires: string[]; conflicts: string[] };
 };
 const kinds = {
   "time.priority": "按时计费",
   "charge.fixed": "固定收费",
   "time.cap": "消费封顶",
 };
+/** A time-plan period: it has a price and the plan's cap. */
 const newRule = (): Rule => ({
   id: crypto.randomUUID(),
   label: "",
@@ -76,9 +83,25 @@ const newRule = (): Rule => ({
   priceCap: 0,
 });
 
+/**
+ * A cap period: it states only how much may be charged in it. A price here
+ * would make it a time plan's period, which the server refuses.
+ */
+const newCapRule = (): Rule => ({
+  id: crypto.randomUUID(),
+  label: "",
+  priority: 0,
+  timeRange: { start: "00:00", end: "00:00" },
+  priceCap: 10,
+});
+
+/** A period of the right shape for the kind being edited. */
+const newRuleFor = (kind: Pricing["kind"]): Rule => (kind === "time.cap" ? newCapRule() : newRule());
+
 export function PricingPage() {
   const { t } = useI18n();
-  const { canWrite } = useMerchant();
+  const { canWrite, shopCode, shopId, owner } = useMerchant();
+  const resourceGroups = useResourceGroups(shopId);
   const resource = useResource<{ pricingConfigs: Pricing[] }>(
     "pricing-configs",
   );
@@ -86,14 +109,18 @@ export function PricingPage() {
   const [edit, setEdit] = useState<Pricing | null>(null);
   const [archive, setArchive] = useState<Pricing | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [showSimulator, setShowSimulator] = useState(false);
+  const [params] = useSearchParams();
+  const [showSimulator, setShowSimulator] = useState(() => params.get("simulate") === "1");
   const rows = resource.data?.pricingConfigs.filter(
     (row) => showArchived || row.status !== "archived",
   );
   return (
     <div className="grid gap-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
-        <h2 className="text-xl font-semibold">{t("计费规则")}</h2>
+        <div className="flex items-center gap-1">
+          <h2 className="text-xl font-semibold">{t("计费规则")}</h2>
+          <BillingManualButton />
+        </div>
         {canWrite && (
           <button
             className={primary}
@@ -122,24 +149,22 @@ export function PricingPage() {
           />
           {t("显示已归档")}
         </label>
+        <div className="flex flex-wrap gap-2">
         {canWrite && (
           <button
             type="button"
             className={button}
-            aria-expanded={showSimulator}
-            onClick={() => setShowSimulator((value) => !value)}
+            onClick={() => setShowSimulator(true)}
           >
             {t("计费模拟器")}
-            <ChevronDown
-              size={15}
-              className={showSimulator ? "rotate-180" : ""}
-              aria-hidden="true"
-            />
           </button>
         )}
+        </div>
       </div>
       {showSimulator && resource.data && (
-        <BillingSimulator pricingConfigs={resource.data.pricingConfigs} />
+        <Modal title={t("计费模拟器")} close={() => setShowSimulator(false)} xl>
+          <BillingSimulator pricingConfigs={resource.data.pricingConfigs} />
+        </Modal>
       )}
       {!rows ? (
         <State error={resource.error} />
@@ -147,7 +172,7 @@ export function PricingPage() {
         <div className="rounded-xl border border-dashed border-ink/20 px-6 py-14 text-center">
           <p className="font-medium">{t("还没有计费规则")}</p>
           <p className="mx-auto mt-2 max-w-sm text-sm text-ink/55">
-            {t("入场计费需要至少一条按时计费的规则。")}
+            {t("规则决定玩家什么时段、按什么价格付费。给资源组选上规则后，组里的资源才开始计费。")}
           </p>
           {canWrite && (
             <button
@@ -169,10 +194,39 @@ export function PricingPage() {
           )}
         </div>
       ) : (
+        <>
+        <p className="text-sm text-ink/60">
+          {t("新建的规则要被资源组、资源或其他规则的「依赖」引用才会计费。")}
+          {owner && (
+            <>
+              {" "}
+              <Link
+                className="underline"
+                to={`/merchant/${segment(shopCode)}/resources`}
+              >
+                {t("资源组")}
+              </Link>
+            </>
+          )}
+        </p>
+        {resource.data && resource.data.pricingConfigs.filter((row) => row.kind === "time.priority" && row.status !== "archived").length > 1 && (
+          <details className="grid gap-3" open>
+            <summary className="cursor-pointer text-sm font-semibold">{t("规则关系")}</summary>
+            <div className="mt-3">
+              <PlanRelationGraph
+                plans={resource.data.pricingConfigs}
+                groups={resourceGroups.groups ?? []}
+                onSelect={canWrite ? (plan) => setEdit(structuredClone(plan)) : undefined}
+              />
+            </div>
+          </details>
+        )}
         <Table headers={["名称", "计费方式", "时段", "状态", "操作"]}>
           {rows.map((row) => (
             <tr key={row.id}>
-              <td className={`${cell} font-medium`}>{row.name}</td>
+              <td className={`${cell} font-medium`}>
+                {row.name}
+              </td>
               <td className={cell}>
                 {t(kinds[row.kind])}
                 {row.kind === "charge.fixed" && (
@@ -235,6 +289,7 @@ export function PricingPage() {
             </tr>
           ))}
         </Table>
+        </>
       )}
       {edit && (
         <Modal
@@ -381,8 +436,6 @@ function PricingEditor({
       } else if (rule.pricing) {
         if (!(rule.pricing.unitMinutes > 0))
           return { message: t("每隔分钟数需要大于 0"), period: index };
-        if (!(rule.pricing.unitPrice >= 0))
-          return { message: t("收费金额不能为负数"), period: index };
       }
     }
     return null;
@@ -408,13 +461,15 @@ function PricingEditor({
             name: draft.name.trim(),
             enabled: draft.enabled,
             provider: pricingInZone(draft, displayTimeZone, "UTC", day).provider,
+            ...(draft.kind === "time.priority"
+              ? { relations: draft.relations ?? { requires: [], conflicts: [] } }
+              : {}),
           },
         );
       }}
     >
-      <section className="grid gap-3">
-        <h3 className="text-sm font-semibold">{t("基本信息")}</h3>
-        <div className="grid gap-3 sm:grid-cols-2">
+      {/* Name, kind and whether it bills, on one line; the periods below are the work. */}
+      <section className="grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_11rem_auto]">
           <Field label="名称">
             <input
               className={input}
@@ -436,13 +491,7 @@ function PricingEditor({
                   provider:
                     kind === "charge.fixed"
                       ? { id: draft.provider.id, label: draft.name, amount: 10 }
-                      : {
-                          id: draft.provider.id,
-                          rules: [newRule()],
-                          ...(kind === "time.cap"
-                            ? { includedPricingConfigIds: [] }
-                            : {}),
-                        },
+                      : { id: draft.provider.id, rules: [newRuleFor(kind)] },
                 });
                 setOpenRule(null);
               }}
@@ -454,10 +503,7 @@ function PricingEditor({
               ))}
             </select>
           </Field>
-        </div>
-        {/* The switch sits next to its state, because "is this rule billing
-            anyone right now" is the question this screen answers. */}
-        <label className="flex items-center gap-3 rounded-lg border border-ink/10 px-3 py-2 text-sm">
+        <label className="flex min-h-11 items-center gap-3 self-end text-sm">
           <input
             type="checkbox"
             role="switch"
@@ -475,10 +521,7 @@ function PricingEditor({
             } peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-mint`}
           />
           <span className="font-medium">
-            {t(draft.enabled ? "启用规则" : "停用规则")}
-          </span>
-          <span className="text-xs text-ink/50">
-            {t(draft.enabled ? "启用后参与计费" : "停用后不参与计费")}
+            {t(draft.enabled ? "启用" : "停用")}
           </span>
         </label>
       </section>
@@ -509,74 +552,14 @@ function PricingEditor({
           </div>
         </section>
       ) : (
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)] lg:items-start">
-          {/* The ring stays on screen while the periods are edited: it is how
-              the store sees the day, and clicking a segment opens its period. */}
-          <div className="lg:sticky lg:top-0">
-            <PricingRing
-              value={draft}
-              localDate={day}
-              onDateChange={changeDay}
-              onSelect={(id) => {
-                const index = rules.findIndex((r) => r.id === id);
-                if (index >= 0) openPeriod(index);
-              }}
-            />
-          </div>
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_17rem] lg:items-start">
           <section className="grid gap-3">
-            <h3 className="text-sm font-semibold">
-              {t(draft.kind === "time.cap" ? "封顶设置" : "计费时段")}
-            </h3>
-          {draft.kind === "time.cap" && (
-            <fieldset className="grid gap-2 rounded-xl border border-ink/10 p-4">
-              <legend className="px-1 text-sm font-medium">
-                {t("计入封顶的规则")}
-              </legend>
-              {all
-                .filter(
-                  (p) =>
-                    p.id !== draft.id &&
-                    p.kind !== "time.cap" &&
-                    p.status !== "archived",
-                )
-                .map((p) => (
-                  <label className="flex gap-2 text-sm" key={p.id}>
-                    <input
-                      type="checkbox"
-                      checked={
-                        draft.provider.includedPricingConfigIds?.includes(
-                          p.id,
-                        ) ?? false
-                      }
-                      onChange={(e) =>
-                        provider({
-                          includedPricingConfigIds: e.target.checked
-                            ? [
-                                ...(draft.provider.includedPricingConfigIds ??
-                                  []),
-                                p.id,
-                              ]
-                            : draft.provider.includedPricingConfigIds?.filter(
-                                (id) => id !== p.id,
-                              ),
-                        })
-                      }
-                    />
-                    {p.name}
-                  </label>
-                ))}
-              {!all.some(
-                (p) =>
-                  p.id !== draft.id &&
-                  p.kind !== "time.cap" &&
-                  p.status !== "archived",
-              ) && (
-                <p className="text-sm text-ink/55">
-                  {t("还没有可计入封顶的规则。")}
-                </p>
-              )}
-            </fieldset>
-          )}
+            <div className="flex items-center gap-1">
+              <h3 className="text-sm font-semibold">
+                {t(draft.kind === "time.cap" ? "封顶设置" : "计费时段")}
+              </h3>
+              <BillingManualButton section="fields" />
+            </div>
 
           <div className="grid gap-2">
             {rules.map((rule, index) => (
@@ -602,7 +585,7 @@ function PricingEditor({
               type="button"
               className={`${buttonQuiet} min-h-10 justify-self-start px-2 text-sm`}
               onClick={() => {
-                provider({ rules: [...rules, newRule()] });
+                provider({ rules: [...rules, newRuleFor(draft.kind)] });
                 setOpenRule(rules.length);
               }}
             >
@@ -611,7 +594,28 @@ function PricingEditor({
             </button>
           </div>
           </section>
+          {/* The day at a glance stays beside the periods; a segment opens its period. */}
+          <div className="lg:sticky lg:top-0">
+            <PricingRing
+              value={draft}
+              localDate={day}
+              onDateChange={changeDay}
+              title="当日预览"
+              onSelect={(id) => {
+                const index = rules.findIndex((r) => r.id === id);
+                if (index >= 0) openPeriod(index);
+              }}
+            />
+          </div>
         </div>
+      )}
+
+      {draft.kind === "time.priority" && (
+        <PlanRelations
+          draft={draft}
+          all={all}
+          change={(relations) => update({ relations })}
+        />
       )}
     </ActionForm>
   );
@@ -621,6 +625,76 @@ function PricingEditor({
  * One period: the header states the rule in one line, and the fields only
  * exist while the period is open.
  */
+/**
+ * Which other time plans must run with this one, and which may never run with
+ * it. A conflict holds both ways, so one declared by the other plan shows here
+ * as fixed rather than as a choice.
+ */
+function PlanRelations({
+  draft,
+  all,
+  change,
+}: {
+  draft: Pricing;
+  all: Pricing[];
+  change: (relations: { requires: string[]; conflicts: string[] }) => void;
+}) {
+  const { t } = useI18n();
+  const relations = draft.relations ?? { requires: [], conflicts: [] };
+  const others = all.filter(
+    (p) => p.id !== draft.id && p.kind === "time.priority" && p.status !== "archived",
+  );
+  const declaredBy = (p: Pricing) => !!draft.id && (p.relations?.conflicts ?? []).includes(draft.id);
+  const toggle = (field: "requires" | "conflicts", id: string, on: boolean) =>
+    change({
+      ...relations,
+      [field]: on ? [...relations[field], id] : relations[field].filter((item) => item !== id),
+    });
+  if (!others.length) return null;
+  const row = (field: "requires" | "conflicts", label: string) => (
+    <div className="grid gap-2 sm:grid-cols-[4rem_minmax(0,1fr)] sm:items-start">
+      <span className="pt-1.5 text-sm font-medium">{t(label)}</span>
+      <div className="flex flex-wrap gap-2" role="group" aria-label={t(label)}>
+        {others.map((p) => {
+          const fixed = field === "conflicts" && declaredBy(p);
+          const on = relations[field].includes(p.id) || fixed;
+          // A plan cannot be both needed and excluded.
+          const blocked = field === "requires" ? relations.conflicts.includes(p.id) || declaredBy(p) : relations.requires.includes(p.id);
+          return (
+            <button
+              key={p.id}
+              type="button"
+              aria-pressed={on}
+              disabled={fixed || (blocked && !on)}
+              title={fixed ? t("由该规则设置") : undefined}
+              className={`focus-ring rounded-full border px-3 py-1 text-sm transition-colors disabled:opacity-40 ${
+                on
+                  ? field === "requires"
+                    ? "border-mint/50 bg-mint/15 text-ink"
+                    : "border-coral/50 bg-coral/10 text-ink"
+                  : "border-ink/15 text-ink/60 hover:border-ink/30 hover:text-ink"
+              }`}
+              onClick={() => toggle(field, p.id, !on)}
+            >
+              {p.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+  return (
+    <section className="grid gap-3 border-t border-ink/10 pt-4">
+      <h3 className="text-sm font-semibold">{t("规则关系")}</h3>
+      {row("requires", "依赖")}
+      {row("conflicts", "冲突")}
+      <p className="text-xs leading-relaxed text-ink/55">
+        {t("开始本规则时，依赖的规则会同时开始（已在计费的不重新计时），冲突的规则会结束（已产生的费用仍在账单里）。冲突是双向的。")}
+      </p>
+    </section>
+  );
+}
+
 function PeriodCard({
   index,
   rule,
@@ -730,7 +804,7 @@ function PeriodCard({
             {t("开始与结束相同表示全天。")}
           </p>
           {kind === "time.cap" ? (
-            <Field label="封顶金额">
+            <Field label="封顶金额" unit="元">
               <input
                 className={input}
                 required
@@ -747,18 +821,24 @@ function PeriodCard({
             <div className="grid grid-cols-2 gap-3">
               {(
                 [
-                  ["unitMinutes", "每隔（分钟）", 1],
-                  ["unitPrice", "收费金额", 0],
-                  ["roundGraceMinutes", "宽限（分钟）", 0],
-                  ["priceCap", "时段封顶（0 为不限）", 0],
+                  ["unitMinutes", "计费间隔", "分钟", 1],
+                  // A negative price is a discount on that period, so no floor.
+                  ["unitPrice", "收费金额", "元", undefined],
+                  ["roundGraceMinutes", "宽限时长", "分钟", 0],
+                  ["priceCap", "时段封顶", "元", 0],
                 ] as const
-              ).map(([key, label, min]) => (
-                <Field key={key} label={label}>
+              ).map(([key, label, unit, min]) => (
+                <Field
+                  key={key}
+                  label={label}
+                  unit={key === "priceCap" && !rule.pricing?.priceCap ? "不限" : unit}
+                >
                   <input
                     className={input}
                     type="number"
                     required
-                    min={min}
+                    aria-describedby={key === "unitPrice" ? "negative-price-note" : undefined}
+                    {...(min === undefined ? {} : { min })}
                     step={
                       key === "unitPrice" || key === "priceCap" ? "0.01" : "1"
                     }
@@ -774,6 +854,9 @@ function PeriodCard({
                   />
                 </Field>
               ))}
+              <p id="negative-price-note" className="col-span-2 text-xs text-ink/50">
+                {t("负数表示在该时段减免（例如活动价）。")}
+              </p>
             </div>
           )}
           <details>
@@ -813,7 +896,7 @@ function PeriodCard({
                   </label>
                 ))}
               </div>
-              <Field label="指定日期（逗号分隔）">
+              <Field label="指定日期">
                 <input
                   className={input}
                   placeholder="2026-10-01, 2026-10-02"

@@ -3,9 +3,12 @@ import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import {
+  botRequest,
+  guardIntegration,
   integrationRouter,
-  requireIntegrationAuth,
+  integrationToken,
 } from "../../routes/shops/integration.js";
+import { ensureBotResource } from "../../resources/bot.js";
 import {
   toDeviceCommandView,
   toPlayerCheckoutResultView,
@@ -15,11 +18,7 @@ export const legacyIntegrationRouter = new Hono<AppBindings>();
 
 // Enforce bot integration authentication and billing verification on all legacy integration routes
 legacyIntegrationRouter.use("*", async (c, next) => {
-  const shop = getShop(c);
-  if (!shop.billing_enabled) {
-    jsonError(409, "店铺未启用计费", "BILLING_DISABLED");
-  }
-  await requireIntegrationAuth(c, shop);
+  await guardIntegration(c);
   await next();
 });
 
@@ -37,12 +36,7 @@ legacyIntegrationRouter.post(
       );
     }
     const result = await deps.integrationCommands.checkoutWithOverrideByIdentity({
-      ...body,
-      identity:
-        body.identity ??
-        (body.provider && body.subject
-          ? { provider: body.provider, subject: body.subject }
-          : undefined),
+      ...botRequest(c, body),
     });
     return c.json(toPlayerCheckoutResultView(result));
   },
@@ -53,13 +47,14 @@ legacyIntegrationRouter.post(
   async (c) => {
     const deps = getShopDeps(c);
     const body = await c.req.json<any>();
+    // The action remembers which bot asked, so that bot does not announce it
+    // again after answering the command itself (resources/shop-events.ts).
+    const shop = getShop(c);
+    const bot = await ensureBotResource(c.env.DB, shop.id, await integrationToken(c, shop));
+    const request = botRequest(c, body);
     const action = await deps.integrationCommands.requestDeviceActionByIdentity({
-      ...body,
-      identity:
-        body.identity ??
-        (body.provider && body.subject
-          ? { provider: body.provider, subject: body.subject }
-          : undefined),
+      ...request,
+      action: { ...request.action, payload: { ...(request.action?.payload ?? {}), viaBot: bot.id } },
     });
     return c.json({
       action: toDeviceCommandView(action),

@@ -6,6 +6,9 @@ import {
   isIoEventMethod,
   messageForClient,
   parseClientHello,
+  parseHaReport,
+  parseHaStates,
+  parseHeartbeat,
   parseIoEvent,
   prepareMessageForClient,
   type ClientCapabilities,
@@ -103,7 +106,49 @@ describe("relay client hello", () => {
         action: "CLIENT_HELLO",
         body: { protocol: "aimeio-remote", auth: "bearer", e2ee: false, events: ["event.ledSet"] },
       }),
-    ).toEqual({ events: ["event.ledSet"], e2ee: false, authenticated: true });
+    ).toEqual({ events: ["event.ledSet"], e2ee: false, authenticated: true, features: [] });
+  });
+
+  it("reports the optional features a client announces", () => {
+    expect(
+      parseClientHello({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], features: ["ha.watch", 3] } })?.features,
+    ).toEqual(["ha.watch"]);
+  });
+
+  it("reads the IO heartbeat, with and without Home Assistant health", () => {
+    // A beat with nothing to say still proves the machine is alive.
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } })).toEqual({ ha: [] });
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat" })).toEqual({ ha: [] });
+    expect(parseHeartbeat({
+      jsonrpc: "2.0", method: "io.heartbeat",
+      params: { ha: [
+        { connection: "ha_1", term: 3, connected: true },
+        { connection: "ha_2", term: 3, connected: false, error: "refused with HTTP 401" },
+        { nope: true },
+      ] },
+    })).toEqual({ ha: [
+      { connection: "ha_1", term: 3, connected: true, error: null },
+      { connection: "ha_2", term: 3, connected: false, error: "refused with HTTP 401" },
+    ] });
+    // Not a heartbeat, and a request (which has an id) is never one.
+    expect(parseHeartbeat({ method: "ha.states", params: {} })).toBeNull();
+    expect(parseHeartbeat({ id: 1, method: "io.heartbeat", params: { ha: [] } })).toBeNull();
+  });
+
+  it("reads Home Assistant state reports and ignores anything malformed", () => {
+    expect(parseHaStates({
+      jsonrpc: "2.0", method: "ha.states",
+      params: { term: 2, connection: "ha_1", full: true, states: [{ entity_id: "switch.a", state: "on", last_changed: "2026-10-21T10:00:00Z" }, { nope: 1 }] },
+    })?.params).toMatchObject({ full: true, states: [{ entity_id: "switch.a", state: "on", last_updated: null, attributes: {} }] });
+    // `last_updated` orders reports from two watchers; an older IO leaves it out.
+    expect(parseHaStates({
+      method: "ha.states", params: { term: 1, connection: "ha_1", states: [{ entity_id: "climate.c", state: "cool", last_changed: 1_800_000_000, last_updated: 1_800_000_060.25 }] },
+    })?.params).toMatchObject({ states: [{ last_changed: "2027-01-15T08:00:00.000Z", last_updated: "2027-01-15T08:01:00.250Z" }] });
+    expect(parseHaStates({
+      method: "ha.states", params: { term: 1, connection: "ha_1", states: [{ entity_id: "switch.a", state: "on", last_changed: 1_800_000_000.5 }] },
+    })?.params).toMatchObject({ states: [{ last_changed: "2027-01-15T08:00:00.500Z" }] });
+    expect(parseHaStates({ method: "ha.states", params: { connection: "ha_1", states: [] } })).toBeNull();
+    expect(parseHaStates({ id: 1, method: "ha.states", params: { term: 1, connection: "x", states: [] } })).toBeNull();
   });
 
   it("reports a legacy client as unauthenticated and not e2ee", () => {
@@ -112,6 +157,7 @@ describe("relay client hello", () => {
       events: [],
       e2ee: false,
       authenticated: false,
+      features: [],
     });
   });
 

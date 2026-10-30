@@ -4,7 +4,8 @@ import { Hono } from "hono";
 import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adapter-d1";
 import type { AppBindings, Env } from "../src/bindings.js";
 import { deviceEventSchema } from "@prism/storage-sql";
-import { merchantMachineRouter } from "../src/routes/platform/merchant-machines.js";
+import { merchantResourceRouter } from "../src/routes/platform/merchant-resources.js";
+import { responseTimeMiddleware } from "../src/middleware/response-time.js";
 
 class SqliteD1 implements D1DatabaseLike {
   constructor(private readonly sqlite: Database) {}
@@ -47,7 +48,7 @@ function fixture() {
       coin_after_swipe INTEGER NOT NULL DEFAULT 0,mahjong_config_json TEXT,aliases_json TEXT NOT NULL DEFAULT '[]',
       relay_connection TEXT NOT NULL DEFAULT 'external',relay_token_hash TEXT,relay_channel TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id,id)
+      resource_group_id TEXT,pricing_config_override_id TEXT,capacity INTEGER NOT NULL DEFAULT 0,occupancy_minutes INTEGER NOT NULL DEFAULT 15,PRIMARY KEY(shop_id,id)
     );
     CREATE TABLE machine_login_events(id TEXT,machine_id TEXT);
     CREATE TABLE player_operations(id TEXT,device_id TEXT);
@@ -63,11 +64,34 @@ function fixture() {
     c.set("user",{id:"admin-1",role:"admin",username:"admin",displayName:"Admin",bannedAt:null});
     await next();
   });
-  app.route("/api/v1/merchant",merchantMachineRouter);
+  app.route("/api/v1/merchant",merchantResourceRouter);
   return {app,env,sqlite};
 }
 
 describe("pre-fork merchant machine lifecycle",()=>{
+  it("returns operation history in the resource's shop zone, including midnight and daylight saving", async () => {
+    const { app, env, sqlite } = fixture();
+    const api = new Hono<AppBindings>();
+    api.use("*", responseTimeMiddleware);
+    api.route("/", app);
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet')");
+    for (const [zone, at, expected] of [
+      ["Asia/Shanghai", "2026-10-29T16:08:00.000Z", "2026-10-30T00:08:00.000+08:00"],
+      ["America/New_York", "2026-07-01T02:08:00.000Z", "2026-06-30T22:08:00.000-04:00"],
+      ["America/New_York", "2026-01-01T02:08:00.000Z", "2025-12-31T21:08:00.000-05:00"],
+      ["UTC", "2026-10-29T16:08:00.000Z", "2026-10-29T16:08:00.000Z"],
+    ] as const) {
+      sqlite.run("INSERT OR REPLACE INTO app_settings(shop_id,key,value_json) VALUES ('shop-1','store.profile',?)", [JSON.stringify({ timeZone: zone })]);
+      sqlite.run(`INSERT OR REPLACE INTO device_events(shop_id,id,device_id,capability,kind,name,origin,occurred_at)
+        VALUES ('shop-1','event','cab','power','request','power.off','platform',?)`, [at]);
+      const response = await api.fetch(new Request("https://prism.test/api/v1/merchant/machines/cab/events"), env);
+      expect(response.status).toBe(200);
+      const body = await response.json() as { data: { events: { at: string }[] } };
+      expect(body.data.events[0]!.at).toBe(expected);
+      expect(sqlite.query("SELECT occurred_at FROM device_events WHERE id='event'").get()).toEqual({ occurred_at: at });
+    }
+    sqlite.close();
+  });
   it("creates, updates and deletes against the actual shop-scoped machine columns",async()=>{
     const {app,env,sqlite}=fixture();
     const created=await app.fetch(new Request("https://prism.test/api/v1/merchant/machines",{
@@ -129,6 +153,34 @@ describe("pre-fork merchant machine lifecycle",()=>{
     const unbound=await send("PATCH",`/machines/${machine.id}`,{homeAssistant:null,ttlockLockId:null,hinataUrl:null,hinataPassword:null});
     expect(unbound.status).toBe(200);
     expect(rows()).toEqual([]);
+  });
+  it("binds an air conditioner as its own capability and reuses the power token for the same Home Assistant",async()=>{
+    const {app,env,sqlite}=fixture();
+    const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{
+      method,headers:{"content-type":"application/json"},body:JSON.stringify(body),
+    }),env);
+    // A switch is power, not an air conditioner; the schema refuses it.
+    const wrong=await send("POST","/machines",{shopId:"shop-1",name:"包间",climate:{url:"https://ha.example",entityId:"switch.ac",token:"t"}});
+    expect(wrong.status).not.toBe(201);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM machines").get()).toEqual({n:0});
+    const missing=await send("POST","/machines",{shopId:"shop-1",name:"包间",climate:{url:"https://ha.example",entityId:"climate.room"}});
+    expect(missing.status).toBe(400);
+    const created=await send("POST","/machines",{
+      shopId:"shop-1",name:"包间",
+      homeAssistant:{url:"https://ha.example",entityId:"switch.room",token:"ha-token"},
+      climate:{url:"https://ha.example",entityId:"climate.lumi_cn_974741205_mcn02"},
+    });
+    expect(created.status).toBe(201);
+    const {machine}=await created.json() as {machine:Record<string,unknown>&{id:string;actions:{name:string;capability:string}[]}};
+    expect(machine).toMatchObject({climate:{url:"https://ha.example",entityId:"climate.lumi_cn_974741205_mcn02"}});
+    expect(machine.actions.filter(a=>a.capability==="climate").map(a=>a.name)).toEqual([
+      "climate.on","climate.off","climate.set_mode","climate.set_temperature","climate.set_fan_mode",
+    ]);
+    const rows=sqlite.query("SELECT capability FROM device_capabilities ORDER BY capability").all();
+    expect(rows).toEqual([{capability:"climate"},{capability:"power"}]);
+    expect(JSON.stringify(sqlite.query("SELECT secret_json FROM device_capabilities").all())).not.toContain("ha-token");
+    await send("PATCH",`/machines/${machine.id}`,{climate:null});
+    expect(sqlite.query("SELECT capability FROM device_capabilities").all()).toEqual([{capability:"power"}]);
   });
   it("does not delete machines that have historical commands",async()=>{
     const {app,env,sqlite}=fixture();

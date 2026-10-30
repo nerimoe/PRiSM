@@ -17,7 +17,6 @@ import { shopApi } from "../BillingPages";
 export const MerchantContext = createContext({
   shopCode: "",
   shopId: "",
-  billingEnabled: false,
   cashierEnabled: false,
   canWrite: false,
   owner: false,
@@ -97,7 +96,7 @@ export function useResource<T>(path: string | null) {
         if (current) setData(result);
       })
       .catch((error) => {
-        if (current) setError(error.message);
+        if (current) setError(staffMessage(error));
       });
     return () => {
       current = false;
@@ -109,16 +108,28 @@ export function useResource<T>(path: string | null) {
 }
 export function Field({
   label,
+  unit,
   children,
 }: {
   label: string;
+  /** Shown inside the right edge of the input, so the label stays a plain noun. */
+  unit?: string;
   children: ReactNode;
 }) {
   const { t } = useI18n();
   return (
     <label className="grid min-w-0 gap-2 text-sm font-medium">
       {t(label)}
-      {children}
+      {unit ? (
+        <span className="relative block [&>input]:pr-16">
+          {children}
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-normal text-ink/50">
+            {t(unit)}
+          </span>
+        </span>
+      ) : (
+        children
+      )}
     </label>
   );
 }
@@ -194,11 +205,14 @@ export function ActionForm({
   onResult,
   sticky = false,
   noValidate = false,
+  submitDisabled = false,
 }: {
   children: ReactNode;
   submit: (form: FormData) => Promise<unknown>;
   label?: string;
   done: () => void;
+  /** Disable submit when the form has nothing valid to send. */
+  submitDisabled?: boolean;
   /**
    * Return `true` to keep the form open after a successful submit. Used where
    * the response carries something that can only be shown once, such as a
@@ -237,7 +251,7 @@ export function ActionForm({
       const result = await submit(form);
       if (!onResult?.(result)) done();
     } catch (error) {
-      setError(error instanceof Error ? error.message : t("操作失败"));
+      setError(error instanceof Error ? staffMessage(error) : t("操作失败"));
     } finally {
       setBusy(false);
     }
@@ -265,7 +279,7 @@ export function ActionForm({
               {error}
             </p>
           )}
-          <button className={`${primary} justify-self-start`}>{t(busy ? "处理中…" : label)}</button>
+          <button className={`${primary} justify-self-start`} disabled={submitDisabled}>{t(busy ? "处理中…" : label)}</button>
         </div>
       </fieldset>
     </form>
@@ -297,6 +311,37 @@ export function Table({
   );
 }
 export const cell = "px-4 py-4";
+/** Copy with visible feedback; `failed` keeps the value selectable when denied. */
+export function useCopy() {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const copy = useCallback(async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    window.setTimeout(() => setState("idle"), 1800);
+  }, []);
+  return [state, copy] as const;
+}
+export function CopyValue({ label, value }: { label: string; value: string }) {
+  const { t } = useI18n();
+  const [state, copy] = useCopy();
+  return (
+    <div className="grid gap-1">
+      <span className="text-xs text-ink/60">{t(label)}</span>
+      <div className="flex items-center gap-2">
+        <code className="min-w-0 flex-1 select-all break-all rounded border border-ink/10 bg-panel px-3 py-2 text-sm">
+          {value}
+        </code>
+        <button className={button} type="button" onClick={() => copy(value)}>
+          {t(state === "copied" ? "已复制" : state === "failed" ? "复制失败" : "复制")}
+        </button>
+      </div>
+    </div>
+  );
+}
 export type Player = {
   paymentMode?: "cashier";
   id: string;
@@ -307,6 +352,21 @@ export type Player = {
   hasUnpaidSession?: boolean;
   identities?: { provider: string; subject: string; displayName?: string }[];
 };
+/**
+ * Who is in the shop and where, as the server lists them: each person once, at
+ * the resource they occupy or their most specific plan.
+ */
+export type Roster = {
+  total: number;
+  groups: Array<{
+    kind: "resource" | "plan";
+    id: string | null;
+    name: string;
+    capacity?: number;
+    members: Array<{ playerId: string; displayName: string | null }>;
+  }>;
+};
+
 export type LivePlayer = {
   quoteState?: "loading" | "ready" | "error";
   quoteError?: string;
@@ -325,6 +385,8 @@ export type LivePlayer = {
   }[];
   sessions: {
     id: string; label?: string; startedAt: string; endedAt: string | null;
+    /** The plan the session bills; null for the unpriced placeholder session. */
+    pricingConfigId?: string | null;
     status: "active" | "closed"; elapsedMinutes: number; currentImpact: number | null;
     pricingCharges: { pricingConfigId: string; planName: string; ruleLabel: string; amount: number }[];
     pricingSegments: {
@@ -354,3 +416,12 @@ export type Preview = {
   adjustments: { label: string; amount: number }[];
   wallet: { balanceBefore: number; balanceAfter: number };
 };
+
+/**
+ * Staff see the player-facing text plus the server's own wording when they
+ * differ, which is often the more specific of the two.
+ */
+export function staffMessage(error: Error): string {
+  const reason = (error as { reason?: unknown }).reason;
+  return typeof reason === "string" && reason && reason !== error.message ? `${error.message}（${reason}）` : error.message;
+}

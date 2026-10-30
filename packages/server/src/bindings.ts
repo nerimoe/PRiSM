@@ -24,6 +24,7 @@ import type {
   PlayerAuthService,
   StaffReportService,
   SettlePlayerCheckoutResult,
+  PricingSessionOrchestrator,
 } from "@prism/application";
 import type { LiveBillingSnapshot } from "@prism/core";
 import type { SqlRepositories } from "@prism/storage-sql";
@@ -52,14 +53,12 @@ export type TenantShop = {
   latitude: number;
   longitude: number;
   radius_meters: number;
-  billing_enabled: number;
   cashier_enabled: number;
   auto_register: number;
   identity_binding_required: number;
   checkin_geo: number;
   checkout_geo: number;
   machine_geo: number;
-  entry_pricing_ids_json: string;
   bot_contact: string;
   time_zone: string;
   hero_url: string | null;
@@ -72,6 +71,14 @@ export type PrismAppDependencies = {
   playerQueries: PlayerQueries;
   staffQueries: StaffQueries;
   playerCommands: PlayerCommandService;
+  /** The only way sessions start and stop; see docs/pricing-sessions.md. */
+  pricingSessions: PricingSessionOrchestrator;
+  /** Which plan a scanned resource bills, and starting it; see docs/resources.md. */
+  resourceBilling: import("./resources/activation.js").ResourceBilling;
+  /** Who occupies which resource; see docs/occupancy.md. */
+  occupancy: import("./resources/occupancy/service.js").OccupancyService;
+  /** Who is in the shop and where; see docs/occupancy.md. */
+  roster: import("./resources/roster.js").RosterService;
   playerCheckoutCommands: SettlementService;
   playerRedeemCommands: RedeemService;
   integrationCommands: IntegrationService;
@@ -120,6 +127,7 @@ export type Env = {
   APNS_PRIVATE_KEY?: string;
   LIVE_BILLING?: DurableObjectNamespace<any>;
   MACHINE_RELAY?: DurableObjectNamespace<any>;
+  SHOP_HUB?: DurableObjectNamespace<any>;
   EXTRA_ALLOWED_ORIGINS?: string;
   ANDROID_CERT_FINGERPRINTS?: string;
   PRISM_DEPLOY_GUARD?: string;

@@ -5,8 +5,9 @@ import type { PlayerIdentity, Session } from "@prism/core";
 import { createDeviceEventRepository, sqliteSchema } from "@prism/storage-sql";
 import type { Env } from "../src/bindings.js";
 import { encryptSecret } from "../src/crypto.js";
-import { createDeviceActionService } from "../src/devices/actions.js";
-import { listDeviceStates } from "../src/devices/legacy-views.js";
+import { createCardStore } from "../src/resources/cards.js";
+import { createDeviceActionService } from "../src/resources/capabilities/actions.js";
+import { listDeviceStates } from "../src/resources/capabilities/legacy-views.js";
 import { createD1DatabaseFromSqlite, platformSchema } from "../src/local-server.js";
 
 const KEY = "unit-test-encryption-key";
@@ -101,10 +102,9 @@ describe("device action service", () => {
   });
 
   it("swipes only a card bound to the player and never stores the number", async () => {
-    const { service, machine, operations, sqlite } = await fixture({
-      activeSession: true,
-      identities: [{ playerId: "p1", provider: "aime", subject: "12345678901234567890", createdAt: NOW }],
-    });
+    const { service, machine, operations, sqlite, db } = await fixture({ activeSession: true });
+    // The player's card at this shop, kept encrypted.
+    await createCardStore(db, SHOP, KEY).bind({ playerId: "p1", card: { type: "aime", accessCode: "12345678901234567890" }, source: "scan" });
     await machine("m1", "舞萌", { hinata_io: { config: {}, secrets: { url: "https://io.test/m1" } } });
     const scan = { actor: { type: "player" as const, playerId: "p1" }, target: { kind: "game_machine" as const, ref: "舞萌" }, type: "aime.scan" as const };
     await expect(service.requestDeviceAction({ ...scan, payload: { subject: "99999999999999999999" } }))
@@ -159,7 +159,10 @@ describe("legacy device registries", () => {
     const wacca = devices.find((device) => device.name === "华卡")!;
     expect(JSON.parse(wacca.aliases_json)).toEqual(["switch.wacca", "wc"]);
     expect(sqlite.query("SELECT device_id FROM device_operations WHERE id='old'").get()).toEqual({ device_id: wacca.id });
-    expect(sqlite.query("SELECT key FROM app_settings ORDER BY key").all()).toEqual([{ key: "devices.homeassistant_connection" }]);
+    const keys = sqlite.query<{ key: string }, []>("SELECT key FROM app_settings ORDER BY key").all().map((row) => row.key);
+    // The registry is gone; its Home Assistant became one shop connection.
+    expect(keys.filter((key) => !key.startsWith("devices.ha_connection:"))).toEqual(["devices.homeassistant_connection"]);
+    expect(keys.filter((key) => key.startsWith("devices.ha_connection:"))).toHaveLength(1);
 
     // The adopted device is an ordinary device everywhere, including the Bot's state listing.
     const states = await listDeviceStates({ db, env: { DB: db, URL_ENCRYPTION_KEY: KEY } as unknown as Env, shopId: SHOP, fetcher, now: () => NOW });
@@ -171,10 +174,10 @@ describe("legacy device registries", () => {
     sqlite.run("INSERT INTO app_settings(shop_id, key, value_json, updated_at) VALUES (?,?,?,?)", [
       SHOP, "devices.hinata_io", JSON.stringify([{ id: "io", name: "IO", url: "https://io.test", password: "pw", coinKey: 32, aliases: [] }]), NOW.toISOString(),
     ]);
-    const { loadDevices } = await import("../src/devices/device.js");
-    expect(await loadDevices(db, SHOP, undefined)).toEqual([]);
+    const { loadResources } = await import("../src/resources/resource.js");
+    expect(await loadResources(db, SHOP, undefined)).toEqual([]);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM app_settings").get()).toEqual({ n: 1 });
-    const adopted = await loadDevices(db, SHOP, KEY);
+    const adopted = await loadResources(db, SHOP, KEY);
     expect(adopted.map((device) => [device.name, [...device.capabilities.keys()]])).toEqual([["IO", ["hinata_io"]]]);
   });
 });

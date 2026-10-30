@@ -134,6 +134,8 @@ export type ClientHello = {
   events: string[];
   e2ee: boolean;
   authenticated: boolean;
+  /** Optional abilities beyond the card relay, such as `ha.watch`. */
+  features: string[];
 };
 
 /**
@@ -150,7 +152,123 @@ export function parseClientHello(value: unknown): ClientHello | null {
       : [],
     e2ee: body.e2ee === true,
     authenticated: body.auth === "bearer",
+    features: Array.isArray(body.features)
+      ? body.features.filter((item): item is string => typeof item === "string")
+      : [],
   };
+}
+
+/**
+ * One Home Assistant connection's health, as an IO reports it in its heartbeat.
+ *
+ * A machine's IO is the only one who can tell whether the shop's Home
+ * Assistant is reachable from inside the shop, and it says so on every beat
+ * rather than in a report of its own.
+ */
+export type HaConnectionHealth = {
+  connection: string;
+  term: number;
+  connected: boolean;
+  error: string | null;
+};
+
+/**
+ * What the hub is told about Home Assistant: each connection's health (carried
+ * by the IO's heartbeat) and the states themselves.
+ */
+export type HaReport =
+  | { method: "ha.status"; params: HaConnectionHealth }
+  | { method: "ha.states"; params: { term: number; connection: string; full: boolean; states: HaEntityState[] } };
+
+/** A heartbeat from a connected IO, with whatever Home Assistant health it holds. */
+export type IoHeartbeat = { ha: HaConnectionHealth[] };
+
+export type HaEntityState = {
+  entity_id: string;
+  state: string;
+  last_changed: string | null;
+  /**
+   * When the state or any attribute last changed. Unlike `last_changed` it moves
+   * on an attribute-only change, so it orders reports from two watchers. Absent
+   * from an IO that predates the field.
+   */
+  last_updated: string | null;
+  attributes: Record<string, unknown>;
+};
+
+/** Home Assistant's compressed state gives Unix seconds; ISO text is accepted too. */
+function changedAt(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value * 1000).toISOString();
+  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
+  return null;
+}
+
+/**
+ * The heartbeat a token-connected IO sends, whatever it is watching.
+ *
+ * Being connected is a fact the platform judges on its own, so every such IO
+ * beats, and the beat carries the Home Assistant health only when this IO holds
+ * an assignment. A beat with no `ha` says only "still here".
+ */
+export function parseHeartbeat(value: unknown): IoHeartbeat | null {
+  if (!isRecord(value) || value.method !== "io.heartbeat") return null;
+  if (value.id !== undefined && value.id !== null) return null;
+  const params = isRecord(value.params) ? value.params : {};
+  const ha: HaConnectionHealth[] = [];
+  for (const item of Array.isArray(params.ha) ? params.ha : []) {
+    if (!isRecord(item) || typeof item.connection !== "string" || typeof item.term !== "number") continue;
+    ha.push({
+      connection: item.connection,
+      term: item.term,
+      connected: item.connected === true,
+      error: typeof item.error === "string" ? item.error : null,
+    });
+  }
+  return { ha };
+}
+
+/**
+ * A Home Assistant report from a watching **bot**, which is told what to watch
+ * and reports through its own connection rather than through an IO heartbeat.
+ * Null for anything else.
+ */
+export function parseHaReport(value: unknown): HaReport | null {
+  if (!isRecord(value) || (value.id !== undefined && value.id !== null)) return null;
+  const params = isRecord(value.params) ? value.params : null;
+  if (!params || typeof params.term !== "number" || typeof params.connection !== "string") return null;
+  if (value.method === "ha.status") {
+    return {
+      method: "ha.status",
+      params: {
+        term: params.term,
+        connection: params.connection,
+        connected: params.connected === true,
+        error: typeof params.error === "string" ? params.error : null,
+      },
+    };
+  }
+  if (value.method !== "ha.states" || !Array.isArray(params.states)) return null;
+  return parseHaStates(value);
+}
+
+/** A Home Assistant state report from a watching IO, or null for anything else. */
+export function parseHaStates(value: unknown): HaReport | null {
+  if (!isRecord(value) || (value.id !== undefined && value.id !== null)) return null;
+  const params = isRecord(value.params) ? value.params : null;
+  if (!params || typeof params.term !== "number" || typeof params.connection !== "string") return null;
+  if (value.method !== "ha.states" || !Array.isArray(params.states)) return null;
+  const states: HaEntityState[] = [];
+  for (const item of params.states) {
+    if (!isRecord(item) || typeof item.entity_id !== "string" || typeof item.state !== "string") continue;
+    states.push({
+      entity_id: item.entity_id,
+      state: item.state,
+      last_changed: changedAt(item.last_changed),
+      last_updated: changedAt(item.last_updated),
+      attributes: isRecord(item.attributes) ? item.attributes : {},
+    });
+  }
+  return { method: "ha.states", params: { term: params.term, connection: params.connection, full: params.full === true, states } };
 }
 
 export function isIoEventMethod(method: string): method is IoEventMethod {

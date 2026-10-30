@@ -1,5 +1,6 @@
 import type { Env } from "../bindings.js";
 import { sha256Hex } from "../crypto.js";
+import type { CardLoginResult, CardWaitLimits, HaWatch } from "../durable-objects/machine-relay.js";
 import { machineRelayPath } from "./relay-path.js";
 
 export type RelayGatewayResult =
@@ -7,7 +8,7 @@ export type RelayGatewayResult =
   | { kind: "rejected"; response: Response }
   | { kind: "dispatch"; channel: string; shopId: string; machineId: string };
 
-type DeviceRow = { device_id: string; shop_id: string; channel: string | null };
+type ResourceRow = { device_id: string; shop_id: string; channel: string | null };
 
 /**
  * Authenticate a device connecting to the embedded relay.
@@ -41,7 +42,7 @@ export async function relayGateway(
        AND json_extract(c.config_json, '$.transport') = 'embedded' AND m.enabled = 1`,
   )
     .bind(tokenHash)
-    .first<DeviceRow>();
+    .first<ResourceRow>();
   if (!device) return { kind: "rejected", response: rejected("unknown or disabled device token") };
   if (!device.channel) {
     return { kind: "rejected", response: rejected("device has no relay channel") };
@@ -77,10 +78,20 @@ function rejected(reason: string): Response {
  */
 export type MachineRelayNamespace = {
   getByName(name: string): {
-    sendCard(input: { accessCode: string; source?: string; disposable?: boolean; duration?: number }):
-      Promise<{ ok: boolean; error?: string }>;
+    sendCard(input: {
+      accessCode: string;
+      source?: string;
+      disposable?: boolean;
+      duration?: number;
+      wait?: CardWaitLimits;
+    }): Promise<{ ok: boolean; error?: string; login?: CardLoginResult }>;
     sendKeyPress(input: { key: number; messageId: string; expiresAt: number; count?: number }):
       Promise<{ ok: boolean; error?: string }>;
+    watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }>;
+    startCardCapture(input: {
+      id: string; shopId: string; userId: string; playerId: string; expiresAt: number;
+    }): Promise<{ ok: boolean; error?: string }>;
+    cardCaptureResult(id: string, userId: string): Promise<{ status: string; cardType?: string }>;
     getCapabilities(): Promise<{
       online: boolean;
       e2ee: boolean;
@@ -106,6 +117,7 @@ export async function dispatchToRelay(
   const headers = new Headers(request.headers);
   headers.set("x-prism-relay-shop", target.shopId);
   headers.set("x-prism-relay-machine", target.machineId);
+  headers.set("x-prism-relay-channel", target.channel);
   // `webSocket` must be carried over untouched for the upgrade to complete; only
   // the headers differ from what arrived.
   const forwarded = new Request(request, { headers });

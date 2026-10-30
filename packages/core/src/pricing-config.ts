@@ -6,6 +6,17 @@ import type { PricingProvider } from "./settlement";
 
 export type PricingConfigKind = "time.priority" | "time.cap" | "charge.fixed";
 
+/**
+ * How this plan runs alongside others: which plans must also be active, and
+ * which may never be active at the same time. Stored with the immutable pricing
+ * version; only `time.priority` plans may carry references (see
+ * `pricing-relations.ts`).
+ */
+export type PricingConfigRelations = {
+  requires: string[];
+  conflicts: string[];
+};
+
 export type TimePriorityPricingConfig = {
   id: string;
   kind: "time.priority";
@@ -13,6 +24,7 @@ export type TimePriorityPricingConfig = {
   enabled: boolean;
   status?: PricingConfigStatus;
   provider: PriorityTimePricingProviderConfig;
+  relations?: PricingConfigRelations;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -81,16 +93,21 @@ export function quantizePricingProvider(
     return { ...provider, amount: quantizeMoney(provider.amount) };
   }
 
-  if ("includedPricingConfigIds" in provider) {
-    for (const rule of provider.rules) assertNonNegativePrice(rule.priceCap);
+  // A cap's periods state only a cap amount; a time plan's state a price. The
+  // stored `includedPricingConfigIds` no longer names plans (a cap holds every
+  // time plan), so the periods are what tells the two apart.
+  if (provider.rules.some((rule) => !("pricing" in rule))) {
+    const cap = provider as TimeCapPricingProviderConfig;
+    for (const rule of cap.rules) assertNonNegativePrice(rule.priceCap);
     return {
-      ...provider,
-      rules: provider.rules.map((rule) => ({ ...rule, priceCap: quantizeMoney(rule.priceCap) })),
-      paidHistory: provider.paidHistory,
+      ...cap,
+      rules: cap.rules.map((rule) => ({ ...rule, priceCap: quantizeMoney(rule.priceCap) })),
+      paidHistory: cap.paidHistory,
     };
   }
 
-  for (const rule of provider.rules) {
+  const time = provider as PriorityTimePricingProviderConfig;
+  for (const rule of time.rules) {
     // A negative unit price is legitimate: the rule subtracts from the bill,
     // which is how a stacking discount is expressed. The cap itself still has
     // to be a real upper bound.
@@ -98,8 +115,8 @@ export function quantizePricingProvider(
     assertNonNegativePrice(rule.pricing.priceCap);
   }
   return {
-    ...provider,
-    rules: provider.rules.map((rule) => ({
+    ...time,
+    rules: time.rules.map((rule) => ({
       ...rule,
       pricing: {
         ...rule.pricing,
@@ -155,12 +172,6 @@ export function validatePricingConfig(config: PricingConfig): void {
       }
       return;
     case "time.cap":
-      if (config.provider.includedPricingConfigIds.length === 0) {
-        throw new PrismDomainError(
-          "Enabled global cap pricing config requires at least one included pricing config.",
-          "TIME_CAP_REQUIRES_INCLUDED_PRICING_CONFIG",
-        );
-      }
       if (!hasActiveTimeRule(config.provider.rules)) {
         throw new PrismDomainError(
           "Enabled global cap pricing config requires at least one active cap rule.",
