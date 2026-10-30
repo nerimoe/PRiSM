@@ -747,9 +747,11 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
   const used=await c.env.DB.prepare(
     `SELECT 1 FROM machine_login_events WHERE machine_id=?
      UNION ALL SELECT 1 FROM player_operations WHERE device_id=?
-     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=? LIMIT 1`,
-  ).bind(id,id,machine.shop_id,id).first();
-  if(used)jsonError(409,"机台已有操作记录，请改为停用","MACHINE_HAS_HISTORY");
+     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=?
+     UNION ALL SELECT 1 FROM resource_occupancies WHERE shop_id=? AND resource_id=?
+     UNION ALL SELECT 1 FROM mahjong_seats WHERE shop_id=? AND machine_id=? LIMIT 1`,
+  ).bind(id,id,machine.shop_id,id,machine.shop_id,id,machine.shop_id,id).first();
+  if(used)jsonError(409,"资源已有使用记录，请改为停用","MACHINE_HAS_HISTORY");
   const botToken=await c.env.DB.prepare(
     "SELECT json_extract(config_json,'$.tokenId') AS tokenId FROM device_capabilities WHERE shop_id=? AND device_id=? AND capability='bot'",
   ).bind(machine.shop_id,id).first<{tokenId:string|null}>();
@@ -764,5 +766,7 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
     c.env.DB.prepare("DELETE FROM device_state WHERE shop_id=? AND device_id=?").bind(machine.shop_id,id),
     c.env.DB.prepare("DELETE FROM machines WHERE id=? AND shop_id=?").bind(id,machine.shop_id),
   ]);
+  notifyBotsChangedAfter(c,machine.shop_id);
+  afterHaChange(c,machine.shop_id);
   return c.json({ok:true});
 });

@@ -116,6 +116,7 @@
 - `PATCH /resource-groups/:id`：`{ shopId, name?, enabled?, defaultPricingConfigId? }`。`default` 和其他资源组一样可改名称、方案与启用。
 - `DELETE /resource-groups/:id?shopId=`。`default` 不能删除（`RESOURCE_GROUP_DEFAULT_FIXED`）。
 - 资源接口 `POST/PATCH /machines` 接受 `resourceGroupId`（`"default"` 或 `null` 表示默认资源组）与 `pricingConfigOverrideId`；列表返回这两个字段。
+- `DELETE /machines/:id` 删除未使用的资源，权限与配置相同（店铺负责人、经理或平台管理员）。资源编辑的「基本信息」提供「删除资源」，确认后执行删除；删除不要求先补齐未保存的能力配置，取消会保留编辑内容。已有登录、玩家操作、设备操作、占用历史或麻将座位时返回 `409 MACHINE_HAS_HISTORY`，提示「资源已有使用记录，请改为停用」，保留历史与进行中的使用。成功删除时清理二维码票据、能力、设备事件与状态，撤销 Bot 接入凭据，并通知 Bot 和 HA 监听服务更新配置；共享的 HA 连接不删除。
 
 方案必须是本店未归档、能开始计费的方案（按时计费，或每次开始收一次的固定收费），否则返回 `RESOURCE_PRICING_INVALID`；默认资源组也一样，可以是任意可开始的方案。扫码页的计费规则卡片里，固定收费方案没有时间轴，只写金额和「单次收取」。
 

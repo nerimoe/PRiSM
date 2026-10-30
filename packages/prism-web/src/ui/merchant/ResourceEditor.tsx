@@ -82,6 +82,7 @@ export function ResourceEditor({
   // empty array is the correct starting point for a device without aliases.
   const [aliases, setAliases] = useState<string[]>(value?.aliases ?? []);
   const [enabled, setEnabled] = useState(value ? !!value.enabled : true);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   // Empty for a new resource: the server picks 1 for a cabinet with an IO, 0 otherwise.
   const [resourceCapacity, setResourceCapacity] = useState(value?.capacity === undefined ? "" : String(value.capacity));
   const [occupancyMinutes, setOccupancyMinutes] = useState(String(value?.occupancyMinutes ?? 15));
@@ -314,8 +315,17 @@ export function ResourceEditor({
     );
   }
 
+  if (value && confirmDelete) return (
+    <ActionForm key="delete" label="确认删除资源" done={done} submit={() => Api.deleteResource(value.id)}>
+      <p className="font-medium">{t("确定删除资源「{name}」？", { name: value.name })}</p>
+      <p className="text-sm text-ink/60">{t("删除后，资源二维码和接入凭据将失效，无法恢复。已有使用记录的资源请改为停用。")}</p>
+      <button type="button" className={`${buttonQuiet} justify-self-start`} onClick={() => setConfirmDelete(false)}>{t("取消")}</button>
+    </ActionForm>
+  );
+
   return (
     <ActionForm
+      key="edit"
       sticky
       noValidate
       done={done}
@@ -509,6 +519,12 @@ export function ResourceEditor({
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           {t("启用")}
         </label>
+        {value && (
+          <button type="button" className={`${buttonQuiet} justify-self-start text-coral`} onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={15} aria-hidden="true" />
+            {t("删除资源")}
+          </button>
+        )}
         </>
       )}
       {pane === "usage" && (

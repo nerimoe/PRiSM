@@ -53,6 +53,7 @@ function fixture() {
     CREATE TABLE machine_login_events(id TEXT,machine_id TEXT);
     CREATE TABLE player_operations(id TEXT,device_id TEXT);
     CREATE TABLE machine_tickets(machine_id TEXT,token_hash TEXT);
+    CREATE TABLE mahjong_seats(shop_id TEXT,machine_id TEXT,player_id TEXT);
   `);
   sqlite.run("CREATE TABLE players(shop_id TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(shop_id,id))");
   for(const statement of deviceEventSchema)sqlite.run(statement);

@@ -560,7 +560,7 @@ export const Api = {
       body: JSON.stringify(input),
     }),
   deleteResource: (id: string) =>
-    api<{ ok: true }>(`/api/v1/merchant/machines/${id}`, { method: "DELETE" }),
+    api<{ ok: true }>(`/api/v1/merchant/machines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   shopMembers: (shopId: string) =>
     api<{ members: ShopMember[] }>(
       `/api/v1/merchant/shop-members?shopId=${encodeURIComponent(shopId)}`,
