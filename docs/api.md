@@ -161,6 +161,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 兑换响应中的 `grantedAssets` 只包含本次兑换实际增加且当前可向玩家展示的资产，使用 `assetName` 返回后台配置的展示名称，`quantity` 是本次增加量。兑换后的完整可用持有量放在 `currentHoldings`；响应不再提供含义重复的 `holdings` 别名。
 
+公共码的并发兑换最多等待码锁 10 秒，期间不占用玩家资产锁；超过等待预算返回 `OPERATION_IN_PROGRESS`。礼物已领过返回 `PRESENT_ONCE_PER_PLAYER_REDEEMED`（「您已经领取过这份礼物」），公共码次数耗尽返回 `REDEEM_CODE_MAX_USE_REACHED`（「兑换码已被领完」），礼物内容限领达到上限返回 `PRESENT_GRANT_LIMIT_REACHED`；这些正常拒绝均为行内提示，不引导玩家反复重试。
+
 所有玩家当前资产读取统一执行同一组规则：持有数量必须大于 0，持有记录和关联资产定义都必须已生效且未过期，资产定义必须存在且未归档，玩家视图还会排除 `hiddenFromPlayer` 项。钱包、资产列表、兑换与结账回执均使用该统一结果；员工审计接口仍可查看过期、归档和隐藏记录。
 
 员工读取 `/rpc/staff/players/:playerId/assets` 时仍会得到全部当前持有记录，但每条 holding 由同一个统一入口附加 `availability`（`available` / `unavailable`）和 `unavailableReasons`。原因码覆盖数量非正、持有记录未生效或已过期、资产定义缺失、归档、未生效或已过期；Staff Web 只负责筛选和翻译原因，不自行按浏览器时间重新判断。该读取不会回写或清理数据库。

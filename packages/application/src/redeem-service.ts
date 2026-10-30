@@ -46,7 +46,7 @@ export function createRedeemService(dependencies: RedeemServiceDependencies): Re
     async redeemCode(input) {
       // Serialize each redeem code globally before acquiring a per-player lock:
       // the global maxUseCount must never race across different players.
-      return withOperationLease({ repository: dependencies.operationLocks, scope: "redeem.code", resourceId: input.code, id: dependencies.id, now: dependencies.now }, () =>
+      return withOperationLease({ repository: dependencies.operationLocks, scope: "redeem.code", resourceId: input.code, id: dependencies.id, now: dependencies.now, waitMs: 10_000 }, () =>
       withOperationLease({ repository: dependencies.operationLocks, scope: PLAYER_BILLING_LOCK_SCOPE, resourceId: input.playerId, id: dependencies.id, now: dependencies.now }, async () => {
       const code = await dependencies.redeems.findRedeemCodeByCode(input.code);
       if (!code) {
@@ -63,9 +63,9 @@ export function createRedeemService(dependencies: RedeemServiceDependencies): Re
       const now = dependencies.now();
       await assertPresentGrantAssetDefinitionsActive(dependencies, present.grants, now);
 
-      const [existingHoldings, redeemRecords] = await Promise.all([
+      const [existingHoldings, redemptionCounts] = await Promise.all([
         dependencies.assets.listAssetHoldings(input.playerId),
-        dependencies.redeems.listRedeemRecords(),
+        dependencies.redeems.getRedemptionCounts(code.id, input.playerId, present.id),
       ]);
 
       const result = redeemGift({
@@ -73,7 +73,7 @@ export function createRedeemService(dependencies: RedeemServiceDependencies): Re
         code,
         present,
         existingHoldings,
-        redeemRecords,
+        redemptionCounts,
         now,
         idFactory: dependencies.id,
       });

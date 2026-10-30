@@ -49,6 +49,8 @@ deactivate({ playerId, pricingConfigId, expectedRevision?, at? })
 
 开始、结束、结账、钱包、兑换与商品购买共用同一把玩家租约 `PLAYER_BILLING_LOCK_SCOPE`（存储值仍为 `player.assets`，部署期间持有的租约保持兼容），开始不会与结账交错。租约在同一调用链内可重入：已持有租约的路由（收银台入场、麻将入座）再调用加锁的服务不会自锁。可重入由 `#lease-context` 子路径导入提供，Worker 与 Bun 使用 `AsyncLocalStorage`，浏览器构建（只用于报价）使用空实现。
 
+公共兑换码还持有 `redeem.code` 租约以保护全店总兑换次数。争用这把码锁时会在 10 秒内以短随机间隔重新尝试获取，避免多人各限领一次的公共码同时提交时只有第一人成功；超出等待预算仍返回 `OPERATION_IN_PROGRESS`，不无限等待。等待码锁期间不持有玩家租约，其余业务租约继续立即拒绝冲突。兑换只查询本码总兑换次数和当前玩家领取本礼物的次数，不读取全店兑换记录；两项统计均按店铺隔离，迁移 `0047_redeem_player_present_index.sql` 为按玩家、礼物计数补齐索引。码锁成功获取后重新校验次数、有效期与礼物上限。
+
 ## 5. 各入口
 
 开始计费只有一个入口：`resourceBilling.activate`（`packages/server/src/resources/activation.ts`）。目标有两种写法：一个资源（开始它的方案）或一个方案；没有默认计费方案，两者都不写返回 `PRICING_TARGET_REQUIRED`。它在玩家计费锁内解析目标并调用编排器，处理没有计时方案时的占位 Session，并返回 `created`：目标方案这次是否新开始。`resourceBilling.preview` 用同样的目标给出预览。扫码确认、门锁开门、店员开单、收银台、机器人入场都调用它，响应里的 `billing` 统一为 `{changed, created, started, stopped, kept}`（方案名）。麻将入座需要为整桌共享同一时间点，直接调用编排器。

@@ -401,6 +401,7 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_asset_transactions_player_created ON asset_transactions(shop_id, player_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_asset_ledger_player_created ON asset_ledger_entries(shop_id, player_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_redeem_records_code ON redeem_records(shop_id, code_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_redeem_records_player_present ON redeem_records(shop_id, player_id, present_id)`,
   `CREATE INDEX IF NOT EXISTS idx_device_commands_status_requested ON device_commands(shop_id, status, requested_at)`,
   `CREATE INDEX IF NOT EXISTS idx_device_commands_player_requested ON device_commands(shop_id, player_id, requested_at, type, status)`,
   `CREATE INDEX IF NOT EXISTS idx_device_states_reported_at ON device_states(shop_id, reported_at)`,

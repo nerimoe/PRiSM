@@ -89,6 +89,14 @@ class MemoryRedeemRepository implements RedeemRepository {
     return [...this.records, ...this.savedRecords];
   }
 
+  async getRedemptionCounts(codeId: string, playerId: string, presentId: string) {
+    const records = await this.listRedeemRecords();
+    return {
+      codeUses: records.filter((record) => record.codeId === codeId).length,
+      playerPresentUses: records.filter((record) => record.playerId === playerId && record.presentId === presentId).length,
+    };
+  }
+
   async countRedeemCodeUses(codeId: string): Promise<number> {
     return (await this.listRedeemRecords()).filter(
       (record) => record.codeId === codeId,
