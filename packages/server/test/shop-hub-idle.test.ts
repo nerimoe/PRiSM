@@ -7,6 +7,7 @@ import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { newHaConnection, writeHaConnection } from "../src/resources/capabilities/ha-connections.js";
 import { IDLE_SETTINGS_KEY } from "../src/resources/capabilities/idle-power.js";
 import { ShopHub } from "../src/durable-objects/shop-hub.js";
+import { createOccupancy } from "../src/resources/occupancy/service.js";
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
 const KEY = "idle-test-key";
@@ -25,7 +26,7 @@ async function fixture(settings: unknown, options: { watched?: boolean; climate?
   sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('shop','shop-code','A',0,0,80,'u')");
   const connection = await newHaConnection("https://ha.example", "control", KEY);
   await writeHaConnection(db, "shop", connection).run();
-  // Signs of someone keep it busy for its occupancy time.
+  // Only occupancy keeps it busy; power operations reset the shutdown wait.
   sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,occupancy_minutes) VALUES ('m1','p1','shop','舞萌','',30)");
   sqlite.run(
     `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
@@ -83,9 +84,7 @@ async function fixture(settings: unknown, options: { watched?: boolean; climate?
     sqlite.query<{ action: string; player_id: string | null; staff_id: string | null }, []>(
       "SELECT action, player_id, staff_id FROM device_operations WHERE action IN ('power.off','climate.off')",
     ).all();
-  const idle = () =>
-    (sqlite.query("SELECT value_json FROM device_state WHERE key='idle'").get() as { value_json: string } | null)?.value_json ?? null;
-  return { hub, sqlite, run, fireAlarm, sockets, offs, idle, state, connectionId: connection.id, alarm: () => alarm };
+  return { hub, db, sqlite, run, fireAlarm, sockets, offs, state, connectionId: connection.id, alarm: () => alarm };
 }
 
 const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url: string | URL | Request) => {
@@ -97,6 +96,60 @@ const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url:
 }) as typeof fetch);
 
 describe("idle check in the shop hub", () => {
+  it("counts down from occupancy expiry, extends it for an eligible card, and rejects an unbilled renewal", async () => {
+    const start = Date.now();
+    let now = start;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const { db, sqlite, run, fireAlarm, offs, state, sockets, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } });
+    const watchers = state.get("watchers") as any;
+    watchers.a.leaseUntil = start + 60 * MIN;
+    state.set("watchers", watchers);
+    sqlite.run("UPDATE machines SET capacity=1,occupancy_minutes=2,pricing_config_override_id='arcade' WHERE id='m1'");
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+      VALUES ('shop','m1','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
+    sqlite.run(`INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json)
+      VALUES ('shop','s1','p','2026-01-01','active','["arcade"]'),('shop','s2','other','2026-01-01','active','["other"]')`);
+    const notices: any[] = [];
+    sockets.push({ tags: ["bot"], deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }), send: (data) => notices.push(JSON.parse(data)) });
+    const occupancy = createOccupancy({ db, shopId: "shop", now: () => new Date(now) });
+    const scan = () => occupancy.observe({ resourceId: "m1", event: { kind: "signal", name: "card.consumed", payload: {}, playerId: "p" } });
+    const spy = haCalls();
+    try {
+      await scan();
+      await run();
+      expect(alarm()).toBe(start + 2 * MIN);
+      expect((state.get("idle") as any).powerOffAt).toEqual({});
+      now = start + 2 * MIN;
+      await fireAlarm();
+      expect((await occupancy.current())[0]!.occupants).toEqual([]);
+      expect((state.get("idle") as any).powerOffAt).toEqual({ m1: start + 12 * MIN });
+      expect(offs()).toEqual([]);
+      now = start + 7 * MIN;
+      await fireAlarm();
+      expect(notices.at(-1).data.at).toBe(start + 12 * MIN);
+      now = start + 8 * MIN;
+      await scan();
+      await run();
+      expect((await occupancy.current())[0]!.occupants).toHaveLength(1);
+      expect((state.get("idle") as any).powerOffAt).toEqual({});
+      now = start + 10 * MIN;
+      await fireAlarm();
+      expect((state.get("idle") as any).powerOffAt).toEqual({ m1: start + 20 * MIN });
+      sqlite.run("UPDATE sessions SET status='closed' WHERE id='s1'");
+      now = start + 12 * MIN;
+      await scan();
+      await run();
+      expect((await occupancy.current())[0]!.occupants).toEqual([]);
+      expect((state.get("idle") as any).powerOffAt).toEqual({ m1: start + 20 * MIN });
+      expect(offs()).toEqual([]);
+      now = start + 20 * MIN;
+      await fireAlarm();
+      expect(offs()).toHaveLength(1);
+      expect(sqlite.query("SELECT * FROM device_state WHERE key='idle'").all()).toEqual([]);
+      expect(sqlite.query("SELECT * FROM device_events WHERE kind='change' AND name='idle'").all()).toEqual([]);
+    } finally { spy.mockRestore(); clock.mockRestore(); sqlite.close(); }
+  });
+
   for (const scenario of [
     { policy: "off", players: 1, sendFails: false, climate: false, shared: false, lead: 2 },
     { policy: "remind", players: 1, sendFails: false },
@@ -127,7 +180,7 @@ describe("idle check in the shop hub", () => {
     watchers.a!.leaseUntil = start + 60 * MIN;
     state.set("watchers", watchers);
     sqlite.run("UPDATE machines SET occupancy_minutes=1 WHERE id='m1'");
-    sqlite.run("UPDATE device_state SET changed_at=? WHERE key IN ('power','climate')", [new Date(start - MIN).toISOString()]);
+    sqlite.run("UPDATE device_state SET changed_at=? WHERE key IN ('power','climate')", [new Date(start).toISOString()]);
     if (scenario.shared) {
       sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,occupancy_minutes) VALUES ('m2','p2','shop','中二','',1)");
       sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) SELECT shop_id,'m2',capability,config_json,secret_json,created_at,updated_at FROM device_capabilities WHERE device_id='m1'`);
@@ -137,7 +190,7 @@ describe("idle check in the shop hub", () => {
     if (scenario.climate && scenario.players) {
       sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,occupancy_minutes) VALUES ('game','game','shop','机台','',1)");
       sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','game','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
-      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at) VALUES ('shop','game-use','game','hinata_io','request','coin','platform','p','{}',?)`, [new Date(start - MIN).toISOString()]);
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at) VALUES ('shop','game-use','game','hinata_io','request','coin','platform','p','{}',?)`, [new Date(start).toISOString()]);
     }
     const spy = haCalls();
     try {
@@ -177,7 +230,7 @@ describe("idle check in the shop hub", () => {
     if (climate) sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','m2','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
     sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at)
       VALUES ('shop','e1','m2',?,'request',?,'platform','p','{}',?)`,
-      [climate ? "hinata_io" : "power", climate ? "coin" : "power.keep", new Date(start - MIN).toISOString()]);
+      [climate ? "hinata_io" : "power", climate ? "coin" : "power.keep", new Date(start).toISOString()]);
     const spy = haCalls();
     try {
       await run();
@@ -248,6 +301,8 @@ describe("idle check in the shop hub", () => {
       // A fresh cabinet action postpones climate too, after the old warning was sent.
       sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at)
         VALUES ('shop','e1','m2','hinata_io','request','coin','platform','p','{}',?)`, [new Date(now).toISOString()]);
+      sqlite.run(`INSERT INTO resource_occupancies(shop_id,id,resource_id,player_id,source,started_at,last_seen_at,expires_at)
+        VALUES ('shop','o2','m2','p','hinata_io',?,?,?)`, [new Date(now).toISOString(), new Date(now).toISOString(), new Date(now + MIN).toISOString()]);
       await run();
       expect((state.get("idle") as any).powerOffAt.m1).toBe(start + 17 * MIN);
       now = start + 11 * MIN;
@@ -283,15 +338,15 @@ describe("idle check in the shop hub", () => {
 
 
 
-  it("waits while the shop has players, and marks an idle machine when the owner chose only that", async () => {
-    const { run, offs, idle, sqlite, state } = await fixture({ shopEmpty: { enabled: true, minutes: 15 }, device: { enabled: true, whileOccupied: "mark" } });
+  it("can keep an unoccupied machine on without writing an idle flag", async () => {
+    const { run, offs, sqlite, state } = await fixture({ shopEmpty: { enabled: true, minutes: 15 }, device: { enabled: true, whileOccupied: "mark" } });
     sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");
     const spy = haCalls();
     try {
       await run();
       expect(offs()).toEqual([]);
-      expect(idle()).toBe("true");
-      // Someone occupying the machine: the mark goes away.
+      expect(sqlite.query("SELECT * FROM device_state WHERE key='idle'").all()).toEqual([]);
+      // Someone occupying the machine: the power decision still follows occupancy.
       sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
         VALUES ('shop','m1','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
       sqlite.run("UPDATE machines SET capacity=1 WHERE id='m1'");
@@ -302,8 +357,9 @@ describe("idle check in the shop hub", () => {
         [seen.toISOString(), seen.toISOString(), new Date(seen.getTime() + 30 * MIN).toISOString()],
       );
       await run();
-      expect(idle()).toBe("false");
-      expect((state.get("idle") as { wakeAt: number }).wakeAt).toBeGreaterThan(Date.now() + 29 * MIN);
+      expect(sqlite.query("SELECT * FROM device_state WHERE key='idle'").all()).toEqual([]);
+      expect(offs()).toEqual([]);
+      expect((state.get("idle") as { powerOffAt: unknown }).powerOffAt).toEqual({});
     } finally { spy.mockRestore(); sqlite.close(); }
   });
 
@@ -369,7 +425,7 @@ describe("idle check in the shop hub", () => {
     } finally { spy.mockRestore(); sqlite.close(); }
   });
 
-  it("ignores the occupancy time where seats decide who is on the resource", async () => {
+  it("uses the idle wait without adding an occupancy period to a power operation, with or without seats", async () => {
     const { run, offs, sqlite } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { watched: false });
     sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status) VALUES ('shop','s1','p','2026-01-01T00:00:00Z','active')");
     sqlite.run(
@@ -379,10 +435,10 @@ describe("idle check in the shop hub", () => {
     );
     const spy = haCalls();
     try {
-      // Switched on 20 minutes ago, with 30 minutes of occupancy time: still busy.
+      // Switched on 20 minutes ago with no occupant: the 10 minute wait has elapsed.
       await run();
-      expect(offs()).toEqual([]);
-      // As a mahjong table nobody sits at, it is free since then and idle after 10 minutes.
+      expect(offs()).toHaveLength(1);
+      // Adding seats must not change the deadline or duplicate a completed shutdown.
       sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
         VALUES ('shop','m1','mahjong','{"pricingConfigIds":[]}','{}','2026-01-01','2026-01-01')`);
       sqlite.run("UPDATE machines SET capacity=4 WHERE id='m1'");

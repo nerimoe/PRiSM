@@ -503,7 +503,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       ...("previous_card" in event.params ? { previous_card: withoutCardNumber(event.params.previous_card) } : {}),
     };
     await this.record(name, (bus, channel) => this.signal(bus, channel, name, source, payload, card?.accessCode ?? null));
-    // Someone is at this machine; its idle countdown starts over.
+    // Recheck occupancy and its deadline; an ineligible card does not extend either.
     if (hinataIo.signals[name]?.activity) await this.touchHub();
   }
 

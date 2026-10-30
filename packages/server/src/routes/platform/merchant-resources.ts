@@ -450,7 +450,7 @@ const machineInput=z.object({
   // How many people can use it at once; 0 for one nobody occupies (an air
   // conditioner). A mahjong table's is its table size.
   capacity:z.number().int().min(0).max(16).optional(),
-  // How long someone counts as on it after the last sign of them; also its idle time.
+  // How long someone counts as on it after the last eligible swipe or coin.
   occupancyMinutes:z.number().int().min(1).max(1440).optional(),
   mahjong:z.object({
     // A table bills one plan; what it stacks on is that plan's `requires`.

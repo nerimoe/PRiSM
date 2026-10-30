@@ -3,7 +3,8 @@
  *
  * - The game took a card (`card.consumed`): the card's owner occupies the
  *   cabinet, for physical cards on its reader and cards the platform sent
- *   alike. A card nobody bound here tells nothing: the cabinet stays as it is,
+ *   alike, once occupancy verifies its owner is billing for this resource.
+ *   A card nobody bound here tells nothing: the cabinet stays as it is,
  *   and a coin from its holder through the platform tells who it was.
  * - A swipe or a coin requested through the platform for a player: that player
  *   occupies it, which is all a relay that reports nothing back tells.

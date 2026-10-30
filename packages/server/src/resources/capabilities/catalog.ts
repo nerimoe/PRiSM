@@ -119,8 +119,8 @@ export const power: CapabilitySpec<HaEntityConfig> = {
   },
   signals: {},
   // Power can be switched outside the platform. A watcher's events keep it
-  // current; `idle` is the platform's own verdict.
-  state: { power: { authority: "external" }, idle: { authority: "owned" } },
+  // current. Occupancy alone determines whether the device is idle.
+  state: { power: { authority: "external" } },
   available: (_action, config, secrets) => haBound(config, secrets),
 };
 
@@ -146,7 +146,7 @@ export const climate: CapabilitySpec<HaEntityConfig> = {
     "climate.set_fan_mode": climateAction,
   },
   signals: {},
-  state: { climate: { authority: "external" }, idle: { authority: "owned" } },
+  state: { climate: { authority: "external" } },
   available: (_action, config, secrets) => haBound(config, secrets),
 };
 

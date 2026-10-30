@@ -654,9 +654,7 @@ function ResourceCard({
                 {occupant.displayName ?? occupant.playerId}
               </Link>
             ))
-          ) : (
-            <span className="text-ink/45">{t("空闲")}</span>
-          )}
+          ) : null}
         </div>
       )}
       {!configured && canWrite && (
