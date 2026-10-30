@@ -344,7 +344,7 @@ Bot 向玩家开放哪些命令由 Bot 自己配置，后台不做限制：后�
 | --- | --- | --- |
 | `POST` | `/rpc/integration/players/by-identity/resolve` | 按外部身份查找已绑定玩家。 |
 | `POST` | `/rpc/integration/players/by-identity/register` | 按外部身份查找或注册玩家，并自动绑定该身份。 |
-| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。请求带 `pricingConfigIds` 时开始其中第一个方案（`label` 作为场次显示名），这是给麻将还没交给平台的旧版 Bot 的兼容路径：旧版 Bot 上桌时按桌的方案开始计费、下桌时停止返回的那个场次，所以只结束麻将方案、不影响玩家的其他计费；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
+| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。旧版请求携带 `pricingConfigIds` 或 `label` 返回 `400 VALIDATION_FAILED`，已移除自行指定麻将方案的兼容路径；麻将改用统一上下桌接口；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
 | `POST` | `/rpc/integration/players/by-identity/presence` | 一位玩家是否在店：`{inShop, plans, occupying}`，`plans` 为在计费的方案，`occupying` 为正在占用的资源。只剩未结账单的玩家 `inShop: false`。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/preview` | 按外部身份预览玩家当前 session 结算。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/confirm` | 按外部身份确认玩家当前 session 结算。 |

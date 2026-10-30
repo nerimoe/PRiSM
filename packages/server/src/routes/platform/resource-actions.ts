@@ -40,6 +40,7 @@ export const actionSchema=z.object({
   temperature:z.number().finite().min(-20).max(60).optional(),
   fanMode:z.string().trim().min(1).max(40).optional(),
   consent:z.boolean().optional(),
+  expectedRevision:z.string().optional(),
   location:z.unknown().optional(),
 });
 

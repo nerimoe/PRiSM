@@ -1430,7 +1430,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(Array.isArray(walletData.wallet)).toBe(true);
   });
 
-  it("runs Koishi's nested identity flow through real API routes and D1 (entry, table, leave, preview)", async () => {
+  it("runs Koishi's nested identity flow through real API routes and D1 (resource plans, stop, preview)", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, botToken } = await setupShopFixture(db, sqlite);
     const app = createTestApp();
@@ -1469,30 +1469,30 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       // encrypted machine fields.
       sqlite.run("ALTER TABLE machines ADD COLUMN hinata_url_encrypted TEXT");
       const entry = await post("/players/by-identity/session/start", {
-        identity, label: "音游区间", entry: true,
+        identity,
       });
       expect(entry.status).toBe(200);
       const entryBody = await entry.json() as { session: { id: string; playerId: string } };
       expect(entryBody.session.playerId).toBe(playerId);
 
-      // A bot from before platform mahjong starts a table by naming its plan:
-      // that plan starts as a session of its own, beside the visit.
+      // Obsolete bots may not start a named Mahjong plan through the login endpoint.
       const named = await post("/players/by-identity/session/start", {
-        identity, label: "麻将 A 桌", entry: false, pricingConfigIds: ["mahjong-table-a"],
+        identity, label: "麻将 A 桌", pricingConfigIds: ["mahjong-table-a"],
       });
-      expect(named.status).toBe(200);
-      const tableBody = await named.json() as { session: { id: string; playerId: string }; created: boolean };
-      expect(tableBody.created).toBe(true);
-      expect(tableBody.session.playerId).toBe(playerId);
-      expect(tableBody.session.id).not.toBe(entryBody.session.id);
-
-      // A plan bills a player once: a login on a bot whose own plan is the table's
-      // reuses that session instead of charging the plan a second time.
+      expect(named.status).toBe(400);
+      // Only the bot resource's actual binding determines what login starts.
       sqlite.run(
         `UPDATE machines SET pricing_config_override_id='mahjong-table-a'
          WHERE shop_id=? AND id IN (SELECT device_id FROM device_capabilities WHERE shop_id=? AND capability='bot')`,
         [shopId, shopId],
       );
+      const started = await post("/players/by-identity/session/start", { identity });
+      expect(started.status).toBe(200);
+      const tableBody = await started.json() as { session: { id: string; playerId: string }; created: boolean };
+      expect(tableBody.created).toBe(true);
+      expect(tableBody.session.playerId).toBe(playerId);
+      expect(tableBody.session.id).not.toBe(entryBody.session.id);
+
       const again = await post("/players/by-identity/session/start", { identity });
       expect(again.status).toBe(200);
       const againBody = await again.json() as { session: { id: string }; created: boolean };
@@ -1531,7 +1531,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       sqlite.run("UPDATE shop_billing_settings SET auto_register=0 WHERE shop_id=?", [shopId]);
       const blockedRegistration = await post("/players/by-identity/session/start", {
         identity: { provider: "onebot", subject: "unknown-new-player" },
-        autoRegister: true, label: "麻将 A 桌", entry: false,
+        autoRegister: true,
       });
       expect([400, 404]).toContain(blockedRegistration.status);
       expect((await blockedRegistration.json() as { error: { code: string } }).error.code)

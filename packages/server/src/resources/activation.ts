@@ -77,8 +77,8 @@ export type ResourceBilling = {
     label?: string;
     metadata?: Record<string, unknown>;
   }): Promise<BillingActivation>;
-  /** The plans scanning this resource bills: its own and what that requires. */
-  rulesOf(input: { resourceId: string; playerId: string; withCaps?: boolean }): Promise<ResourcePlanRules | null>;
+  /** The plans scanning this resource bills; mahjong may select its game plan instead of its waiting plan. */
+  rulesOf(input: { resourceId: string; playerId: string; pricingConfigId?: string; withCaps?: boolean }): Promise<ResourcePlanRules | null>;
   /** The running session of the resource's plan; null when the player must confirm first, or the resource is free. */
   activeSession(input: { resourceId: string; playerId: string }): Promise<Session | null>;
   /** Whether the player may use the resource now: it is free, or its plan runs for them. */
@@ -215,7 +215,9 @@ export function createResourceBilling(dependencies: {
     },
 
     async rulesOf(input) {
-      const { planId, source } = await bindingOf(input.resourceId);
+      const binding = await bindingOf(input.resourceId);
+      const planId = input.pricingConfigId ?? binding.planId;
+      const source = input.pricingConfigId && input.pricingConfigId !== binding.planId ? { kind: "resource" as const } : binding.source;
       if (!planId || await unpriced(input.playerId)) return null;
       const catalog = await dependencies.pricingCatalog(input.playerId);
       const graph = buildPricingRelationGraph(catalog.filter((config) => isStartablePricingKind(config.kind)));

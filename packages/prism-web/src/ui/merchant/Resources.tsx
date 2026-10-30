@@ -34,7 +34,7 @@ import {
   useCopy,
   useMerchant,
   useResource,
-  type LivePlayer,
+  type Player,
 } from "./shared";
 import {
   canOperateCoin,
@@ -891,8 +891,8 @@ function ResourceActions({
   const { t } = useI18n();
   const caps = resourceCapabilities(device);
   const groups = deviceActionGroups(device);
-  const players = useResource<{ players: LivePlayer[] }>(
-    caps.mahjong ? "live-players" : null,
+  const players = useResource<{ players: Player[] }>(
+    caps.mahjong ? "players" : null,
   );
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [cardNumber, setCardNumber] = useState("");
@@ -948,9 +948,9 @@ function ResourceActions({
       setBusy("");
     }
   }
-  // Seating needs an entry, so only players who are in the shop are offered.
-  const playerOptions = (players.data?.players ?? []).map((player) => ({
-    id: player.playerId,
+  // Staff may confirm billing and seat any active player registered at this shop.
+  const playerOptions = (players.data?.players ?? []).filter(player => player.status === "active").map((player) => ({
+    id: player.id,
     name: player.displayName,
   }));
   const seated = new Set(table?.seats.map((seat) => seat.playerId));

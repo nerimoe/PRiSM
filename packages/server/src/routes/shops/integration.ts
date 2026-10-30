@@ -189,16 +189,12 @@ integrationRouter.post("/players/by-identity/session/start", async (c) => {
   const bot = await ensureBotResource(c.env.DB, shop.id, await integrationToken(c, shop));
   if (!bot.enabled) jsonError(403, "这个 Bot 已停用", "BOT_DISABLED");
   const body = await c.req.json<any>();
+  if (body.pricingConfigIds !== undefined || body.label !== undefined)
+    jsonError(400, "请升级 Bot 并使用上下桌接口", "VALIDATION_FAILED");
   const player = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity(botRequest(c, body));
-  // Bots released before mahjong moved onto the platform start a table by naming
-  // its plan, then end it by stopping the session returned here: that plan's.
-  const named = Array.isArray(body.pricingConfigIds) && typeof body.pricingConfigIds[0] === "string"
-    ? body.pricingConfigIds[0] as string
-    : null;
   const result = await deps.resourceBilling.activate({
     playerId: player.id,
-    ...(named ? { pricingConfigId: named } : { resourceId: bot.id }),
-    ...(named && typeof body.label === "string" ? { label: body.label } : {}),
+    resourceId: bot.id,
     // Audit trail only: records which bot started this session.
     metadata: { createdBy: "integration", botResourceId: bot.id },
   });

@@ -81,7 +81,7 @@ Bot 和其他资源一样属于一个资源组，也可以设置专属方案（�
 
 ### 按外部身份上下麻将桌
 
-- `POST integration/players/by-identity/mahjong`，`{identity, table, action: "join" | "leave"}`。`table` 可以是麻将桌资源的 ID、名称或别名。上桌即玩家本人的确认：服务端会开始这张桌资源的计费方案（以及它依赖的方案），满桌时为所有人开台；不需要先入场。返回 `{mahjong: {capacity, seats}}`。错误：`MAHJONG_TABLE_NOT_FOUND`、`MAHJONG_TABLE_FULL`、`MAHJONG_ALREADY_SEATED`。
+- `POST integration/players/by-identity/mahjong`，`{identity, table, action: "join" | "leave"}`。`table` 可以是麻将桌资源的 ID、名称或别名。上桌即玩家本人的确认：等位开始资源方案，直接开局则开始对局方案，依赖与冲突统一交给计费编排器；不需要先入场。直接加入另一桌原子换桌，同方案保持计时，失败保留原桌及计费。返回 `{mahjong: {capacity, seats}, billing: {remaining}, movedFrom?: {id}}`，重复加入原桌返回 `alreadySeated: true`。错误包括 `MAHJONG_TABLE_NOT_FOUND`、`MAHJONG_TABLE_FULL`。Bot 店员可使用 `/上桌 a @玩家`、`/下桌 a @玩家` 代操作，普通玩家仅能操作自己。
 - `GET integration/mahjong-tables`：每张桌的座位 `{playerId, name, playing}`，供机器人列名单和不带桌名的下桌。
 - 下桌只结束座位当前所在的 session（已开局为麻将方案，等位中为麻将桌自己的等位方案），响应带 `billing.remaining`：还在计费的方案名，机器人回复「仍在计费：…」。见 [卡片、占用与查人](occupancy.md#3-麻将等位)。
 - `GET integration/roster` 列出在店的人：每人只列一处，正在占用的资源（麻将桌和其他游戏机一样，带人数/容量）或最具体的方案；`?name=` 只列一个资源或一个方案。机器人的 `list` 按它输出，不再自己拼麻将桌。`POST integration/players/by-identity/presence` 回答一位玩家是否在店、计费哪些方案、占用哪些资源。`GET integration/sessions/active` 的每条 session 带 `pricingConfigId` 与 `planName`。
@@ -131,7 +131,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/sessi
   }'
 ```
 
-开始哪个方案只由发请求的 Bot 资源决定（见上文「Bot 是一种资源」）；请求里的 `pricingConfigId`、`pricingConfigIds`、`label`、`entry` 都会被忽略。麻将由上下桌接口开始和结束计费，不再由机器人另开 session。无论请求里的 `autoRegister` 如何设置，服务端都以店铺是否允许自动注册为准。
+开始哪个方案只由发请求的 Bot 资源决定（见上文「Bot 是一种资源」）；请求携带旧版 `pricingConfigIds` 或 `label` 时返回 `400 VALIDATION_FAILED`；`pricingConfigId`、`entry` 不决定计费。麻将由上下桌接口开始和结束计费，不再由机器人另开 session。无论请求里的 `autoRegister` 如何设置，服务端都以店铺是否允许自动注册为准。
 
 机器人、店员后台、前台收银和扫码确认都走同一个开始入口（`resourceBilling.activate`），结果相同；响应的 `billing.stopped` 列出因互斥被结束的方案，机器人在回复里列出。Bot 所在资源组（包括默认资源组）没有方案时返回 `RESOURCE_NOT_BILLED`；所在资源组停用时返回 `RESOURCE_GROUP_DISABLED`。在场就是有进行中的 session，在哪个场由 session 的方案区分：响应带 `created` 与 `planName`，`created: false` 表示这个方案在这次请求之前就在计费（例如已在「普通游玩」中），返回的是原 session。机器人对设备的操作要求该设备的计费方案在玩家这里计费中，否则返回 `DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION`。
 

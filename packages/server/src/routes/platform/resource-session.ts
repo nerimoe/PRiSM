@@ -19,7 +19,7 @@ import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type 
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
-import { mahjongState, operateMahjong } from "./mahjong.js";
+import { mahjongState, operateMahjong, previewMahjong } from "./mahjong.js";
 
 export const resourceSessionRouter=new Hono<AppBindings>();
 export const merchantResourceActionRouter=new Hono<AppBindings>();
@@ -100,14 +100,16 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
     if(gate==="entry"&&bills&&!billing){
       // A player not yet registered here has nothing running, so the preview is
       // simply everything the plan needs.
-      const preview=await billingRead(()=>resourceBilling.preview({resourceId:machine.id,playerId:player?.playerId??""}));
+      const preview=await billingRead(()=>bound("mahjong")
+        ? previewMahjong(c,machine,player?.playerId??"")
+        : resourceBilling.preview({resourceId:machine.id,playerId:player?.playerId??""}));
       if(preview)billing={preview};
     }
     // What the page shows as this resource's pricing: its own plan and every
     // plan that bills with it, as the player's locked release defines them.
     if(planId&&gate!=="binding"&&!billing?.error){
       // Caps only matter where the rules are read before confirming.
-      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId:player?.playerId??"",withCaps:gate==="entry"}));
+      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId:player?.playerId??"",pricingConfigId:billing?.preview?.pricingConfigId,withCaps:gate==="entry"}));
       if(rules)billing={...billing,rules:{
         ...rules,
         plans:rules.plans.map(plan=>({...plan,config:toPricingConfigManagementView(plan.config)})),

@@ -248,17 +248,14 @@ describe("the bot seats players through the platform", () => {
     expect((await client.post("players/by-identity/session/start", player)).body).toMatchObject({ created: false, planName: "base" });
   });
 
-  it("lets a bot from before platform mahjong start and stop a table's plan by name", async () => {
+  it("rejects obsolete named-plan starts without changing billing", async () => {
     const { bot, createBot } = await fixture();
     const client = bot((await createBot()).token);
     const player = { identity: { provider: "onebot", subject: "1" }, autoRegister: true };
     await client.post("players/by-identity/session/start", player);
     const table = await client.post("players/by-identity/session/start", { ...player, pricingConfigIds: ["mahjong"], label: "A 桌" });
-    expect(table.body).toMatchObject({ created: true, planName: "mahjong", session: { label: "A 桌" } });
-    const plans = async () => ((await client.get("sessions/active")).body.sessions as { planName: string }[]).map((s) => s.planName).sort();
-    expect(await plans()).toEqual(["base", "mahjong"]);
-    // Leaving the table stops the session it was given: the table's plan, not the player's visit.
-    expect((await client.post(`players/by-identity/sessions/${table.body.session.id}/stop`, player)).status).toBe(200);
-    expect(await plans()).toEqual(["base"]);
+    expect(table.status).toBe(400);
+    expect(table.body.error.code).toBe("VALIDATION_FAILED");
+    expect((await client.get("sessions/active")).body.sessions.map((s: any) => s.planName)).toEqual(["base"]);
   });
 });

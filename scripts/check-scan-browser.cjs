@@ -68,5 +68,30 @@ const fs=require('node:fs');const assert=require('node:assert/strict');
   assert.equal(await checkoutPage.getByText(billing,{exact:true}).count()>0,true);
   await checkoutPage.screenshot({path:`${output}/checkout-insufficient-${locale}.png`,fullPage:true});await checkoutPage.close();
  }
+ {
+  const seatPage=await browser.newPage({viewport:{width:390,height:844},locale:'zh-CN'});
+  const writes=[];let seated=false;
+  const state=()=>({gate:seated?'ready':'entry',coinUsed:false,power:'unmanaged',device:{watching:true},mahjong:seated?{capacity:4,seats:[{playerId:'p',name:'测试玩家',mine:true,playing:false}]}:null,billing:seated?null:{preview:{revision:'seat-preview',started:[],stopped:[],kept:[]}}});
+  await seatPage.routeWebSocket(/\/api\/v1\/devices\/session\/ws/,ws=>ws.send(JSON.stringify({type:'hello',watching:true})));
+  await seatPage.route('**/api/**',async route=>{const req=route.request(),p=new URL(req.url()).pathname;let data={};
+   if(req.method()==='POST'){writes.push({path:p,body:JSON.parse(req.postData())});seated=true;data={mahjong:state().mahjong};}
+   else if(p==='/api/v1/me')data={user:{id:'u',role:'user',displayName:'测试玩家',hasShops:false}};
+   else if(p==='/api/v1/devices/session/bootstrap')data={machine:{...machine,billed:true,capabilities:{mahjong:true},shop:{...machine.shop,billingEnabled:true}},state:state()};
+   else if(p==='/api/v1/devices/session/state')data=state();
+   else if(p==='/api/v1/shops/demo')data={shop:{...machine.shop,billingEnabled:true,identityBindingRequired:false},membership:{playerId:'p',identityBound:true},entryPricing:[],pricingSchedule:{localDate:'2026-10-31',timeZone:'Asia/Shanghai',groups:[]}};
+   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({data})});
+  });
+  await seatPage.goto(`${process.env.PRISM_SCAN_ORIGIN || 'http://127.0.0.1:4173'}/m#ticket=v1.seat-ticket`);
+  await seatPage.getByRole('checkbox').check();
+  await seatPage.getByRole('button',{name:'确认',exact:true}).click();
+  await seatPage.getByRole('button',{name:'下桌',exact:true}).waitFor();
+  assert.equal(writes.length,1);
+  assert.equal(writes[0].path,'/api/v1/devices/session/actions');
+  assert.equal(writes[0].body.action,'mahjong.join');
+  assert.equal(writes[0].body.consent,true);
+  assert.equal(writes[0].body.expectedRevision,'seat-preview');
+  await seatPage.close();
+  console.log('PASS scanned mahjong confirmation seats through one atomic action without an earlier session start');
+ }
  console.log('PASS localized balance rejection retains the bill and permits manual retry');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});

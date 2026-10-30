@@ -29,6 +29,7 @@
 
 ```ts
 getActive(playerId)
+prepare(playerId, changes) // 已持有玩家计费锁时，预演多次转换，返回最终写集；不写数据库
 previewActivate({ playerId, pricingConfigId })
 activate({ playerId, pricingConfigId, expectedRevision?, label?, metadata?, sessionId?, at? })
 previewDeactivate({ playerId, pricingConfigId })
@@ -60,12 +61,18 @@ deactivate({ playerId, pricingConfigId, expectedRevision?, at? })
 | 玩家扫码确认、门锁开门 | 开始扫码资源的方案（资源专属方案，否则资源组的方案），见 [资源与资源组](resources.md) |
 | 店员开单 | 开始店员指定的方案，不指定返回 `PRICING_TARGET_REQUIRED`。店员开单先调用 `session/preview` 显示会新增、结束、保留的方案，确认时带 `expectedRevision` |
 | 收银台入场 | 前台是资源：开始「前台资源」的方案（专属方案，否则所属资源组的方案），见 [前台收银](cashier.md) |
-| Integration / Bot 入场 | Bot 是资源：开始这个 Bot 的方案（专属方案，否则所属资源组的方案）；已在计费则复用原 Session（`created: false`）。请求里的方案、`label`、`entry` 都被忽略 |
+| Integration / Bot 入场 | Bot 是资源：开始这个 Bot 的方案（专属方案，否则所属资源组的方案）；已在计费则复用原 Session（`created: false`）。旧版请求中的 `pricingConfigIds` 或 `label` 返回 `VALIDATION_FAILED`，不再兼容 Bot 自行指定麻将方案；`entry` 不决定计费 |
 | 停止单条 Session（店员、玩家、Integration） | 有 `pricingConfigId` 的按方案 `deactivate`，依赖它的方案同时结束；没有的（占位、历史）按原方式只关闭这一条 |
-| 麻将入座 | 要求麻将桌这个资源的方案（等位方案）在计费中（店员或 Bot 代为入座时直接开始）。座位跟着它当前所在的 session：等位时是等位方案的，开局后是麻将方案的；麻将方案与等位方案互斥时，开局会结束等位方案而座位保留。满桌（或桌上已有人在计费）时，为每位等待中的玩家 `activate(麻将方案)`，同一时间点；先逐一预览，任何一位无法计费则都不开始，并撤销本次入座 |
+| 麻将入座 | 要求麻将桌这个资源的方案（等位方案）在计费中（店员或 Bot 代为入座时直接开始）。座位跟着它当前所在的 session：等位时是等位方案的，开局后是麻将方案的；麻将方案与等位方案互斥时，开局会结束等位方案而座位保留。满桌（或桌上已有人在计费）时，为每位等待中的玩家 `activate(麻将方案)`，同一时间点；所有人的转换通过同一个编排器 `prepare` 预演，再将计费与座位写入同一个 D1 批次；任何一位无法计费或任何写入失败，整次操作都不落库 |
 | 麻将下桌 | 只结束座位当前所在的 session：已开局时 `deactivate(麻将方案)`；等位中时结束为这张桌开始的等位方案（没有其他方案依赖它时）。随之开始的基础方案继续计费，再删除座位；响应带 `billing.remaining`。见 [卡片、占用与查人](occupancy.md#3-麻将等位) |
 | 其他原因结束麻将计费（互斥切换、停止所依赖的方案） | 编排器写入后通过 `afterClose` 释放这些 Session 对应的麻将座位 |
 | 结账 | 不变：关闭全部 active Session 并统一结算 |
+
+直接上另一桌即为换桌，不要求先下桌。相同对局方案复用原 Session，不重新计时；不同方案按统一依赖、冲突关系转换，再释放原桌不再需要的对局和自建等位方案。还被其他方案依赖的原方案保留。目标桌未满且未开局时进入等位；相同对局方案已在原桌计费时，换桌继续计费。容量限制和满桌开局是座位规则，不是另一套计费关系。
+
+换桌和整桌开局先取店铺座位锁，再按玩家 ID 排序取得涉及玩家的计费锁。扫码确认直接提交 `mahjong.join`，不再先开始等位方案、再单独入座。预览展示本次实际开始、结束和保留的方案及相应价格，麻将预览的 `revision` 同时绑定计费与桌位状态：他人上下桌导致计费从等位变成对局时也须重新确认。重复加入自己所在桌直接返回当前座位，等位方案已因互斥结束时仍可重复请求。
+
+管理员可在资源操作面板选择本店任一有效玩家上下桌、换桌，不要求玩家先入场。Bot 使用 `/上桌 a @玩家`、`/下桌 a @玩家`，复用 `withTarget` 的店员身份及「店员命令」开关检查，普通玩家只能操作自己。方案可用性与时段统一由编排器按玩家锁定版本、店铺时区判断，麻将入口不再另读当前启用方案或使用 UTC 特判。
 
 麻将桌只能选择一个计费方案（商家接口最多一个）。要叠加在普通游玩上，就让麻将方案 `requires` 普通游玩。
 

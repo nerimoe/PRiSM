@@ -415,12 +415,13 @@ export function ResourceControls({
                   onClick={() =>
                     act("entry", async () => {
                       await playerOperation(
-                        shopApi(code, "player/session/start"),
+                        cap.mahjong ? "/api/v1/devices/session/actions" : shopApi(code, "player/session/start"),
                         {
                           ticket,
+                          ...(cap.mahjong ? { action: "mahjong.join" } : {}),
                           consent,
                           location: await operationLocation(
-                            info.shop.locationEnabled ?? info.shop.checkinGeo,
+                            (info.shop.locationEnabled ?? info.shop.checkinGeo) || (!!cap.mahjong && !!machine.shop.machineGeo),
                           ),
                           // The server refuses a confirmation of a state that has since changed.
                           ...(preview ? { expectedRevision: preview.revision } : {}),
