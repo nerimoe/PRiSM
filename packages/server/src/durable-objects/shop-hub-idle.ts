@@ -35,9 +35,8 @@ export const emptyIdleMemory = (): IdleMemory => ({ emptySince: null, emptyHandl
 export type IdleNotice = Omit<Reminder, "deviceIds" | "key"> & { devices: Array<{ id: string; name: string }> };
 
 /**
- * Actions that hold a device off idling for its occupancy time: someone asked
- * the platform to use it (switch it on, keep it, coin, swipe). Switching it off
- * does not. Who occupies it comes from occupancy, not from here.
+ * Platform activity resets the shutdown wait; occupancy supplies its own expiry.
+ * Switching a device off does not extend either.
  */
 const HOLD_ACTIONS = Object.values(capabilities)
   .flatMap((spec) => Object.entries(spec.actions))
@@ -75,32 +74,22 @@ export async function runIdleCheck(input: {
         .first<{ value_json: string }>())?.value_json ?? null,
     ),
   );
-  const anyRule = settings.shopEmpty.enabled || settings.device.enabled;
-  if (!anyRule) return { memory: { ...emptyIdleMemory(), lastAutoOff: input.memory.lastAutoOff }, notices: [], poweredOff: [] };
-
+  if (!settings.shopEmpty.enabled && !settings.device.enabled)
+    return { memory: { ...emptyIdleMemory(), lastAutoOff: input.memory.lastAutoOff }, notices: [], poweredOff: [] };
   // Settle held seats before reading their last usage, including seats just vacated.
   const occupancy = await createOccupancy({ db, shopId, now: () => new Date(now) }).current();
-  const [visits, capabilityRows, idleRows, activityRows] = await Promise.all([
+  const [visits, capabilityRows, activityRows] = await Promise.all([
     db.prepare(
       `SELECT (SELECT COUNT(*) FROM sessions WHERE shop_id = ? AND status = 'active') AS active,
               (SELECT MAX(ended_at) FROM sessions WHERE shop_id = ? AND status = 'closed') AS last_end`,
     ).bind(shopId, shopId).first<{ active: number; last_end: string | null }>(),
     db.prepare(
-      // Where a capability holds its occupants itself (seats), they are the whole
-      // story and the occupancy minutes do not apply, also not to activity.
-      `SELECT m.id, m.name, c.capability, c.config_json,
-              CASE WHEN EXISTS (SELECT 1 FROM device_capabilities h WHERE h.shop_id = m.shop_id AND h.device_id = m.id
-                                  AND h.capability IN (SELECT value FROM json_each(?)))
-                   THEN 0 ELSE m.occupancy_minutes END AS occupancy_minutes
+      `SELECT m.id, m.name, c.capability, c.config_json
        FROM machines m
        JOIN device_capabilities c ON c.shop_id = m.shop_id AND c.device_id = m.id
        WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN (SELECT value FROM json_each(?)) ORDER BY m.id, c.capability`,
-    ).bind(JSON.stringify(heldProviders.map((provider) => provider.capability)), shopId, JSON.stringify(IDLE_CAPABILITIES))
-      .all<{ id: string; name: string; occupancy_minutes: number; capability: string; config_json: string }>(),
-    // Climate follows cabinet usage, so no AC setting timestamps belong to idle planning.
-    db.prepare(
-      "SELECT device_id, capability, value_json FROM device_state WHERE shop_id = ? AND key = 'idle'",
-    ).bind(shopId).all<{ device_id: string; capability: string; value_json: string }>(),
+    ).bind(shopId, JSON.stringify(IDLE_CAPABILITIES))
+      .all<{ id: string; name: string; capability: string; config_json: string }>(),
     db.prepare(
       `SELECT device_id, MAX(at) AS at, MAX(occupied_until) AS occupied_until FROM (
          SELECT device_id, occurred_at AS at, NULL AS occupied_until FROM device_events
@@ -116,13 +105,13 @@ export async function runIdleCheck(input: {
   ]);
 
   const devices = new Map<string, IdleDevice>();
-  const device = (id: string, name: string, minutes: number) => {
+  const device = (id: string, name: string) => {
     let entry = devices.get(id);
     if (!entry) {
       entry = {
-        id, name, minutes, hasPower: false, hasClimate: false, hasUsage: false, power: null, climate: null,
+        id, name, hasPower: false, hasClimate: false, hasUsage: false, power: null, climate: null,
         powerTarget: null, climateTarget: null,
-        lastActivity: null, busyUntil: null, poweredOnAt: null, idle: false, lastAutoOff: input.memory.lastAutoOff[id] ?? null,
+        lastActivity: null, busyUntil: null, poweredOnAt: null, lastAutoOff: input.memory.lastAutoOff[id] ?? null,
         lastClimateAutoOff: input.memory.lastAutoOff[`climate:${id}`] ?? null,
       };
       devices.set(id, entry);
@@ -134,7 +123,7 @@ export async function runIdleCheck(input: {
   // without knowing.
   const bound = new Map<string, { id: string; capabilities: Map<string, { config: Record<string, unknown> }> }>();
   for (const row of capabilityRows.results) {
-    const entry = device(row.id, row.name, row.occupancy_minutes);
+    const entry = device(row.id, row.name);
     if (row.capability !== "power" && row.capability !== "climate") { entry.hasUsage = true; continue; }
     if (row.capability === "power") entry.hasPower = true;
     else entry.hasClimate = true;
@@ -156,11 +145,6 @@ export async function runIdleCheck(input: {
       if (state.power === "on") entry.poweredOnAt = live.powerChangedAt[id] ?? null;
     }
     if (entry.hasClimate && state.climate) entry.climate = state.climate.mode;
-  }
-  for (const row of idleRows.results) {
-    const entry = devices.get(row.device_id);
-    if (!entry) continue;
-    if (row.capability === (entry.hasPower ? "power" : "climate")) entry.idle = parse(row.value_json) === true;
   }
   for (const row of activityRows.results) {
     const entry = devices.get(row.device_id);
@@ -220,13 +204,6 @@ export async function runIdleCheck(input: {
     if (await act(group.devices[0]!.id, group.capability === "power" ? "power.off" : "climate.off")) {
       if (group.capability === "power") poweredOff.push(...group.devices.map((device) => device.id));
     } else memory.emptyHandled = input.memory.emptyHandled;
-  }
-  for (const [ids, value] of [[plan.markIdle, true], [plan.clearIdle, false]] as const) {
-    for (const id of ids) {
-      const capability = devices.get(id)?.hasPower ? "power" : "climate";
-      await bus.setOwned({ device: { id }, capability, key: "idle", value }).catch((error) =>
-        console.error("Idle mark failed", { shopId, id, error }));
-    }
   }
   const notices = plan.remind.map((reminder) => {
     memory.reminded[reminder.key] = reminder.at;

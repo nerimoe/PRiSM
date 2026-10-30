@@ -1,7 +1,7 @@
 /**
  * Idle power-off settings: the shop-wide rules and which devices are never
- * switched off. A device's idle time is its occupancy time, set on the
- * resource. Owners and managers edit them; anyone on the shop's staff can read
+ * switched off. Unoccupied devices are idle; the configured wait controls only
+ * automatic shutdown. Owners and managers edit them; anyone on the shop's staff can read
  * them.
  */
 import { Hono, type Context } from "hono";

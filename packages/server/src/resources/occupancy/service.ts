@@ -13,6 +13,8 @@ import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { CapabilityId } from "../capabilities/catalog.js";
 import { heldProviders, occupancyProviderFor, type HeldOccupant } from "./providers.js";
 import { planObservation, type OpenOccupancy } from "./rules.js";
+import { resolveResourcePlanId, resourceGroupIdOf } from "../billing.js";
+import { findBillableResource, findResourceGroup } from "../repository.js";
 
 export type Occupant = {
   playerId: string;
@@ -157,6 +159,18 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
             playerId: input.event.playerId,
           }) ?? null;
       if (!observation) return none;
+      // A reader identifies a player, but only billing for this resource permits a stay.
+      if (input.event.kind === "signal" || input.event.action === "aime.scan") {
+        const billable = await findBillableResource(db, shopId, resource.id);
+        if (!billable) return none;
+        const group = await findResourceGroup(db, shopId, resourceGroupIdOf(billable));
+        if (!group?.enabled) return none;
+        const planId = resolveResourcePlanId({ resource: billable, group });
+        if (!planId || !await db.prepare(
+          `SELECT 1 FROM sessions WHERE shop_id = ? AND player_id = ? AND status = 'active'
+           AND json_extract(pricing_config_ids_json, '$[0]') = ? LIMIT 1`,
+        ).bind(shopId, observation.playerId, planId).first()) return none;
+      }
       await closeTimedOut(at, resource.id);
       const open = (await db.prepare(
         "SELECT * FROM resource_occupancies WHERE shop_id = ? AND resource_id = ? AND source = ? AND ended_at IS NULL",

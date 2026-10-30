@@ -48,6 +48,7 @@ function database() {
   sqlite.run("PRAGMA foreign_keys=OFF");
   const now = new Date().toISOString();
   sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('shop','shop-code','Arcade',0,0,80,'u')");
+  sqlite.run("INSERT INTO resource_groups(shop_id,id,name,created_at,updated_at) VALUES ('shop','default','Default',?,?)", [now, now]);
   for (const [id, name] of [["p1", "Alice"], ["p2", "Bob"], ["p3", "Carol"]])
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop',?,?,'active',?)", [id, name, now]);
   // A two-player cabinet with a directly connected IO.
@@ -173,6 +174,9 @@ describe("a cabinet's card reports", () => {
 
   it("logs whose card it was instead of its number, has its owner occupy the cabinet, and ignores an unknown card", async () => {
     const { sqlite, db, report } = await relayFixture();
+    sqlite.run("UPDATE resource_groups SET default_pricing_config_id='arcade' WHERE shop_id='shop' AND id='default'");
+    sqlite.run(`INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json)
+      VALUES ('shop','billing','p1','2026-01-01','active','["arcade"]')`);
     await createCardStore(db, "shop", KEY).bind({ playerId: "p1", card: { type: "aime", accessCode: CARD_A }, source: "scan" });
     await report("event.cardConsumed", CARD_A);
     // A card nobody bound here tells nothing.
@@ -187,6 +191,36 @@ describe("a cabinet's card reports", () => {
     const [cab] = await createOccupancy({ db, shopId: "shop" }).current();
     expect(cab!.occupants.map((occupant) => [occupant.playerId, occupant.displayName])).toEqual([["p1", "Alice"]]);
   });
+
+  for (const scenario of ["unbilled", "wrong-plan", "closed", "other-shop", "free", "disabled-group", "override", "valid-group", "valid-override"] as const) {
+    it(`requires the card owner's active billing for the resource's effective plan: ${scenario}`, async () => {
+      const { sqlite, db, report } = await relayFixture();
+      sqlite.run("UPDATE resource_groups SET default_pricing_config_id=? WHERE shop_id='shop' AND id='default'", [scenario === "free" ? null : "arcade"]);
+      if (scenario === "disabled-group") sqlite.run("UPDATE resource_groups SET enabled=0 WHERE shop_id='shop'");
+      if (scenario === "override" || scenario === "valid-override") sqlite.run("UPDATE machines SET pricing_config_override_id='vip' WHERE id='cab'");
+      if (scenario !== "unbilled") sqlite.run(
+        `INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES (?,'billing','p1','2026-01-01',?,?)`,
+        [scenario === "other-shop" ? "other" : "shop", scenario === "closed" ? "closed" : "active",
+          JSON.stringify([scenario === "wrong-plan" ? "other" : scenario === "valid-override" ? "vip" : "arcade"])],
+      );
+      await createCardStore(db, "shop", KEY).bind({ playerId: "p1", card: { type: "aime", accessCode: CARD_A }, source: "scan" });
+      await report("event.cardConsumed", CARD_A);
+      const occupancy = createOccupancy({ db, shopId: "shop" });
+      const allowed = scenario === "valid-group" || scenario === "valid-override";
+      expect((await occupancy.current())[0]!.occupants.map((o) => o.playerId)).toEqual(allowed ? ["p1"] : []);
+      await occupancy.observe({ resourceId: "cab", event: { kind: "action", action: "aime.scan", playerId: "p1" } });
+      expect((await occupancy.current())[0]!.occupants.map((o) => o.playerId)).toEqual(allowed ? ["p1"] : []);
+      // Identity remains in the event log even when billing does not permit a stay.
+      expect(sqlite.query("SELECT player_id FROM device_events WHERE kind='signal'").get()).toEqual({ player_id: "p1" });
+      if (allowed) {
+        const before = sqlite.query("SELECT expires_at FROM resource_occupancies").get() as { expires_at: string };
+        sqlite.run("UPDATE sessions SET status='closed' WHERE id='billing'");
+        await report("event.cardConsumed", CARD_A);
+        expect(sqlite.query("SELECT expires_at FROM resource_occupancies").get()).toEqual(before);
+      }
+      sqlite.close();
+    });
+  }
 
   it("adds the next card put on the reader to the player who opened the window", async () => {
     const { sqlite, relay, report } = await relayFixture();

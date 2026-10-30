@@ -6,16 +6,15 @@
  * Two rules, both off until the shop turns them on:
  * - **Shop empty**: no active entry for N minutes, then every free powered device
  *   and air conditioner is switched off, respecting occupancy and holds.
- * - **Device idle**: a powered device free for the shop's idle time. Climate
+ * - **Device idle**: a device is idle whenever nobody occupies it, and may be
+ *   switched off after the configured idle time. Climate
  *   follows the whole shop's devices, never the time since an AC setting. While
  *   the shop has players the owner chooses what happens: only
- *   mark it idle or switch it off, with an optional advance warning by the bot.
+ *   leave it on or switch it off, with an optional advance warning by the bot.
  *
- * A device is busy while someone occupies it (see `occupancy/`). Being switched
- * on, kept from idling, or operated through the platform keeps it busy for its
- * occupancy time too, so a guest game or a machine switched on outside the
- * platform is not cut short. Once nothing keeps it busy it is free, and after
- * the idle time free it is idle. A device is never switched off while occupied.
+ * Occupancy (see `occupancy/`) alone says whether it is idle; no separate flag
+ * is stored. Switching on or keeping a device on resets its shutdown wait without
+ * inventing an occupant. A device is never switched off while occupied.
  */
 import { z } from "zod";
 
@@ -45,7 +44,7 @@ export const idleSettingsSchema = z.preprocess(
     device: z
       .object({
         enabled: z.boolean().default(false),
-        /** How long a device stays free before it counts as idle. */
+        /** How long an idle device waits before automatic shutdown. */
         minutes: z.number().int().min(1).max(24 * 60).default(10),
         // Old reminder-only settings now share the automatic power-off deadline.
         whileOccupied: z.preprocess((value) => value === "remind" ? "off" : value, z.enum(["mark", "off"]).default("mark")),
@@ -85,8 +84,6 @@ export type IdleDevice = {
   power: "on" | "off" | null;
   /** Climate mode; anything other than "off" is running. Null when unknown. */
   climate: string | null;
-  /** How long a sign of someone (switching on, a hold) keeps it busy: its occupancy time, or 0 where seats decide. */
-  minutes: number;
   /** Latest sign of someone at it (an occupant seen, a hold), in ms. */
   lastActivity: number | null;
   /**
@@ -96,7 +93,6 @@ export type IdleDevice = {
   busyUntil: number | null;
   /** When it was last seen switching on, in ms. */
   poweredOnAt: number | null;
-  idle: boolean;
   lastAutoOff: number | null;
   lastClimateAutoOff: number | null;
 };
@@ -140,8 +136,6 @@ export type Reminder = { key: string; reason: "shop_empty" | "device_idle"; devi
 export type IdlePlan = {
   powerOff: string[];
   climateOff: string[];
-  markIdle: string[];
-  clearIdle: string[];
   remind: Reminder[];
   emptySince: number | null;
   emptyHandled: number | null;
@@ -149,7 +143,7 @@ export type IdlePlan = {
   /**
    * When each device is due to be switched off, in ms, once its countdown has
    * started: the shop is empty, or the device is free and the rule switches it
-   * off. A device that is only marked idle has none.
+   * off. A device kept on by policy has none.
    */
   powerOffAt: Record<string, number>;
 };
@@ -159,8 +153,6 @@ export function planIdle(input: IdleInputs): IdlePlan {
   const plan: IdlePlan = {
     powerOff: [],
     climateOff: [],
-    markIdle: [],
-    clearIdle: [],
     remind: [],
     emptySince: null,
     emptyHandled: null,
@@ -177,7 +169,7 @@ export function planIdle(input: IdleInputs): IdlePlan {
     else if (now < at) wake(at);
   };
   const freeAt = (device: IdleDevice, changedAt = 0, on = false) => Math.max(
-    (Math.max(device.lastActivity ?? 0, changedAt) || (on ? now : 0)) + device.minutes * 60_000,
+    Math.max(device.lastActivity ?? 0, changedAt) || (on ? now : 0),
     device.busyUntil ?? 0,
   );
   const idleMs = settings.device.minutes * 60_000;
@@ -249,36 +241,31 @@ export function planIdle(input: IdleInputs): IdlePlan {
     const blind = group.state === null;
     const handled = blind && group.attempted > 0 && group.attempted >= group.activity;
     if (group.excluded || group.state === "off" || !settings.device.enabled || (group.capability === "power" && blind && (!group.activity || handled))) {
-      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
     // Never idle while occupied: an occupant without an expiry holds it indefinitely.
     if (group.free === Infinity || (group.capability === "climate" && !empty && allDevicesIdleAt === Infinity)) {
-      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       continue;
     }
-    // Free once nothing keeps it busy; idle after the idle time free.
+    // No separate idle flag: this deadline only controls shutdown.
     const deadline = group.capability === "power" ? group.free + idleMs
       : Math.max(group.free, empty ? (plan.emptySince ?? now) + idleMs : allDevicesIdleAt);
     if (group.capability === "climate" && blind && group.attempted > 0 && group.attempted >= deadline) continue;
     const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
     if (now < deadline) {
-      plan.clearIdle.push(...group.devices.filter((d) => d.idle).map((d) => d.id));
       wake(deadline);
       // Counting down once nothing keeps it busy, where the rule would switch it off.
       if (now >= group.free && switchesOff) countdown(group, deadline);
       if (switchesOff)
         remindBefore(`${group.capability === "power" ? "device" : "climate"}:${group.ids[0]}`, "device_idle", group.ids, deadline);
+      if (switchesOff) wake(group.free);
       continue;
     }
     if ((group.capability === "power" ? plan.powerOff : plan.climateOff).includes(group.ids[0]!)) continue;
     // With nobody in, the device rule switches off unless the shop rule is
     // about to; with players in, the owner's choice applies.
-    plan.markIdle.push(...group.devices.filter((d) => !d.idle).map((d) => d.id));
     if (switchesOff && group.canRetry) turnOff(group);
     if (switchesOff && !group.canRetry) wake(group.attempted + RETRY_OFF_MS);
   }
-  plan.clearIdle = [...new Set(plan.clearIdle)];
-  plan.markIdle = [...new Set(plan.markIdle)].filter((id) => !plan.clearIdle.includes(id));
   return plan;
 }
