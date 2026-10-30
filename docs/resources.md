@@ -109,6 +109,8 @@
 
 ## 6. 管理接口与界面
 
+Bot 按消息的 `provider + subject`（如 `onebot:QQ号`）匹配平台下发的员工名单，不使用 Koishi 的管理员等级。名单来自本店的 `shop_platform_bindings` 已验证绑定，账号须在本店 `shop_members` 中，或关联本店启用的账务员工。仅在玩家档案中添加 `player_identities` 不会授予员工权限；网页账号须通过 Bot 验证码完成平台绑定。负责人不需要手动填写 QQ 管理员列表。Bot 会缓存名单，店铺成员新增、角色变更或移除成功后，平台通知本店在线 Bot 重新读取配置，避免新增负责人仍被拒绝或已移除成员继续使用旧名单。具体命令仍受 Bot 的「店员命令」、只读模式与关机权限设置限制。
+
 商户接口挂在 `/api/v1/merchant`，权限与资源配置相同：
 
 - `GET /resource-groups?shopId=`：默认资源组在第一位，带 `resourceCount`。

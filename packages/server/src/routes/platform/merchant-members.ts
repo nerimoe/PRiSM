@@ -4,6 +4,7 @@ import type { AppBindings, AuthUser } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { canAccessShop } from "./shops.js";
+import { notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 
 export const merchantMembersRouter = new Hono<AppBindings>();
 const memberInput = z.object({
@@ -61,6 +62,7 @@ merchantMembersRouter.post("/shop-members", async (c) => {
   ).bind(crypto.randomUUID(),body.shopId,target.id,body.role).run();
   if ((updated as { meta?: { changes?: number } }).meta?.changes === 0)
     jsonError(409, "至少需要保留一位店铺负责人", "LAST_OWNER_REQUIRED");
+  notifyBotsChangedAfter(c, body.shopId);
   return c.json({ ok: true });
 });
 
@@ -76,5 +78,6 @@ merchantMembersRouter.delete("/shop-members/:id", async (c) => {
   ).bind(member.id, member.shop_id).run();
   if ((deleted as { meta?: { changes?: number } }).meta?.changes === 0)
     jsonError(409, "至少需要保留一位店铺负责人", "LAST_OWNER_REQUIRED");
+  notifyBotsChangedAfter(c, member.shop_id);
   return c.json({ ok:true });
 });

@@ -104,6 +104,42 @@ describe("a bot is a resource", () => {
     });
   });
 
+  it("refreshes connected bots when a bound account becomes a shop owner or leaves", async () => {
+    const { sqlite, env, bot, createBot } = await fixture();
+    const client = bot((await createBot()).token);
+    sqlite.run("INSERT INTO users(id,role) VALUES ('new-owner','user')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','new-player','新负责人','active',?)", [NOW]);
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','new-owner','new-player',?)", [NOW]);
+    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','new-player','onebot','20002',?)", [NOW]);
+    sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','new-owner','onebot','20002',?)", [NOW]);
+    const staff = async () => (await client.get("bot")).body.staff;
+    expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });
+    let refreshes = 0;
+    env.SHOP_HUB = { getByName: (id: string) => {
+      expect(id).toBe("shop");
+      return { botsChanged: async () => { refreshes++; } };
+    } } as unknown as Env["SHOP_HUB"];
+    const pending: Promise<unknown>[] = [];
+    const app = createApp();
+    const change = async (method: string, path: string, body?: unknown) => {
+      const response = await app.fetch(new Request(`https://prism.test/api/v1/merchant/${path}`, {
+        method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }), env, { waitUntil: (task) => { pending.push(task); }, passThroughOnException() {}, props: {} });
+      await Promise.all(pending.splice(0));
+      return response;
+    };
+    expect((await change("POST", "shop-members", { shopId: "shop", user: "new-owner", role: "owner" })).status).toBe(200);
+    expect(refreshes).toBe(1);
+    expect(await staff()).toContainEqual({ provider: "onebot", subject: "20002" });
+    const member = sqlite.query("SELECT id FROM shop_members WHERE shop_id='shop' AND user_id='new-owner'").get() as { id: string };
+    expect((await change("DELETE", `shop-members/${member.id}`)).status).toBe(200);
+    expect(refreshes).toBe(2);
+    expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });
+    expect((await change("DELETE", "shop-members/m1")).status).toBe(409);
+    expect(refreshes).toBe(2);
+  });
+
   it("gives a token issued before bots were resources a resource of its own", async () => {
     const { sqlite, bot, call } = await fixture();
     sqlite.run("INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','old','旧 Bot','integration','prism_integration',?,'active',?)",
