@@ -153,6 +153,8 @@ bun run deploy:beta
 
 恢复操作须使用日志中的目标数据库和书签；不要仅回滚 Worker 到旧 stable，因为表结构可能已升级。书签是在屏障启用后取得的，恢复该数据库仍保留维护屏障。通常先修复并重新运行 `deploy:beta`；确需恢复旧版时，由管理员恢复对应 D1 书签和匹配的 Worker，再确认兼容性并明确解除 `prism_deployment_gate` 的维护状态。脚本不会自动恢复数据库或删除业务记录。
 
+若最后成功记录是 `0042_resource_occupancy.sql`，随后出现 `UNIQUE constraint failed: machines.id`，检查 `0043_legacy_bot_resources.sql`。旧实现用 `bot-凭据ID` 创建全局资源，而 `api_tokens.id` 只在店铺内唯一，跨店同名凭据或已有同名资源会冲突。修复后的 ID 分别编码店铺 ID 和凭据 ID；已有 Bot 的 ID、公开入口、配置及令牌保持原样。该修复直接纠正尚未完成的 0043，不能只追加更晚的迁移，因为部署会先停在失败的旧文件。将修复合入生产分支后重跑完整部署，已成功的 0042 及之前文件会跳过，失败的 0043 会重新执行；不需要删资源、撤销 0042 或手工解除维护。已经成功应用 0043 的数据库仍按迁移记录跳过，不重命名现有资源。
+
 Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及 Time Travel info 权限；无须手工配置维护令牌或新增 KV namespace。
 
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
