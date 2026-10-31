@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
+import { deleteAccountCard } from "../../resources/cards.js";
 import { syncMunetCards } from "./oauth.js";
 
 export const cardsRouter = new Hono<AppBindings>();
@@ -38,8 +39,7 @@ cardsRouter.post("/", async (c) => {
 
 cardsRouter.delete("/:id", async (c) => {
   const user = requireUser(c);
-  await c.env.DB.prepare("DELETE FROM cards WHERE id=? AND user_id=?")
-    .bind(c.req.param("id"),user.id).run();
+  await deleteAccountCard(c.env.DB, user.id, c.req.param("id"), c.env.URL_ENCRYPTION_KEY);
   return c.json({ok:true});
 });
 
