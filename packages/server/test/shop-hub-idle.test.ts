@@ -274,7 +274,7 @@ describe("idle check in the shop hub", () => {
     const start = Date.now();
     let now = start;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
-    const { sqlite, run, offs, state, sockets, connectionId } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { climate: true });
+    const { db, sqlite, run, fireAlarm, offs, state, sockets, connectionId, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { climate: true });
     const notices: any[] = [];
     sockets.push({ tags: ["bot"], deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }), send: (data) => notices.push(JSON.parse(data)) });
     const watchers = state.get("watchers") as any;
@@ -293,6 +293,11 @@ describe("idle check in the shop hub", () => {
     try {
       await run();
       expect(offs()).toEqual([]);
+      expect((state.get("idle") as any).powerOffAt.m1).toBeUndefined();
+      expect(notices).toEqual([]);
+      expect(alarm()).toBe(start + MIN);
+      now = start + MIN;
+      await fireAlarm();
       expect((state.get("idle") as any).powerOffAt.m1).toBe(start + 11 * MIN);
       now = start + 6 * MIN;
       await run();
@@ -301,9 +306,14 @@ describe("idle check in the shop hub", () => {
       // A fresh cabinet action postpones climate too, after the old warning was sent.
       sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at)
         VALUES ('shop','e1','m2','hinata_io','request','coin','platform','p','{}',?)`, [new Date(now).toISOString()]);
-      sqlite.run(`INSERT INTO resource_occupancies(shop_id,id,resource_id,player_id,source,started_at,last_seen_at,expires_at)
-        VALUES ('shop','o2','m2','p','hinata_io',?,?,?)`, [new Date(now).toISOString(), new Date(now).toISOString(), new Date(now + MIN).toISOString()]);
+      const occupancy = createOccupancy({ db, shopId: "shop", now: () => new Date(now) });
+      await occupancy.observe({ resourceId: "m2", event: { kind: "action", action: "coin", playerId: "p" } });
+      expect((await occupancy.current()).find((resource) => resource.resourceId === "m2")!.occupants).toHaveLength(1);
       await run();
+      expect((state.get("idle") as any).powerOffAt.m1).toBeUndefined();
+      expect(notices.filter((frame) => frame.data?.devices.some((device: any) => device.id === "m1"))).toHaveLength(1);
+      now = start + 7 * MIN;
+      await fireAlarm();
       expect((state.get("idle") as any).powerOffAt.m1).toBe(start + 17 * MIN);
       now = start + 11 * MIN;
       // Even a fresh AC setting must not create its own idle timer.

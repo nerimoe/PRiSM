@@ -191,10 +191,16 @@ export function planIdle(input: IdleInputs): IdlePlan {
   });
   // Climate serves the shop; only other devices' usage decides when it is idle.
   // Unknown power without any activity cannot prove that a cabinet is idle.
+  const powerGroups = groups.filter((group) => group.capability === "power");
+  const usageOnly = input.devices.filter((device) => device.hasUsage && !device.hasPower);
+  const allDevicesFreeAt = Math.max(0,
+    ...powerGroups.map((group) => group.state === "off" ? 0 : group.free),
+    ...usageOnly.map((device) => freeAt(device)),
+  );
   const deviceDeadlines = [
-    ...groups.filter((group) => group.capability === "power").map((group) => group.state === "off" ? 0
+    ...powerGroups.map((group) => group.state === "off" ? 0
       : group.state === null && !group.activity ? Infinity : group.free + idleMs),
-    ...input.devices.filter((device) => device.hasUsage && !device.hasPower).map((device) => freeAt(device) + idleMs),
+    ...usageOnly.map((device) => freeAt(device) + idleMs),
   ];
   const allDevicesIdleAt = deviceDeadlines.length ? Math.max(...deviceDeadlines) : Infinity;
   const turnOff = (group: typeof groups[number]) => {
@@ -245,6 +251,11 @@ export function planIdle(input: IdleInputs): IdlePlan {
     }
     // Never idle while occupied: an occupant without an expiry holds it indefinitely.
     if (group.free === Infinity || (group.capability === "climate" && !empty && allDevicesIdleAt === Infinity)) {
+      continue;
+    }
+    // A predicted occupancy expiry is a recheck time, not an active climate countdown.
+    if (group.capability === "climate" && !empty && now < allDevicesFreeAt) {
+      wake(allDevicesFreeAt);
       continue;
     }
     // No separate idle flag: this deadline only controls shutdown.

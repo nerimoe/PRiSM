@@ -89,6 +89,24 @@ describe("idle power planning", () => {
 
   const airConditioner = () => device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool" });
 
+  for (const hasPower of [false, true]) it(`starts the climate countdown only after every cabinet's occupancy expires, power binding=${hasPower}`, () => {
+    const devices = [
+      airConditioner(),
+      device({ id: "left", poweredOnAt: NOW - 2 * MIN }),
+      device({ id: "right", poweredOnAt: NOW - 2 * MIN }),
+      device({ id: "occupied", hasPower, hasUsage: true, busyUntil: NOW + 22 * MIN }),
+    ];
+    const check = (now: number) => planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now, reminderLeadMs: 40 * MIN }));
+    const busy = check(NOW);
+    expect(busy.powerOffAt).toEqual({ left: NOW + 8 * MIN, right: NOW + 8 * MIN });
+    expect(busy.climateOff).toEqual([]);
+    expect(busy.remind.flatMap((notice) => notice.deviceIds)).not.toContain("ac");
+    const free = check(NOW + 22 * MIN);
+    expect(free.powerOffAt.ac).toBe(NOW + 32 * MIN);
+    expect(free.remind.flatMap((notice) => notice.deviceIds)).toContain("ac");
+    expect(check(NOW + 32 * MIN).climateOff).toEqual(["ac"]);
+  });
+
   it("waits for the empty-shop rule when there are no cabinets to observe", () => {
     expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [airConditioner()] })).climateOff).toEqual([]);
   });
