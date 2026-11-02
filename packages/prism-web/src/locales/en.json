@@ -1691,6 +1691,7 @@
   "规则关系": "How rules relate",
   "计费规则关系图": "Pricing rule relations",
   "不计费": "Not billed",
+  "未覆盖": "Not covered",
   "Bot 令牌已签发": "Bot token issued",
   "填入 Koishi 的 PRiSM 插件": "Paste into the PRiSM plugin in Koishi",
   "复制配置": "Copy config",
