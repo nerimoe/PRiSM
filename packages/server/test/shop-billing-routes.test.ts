@@ -1783,6 +1783,45 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(flags?.machine_geo).toBe(1);
   });
 
+  it("lists every checkout of one player, archived ones included, newest first", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    for (const id of ["mine", "other"]) {
+      sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',CURRENT_TIMESTAMP)", [shopId, id, id]);
+    }
+    const checkout = (id: string, player: string, settledAt: string, total: number) =>
+      sqlite.run(
+        "INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)",
+        [shopId, id, player, total, total, settledAt],
+      );
+    checkout("old", "mine", "2025-01-01T10:00:00.000Z", 1200);
+    checkout("new", "mine", "2026-10-01T10:00:00.000Z", 3400);
+    checkout("archived", "mine", "2026-06-01T10:00:00.000Z", 500);
+    checkout("theirs", "other", "2026-10-02T10:00:00.000Z", 999);
+    sqlite.run(
+      "INSERT INTO checkout_report_states(shop_id,checkout_id,archived,updated_at,updated_by) VALUES (?,'archived',1,CURRENT_TIMESTAMP,'staff')",
+      [shopId],
+    );
+    const headers = { Authorization: `Bearer ${staffSessionToken}` };
+    const list = async (query: string) => {
+      const response = await app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/players/mine/checkouts${query}`, { headers }), env,
+      );
+      expect(response.status).toBe(200);
+      return await response.json() as { records: { checkoutId: string; total: number; archived: boolean }[]; page: { hasMore: boolean } };
+    };
+    const all = await list("");
+    expect(all.records.map((record) => [record.checkoutId, record.total, record.archived])).toEqual([
+      ["new", 34, false], ["archived", 5, true], ["old", 12, false],
+    ]);
+    expect(all.page.hasMore).toBe(false);
+    const first = await list("?limit=2");
+    expect(first.records.map((record) => record.checkoutId)).toEqual(["new", "archived"]);
+    expect(first.page.hasMore).toBe(true);
+    expect((await list("?limit=2&offset=2")).records.map((record) => record.checkoutId)).toEqual(["old"]);
+  });
+
   it("rejects invalid checkout report ranges and archive filters with stable error codes", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);

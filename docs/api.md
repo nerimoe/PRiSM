@@ -191,6 +191,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players/:playerId/assets/adjustments` | 按 `holdingId` 精确调整/扣减/ revoke 某条玩家持有记录，避免同类资产的不同有效期记录互相混淆。 |
 | `POST` | `/rpc/staff/players/:playerId/wallet/adjustment` | 按 `amount` 与 `reason` 调整玩家钱包；正数增加充值余额，负数执行余额冲正。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/history` | 查询该玩家的历史场次。 |
+| `GET` | `/rpc/staff/players/:playerId/checkouts` | 该玩家的全部结账单，含已归档（`archived: true`），按结账时间倒序；`limit`（默认 50，最多 200）/`offset` 分页，响应 `{records, page: {limit, offset, hasMore}}`，每条与 `/reports/checkouts` 相同。商户后台玩家面板的「消费记录」用它列出账单，点开读 `/reports/checkouts/:checkoutId` 显示完整时间轴。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/:sessionId/history` | 查询玩家某次结算的账单明细。 |
 | `GET` | `/rpc/staff/players/:playerId/redeem-records` | 查询该玩家的兑换记录，返回兑换码、礼物名称和兑换时间，用于玩家档案审计。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/preview` | 预览该玩家所有 active session 和未结 closed session 的统一结算结果；不关单、不扣款。 |

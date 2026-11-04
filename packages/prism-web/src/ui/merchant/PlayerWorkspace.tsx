@@ -29,7 +29,9 @@ import {
 } from "./shared";
 import { liveBilling, stayDuration } from "./live-billing";
 import { useLiveBilling } from "./use-live-billing";
-import { billTime } from "../bill-time";
+import { billTime, displayDateTime } from "../bill-time";
+import type { StaffReportCheckout } from "@prism/application";
+import { payment, ReportDetail } from "./Reports";
 
 type EntryPlan = {
   id: string;
@@ -67,14 +69,6 @@ type Holdings = {
     delta: number;
     reason: string;
     createdAt: string;
-  }[];
-};
-type History = {
-  sessions: {
-    sessionId: string;
-    startedAt: string;
-    endedAt: string | null;
-    total: number | null;
   }[];
 };
 
@@ -731,7 +725,6 @@ function PlayerPanel({
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
   const assets = useResource<Holdings>(`${base}/assets`);
-  const history = useResource<History>(`${base}/sessions/history`);
   const definitions = useResource<{ assetDefinitions: Asset[] }>(
     "asset-definitions",
   );
@@ -748,11 +741,13 @@ function PlayerPanel({
   const [busy, setBusy] = useState(false);
   const quoteRequest = useRef<AbortController | null>(null);
   useEffect(() => () => quoteRequest.current?.abort(), []);
+  // The checkout list reloads itself; a checkout made here asks it to.
+  const checkoutsReload = useRef(() => {});
   const done = () => {
     setAction(null);
     setPreview(null);
     assets.reload();
-    history.reload();
+    checkoutsReload.current();
     onChanged();
   };
   const billing = !!player.activeSessionId || !!livePlayer;
@@ -1204,22 +1199,7 @@ function PlayerPanel({
           <summary className="cursor-pointer py-2 text-sm font-medium">
             {t("消费记录")}
           </summary>
-          {!(history.data?.sessions?.length ?? 0) ? (
-            <p className="pb-2 text-sm text-ink/50">{t("暂无记录")}</p>
-          ) : (
-            (history.data?.sessions ?? []).map((s) => (
-              <div
-                key={s.sessionId}
-                className="flex justify-between gap-3 border-b border-ink/10 py-2 text-sm last:border-b-0"
-              >
-                <span>{date(s.startedAt)}</span>
-                <span className="tabular-nums">
-                  {s.endedAt ? money(s.total) : t("进行中")}
-                </span>
-              </div>
-            ))
-          )}
-          {history.error && <State error={history.error} />}
+          <PlayerCheckouts base={base} reload={checkoutsReload} />
         </details>
         <details>
           <summary className="cursor-pointer py-2 text-sm font-medium">
@@ -1358,5 +1338,74 @@ function PlanStart({ base, plans, done }: { base: string; plans: readonly { id: 
         </dl>
       )}
     </ActionForm>
+  );
+}
+
+const CHECKOUT_PAGE = 20;
+
+/**
+ * Every bill the player has settled, newest first, archived ones marked. Each
+ * opens the same detail as the records tab: the bill, its full timeline and
+ * its archive action.
+ */
+function PlayerCheckouts({ base, reload }: { base: string; reload: React.MutableRefObject<() => void> }) {
+  const { t, errorText } = useI18n();
+  const { timeZone } = useMerchant();
+  const [offset, setOffset] = useState(0);
+  const [selected, setSelected] = useState<string | null>(null);
+  const checkouts = useResource<{ records: StaffReportCheckout[]; page: { hasMore: boolean } }>(
+    `${base}/checkouts?limit=${CHECKOUT_PAGE}&offset=${offset}`,
+  );
+  reload.current = checkouts.reload;
+  const records = checkouts.data?.records ?? [];
+  return (
+    <>
+      {checkouts.error ? (
+        <State error={errorText(checkouts.error)} />
+      ) : !checkouts.data ? (
+        <State />
+      ) : !records.length ? (
+        <p className="pb-2 text-sm text-ink/50">{t("暂无记录")}</p>
+      ) : (
+        records.map((record) => (
+          <button
+            key={record.checkoutId}
+            type="button"
+            className="grid w-full grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 border-b border-ink/10 py-2 text-left text-sm last:border-b-0 hover:bg-ink/[0.03]"
+            onClick={() => setSelected(record.checkoutId)}
+          >
+            <span className={record.archived ? "text-ink/50" : ""}>
+              {displayDateTime(record.settledAt, timeZone)}
+              {record.archived && <span className="ml-2 text-xs">{t("已归档")}</span>}
+            </span>
+            <span className={`tabular-nums ${record.archived ? "text-ink/50" : ""}`}>{money(record.total)}</span>
+            <small className="col-span-2 text-xs text-ink/50">
+              {record.durationMinutes} {t("分钟")} · {payment(record, t)}
+            </small>
+          </button>
+        ))
+      )}
+      {(offset > 0 || checkouts.data?.page.hasMore) && (
+        <div className="flex justify-end gap-2 pt-2">
+          <button className={buttonQuiet} disabled={!offset} onClick={() => setOffset(Math.max(0, offset - CHECKOUT_PAGE))}>
+            {t("上一页")}
+          </button>
+          <button className={buttonQuiet} disabled={!checkouts.data?.page.hasMore} onClick={() => setOffset(offset + CHECKOUT_PAGE)}>
+            {t("下一页")}
+          </button>
+        </div>
+      )}
+      {selected && (
+        <ReportDetail
+          key={selected}
+          checkoutId={selected}
+          close={() => setSelected(null)}
+          changed={() => {
+            setSelected(null);
+            checkouts.reload();
+          }}
+        />
+      )}
+    </>
   );
 }
