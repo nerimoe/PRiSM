@@ -4,9 +4,9 @@
  */
 import type { Env } from "../bindings.js";
 import type { HaReport } from "../hardware/aimeio-relay.js";
+import { objectNamespace } from "../platform/objects.js";
 
-type ShopHubNamespace = {
-  getByName(name: string): {
+type ShopHubMethods = {
     relayOnline(shopId: string, machineId: string, channel: string, options?: { session?: string; restart?: boolean }): Promise<void>;
     relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void>;
     poweredOff(shopId: string, machineId: string): Promise<void>;
@@ -20,11 +20,10 @@ type ShopHubNamespace = {
     connectedBots(): Promise<string[]>;
     shopEvent(event: Record<string, unknown>): Promise<void>;
     idleSchedule(): Promise<Record<string, number>>;
-  };
 };
 
 export function shopHub(env: Env, shopId: string) {
-  return (env.SHOP_HUB as unknown as ShopHubNamespace | undefined)?.getByName(shopId) ?? null;
+  return objectNamespace<ShopHubMethods>(env.SHOP_HUB)?.getByName(shopId) ?? null;
 }
 
 /** null means the hub could not be asked, rather than that every bot is offline. */

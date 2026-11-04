@@ -11,7 +11,7 @@ The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalon
 - `bun install`: install workspace dependencies from `bun.lock`.
 - `bun test`: run all Bun tests across the repository.
 - `bun run typecheck`: run TypeScript project-reference checks.
-- `bun run dev:local`: start the local Bun + SQLite runtime.
+- `bun run dev:local`: start the local Bun + SQLite runtime with a seeded development shop.
 - `bun run dev:worker`: run the Cloudflare Worker through Wrangler.
 - `bun run deploy:worker`: deploy the Worker.
 - `bun run db:migrate:local` / `bun run db:migrate:remote`: apply D1 migrations locally or remotely.
@@ -19,6 +19,7 @@ The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalon
 - `bun run build:web`: build the React admin and player UI.
 - `bun run check:server` / `bun run check:platform`: build React and check the Worker bundle without deploying.
 - `bun run deploy:beta`: build React, apply D1 migrations and deploy the unified platform.
+- `bun run local:upgrade` / `bun run local:start`: migrate (with a backup) and run the standby local deployment on Bun + SQLite, no Cloudflare; `local:backup` / `local:restore` copy and put back its database. See `docs/local-deployment.md`.
 
 ## Coding Style & Naming Conventions
 

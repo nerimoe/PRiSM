@@ -55,7 +55,7 @@ bun run dev:all
 
 Use `PORT` and `WEB_PORT` to change ports; the runner updates the Vite proxy and allowed origins together. Configure MuNET OAuth credentials for real sign-in. Local D1 state is stored under the ignored `.wrangler` directory.
 
-`bun run dev:local` remains available for the standalone Bun + SQLite API and regression/integration work. It defaults to `./prism.sqlite`, configurable through `PRISM_SQLITE_PATH`; it does not serve a separate management UI. Its `/admin` page explains how to start the React platform.
+`bun run dev:local` runs the same local runtime as the standby deployment (Bun + SQLite, Durable Objects in process) on a development database that migrates and seeds itself. It defaults to `./prism.sqlite`, configurable through `PRISM_SQLITE_PATH`. For the standby deployment itself (`local:upgrade`, `local:start`), see [docs/local-deployment.md](docs/local-deployment.md).
 
 ## Quick Start: Cloudflare
 

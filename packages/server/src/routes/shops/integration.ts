@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { objectNamespace } from "../../platform/objects.js";
 import { yuanOf } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { sha256Hex } from "../../crypto.js";
@@ -100,7 +101,7 @@ export const integrationSocketRouter = new Hono<AppBindings>();
 
 integrationSocketRouter.get("/ws", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") jsonError(426, "需要 WebSocket 连接", "UPGRADE_REQUIRED");
-  const hub = (c.env.SHOP_HUB as unknown as { getByName(name: string): Promise<{ fetch(request: Request): Promise<Response> }> } | undefined);
+  const hub = objectNamespace(c.env.SHOP_HUB);
   if (!hub) jsonError(503, "店铺连接服务尚未配置", "SHOP_HUB_UNAVAILABLE");
   const { code, id } = await shopOfIntegrationToken(c);
   // A credential from before bots were resources gets one when it connects.
@@ -110,13 +111,13 @@ integrationSocketRouter.get("/ws", async (c) => {
   const headers = new Headers(c.req.raw.headers);
   headers.set("x-prism-hub-shop", id);
   headers.set("x-prism-hub-shop-code", code);
-  return (await hub.getByName(id)).fetch(new Request(c.req.raw, { headers }));
+  return hub.getByName(id).fetch(new Request(c.req.raw, { headers }));
 });
 
 /** The older address, `/api/v1/shops/:shopCode/integration/ws`, still connects. */
 integrationRouter.get("/ws", async (c) => {
   if (c.req.header("upgrade")?.toLowerCase() !== "websocket") jsonError(426, "需要 WebSocket 连接", "UPGRADE_REQUIRED");
-  const hub = (c.env.SHOP_HUB as unknown as { getByName(name: string): { fetch(request: Request): Promise<Response> } } | undefined);
+  const hub = objectNamespace(c.env.SHOP_HUB);
   if (!hub) jsonError(503, "店铺连接服务尚未配置", "SHOP_HUB_UNAVAILABLE");
   const shop = getShop(c);
   const code = c.req.path.match(/^\/api\/v1\/shops\/([^/]+)\//)?.[1] ?? shop.id;

@@ -1,16 +1,10 @@
 import { Database } from "bun:sqlite";
-import type {
-  D1BoundStatementLike,
-  D1DatabaseLike,
-  D1PreparedStatementLike,
-  SqlValue,
-} from "@prism/adapter-d1";
-import {
-  serializePricingProviderConfig,
-  sqliteSchema,
-} from "@prism/storage-sql";
+import { serializePricingProviderConfig } from "@prism/storage-sql";
+import type { Server } from "bun";
+import { applyMigrations, openLocalDatabase } from "./local/database.js";
+import { startLocalRuntime } from "./local/runtime.js";
+import type { LocalServerSocket } from "./local/websockets.js";
 import type { AppBindings, Env, TenantShop } from "./bindings.js";
-import app from "./app.js";
 
 export const SHOP_QUERY = `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
   COALESCE(b.auto_register, 0) AS auto_register,
@@ -25,6 +19,10 @@ export const SHOP_QUERY = `SELECT s.id, s.public_id, s.name, s.latitude, s.longi
 FROM shops s
 LEFT JOIN shop_billing_settings b ON b.shop_id = s.id`;
 
+/**
+ * Platform tables as a hand-written fixture for tests that build a minimal
+ * database. The runtime never uses it: its schema comes from the migrations.
+ */
 export const platformSchema = [
   `CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -253,117 +251,23 @@ export const platformSchema = [
   )`,
 ] as const;
 
-export type SqliteD1PreparedStatement = D1PreparedStatementLike & D1BoundStatementLike;
-export type SqliteD1Database = D1DatabaseLike & {
-  prepare(sql: string): SqliteD1PreparedStatement;
-};
+export {
+  createD1DatabaseFromSqlite,
+  type SqliteD1Database,
+  type SqliteD1PreparedStatement,
+} from "./local/database.js";
 
-export function createD1DatabaseFromSqlite(db: Database): SqliteD1Database {
-  return {
-    prepare(sql: string): SqliteD1PreparedStatement {
-      type LocalBatchResult = {
-        results: unknown[];
-        success: true;
-        meta: { changes: number };
-      };
-      type LocalBoundStatement = D1BoundStatementLike & {
-        executeBatch(): Promise<LocalBatchResult>;
-      };
-      const createStatement = (...values: SqlValue[]): LocalBoundStatement => ({
-        async first<T = unknown>() {
-          return (db.query(sql).get(...values) as T | null) ?? null;
-        },
-        async all<T = unknown>() {
-          return { results: db.query(sql).all(...values) as T[] };
-        },
-        async run() {
-          const result = db.query(sql).run(...values);
-          return { success: true, meta: { changes: result.changes } };
-        },
-        async executeBatch() {
-          // Cloudflare D1 returns rows for SELECT/RETURNING statements inside a batch;
-          // a plain .run() silently discards those rows and breaks shop-data exports.
-          const returnsRows = /^(?:SELECT|WITH|PRAGMA|EXPLAIN)\b/i.test(sql.trim())
-            || /\bRETURNING\b/i.test(sql);
-          if (returnsRows) {
-            const results = db.query(sql).all(...values) as unknown[];
-            const changed = /\bRETURNING\b/i.test(sql)
-              ? (db.query("SELECT changes() AS changes").get() as { changes: number } | null)?.changes ?? 0
-              : 0;
-            return { results, success: true as const, meta: { changes: changed } };
-          }
-          const result = db.query(sql).run(...values);
-          return { results: [], success: true as const, meta: { changes: result.changes } };
-        },
-      });
-
-      return {
-        ...createStatement(),
-        bind(...values: SqlValue[]) {
-          return createStatement(...values);
-        },
-      };
-    },
-
-    async batch(statements: readonly D1BoundStatementLike[]) {
-      if (statements.length === 0) return [];
-      const needsTransaction = !db.inTransaction;
-      if (needsTransaction) {
-        db.run("BEGIN");
-      }
-      try {
-        const results: unknown[] = [];
-        for (const statement of statements) {
-          const local = statement as D1BoundStatementLike & {
-            executeBatch?: () => Promise<unknown>;
-          };
-          results.push(local.executeBatch ? await local.executeBatch() : await statement.run());
-        }
-        if (needsTransaction) {
-          db.run("COMMIT");
-        }
-        return results;
-      } catch (error) {
-        if (needsTransaction) {
-          try {
-            db.run("ROLLBACK");
-          } catch {}
-        }
-        throw error;
-      }
-    },
-  };
-}
-
+/**
+ * Build the schema from the D1 migrations and seed a development shop: a
+ * platform admin, the default shop and one plan. Only `dev:local` and tests
+ * seed; the local deployment (`local/runtime.ts`) starts from an empty
+ * platform and is set up through install like the Worker.
+ */
 export function initializeLocalDatabase(
   db: Database,
   defaultShopCode = "default",
 ): void {
-  db.run("PRAGMA foreign_keys = OFF;");
-
-  for (const statement of sqliteSchema) {
-    db.run(statement);
-  }
-
-  for (const statement of platformSchema) {
-    db.run(statement);
-  }
-  const seatOwned = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('mahjong_seats') WHERE name = 'entry_owned'").get();
-  if (!seatOwned) db.run("ALTER TABLE mahjong_seats ADD COLUMN entry_owned INTEGER NOT NULL DEFAULT 0");
-  // A local database created before resource groups or occupancy lacks their columns.
-  for (const [column, type] of [
-    ["resource_group_id", "TEXT"],
-    ["pricing_config_override_id", "TEXT"],
-    ["capacity", "INTEGER NOT NULL DEFAULT 0"],
-    ["occupancy_minutes", "INTEGER NOT NULL DEFAULT 15"],
-  ] as const) {
-    const exists = db
-      .query<{ name: string }, [string]>("SELECT name FROM pragma_table_info('machines') WHERE name = ?")
-      .get(column);
-    if (!exists) db.run(`ALTER TABLE machines ADD COLUMN ${column} ${type}`);
-  }
-
-  db.run("PRAGMA foreign_keys = ON;");
+  applyMigrations(db);
 
   const now = new Date().toISOString();
 
@@ -486,44 +390,41 @@ export type CreateLocalServerOptions = {
   env?: Partial<Env>;
 };
 
-export type LocalServer = ReturnType<typeof Bun.serve<undefined>> & {
+export type LocalServer = Server<LocalServerSocket> & {
   db: Database;
   env: Env;
+  /** Stops the HTTP server, the object host and the cron. */
+  stop(closeActiveConnections?: boolean): Promise<void>;
 };
 
+/**
+ * `dev:local`: the local runtime (`local/runtime.ts`) on a development
+ * database that migrates and seeds itself on start. The local deployment
+ * starts through `scripts/local.ts` instead, which never seeds.
+ */
 export function createLocalServer(
   options: CreateLocalServerOptions = {},
 ): LocalServer {
-  const databasePath =
-    options.databasePath ?? process.env.PRISM_SQLITE_PATH ?? "./prism.sqlite";
-  const db = options.db ?? new Database(databasePath);
-  const defaultShopCode = options.defaultShopCode ?? "default";
-
-  initializeLocalDatabase(db, defaultShopCode);
-
-  const d1 = createD1DatabaseFromSqlite(db);
-  const port =
-    options.port !== undefined
-      ? options.port
-      : Number.parseInt(process.env.PORT ?? "8787", 10);
-  const appOrigin = options.env?.APP_ORIGIN ?? `http://localhost:${port}`;
-
-  const env: Env = {
-    DB: d1,
-    APP_ORIGIN: appOrigin,
-    PRISM_SQLITE_PATH: databasePath,
-    ...options.env,
-  };
-
-  // Device software connects through the embedded relay on the Worker; this
-  // local runtime only serves the HTTP API.
-  const server = Bun.serve({
-    port,
+  const databasePath = options.db
+    ? ":memory:"
+    : options.databasePath ?? process.env.PRISM_SQLITE_PATH ?? "./prism.sqlite";
+  const db = options.db ?? openLocalDatabase(databasePath);
+  initializeLocalDatabase(db, options.defaultShopCode ?? "default");
+  const runtime = startLocalRuntime({
+    databasePath,
+    db,
+    port: options.port ?? Number.parseInt(process.env.PORT ?? "8787", 10),
     hostname: options.hostname,
-    fetch(request) {
-      return app.fetch(request, env);
-    },
+    env: options.env,
+    cron: databasePath !== ":memory:",
   });
-
-  return Object.assign(server, { db, env });
+  return new Proxy(runtime.server, {
+    get(target, property) {
+      if (property === "db") return runtime.db;
+      if (property === "env") return runtime.env;
+      if (property === "stop") return () => runtime.stop();
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as LocalServer;
 }

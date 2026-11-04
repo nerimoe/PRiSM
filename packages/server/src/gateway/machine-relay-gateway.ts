@@ -1,4 +1,5 @@
 import type { Env } from "../bindings.js";
+import { objectNamespace, type ObjectNamespace } from "../platform/objects.js";
 import { sha256Hex } from "../crypto.js";
 import type { CardLoginResult, CardWaitLimits, HaWatch } from "../durable-objects/machine-relay.js";
 import { machineRelayPath } from "./relay-path.js";
@@ -71,13 +72,8 @@ function rejected(reason: string): Response {
   });
 }
 
-/**
- * A structural view of the relay namespace. The generated `DurableObjectNamespace`
- * generic is too deep for `tsc` to instantiate when chained, and the existing
- * LiveBilling call site narrows the same way.
- */
-export type MachineRelayNamespace = {
-  getByName(name: string): {
+/** What callers ask of a machine's relay object. */
+export type MachineRelayMethods = {
     sendCard(input: {
       accessCode: string;
       source?: string;
@@ -97,11 +93,12 @@ export type MachineRelayNamespace = {
       e2ee: boolean;
       agents: Array<{ cardProtocol: number; clientVersion: string }>;
     }>;
-  };
 };
 
+export type MachineRelayNamespace = ObjectNamespace<MachineRelayMethods>;
+
 export function machineRelayNamespace(env: Env): MachineRelayNamespace | undefined {
-  return env.MACHINE_RELAY as unknown as MachineRelayNamespace | undefined;
+  return objectNamespace<MachineRelayMethods>(env.MACHINE_RELAY);
 }
 
 /** Forward an authenticated upgrade to the machine's Durable Object. */
@@ -110,10 +107,7 @@ export async function dispatchToRelay(
   env: Env,
   target: { channel: string; shopId: string; machineId: string },
 ): Promise<Response> {
-  const namespace = env.MACHINE_RELAY as unknown as {
-    idFromName(name: string): unknown;
-    get(id: unknown): { fetch(request: Request): Promise<Response> };
-  };
+  const namespace = machineRelayNamespace(env)!;
   const headers = new Headers(request.headers);
   headers.set("x-prism-relay-shop", target.shopId);
   headers.set("x-prism-relay-machine", target.machineId);

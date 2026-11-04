@@ -3,23 +3,23 @@
  * work its REST API cannot do (who the token belongs to, creating a read-only
  * user, minting a long-lived token).
  *
- * Workers open an outbound WebSocket through `fetch` with an Upgrade header;
- * the socket is closed as soon as the commands are done, so nothing stays open.
+ * The socket comes from the platform (`platform/websocket.ts`) and is closed
+ * as soon as the commands are done, so nothing stays open.
  */
-export type HaSocket = {
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  addEventListener(type: "message" | "close" | "error", listener: (event: any) => void): void;
-};
+import { connectWebSocket, OutboundSocketError, type OutboundSocket } from "../platform/websocket.js";
+export type HaSocket = OutboundSocket;
 
 export type HaSocketFactory = (url: string) => Promise<HaSocket>;
 
 export const workerHaSocket: HaSocketFactory = async (url) => {
-  const response = await fetch(url.replace(/^ws/, "http"), { headers: { Upgrade: "websocket" } });
-  const socket = (response as Response & { webSocket?: (HaSocket & { accept(): void }) | null }).webSocket;
-  if (!socket) throw new HaCommandError(`Home Assistant 没有接受 WebSocket 连接（HTTP ${response.status}）`);
-  socket.accept();
-  return socket;
+  try {
+    return await connectWebSocket(url);
+  } catch (error) {
+    if (error instanceof OutboundSocketError) {
+      throw new HaCommandError(`Home Assistant 没有接受 WebSocket 连接（HTTP ${error.status}）`);
+    }
+    throw error;
+  }
 };
 
 export class HaCommandError extends Error {

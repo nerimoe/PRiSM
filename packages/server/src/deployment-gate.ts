@@ -174,6 +174,50 @@ export const utcWriteGuards = ["INSERT", "UPDATE"].map(
   BEGIN SELECT RAISE(ABORT,'UTC_PRICING_REQUIRED'); END`,
 );
 
+/** The data conversions every release runs after its schema migrations; each is idempotent. */
+export async function convertPlatformData(db: D1DatabaseLike) {
+  const pricing = await migrateLegacyPricingToUtc({
+    executor: createD1Executor(db),
+    now: new Date(),
+    id: () => crypto.randomUUID(),
+  });
+  const releases = await normalizeImportedReleaseTimeZones({
+    executor: createD1Executor(db),
+    now: new Date(),
+  });
+  const locations = await migrateShopLocationTimeZones(db);
+  return { pricing, releases, locations };
+}
+
+/** Throws unless the conversions are recorded, pricing is all UTC and every foreign key holds. */
+export async function verifyPlatformData(db: D1DatabaseLike): Promise<void> {
+  const markers = (
+    await db.prepare(
+      "SELECT id FROM prism_data_migrations WHERE id IN (?,?)",
+    )
+      .bind(utcPricingMigrationId, shopLocationTimeZoneMigrationId)
+      .all()
+  ).results;
+  if (markers.length !== 2) {
+    throw new Error("Data migrations are incomplete");
+  }
+  const invalid = await db.prepare(`SELECT
+    (SELECT COUNT(*) FROM pricing_configs WHERE kind IN ('time.priority','time.cap') AND json_extract(provider_json,'$.timeZone') IS NOT 'UTC')
+    + (SELECT COUNT(*) FROM pricing_config_versions WHERE kind IN ('time.priority','time.cap') AND json_extract(provider_json,'$.timeZone') IS NOT 'UTC')
+    + (SELECT COUNT(*) FROM pricing_releases WHERE time_zone!='UTC') AS n`)
+    .bind()
+    .first<{ n: number }>();
+  // D1 .first() returns the first row object unless a column name is supplied.
+  // Comparing that object directly to 0 rejects every healthy database.
+  if (invalid?.n !== 0) throw new Error("UTC pricing verification failed");
+  if (
+    (await db.prepare("PRAGMA foreign_key_check").bind().all()).results
+      .length
+  ) {
+    throw new Error("Foreign key check failed");
+  }
+}
+
 async function tableNames(db: D1DatabaseLike): Promise<string[]> {
   const rows = await db
     .prepare("SELECT name FROM sqlite_master WHERE type='table'")
@@ -320,16 +364,7 @@ export async function deploymentControl(
       return result({ ok: true, skipped: false });
     }
     if (input.action === "convert" && env.PRISM_DEPLOY_PHASE === "verify") {
-      const pricing = await migrateLegacyPricingToUtc({
-        executor: createD1Executor(guardedDB),
-        now: new Date(),
-        id: () => crypto.randomUUID(),
-      });
-      const releases = await normalizeImportedReleaseTimeZones({
-        executor: createD1Executor(guardedDB),
-        now: new Date(),
-      });
-      const locations = await migrateShopLocationTimeZones(guardedDB);
+      const { pricing, releases, locations } = await convertPlatformData(guardedDB);
       await deploymentBatch(
         env.DB,
         owner,
@@ -338,31 +373,7 @@ export async function deploymentControl(
       return result({ ok: true, pricing, releases, locations });
     }
     if (input.action === "check" && env.PRISM_DEPLOY_PHASE === "verify") {
-      const markers = (
-        await env.DB.prepare(
-          "SELECT id FROM prism_data_migrations WHERE id IN (?,?)",
-        )
-          .bind(utcPricingMigrationId, shopLocationTimeZoneMigrationId)
-          .all()
-      ).results;
-      if (markers.length !== 2) {
-        throw new Error("Data migrations are incomplete");
-      }
-      const invalid = await env.DB.prepare(`SELECT
-        (SELECT COUNT(*) FROM pricing_configs WHERE kind IN ('time.priority','time.cap') AND json_extract(provider_json,'$.timeZone') IS NOT 'UTC')
-        + (SELECT COUNT(*) FROM pricing_config_versions WHERE kind IN ('time.priority','time.cap') AND json_extract(provider_json,'$.timeZone') IS NOT 'UTC')
-        + (SELECT COUNT(*) FROM pricing_releases WHERE time_zone!='UTC') AS n`)
-        .bind()
-        .first<{ n: number }>();
-      // D1 .first() returns the first row object unless a column name is supplied.
-      // Comparing that object directly to 0 rejects every healthy database.
-      if (invalid?.n !== 0) throw new Error("UTC pricing verification failed");
-      if (
-        (await env.DB.prepare("PRAGMA foreign_key_check").bind().all()).results
-          .length
-      ) {
-        throw new Error("Foreign key check failed");
-      }
+      await verifyPlatformData(env.DB);
       const response = await health();
       if (!response.ok) throw new Error("Application health check failed");
       const body = (await response.json()) as {

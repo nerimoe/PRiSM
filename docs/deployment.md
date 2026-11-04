@@ -13,7 +13,7 @@ PRiSM Next 的统一平台支持多店铺，Worker 同时提供 API 与 React �
 
 金额从 REAL 元变为 INTEGER 分，券票保持自然整数，不能让旧代码与新数据库混用。统一平台的 `deploy:beta` 自动提供维护窗口和数据库写入屏障，保护首次从旧 stable 升级以及后续部署；独立兼容 API 的 `deploy:worker` 仍须自行停止旧写入并备份。详见下面的自动维护部署及 [计费整数与单位约定](money.md)。
 
-本地 `dev:local` 会在升级前生成 `.before-integer-money-*.sqlite` 备份并在事务内执行 0022；直接调用 `initializeSqliteSchema` 遇到旧金额 schema 会拒绝启动，防止误读。升级后核对金额、券票数量、JSON 定价和外键；回滚必须同时协调数据库与代码。
+本地运行时的表结构由 `migrations/*.sql` 生成，0022 和其它迁移一样由 `local:upgrade` 在备份之后执行；旧版 `dev:local` 手写表结构建的库会被拒绝。升级后核对金额、券票数量、JSON 定价和外键；回滚必须同时协调数据库与代码。
 
 在进行任何部署之前，请确保您的宿主机环境已安装：
 - **Bun**：版本 1.3 或以上。
@@ -46,18 +46,21 @@ bun run dev:all
 
 后端服务可根据场馆的网络和硬件条件选择以下两种部署模式之一：
 
-### A. 独立兼容 API (Local SQLite)
-保留给 SQLite 回归验证和既有 API 集成。此入口不托管 React，也不提供独立管理后台；开发完整平台请使用 `dev:all`。独立 API 的首次安装仍可通过 setup 接口完成 OOBE。
+### A. 本地部署（备用，Bun + SQLite）
+不依赖 Cloudflare，整个平台（API、React、Durable Object、机台中继）在一台机器上运行。详见 [本地部署](local-deployment.md)。
 
-1. **启动服务**：
+1. **建库或升级**（服务停止时）：
    ```bash
-   bun run dev:local
+   bun run local:upgrade
    ```
-2. **说明**：
-   - 默认数据库文件生成在根目录下的 `./prism.sqlite`。
-   - 如需自定义数据库路径，请设置环境变量 `PRISM_SQLITE_PATH`。请对该文件进行定期备份。
-   - 本地程序启动时会自动初始化并升级 SQLite 架构（与测试所用 schema 一致）。
-   - 默认监听端口为 `8787`。
+2. **启动**：
+   ```bash
+   bun run local:start
+   ```
+3. **说明**：
+   - 默认数据库为 `./data/prism.sqlite`，用 `PRISM_SQLITE_PATH` 修改；用 `local:backup` 备份、`local:restore` 恢复。
+   - 默认端口 `8787`；前面需要反向代理提供 HTTPS 和 `wss`。
+   - 开发调试用 `bun run dev:local`：同一套运行时，会自动迁移并创建默认店铺。
 
 ### B. 独立兼容 API 云端部署 (Cloudflare Worker & D1)
 适用于需要高可用、公网可直接访问的云端场景。

@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { objectNamespace } from "../../platform/objects.js";
 import { z } from "zod";
 import { PrismDomainError } from "@prism/core";
 import type { AppBindings } from "../../bindings.js";
@@ -36,7 +37,7 @@ resourceSessionRouter.get("/session/ws", async c=>{
   const user=requireUser(c);
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   const shop=await getShopForMachine(c,machine.shop_public_id);
-  const hub=c.env.SHOP_HUB as unknown as {getByName(name:string):{fetch(request:Request):Promise<Response>}}|undefined;
+  const hub=objectNamespace(c.env.SHOP_HUB);
   if(!hub)jsonError(503,"店铺连接服务尚未配置","SHOP_HUB_UNAVAILABLE");
   const headers=new Headers(c.req.raw.headers);
   headers.set("x-prism-hub-shop",shop.id);
@@ -258,7 +259,7 @@ merchantResourceActionRouter.get("/machines/ws",async c=>{
   const shopId=c.req.query("shopId");
   if(!shopId)jsonError(400,"请选择店铺","SHOP_REQUIRED");
   await assertResourceShop(c,user,shopId);
-  const hub=c.env.SHOP_HUB as unknown as {getByName(name:string):{fetch(request:Request):Promise<Response>}}|undefined;
+  const hub=objectNamespace(c.env.SHOP_HUB);
   if(!hub)jsonError(503,"店铺连接服务尚未配置","SHOP_HUB_UNAVAILABLE");
   const headers=new Headers(c.req.raw.headers);
   headers.set("x-prism-hub-shop",shopId);

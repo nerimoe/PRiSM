@@ -33,7 +33,11 @@
     "dev:platform": "bun run dev:worker",
     "check:server": "bun run build:web && wrangler deploy --dry-run --config wrangler.jsonc",
     "check:platform": "bun run check:server",
-    "deploy:beta": "bun run scripts/deploy-beta.ts"
+    "deploy:beta": "bun run scripts/deploy-beta.ts",
+    "local:upgrade": "bun run scripts/local.ts upgrade",
+    "local:start": "bun run build:web && bun run scripts/local.ts start",
+    "local:backup": "bun run scripts/local.ts backup",
+    "local:restore": "bun run scripts/local.ts restore"
   },
   "devDependencies": {
     "bun-types": "1.3.14",

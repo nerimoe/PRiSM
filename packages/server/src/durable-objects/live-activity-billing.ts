@@ -1,4 +1,5 @@
 import { createD1Repositories } from "@prism/adapter-d1";
+import { objectNamespace } from "../platform/objects.js";
 import { billEventLabel, billEvents, previewBillTimeline } from "@prism/application";
 import {
   addCents,
@@ -325,11 +326,9 @@ export async function refreshActivityBill(
     .bind(shopId, playerId)
     .first();
   if (!token) return;
-  const liveBillingNs = env.LIVE_BILLING as unknown as {
-    getByName(name: string): {
-      refresh(shopId: string, playerId: string, terminal?: boolean, urgent?: boolean): Promise<void>;
-    };
-  } | undefined;
+  const liveBillingNs = objectNamespace<{
+    refresh(shopId: string, playerId: string, terminal?: boolean, urgent?: boolean): Promise<void>;
+  }>(env.LIVE_BILLING);
   if (!liveBillingNs) return;
   await liveBillingNs
     .getByName(JSON.stringify([shopId, playerId]))

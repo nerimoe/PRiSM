@@ -1,4 +1,5 @@
 import type { DurableObject } from "cloudflare:workers";
+import { openWebSocketPair, webSocketAutoResponse, webSocketUpgrade } from "../platform/websocket.js";
 import type { Env } from "../bindings.js";
 import { decryptSecret, sha256Hex } from "../crypto.js";
 import type { DeviceBus } from "../resources/capabilities/bus.js";
@@ -248,9 +249,9 @@ export class ShopHub extends BaseDurableObject<Env> {
     super(ctx, env);
     // A bot's keep-alive is answered without waking the object.
     try {
-      ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+      ctx.setWebSocketAutoResponse(webSocketAutoResponse("ping", "pong") as WebSocketRequestResponsePair);
     } catch {
-      // Not available outside the Workers runtime; the message handler answers instead.
+      // Test doubles of the state lack it; the message handler answers instead.
     }
   }
 
@@ -268,10 +269,10 @@ export class ShopHub extends BaseDurableObject<Env> {
     const token = request.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1];
     if (!shopId || !shopCode || !token) return new Response("Missing bot channel", { status: 400 });
     await this.rememberShop(shopId);
-    const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server!, ["bot"]);
-    server!.serializeAttachment({ kind: "bot", token, shopCode, reminderLeadMs: null, id: crypto.randomUUID() } satisfies BotAttachment);
-    return new Response(null, { status: 101, webSocket: client });
+    const { client, server } = openWebSocketPair();
+    this.ctx.acceptWebSocket(server, ["bot"]);
+    server.serializeAttachment({ kind: "bot", token, shopCode, reminderLeadMs: null, id: crypto.randomUUID() } satisfies BotAttachment);
+    return webSocketUpgrade(client);
   }
 
   private bots(): WebSocket[] {
@@ -309,15 +310,15 @@ export class ShopHub extends BaseDurableObject<Env> {
     if (!shopId) return new Response("Missing page channel", { status: 400 });
     const userId = request.headers.get("x-prism-hub-user") ?? "";
     await this.rememberShop(shopId);
-    const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server!, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
-    server!.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
+    const { client, server } = openWebSocketPair();
+    this.ctx.acceptWebSocket(server, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
+    server.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
     // The greeting never waits on Home Assistant: a live device's stored state goes with it at once,
     // and one that is not live is asked for afterwards and sent when Home Assistant answers.
     const greeting = await this.pageGreeting(shopId, deviceId);
-    server!.send(JSON.stringify({ type: "hello", ...greeting.frame }));
-    if (greeting.ask) this.later(this.askPage(shopId, greeting.ask, server!));
-    return new Response(null, { status: 101, webSocket: client });
+    server.send(JSON.stringify({ type: "hello", ...greeting.frame }));
+    if (greeting.ask) this.later(this.askPage(shopId, greeting.ask, server));
+    return webSocketUpgrade(client);
   }
 
   /**
@@ -415,21 +416,21 @@ export class ShopHub extends BaseDurableObject<Env> {
     const shopId = request.headers.get("x-prism-hub-shop");
     if (!shopId) return new Response("Missing board channel", { status: 400 });
     await this.rememberShop(shopId);
-    const [client, server] = Object.values(new WebSocketPair());
-    this.ctx.acceptWebSocket(server!, ["board"]);
-    server!.serializeAttachment({ kind: "board" } satisfies BoardAttachment);
+    const { client, server } = openWebSocketPair();
+    this.ctx.acceptWebSocket(server, ["board"]);
+    server.serializeAttachment({ kind: "board" } satisfies BoardAttachment);
     // What is stored now, then what Home Assistant says of the devices nothing watches.
     const snapshot = await this.boardSnapshot(shopId);
     if (snapshot) {
-      server!.send(JSON.stringify(snapshot.frame));
-      this.later(this.askBoards(shopId, snapshot.unknown, [server!]));
+      server.send(JSON.stringify(snapshot.frame));
+      this.later(this.askBoards(shopId, snapshot.unknown, [server]));
     }
     try {
-      server!.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
+      server.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
     } catch (error) {
       console.error("Shop hub watcher list failed", error);
     }
-    return new Response(null, { status: 101, webSocket: client });
+    return webSocketUpgrade(client);
   }
 
   /**

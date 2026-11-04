@@ -19,7 +19,7 @@ bun run dev:all
 
 可通过 `PORT` 和 `WEB_PORT` 分别修改 API 和前端端口，代理与允许来源同步调整。平台登录需配置真实 OAuth 凭据；本地配置和数据库不提交到 Git。可用 `ASTRBOT_DIR` 指定可选 AstrBot 目录；Ctrl+C 或 SIGTERM 会停止开发进程。
 
-`bun run dev:local` 提供基于 Bun 原生 `Bun.serve` + `bun:sqlite` 的本地独立服务端运行时（入口为 `packages/server/src/serve.ts` / `local-server.ts`），支持离线单店开发与接口调试，自动初始化 SQLite 表结构及默认店铺计费配置。机台直连 `/io/ws` 需要 Durable Object，请用 `wrangler dev` 调试。
+`bun run dev:local` 启动本地运行时（`packages/server/src/serve.ts` → `local-server.ts` → `local/runtime.ts`），和本地部署是同一套：表结构来自 `migrations/*.sql`，三个 Durable Object、WebSocket、机台直连 `/io/ws` 都在进程内运行。开发用的数据库启动时会自动迁移，并创建默认店铺和一个计费方案。旧版 `dev:local` 手写表结构建的库没有迁移记账表，会被拒绝，换一个新文件即可。正式的本地备用部署见 [本地部署](local-deployment.md)。
 
 ## 检查与发布
 

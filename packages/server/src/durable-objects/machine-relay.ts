@@ -1,4 +1,5 @@
 import { announceShopEvent, eventPlayer } from "../resources/shop-events.js";
+import { openWebSocketPair, webSocketUpgrade } from "../platform/websocket.js";
 import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
 import { hinataIo } from "../resources/capabilities/catalog.js";
@@ -170,8 +171,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     await this.ctx.storage.put<Channel>(CHANNEL_KEY, { shopId, machineId, ...(channel ? { channel } : {}) });
 
     const capabilities = capabilitiesFromRequest(request);
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
+    const { client, server } = openWebSocketPair();
 
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ ...capabilities, session: crypto.randomUUID(), seenAt: Date.now() } satisfies Attachment);
@@ -192,7 +192,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
         // Socket already gone; the next command will deliver the state again.
       }
     }
-    return new Response(null, { status: 101, webSocket: client });
+    return webSocketUpgrade(client);
   }
 
   /** The card to hand a reconnecting device, dropping one that has lapsed. */

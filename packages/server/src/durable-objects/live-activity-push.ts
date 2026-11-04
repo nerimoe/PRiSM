@@ -188,7 +188,7 @@ export class LiveActivityPusher {
     now?: () => number;
   }) {
     this.config = input.config;
-    this.transport = input.transport ?? defaultApnsTransport;
+    this.transport = input.transport ?? ((request) => platformApnsTransport(request));
     this.now = input.now ?? (() => Date.now());
   }
 
@@ -292,7 +292,21 @@ function pemToPkcs8(pem: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
-const defaultApnsTransport: ApnsTransport = async ({
+/**
+ * APNs only speaks HTTP/2. A Worker's `fetch` negotiates it; Bun's `fetch`
+ * does not, so the local runtime installs one over `node:http2`
+ * (`local/apns.ts`).
+ */
+let platformApnsTransport: ApnsTransport = (request) => fetchApnsTransport(request);
+
+/** Install a transport; returns the one it replaces, to put back. */
+export function useApnsTransport(transport: ApnsTransport): ApnsTransport {
+  const previous = platformApnsTransport;
+  platformApnsTransport = transport;
+  return previous;
+}
+
+export const fetchApnsTransport: ApnsTransport = async ({
   url,
   headers,
   body,

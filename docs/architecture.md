@@ -41,7 +41,9 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
   - `src/deployment-gate.ts`：零停机部署栅栏门控。拦截 `/__prism_deploy` 部署动作与检查请求，执行维护窗口隔离、SQL schema 锁检查与 D1 状态围栏。
   - `src/tasks/cron-handlers.ts`：后台定时任务处理模块。实现 `purgeExpiredPlatformState`，按批次（每次最多 500 条）安全清理过期的临时验证凭据与已注销的平台状态。
   - `src/migrations/shop-time-zone-migration.ts`：店铺位置 IANA 时区幂等迁移脚本，基于经纬度地理编码解析缺失的时区配置并批量入库。
-  - `src/local-server.ts` 与 `src/serve.ts`：本地 Bun 原生运行入口与独立服务端运行时。实现 `createD1DatabaseFromSqlite` 将 `bun:sqlite` 封装为 `D1DatabaseLike` 适配器；实现 `initializeLocalDatabase` 自动初始化 `@prism/storage-sql` 与平台表结构并配置默认管理用户与店铺计费；通过 `createLocalServer` 启动 `Bun.serve`，支持离线单店开发调试与 HTTP 请求处理（机台直连 `/io/ws` 依赖 Durable Object，只在 Worker／`wrangler dev` 下可用）。
+  - `src/platform`：业务代码与平台之间的接口。`objects.ts` 是 Durable Object 命名空间的结构化类型（`objectNamespace()`），`websocket.ts` 负责 DO 创建 WebSocket 对、返回 101、出站连接和自动应答。默认是 Cloudflare 的实现，本地运行时启动时替换。
+  - `src/local`：不依赖 Cloudflare 的运行时（备用部署和 `dev:local`）。D1 换成 `bun:sqlite`（表结构来自 `migrations/*.sql`），三个 DO 在 `LocalObjectHost` 中运行（存储与闹钟在 SQLite），WebSocket 由 `LocalWebSockets` 桥接到 `Bun.serve`，APNs 走 `node:http2`，限流、静态资源、定时任务也在进程内提供；请求仍经 `worker.fetch`。升级、备份、恢复在 `upgrade.ts`。见 [本地部署](local-deployment.md)。
+  - `src/local-server.ts` 与 `src/serve.ts`：`dev:local` 的入口。`initializeLocalDatabase` 执行迁移并创建默认管理员、店铺和计费方案，`createLocalServer` 在此之上启动本地运行时；`createD1DatabaseFromSqlite` 从 `local/database.ts` 转导出，供测试使用。
 - `packages/application`：用例编排与跨适配器契约层。结合核心领域规则与仓储端口编排结算、员工现场操作和统一资产效果（设备动作的端口定义在这里，实现在 `packages/server/src/devices`）；查询 DTO 与插件目录契约也定义在这里，避免内层依赖 Hono。`available-assets` 和 SQL 读模型都必须调用 core 的 `evaluateAssetHoldingAvailability`，不得重复实现可用性判断。
 - 架构统一注记：原 `packages/server-hono`、`packages/runtime` 与 `packages/platform` 已在 2026-10-08 架构重构中彻底合并为单一的 `packages/server`；原虚拟 HTTP 请求转发（`createPrismApp().fetch()`）已完全消除，由 `tenantMiddleware` 直接提供原生依赖注入。
 - `packages/prism-web`：唯一的 React 管理与玩家客户端。管理入口为 `/merchant/:shopCode`，负责现场运营、计费、资产、报表、设备、成员和设置；玩家入口负责设备扫码与店铺账单。
