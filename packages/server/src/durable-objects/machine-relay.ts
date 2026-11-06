@@ -4,8 +4,9 @@ import type { Env } from "../bindings.js";
 import { hinataIo } from "../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
-import { cabinetChanges, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
-import { shopHub } from "./shop-hub-client.js";
+import { cabinetChanges, coinLimit, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
+import { loadResource } from "../resources/resource.js";
+import { pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
@@ -32,6 +33,10 @@ const CHANNEL_KEY = "channel";
 const CAPTURE_KEY = "card-capture";
 /** The last readable cabinet books, compared with the next ones. */
 const CABINET_KEY = "cabinet-books";
+/** The credit last judged against the limit, so a repeated beat costs nothing. */
+const CABINET_JUDGED_KEY = "cabinet-judged";
+/** Whether the cabinet was last at its limit, so pages hear only when that flips. */
+const COIN_FULL_KEY = "coin-full";
 /** How long an RPC to the IO may take; reading its books takes milliseconds. */
 const RPC_TIMEOUT_MS = 5000;
 /**
@@ -184,10 +189,28 @@ export class MachineRelay extends BaseDurableObject<Env> {
     }
   }
 
-  private setLink(online: boolean) {
-    return this.record("link", (bus, channel) =>
+  private async setLink(online: boolean) {
+    await this.record("link", (bus, channel) =>
       bus.setOwned({ device: { id: channel.machineId }, capability: "hinata_io", key: "link", value: online ? "online" : "offline" }),
     );
+    // Without a link the books no longer count, so the coin button is no longer held by them.
+    await this.judgeCoinLimit();
+  }
+
+  /** Open pages hear when the cabinet reaches or leaves its limit, and only then. Never gets in the way of the machine. */
+  private async judgeCoinLimit() {
+    const channel = await this.channel();
+    if (!channel) return;
+    try {
+      const device = await loadResource(this.env.DB, channel.shopId, channel.machineId);
+      const full = !!device && (await coinLimit(this.env.DB, channel.shopId, device)) === "full";
+      // Never judged counts as not full: the button starts on, so there is nothing to tell.
+      if (((await this.ctx.storage.get(COIN_FULL_KEY)) ?? false) === full) return;
+      await this.ctx.storage.put(COIN_FULL_KEY, full);
+      await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "coin");
+    } catch (error) {
+      console.error("Coin limit check failed", error);
+    }
   }
 
   /**
@@ -564,6 +587,11 @@ export class MachineRelay extends BaseDurableObject<Env> {
       }
     });
     if (changes.some((change) => hinataIo.signals[change.type]?.activity)) await this.touchHub();
+    const judged = isCabinetBooks(snapshot) ? snapshot.players[0]?.credit ?? null : "unreadable";
+    if ((await this.ctx.storage.get(CABINET_JUDGED_KEY)) !== judged) {
+      await this.ctx.storage.put(CABINET_JUDGED_KEY, judged);
+      await this.judgeCoinLimit();
+    }
   }
 
   private async resourceName(channel: Channel): Promise<string> {

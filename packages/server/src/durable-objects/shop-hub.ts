@@ -37,6 +37,7 @@ import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, say
 import { runBotCommand, type BotView } from "../resources/bot-commands.js";
 import { botConfigView, type BotResource } from "../resources/bot.js";
 import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
+import type { PageScope } from "./shop-hub-client.js";
 import { app } from "../app.js";
 
 /**
@@ -60,7 +61,8 @@ type BotAttachment = {
   commands?: { channels: string[] };
 };
 /** A player's device page, listening for that device's state and for changes to its own page. */
-type PageAttachment = { kind: "page"; deviceId: string; userId: string };
+/** `v: 2` is a page drawn from `/session/page`. It only ever hears that it changed. */
+type PageAttachment = { kind: "page"; deviceId: string; userId: string; v?: 2 };
 /** A merchant's device board, listening for the state of every device in the shop. */
 type BoardAttachment = { kind: "board" };
 /** A write a bot sent is answered from here if it arrives again (a resend after a lost reply). */
@@ -306,6 +308,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.rememberShop(shopId);
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server!, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
+    if (new URL(request.url).searchParams.get("v") === "2") {
+      // Nothing to read or send: the page reads itself once connected.
+      server!.serializeAttachment({ kind: "page", deviceId, userId, v: 2 } satisfies PageAttachment);
+      return new Response(null, { status: 101, webSocket: client });
+    }
     server!.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
     // The greeting never waits on Home Assistant: a live device's stored state goes with it at once,
     // and one that is not live is asked for afterwards and sent when Home Assistant answers.
@@ -394,9 +401,48 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
   }
 
+  /** The connected pages drawn from `/session/page` that `match` picks. */
+  private drawnPages(match: (page: PageAttachment) => boolean): WebSocket[] {
+    return this.ctx.getWebSockets().filter((ws) => {
+      const page = ws.deserializeAttachment() as PageAttachment | null;
+      return page?.kind === "page" && page.v === 2 && match(page);
+    });
+  }
+
+  private tellChanged(pages: WebSocket[], reason: string) {
+    const encoded = JSON.stringify({ method: "event.pageChanged", params: { reason } });
+    for (const ws of pages) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
+  /**
+   * Something pages show changed. The hub computes nothing about them: it passes
+   * this on and each page reads itself. A player's change also reaches mahjong
+   * tables, whose seats live and die with sessions.
+   */
+  async pagesChanged(scope: PageScope, reason: string): Promise<void> {
+    if ("shop" in scope) return this.tellChanged(this.drawnPages(() => true), reason);
+    if ("device" in scope) return this.tellChanged(this.drawnPages((page) => page.deviceId === scope.device), reason);
+    if (!this.drawnPages(() => true).length) return;
+    const shopId = await this.shopId();
+    if (!shopId) return;
+    const account = await this.env.DB.prepare("SELECT user_id FROM shop_player_accounts WHERE shop_id = ? AND player_id = ?")
+      .bind(shopId, scope.player).first<{ user_id: string }>();
+    const tables = new Set((await this.env.DB.prepare("SELECT device_id FROM device_capabilities WHERE shop_id = ? AND capability = 'mahjong'")
+      .bind(shopId).all<{ device_id: string }>()).results.map((row) => row.device_id));
+    this.tellChanged(this.drawnPages((page) => page.userId === account?.user_id || tables.has(page.deviceId)), reason);
+  }
+
   private toPages(deviceId: string, frame: Record<string, unknown>) {
+    this.tellChanged(this.drawnPages((page) => page.deviceId === deviceId), "device");
     const encoded = JSON.stringify(frame);
     for (const ws of this.ctx.getWebSockets(`page:${deviceId}`)) {
+      if ((ws.deserializeAttachment() as PageAttachment | null)?.v === 2) continue;
       try {
         ws.send(encoded);
       } catch {
@@ -596,6 +642,8 @@ export class ShopHub extends BaseDurableObject<Env> {
   /** Tell the open device pages of one user that something they show changed. */
   /** Something a bot is told about changed (its settings, staff, tables): each rereads it. */
   async botsChanged(): Promise<void> {
+    // What bots are told is the shop's setup, and pages show the same setup.
+    await this.pagesChanged({ shop: true }, "shop");
     const frame = JSON.stringify({ type: "config.changed" });
     this.botViews.clear();
     const shopId = (await this.shopId()) ?? "";
@@ -653,8 +701,10 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   async notifyUser(userId: string, frame: Record<string, unknown>): Promise<void> {
+    this.tellChanged(this.drawnPages((page) => page.userId === userId), String(frame.reason ?? "user"));
     const encoded = JSON.stringify(frame);
     for (const ws of this.ctx.getWebSockets(`user:${userId}`)) {
+      if ((ws.deserializeAttachment() as PageAttachment | null)?.v === 2) continue;
       try {
         ws.send(encoded);
       } catch {
@@ -683,9 +733,13 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     const snapshots = new Map<string, Promise<Record<string, unknown>>>();
     for (const ws of pages) {
-      const { deviceId } = ws.deserializeAttachment() as PageAttachment;
+      const { deviceId, v } = ws.deserializeAttachment() as PageAttachment;
       const mine = connections.get(deviceId);
       if (!mine || ![...mine].some((id) => changed.has(id))) continue;
+      if (v === 2) {
+        this.tellChanged([ws], "device");
+        continue;
+      }
       // Once per device however many pages show it, and only for devices that have one open.
       let pending = snapshots.get(deviceId);
       if (!pending) {

@@ -1,5 +1,5 @@
 import { errorResponse } from "../../http-errors.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
+import { pagesChanged, pagesChangedAfter, touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -103,11 +103,14 @@ shopRouter.use("*", async (c, next) => {
   if (!c.res.ok || c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
   const shop = c.get("shop");
   if (shop) touchShopHubAfter(c, shop.id);
+  // The shop's rules and prices are on every page.
+  if (shop && /^\/api\/v1\/shops\/[^/]+\/(settings$|pricing|staff\/pricing)/.test(c.req.path) && !c.req.path.endsWith("/preview"))
+    pagesChangedAfter(c, shop.id, { shop: true }, "shop");
 });
 
 shopRouter.use("*", async (c, next) => {
   await next();
-  if (!c.res.ok || !liveActivityConfig(c.env) || c.res.headers.get("x-prism-operation-replayed") === "true" ||
+  if (!c.res.ok || c.res.headers.get("x-prism-operation-replayed") === "true" ||
       c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
   const match = c.req.path.match(/^\/api\/v1\/shops\/[^/]+\/(player|staff|integration|cashier|assets|pricing)(?:\/(.*))?$/);
   if (!match) return;
@@ -148,6 +151,7 @@ shopRouter.use("*", async (c, next) => {
     const sessionIds = event ? extractSessionIds(payload, event) : [];
     const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
     await Promise.all([...playerIds].map(async (playerId) => {
+      await pagesChanged(c.env, shop.id, { player: playerId }, "billing");
       if (event && sessionIds.length) {
         await pushSessionEvent(c, { shopId: shop.id, playerId, sessionIds, event, initiatorClientId });
       } else {

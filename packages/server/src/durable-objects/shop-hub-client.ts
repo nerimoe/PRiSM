@@ -17,6 +17,7 @@ type ShopHubNamespace = {
     touch(shopId: string): Promise<void>;
     notifyUser(userId: string, frame: Record<string, unknown>): Promise<void>;
     botsChanged(): Promise<void>;
+    pagesChanged(scope: PageScope, reason: string): Promise<void>;
     shopEvent(event: Record<string, unknown>): Promise<void>;
     idleSchedule(): Promise<Record<string, number>>;
   };
@@ -91,6 +92,31 @@ export function notifyUserPages(
     }
   })();
   if (ctx) ctx.waitUntil(task);
+}
+
+/** Whose scanned pages are affected by a change. */
+export type PageScope = { device: string } | { player: string } | { shop: true };
+
+/**
+ * Something a scanned page shows changed: the hub tells the pages that show it,
+ * and they read themselves again. `reason` is only for logs. Never throws; a page
+ * that misses this reads on its next focus or within a minute.
+ */
+export async function pagesChanged(env: Env, shopId: string, scope: PageScope, reason: string): Promise<void> {
+  try {
+    await shopHub(env, shopId)?.pagesChanged(scope, reason);
+  } catch (error) {
+    console.error("Shop hub page notify failed", error);
+  }
+}
+
+/** The same, after the response. */
+export function pagesChangedAfter(c: { env: Env; executionCtx: { waitUntil(promise: Promise<unknown>): void } }, shopId: string, scope: PageScope, reason: string): void {
+  try {
+    c.executionCtx.waitUntil(pagesChanged(c.env, shopId, scope, reason));
+  } catch {
+    // Local server and tests: nothing would keep the call alive.
+  }
 }
 
 /**

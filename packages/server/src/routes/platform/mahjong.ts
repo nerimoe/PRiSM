@@ -7,6 +7,7 @@ import { requireUser } from "../../middleware/auth.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { checkShopLocation } from "../../middleware/geo.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { pagesChanged } from "../../durable-objects/shop-hub-client.js";
 import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings, TenantShop } from "../../bindings.js";
@@ -206,7 +207,10 @@ export async function moveMahjong<T = MahjongMove>(
       await occupancy.left({ resourceId: machine.id, playerId: player.id, at });
     }
     await occupancy.syncHeld(at).catch(error => console.error("Occupancy sync failed", error));
-    const sync = Promise.all(ids.map(id => refreshActivityBill(c.env, shop.id, id, false, true)))
+    const sync = Promise.all(ids.flatMap(id => [
+      refreshActivityBill(c.env, shop.id, id, false, true),
+      pagesChanged(c.env, shop.id, { player: id }, "seat"),
+    ]))
       .catch(error => console.error("Mahjong live bill sync failed", error));
     try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     // What still bills after getting up, so the player knows leaving the shop is checking out.

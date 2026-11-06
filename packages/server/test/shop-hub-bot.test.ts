@@ -14,6 +14,7 @@ const TOKEN = "integration_test_token";
 class FakeSocket {
   readonly sent: string[] = [];
   attachment: unknown = null;
+  tags: string[] | null = null;
   closed: { code?: number; reason?: string } | null = null;
   send(payload: string) { this.sent.push(payload); }
   close(code?: number, reason?: string) { this.closed = { code, reason }; }
@@ -55,8 +56,8 @@ async function fixture() {
       async setAlarm() {},
       async deleteAlarm() {},
     },
-    acceptWebSocket(ws: FakeSocket) { sockets.push(ws); },
-    getWebSockets() { return sockets; },
+    acceptWebSocket(ws: FakeSocket, tags?: string[]) { ws.tags = tags ?? null; sockets.push(ws); },
+    getWebSockets(tag?: string) { return tag ? sockets.filter((ws) => !ws.tags || ws.tags.includes(tag)) : sockets; },
     waitUntil(task: Promise<unknown>) { tasks.push(task); },
   };
   const env = {
@@ -74,7 +75,7 @@ async function fixture() {
     await hub.webSocketMessage(ws as any, JSON.stringify(frame));
     return JSON.parse(ws.sent.at(-1) ?? "null");
   };
-  return { sqlite, hub, ws, send, state };
+  return { sqlite, hub, ws, send, state, sockets, env };
 }
 
 describe("bot connection", () => {
@@ -313,6 +314,110 @@ describe("a bot's commands", () => {
     sqlite.run("UPDATE api_tokens SET status='revoked'");
     await hub.botsChanged();
     expect(ws.closed?.code).toBe(4003);
+    sqlite.close();
+  });
+});
+
+describe("what a page drawn from /session/page hears", () => {
+  async function shop() {
+    const made = await fixture();
+    const { sqlite, hub, env, ws } = made;
+    (env as any).SHOP_HUB = { getByName: () => hub };
+    sqlite.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','currency','paid','猫粮',1,'active'),('shop','currency','free','赠送',1,'active')");
+    sqlite.run(
+      "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES ('shop','base','time.priority','base',1,'active',?,'2026-01-01','2026-01-01')",
+      [JSON.stringify({ id: "base", timeZone: "UTC", rules: [{ id: "r", label: "全天", priority: 0, timeRange: { start: "00:00", end: "00:00" }, pricing: { unitMinutes: 60, unitPrice: 100, roundGraceMinutes: 0, priceCap: 100000 } }] })],
+    );
+    sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at) VALUES ('shop','default','默认',1,'base','2026-01-01','2026-01-01')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','一号','active','2026-01-01')");
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','u1','p1','2026-01-01')");
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");
+    sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')", [JSON.stringify({ tokenId: "t1" })]);
+    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','p1','onebot','1','2026-01-01')");
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    const open = async (deviceId: string, userId: string, query = "?v=2") => {
+      await hub.fetch(new Request(`https://prism.test/ws${query}`, { headers: { Upgrade: "websocket", "x-prism-hub-shop": "shop", "x-prism-hub-device": deviceId, "x-prism-hub-user": userId } }));
+      return made.sockets.at(-1)!;
+    };
+    return { ...made, open };
+  }
+  const frames = (page: FakeSocket) => page.sent.map((raw) => JSON.parse(raw));
+  const changed = (reason: string) => ({ method: "event.pageChanged", params: { reason } });
+
+  it("is greeted with nothing, and costs the hub no reads to connect", async () => {
+    const { sqlite, open } = await shop();
+    expect(frames(await open("m1", "u1"))).toEqual([]);
+    sqlite.close();
+  });
+
+  it("hears only what concerns it: its device, its player, or the whole shop", async () => {
+    const { sqlite, hub, open } = await shop();
+    const mine = await open("m1", "u1");
+    const other = await open("m2", "u2");
+    await hub.pagesChanged({ device: "m2" }, "coin");
+    expect(frames(mine)).toEqual([]);
+    expect(frames(other)).toEqual([changed("coin")]);
+    await hub.pagesChanged({ player: "p1" }, "billing");
+    expect(frames(mine)).toEqual([changed("billing")]);
+    expect(frames(other)).toHaveLength(1);
+    await hub.pagesChanged({ shop: true }, "shop");
+    expect(frames(mine)).toHaveLength(2);
+    expect(frames(other)).toHaveLength(2);
+    sqlite.close();
+  });
+
+  it("hears at a mahjong table whoever's billing moved, as its seats follow sessions", async () => {
+    const { sqlite, hub, open } = await shop();
+    sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','table','mahjong','{}','{}','2026-01-01','2026-01-01')");
+    const table = await open("table", "u2");
+    const elsewhere = await open("m1", "u2");
+    await hub.pagesChanged({ player: "p1" }, "billing");
+    expect(frames(table)).toEqual([changed("billing")]);
+    expect(frames(elsewhere)).toEqual([]);
+    sqlite.close();
+  });
+
+  it("hears a device's state change as a change, without the state", async () => {
+    const { sqlite, hub, open } = await shop();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','m1','pub-m1','空调','')");
+    const page = await open("m1", "u1");
+    await hub.deviceRead("shop", "m1", { power: "on" });
+    expect(frames(page)).toEqual([changed("device")]);
+    sqlite.close();
+  });
+
+  it("hears a binding, and the shop's setup changing", async () => {
+    const { sqlite, hub, open } = await shop();
+    const page = await open("m1", "u1");
+    await hub.notifyUser("u1", { type: "refresh", reason: "binding" });
+    expect(frames(page)).toEqual([changed("binding")]);
+    await hub.botsChanged();
+    expect(frames(page).at(-1)).toEqual(changed("shop"));
+    sqlite.close();
+  });
+
+  it("hears when a bot command moved the player's billing", async () => {
+    const { sqlite, hub, ws, open } = await shop();
+    const page = await open("m1", "u1");
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "c1", name: "login", args: [], from: { provider: "onebot", subject: "1", name: "一号" }, channel: "onebot:9" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(frames(page).map((frame) => frame.method)).toContain("event.pageChanged");
+    sqlite.close();
+  });
+
+  it("leaves a released client's channel as it was", async () => {
+    const { sqlite, hub, open } = await shop();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','m1','pub-m1','空调','')");
+    const old = await open("m1", "u1", "");
+    expect(frames(old)[0].type).toBe("hello");
+    const before = old.sent.length;
+    await hub.pagesChanged({ player: "p1" }, "billing");
+    await hub.pagesChanged({ shop: true }, "shop");
+    expect(old.sent.length).toBe(before);
+    await hub.deviceRead("shop", "m1", { power: "on" });
+    expect(frames(old).at(-1)).toMatchObject({ type: "state", power: "on" });
+    await hub.notifyUser("u1", { type: "refresh", reason: "binding" });
+    expect(frames(old).at(-1)).toEqual({ type: "refresh", reason: "binding" });
     sqlite.close();
   });
 });

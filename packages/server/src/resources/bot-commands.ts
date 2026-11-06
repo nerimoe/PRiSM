@@ -52,7 +52,7 @@ import { loadResources, matchesRef } from "./resource.js";
 import { rosterMessage } from "./roster.js";
 import { eventPlayer } from "./shop-events.js";
 import { refreshActivityBill } from "../durable-objects/live-activity-billing.js";
-import { notifyBotsChanged } from "../durable-objects/shop-hub-client.js";
+import { notifyBotsChanged, pagesChanged } from "../durable-objects/shop-hub-client.js";
 import { extractSessionIds, pushSessionEvent } from "../routes/shops/live-activity-events.js";
 
 /** What the bot is told, as `GET integration/bot` reads it; the hub keeps it until the bot's settings change. */
@@ -114,12 +114,14 @@ const runtime = (ctx: BotCommandContext) => ({ env: ctx.env, executionCtx: { wai
 
 /**
  * A command moved a player's bill. Commands do not pass the routes' event bridge
- * (`routes/shops/index.ts`), so the phone's Live Activity is told from here. Never delays or fails the answer.
+ * (`routes/shops/index.ts`), so the phone's Live Activity and the player's open
+ * pages are told from here. Never delays or fails the answer.
  */
 function billMoved(ctx: BotCommandContext, playerId: string | null | undefined, session?: { event: "start" | "end"; ids: string[] }) {
   if (!playerId) return;
   const { env, shop } = ctx;
   ctx.waitUntil((async () => {
+    await pagesChanged(env, shop.id, { player: playerId }, "billing");
     if (!session?.ids.length) return refreshActivityBill(env, shop.id, playerId, false, true);
     await pushSessionEvent({ env }, { shopId: shop.id, playerId, sessionIds: session.ids, event: session.event, initiatorClientId: null });
   })().catch((error) => console.error("Bot command event dispatch failed", error)));
