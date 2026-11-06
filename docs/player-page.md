@@ -53,7 +53,7 @@ POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, l
 { "method": "event.pageChanged", "params": { "reason": "billing" } }
 ```
 
-它不带内容，收到后重新读页面。`reason` 只用来排查问题，客户端不要按它做判断。连上时 Hub 什么也不发、什么也不读，页面连上之后自己读一次。保活还是纯文本 `ping` / `pong`。
+它不带内容，收到后重新读页面。`reason` 只用来排查问题，客户端不要按它做判断。连上时 Hub 什么也不发、什么也不读。重连之后页面自己读一次，第一次连上时如果页面刚读过就不用再读。保活还是纯文本 `ping` / `pong`。
 
 WebSocket 不保证送达，所以页面在回到前台时、以及可见期间每 60 秒也会读一次。
 
@@ -88,7 +88,7 @@ WebSocket 不保证送达，所以页面在回到前台时、以及可见期间�
 
 这样挂在旧路由上的东西都不会漏：`operationId` 防重复、限流、实时活动、闲置倒计时。玩家能做什么也和直接调旧路由完全一样。
 
-`card.swipe` 没有自己的 `operationId`，重发就是再刷一次卡，**客户端不能自动重试它**。其他操作用同一个 `operationId` 重发是安全的。
+所有操作用同一个 `operationId` 重发都是安全的，只会执行一次并拿到第一次的回答。还在执行时重发，`notices` 里是 `OPERATION_PENDING`，隔一会儿再问。旧客户端刷卡不带 `operationId`，行为不变。
 
 ## 开销
 

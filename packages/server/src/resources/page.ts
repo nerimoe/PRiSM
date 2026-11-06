@@ -19,6 +19,8 @@ export type PageButton = {
   style?: "primary";
   enabled: boolean;
   action: string;
+  /** The answer shows on the button for a moment instead of under it. */
+  answerOnButton?: boolean;
   /** Sent back as they are with the action. */
   payload?: Record<string, unknown>;
   /** The block that must be agreed to first; the action then carries `consent: true`. */
@@ -140,7 +142,7 @@ function pageBlocks(input: PageInput): PageBlock[] {
   if (cap.coin && !input.coinAfterSwipe)
     blocks.push({
       kind: "button", id: "coin", label: t(input.coinFull ? "达到机台投币上限" : "投币"), icon: "coin",
-      enabled: !input.coinFull, action: "coin", needsLocation: geo.machine,
+      enabled: !input.coinFull, action: "coin", answerOnButton: true, needsLocation: geo.machine,
     });
   return blocks.length ? blocks : [nothingHere(t)];
 }

@@ -1718,6 +1718,7 @@
   "没有读到卡片": "No card was read",
   "正在连接机台…": "Connecting to the cabinet…",
   "请把卡片放在「{name}」的读卡器上": "Put your card on the reader of {name}",
+  "网络较慢，正在重试": "The network is slow, trying again",
   "按位置分组": "Group by place",
   "占用": "Occupancy",
   "容量": "Capacity",

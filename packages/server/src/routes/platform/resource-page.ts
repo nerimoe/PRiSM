@@ -84,9 +84,9 @@ function routeOf(machine: ScannedResource, body: z.infer<typeof actionBody>) {
   const { ticket, operationId, action, location, payload } = body;
   if (action === "entry")
     return { path: `/api/v1/shops/${encodeURIComponent(machine.shop_public_id)}/player/session/start`, json: { ...payload, ticket, operationId, location } };
-  // A swipe takes its coordinates at the top level, and is not safe to send twice: it has no operation id of its own.
+  // A swipe takes its coordinates at the top level.
   if (action === "card.swipe")
-    return { path: "/api/v1/machines/login", json: { ...payload, ...(location && typeof location === "object" ? location : {}), ticket } };
+    return { path: "/api/v1/machines/login", json: { ...payload, ...(location && typeof location === "object" ? location : {}), ticket, operationId } };
   return { path: "/api/v1/devices/session/actions", json: { ...payload, ticket, operationId, action, location } };
 }
 

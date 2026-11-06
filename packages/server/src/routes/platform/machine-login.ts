@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { runPlayerOperation } from "../shops/player-operation.js";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { Session } from "@prism/core";
@@ -37,6 +38,8 @@ const machineLoginSchema = z.object({
   accuracy: z.number().min(0).max(10_000).optional(),
   ticket: z.string().min(1, "缺少会话凭证"),
   clientTimestamp: z.string().optional(),
+  /** Sent again after a lost answer, this swipes once and gets the first answer back. */
+  operationId: z.string().uuid().optional(),
 });
 
 export async function assertNotBanned(c: Pick<C, "env">, entries: Array<[string, string]>) {
@@ -181,6 +184,7 @@ async function handleLogin(c:C,routePublicId?:string) {
   // Only an explicit "off" blocks: an unreadable switch must not lock players out.
   if(device.capabilities.has("power")&&await readPower(runtime,device)==="off")
     jsonError(409,"请先开机","DEVICE_POWER_OFF");
+  const swipe=async()=>{
   const operationId=crypto.randomUUID(),now=nowIso();
   await c.env.DB.prepare(
     "INSERT INTO player_operations (shop_id,user_id,id,kind,status,created_at,device_id) VALUES (?,?,?,'aime.scan','pending',?,?)",
@@ -260,6 +264,10 @@ async function handleLogin(c:C,routePublicId?:string) {
       :response.coin?.status==="unknown"?[notice("COIN_UNKNOWN",locale)]:[]),
   ];
   return c.json({ok:true,...response,notices});
+  };
+  return body.operationId
+    ?runPlayerOperation(c,shop.id,`swipe/${machine.id}`,{operationId:body.operationId,cardId:body.cardId,ticket:body.ticket},swipe)
+    :swipe();
 }
 
 machineLoginRouter.post("/login",c=>handleLogin(c));
