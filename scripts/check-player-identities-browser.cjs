@@ -29,6 +29,7 @@ fs.mkdirSync(output, { recursive: true });
       else if (pathname === '/api/v1/shops/demo') data = { shop: { ...shop, billingEnabled: true, cashierEnabled: true } };
       else if (pathname.endsWith('/staff/me')) data = { staff: { canWrite, role: canWrite ? 'manager' : 'viewer' } };
       else if (pathname.endsWith('/staff/players')) data = { players };
+      else if (pathname.endsWith('/checkouts')) data = { records: [], page: { hasMore: false } };
       else if (pathname.endsWith('/staff/players/cashier/identities')) {
         const binding = req.postDataJSON();
         bindings.push(binding);
