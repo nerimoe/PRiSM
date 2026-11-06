@@ -853,6 +853,8 @@ const actionLabels: Record<string, string> = {
   "cabinet.coin": "机台投币",
   "cabinet.consumed": "开局扣币",
   "cabinet.reset": "投币计数清零",
+  "reader.connected": "读卡器插入",
+  "reader.disconnected": "读卡器拔出",
 };
 
 type Books = {
@@ -867,11 +869,15 @@ type Books = {
 function CabinetBooks({ deviceId }: { deviceId: string }) {
   const { t } = useI18n();
   const [books, setBooks] = useState<Books | null | undefined>(undefined);
+  const [io, setIo] = useState<IoFacts | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    api<{ cabinet: Books | null }>(`/api/v1/merchant/machines/${deviceId}/cabinet`)
-      .then((r) => setBooks(r.cabinet))
+    api<{ cabinet: Books | null; io?: IoFacts }>(`/api/v1/merchant/machines/${deviceId}/cabinet`)
+      .then((r) => {
+        setBooks(r.cabinet);
+        setIo(r.io ?? null);
+      })
       .catch(() => setBooks(null));
   }, [deviceId]);
   async function refresh() {
@@ -895,12 +901,42 @@ function CabinetBooks({ deviceId }: { deviceId: string }) {
         coins: books.bookkeeping.totalCoin,
       });
   return (
-    <div className="flex flex-wrap items-center gap-2 text-sm">
-      <span className="text-ink/70">{summary}</span>
-      <button type="button" className={button} disabled={busy} onClick={() => void refresh()}>
-        {t("刷新机台状态")}
-      </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
+    <div className="grid gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-ink/70">{summary}</span>
+        <button type="button" className={button} disabled={busy} onClick={() => void refresh()}>
+          {t("刷新机台状态")}
+        </button>
+        {error && <span className="text-xs text-red-600">{error}</span>}
+      </div>
+      {io && <IoStatus io={io} />}
+    </div>
+  );
+}
+
+type IoReader = { chipId: string | null; firmwareTimestamp: number | null; commitHash: string | null };
+type IoFacts = { version: string | null; readers: IoReader[] | null; online: boolean };
+
+/** A reader's firmware version: `timestamp-commithash`. */
+const firmwareText = (reader: Pick<IoReader, "firmwareTimestamp" | "commitHash">) =>
+  [reader.firmwareTimestamp, reader.commitHash].filter(Boolean).join("-") || "—";
+
+/** What the IO says it is and has connected; while offline, what it last said. */
+function IoStatus({ io }: { io: IoFacts }) {
+  const { t } = useI18n();
+  if (io.version === null && io.readers === null)
+    return <p className="text-xs text-ink/55">{t("这个 IO 没有上报版本和读卡器，需要更新 IO")}</p>;
+  return (
+    <div className="grid gap-1 text-xs text-ink/70">
+      <p>
+        {t("IO 版本")} {io.version ?? "—"}
+        {!io.online && ` · ${t("离线，显示最后上报的信息")}`}
+      </p>
+      {io.readers?.length ? io.readers.map((reader, index) => (
+        <p key={reader.chipId ?? index} className="tabular-nums">
+          {t("读卡器固件")} {firmwareText(reader)}
+        </p>
+      )) : <p>{t("没有连接读卡器")}</p>}
     </div>
   );
 }

@@ -11,6 +11,7 @@ import {
   parseCabinetEvent,
   parseCabinetSnapshot,
   parseHeartbeat,
+  parseReadersEvent,
   parseIoEvent,
   prepareMessageForClient,
   type ClientCapabilities,
@@ -108,7 +109,30 @@ describe("relay client hello", () => {
         action: "CLIENT_HELLO",
         body: { protocol: "aimeio-remote", auth: "bearer", e2ee: false, events: ["event.ledSet"] },
       }),
-    ).toEqual({ events: ["event.ledSet"], e2ee: false, authenticated: true, features: [] });
+    ).toEqual({ events: ["event.ledSet"], e2ee: false, authenticated: true, features: [], ioVersion: null });
+  });
+
+  it("reads the IO's version from the hello", () => {
+    expect(parseClientHello({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], io: { version: "1.2.3" } } })?.ioVersion).toBe("1.2.3");
+  });
+
+  it("reads the readers from a heartbeat and from a change", () => {
+    const params = { ha: [], readers: [
+      { chip_id: "usb-1", name: "HINATA", firmware_timestamp: 20261001, commit_hash: "abcd1234" },
+      { firmware_timestamp: 0 },
+    ] };
+    const expected = [
+      { chipId: "usb-1", name: "HINATA", firmwareTimestamp: 20261001, commitHash: "abcd1234" },
+      { chipId: null, name: "", firmwareTimestamp: null, commitHash: null },
+    ];
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params })?.readers).toEqual(expected);
+    expect(parseReadersEvent({ jsonrpc: "2.0", method: "event.readersChanged", params })).toEqual({ readers: expected, change: null });
+    expect(parseReadersEvent({ method: "event.readersChanged", params: { readers: [], change: { type: "disconnected", reader: params.readers[1] } } }))
+      .toEqual({ readers: [], change: { signal: "reader.disconnected", reader: expected[1] } });
+    // No readers is an answer; no list, or one that makes no sense, is not.
+    expect(parseHeartbeat({ method: "io.heartbeat", params: { readers: [] } })?.readers).toEqual([]);
+    expect(parseHeartbeat({ method: "io.heartbeat", params: {} })?.readers).toBeNull();
+    expect(parseHeartbeat({ method: "io.heartbeat", params: { readers: ["not a reader"] } })?.readers).toBeNull();
   });
 
   it("reports the optional features a client announces", () => {
@@ -143,8 +167,8 @@ describe("relay client hello", () => {
 
   it("reads the IO heartbeat, with and without Home Assistant health", () => {
     // A beat with nothing to say still proves the machine is alive.
-    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } })).toEqual({ ha: [], cabinet: null });
-    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat" })).toEqual({ ha: [], cabinet: null });
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } })).toEqual({ ha: [], readers: null, cabinet: null });
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat" })).toEqual({ ha: [], readers: null, cabinet: null });
     expect(parseHeartbeat({
       jsonrpc: "2.0", method: "io.heartbeat",
       params: { ha: [
@@ -152,7 +176,7 @@ describe("relay client hello", () => {
         { connection: "ha_2", term: 3, connected: false, error: "refused with HTTP 401" },
         { nope: true },
       ] },
-    })).toEqual({ ha: [
+    })).toEqual({ readers: null, ha: [
       { connection: "ha_1", term: 3, connected: true, error: null },
       { connection: "ha_2", term: 3, connected: false, error: "refused with HTTP 401" },
     ], cabinet: null });
@@ -184,6 +208,7 @@ describe("relay client hello", () => {
       e2ee: false,
       authenticated: false,
       features: [],
+      ioVersion: null,
     });
   });
 

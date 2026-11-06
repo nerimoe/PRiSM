@@ -136,7 +136,51 @@ export type ClientHello = {
   authenticated: boolean;
   /** Optional abilities beyond the card relay, such as `ha.watch`. */
   features: string[];
+  /** The IO's own version; null from an IO that predates reporting it. */
+  ioVersion: string | null;
 };
+
+/** A card reader connected to an IO. */
+export type IoReader = {
+  /** Null when the reader did not say. */
+  chipId: string | null;
+  name: string;
+  /** Null when the reader did not say. */
+  firmwareTimestamp: number | null;
+  commitHash: string | null;
+};
+
+function parseIoReaders(value: unknown): IoReader[] | null {
+  if (!Array.isArray(value)) return null;
+  const readers: IoReader[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    readers.push({
+      chipId: typeof item.chip_id === "string" ? item.chip_id : null,
+      name: typeof item.name === "string" ? item.name : "",
+      // A reader that could not be asked reports 0.
+      firmwareTimestamp: count(item.firmware_timestamp) || null,
+      commitHash: typeof item.commit_hash === "string" ? item.commit_hash : null,
+    });
+  }
+  return readers;
+}
+
+/**
+ * `event.readersChanged`: the whole list as it is now, and when one was plugged in
+ * or unplugged, which. The IO's first scan after starting changes the list only.
+ */
+export function parseReadersEvent(value: unknown): { readers: IoReader[]; change: { signal: string; reader: IoReader } | null } | null {
+  if (!isRecord(value) || value.method !== "event.readersChanged") return null;
+  if (value.id !== undefined && value.id !== null) return null;
+  const params = isRecord(value.params) ? value.params : {};
+  const readers = parseIoReaders(params.readers);
+  if (!readers) return null;
+  const change = isRecord(params.change) ? params.change : null;
+  const reader = change ? parseIoReaders([change.reader])?.[0] : undefined;
+  const signal = change?.type === "connected" ? "reader.connected" : change?.type === "disconnected" ? "reader.disconnected" : null;
+  return { readers, change: signal && reader ? { signal, reader } : null };
+}
 
 /**
  * The IO announces its transports on connect. `auth`/`e2ee` are only sent by
@@ -155,6 +199,7 @@ export function parseClientHello(value: unknown): ClientHello | null {
     features: Array.isArray(body.features)
       ? body.features.filter((item): item is string => typeof item === "string")
       : [],
+    ioVersion: isRecord(body.io) && typeof body.io.version === "string" ? body.io.version : null,
   };
 }
 
@@ -184,7 +229,7 @@ export type HaReport =
  * A heartbeat from a connected IO, with whatever Home Assistant health it
  * holds and, when it reads its cabinet (`cabinetMonitor=1`), the latest of that.
  */
-export type IoHeartbeat = { ha: HaConnectionHealth[]; cabinet: CabinetSnapshot | null };
+export type IoHeartbeat = { ha: HaConnectionHealth[]; readers: IoReader[] | null; cabinet: CabinetSnapshot | null };
 
 /**
  * What an IO read from the cabinet's amdaemon backup (`sysfile.dat`), as it
@@ -290,7 +335,7 @@ export function parseHeartbeat(value: unknown): IoHeartbeat | null {
       error: typeof item.error === "string" ? item.error : null,
     });
   }
-  return { ha, cabinet: parseCabinetSnapshot(params.cabinet) };
+  return { ha, readers: parseIoReaders(params.readers), cabinet: parseCabinetSnapshot(params.cabinet) };
 }
 
 /**

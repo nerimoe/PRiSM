@@ -343,6 +343,17 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 响应的 `card` 字段：`read`、`not_read`；外部中继收不到任何回报，记为 `sent`。旧客户端忽略这个字段。开启「刷卡后自动投币」时，`not_read` 不投币，`coin` 返回 `skipped`，`reason` 为 `CARD_NOT_READ`。扫码页在卡片行的说明文字里显示「已刷卡」或「登录失败」（`not_read`），投币结果接在后面（如「已刷卡 · 已投币」）；结果停留几秒，期间其它卡片和投币按钮照常可用。
 
+### HINATA IO：版本和读卡器
+
+只有直连平台的 IO 会上报这些，旧 IO 和外部中继看不到任何变化。
+
+- **版本：** `CLIENT_HELLO` 的 `body.io.version`。`hello` 不带读卡器。
+- **读卡器列表：** 每个读卡器有 `chip_id`、`name`、`firmware_timestamp`、`commit_hash`。网页只显示固件版本，格式是 `timestamp-commithash`。`io.heartbeat` 带完整的 `readers`；IO 第一轮扫描完成前不带这个字段，这和空列表（确实没有读卡器）不是一回事。
+- **变化：** IO 看到读卡器变化时发 `event.readersChanged`，带完整的 `readers`。真的插入或拔出时再带 `change: {type: "connected" | "disconnected", reader}`；IO 启动后第一轮扫到的读卡器不算插入，只有列表。
+- **平台：** 收到列表，和存的不同就整个替换（`device_state` 的 `readers`、`version`），相同就不写。插拔记录照 `change` 写进设备日志（`reader.connected`、`reader.disconnected`），不做比较，也不播报给 Bot。
+
+IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报时只有列表变了。`GET /api/v1/merchant/machines/:id/cabinet` 的 `io` 字段返回版本、列表和 IO 是否在线；离线时是最后上报的信息。
+
 ### 店铺 Hub：谁替店里盯着 Home Assistant，以及设备状态的两种模式
 
 每家店有一个 `ShopHub` Durable Object（binding `SHOP_HUB`，迁移 tag `shop-hub-v1`，名字是店铺 ID），它从店里**在线的 Bot 和直连 HINATA IO 中挑最多两个**（默认两个，平台管理员可按店铺调整，见下），让它们用只读令牌订阅 Home Assistant（`subscribe_entities`），把状态变化经已有的连接报回来。HA 不必暴露到公网（监听者在局域网里也行），机台连进来的 WebSocket 照常可以休眠。Bot 的 WebSocket、玩家资源页和商户看板的 WebSocket 都进这个对象；只有机台直连走每台一个的 `MachineRelay`。

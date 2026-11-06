@@ -148,3 +148,69 @@ describe("what a cabinet's card reports tell the shop's bots", () => {
     expect(await waiting).toMatchObject({ ok: true, awaited: { name: "card.consumed", payload: { unit_no: 0 } } });
   });
 });
+
+describe("what an IO says of its readers", () => {
+  const reader = (chip_id: string) =>
+    ({ chip_id, name: "HINATA", firmware_timestamp: 20261001, commit_hash: "abcd1234" });
+  const signals = (sqlite: Database) => (sqlite.query("SELECT name, payload_json FROM device_events WHERE kind='signal' AND name LIKE 'reader.%' ORDER BY rowid").all() as Array<{ name: string; payload_json: string }>)
+    .map((row) => [row.name, JSON.parse(row.payload_json).chipId]);
+  const stored = (sqlite: Database, key: string) => {
+    const row = sqlite.query("SELECT value_json FROM device_state WHERE device_id='machine-1' AND capability='hinata_io' AND key=?").get(key) as { value_json: string } | null;
+    return row ? JSON.parse(row.value_json) : null;
+  };
+  const hello = (relay: any, sockets: any[], body: Record<string, unknown>) =>
+    relay.webSocketMessage(sockets[0], JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], ...body } }));
+
+  const beat = (report: any, readers: unknown[] | undefined) => report("io.heartbeat", { ha: [], ...(readers ? { readers } : {}) });
+
+  it("keeps the version from the hello, which says nothing of readers", async () => {
+    const { relay, sockets, sqlite } = await fixture();
+    await hello(relay, sockets, { io: { version: "1.2.3" } });
+    expect(stored(sqlite, "version")).toBe("1.2.3");
+    expect(stored(sqlite, "readers")).toBeNull();
+    sqlite.close();
+  });
+
+  const changed = (report: any, readers: unknown[], type?: string, one?: unknown) =>
+    report("event.readersChanged", { readers, ...(type ? { change: { type, reader: one } } : {}) });
+
+  it("replaces the list with whatever the IO last said, from a change or a heartbeat", async () => {
+    const { sqlite, report } = await fixture();
+    await beat(report, [reader("usb-1")]);
+    expect(stored(sqlite, "readers")).toMatchObject([{ chipId: "usb-1", firmwareTimestamp: 20261001, commitHash: "abcd1234" }]);
+    await changed(report, [reader("usb-1"), reader("usb-2")]);
+    expect(stored(sqlite, "readers")).toHaveLength(2);
+    await beat(report, []);
+    expect(stored(sqlite, "readers")).toEqual([]);
+    sqlite.close();
+  });
+
+  it("leaves the list alone when a heartbeat has none yet, and writes nothing when it is the same", async () => {
+    const { sqlite, report } = await fixture();
+    await beat(report, [reader("usb-1")]);
+    await beat(report, undefined);
+    expect(stored(sqlite, "readers")).toHaveLength(1);
+    const at = () => sqlite.query("SELECT changed_at FROM device_state WHERE device_id='machine-1' AND key='readers'").get();
+    sqlite.run("UPDATE device_state SET changed_at='2000-01-01' WHERE device_id='machine-1' AND key='readers'");
+    await beat(report, [reader("usb-1")]);
+    expect(at()).toEqual({ changed_at: "2000-01-01" });
+    sqlite.close();
+  });
+
+  it("records what the IO says was plugged in and unplugged, and tells no bot", async () => {
+    const { sqlite, report, told } = await fixture();
+    await changed(report, [reader("usb-1")], "connected", reader("usb-1"));
+    await changed(report, [], "disconnected", reader("usb-1"));
+    expect(signals(sqlite)).toEqual([["reader.connected", "usb-1"], ["reader.disconnected", "usb-1"]]);
+    expect(told).toEqual([]);
+    sqlite.close();
+  });
+
+  it("records nothing for a list without a change, as when an IO starts up", async () => {
+    const { sqlite, report } = await fixture();
+    await changed(report, [reader("usb-1")]);
+    await beat(report, []);
+    expect(signals(sqlite)).toEqual([]);
+    sqlite.close();
+  });
+});

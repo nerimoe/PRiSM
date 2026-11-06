@@ -283,10 +283,16 @@ merchantResourceRouter.get("/machines/:id/cabinet", async (c) => {
     .bind(c.req.param("id")).first<{ shop_id: string }>();
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c, user, machine.shop_id);
-  const row = await c.env.DB.prepare(
-    "SELECT value_json, changed_at FROM device_state WHERE shop_id=? AND device_id=? AND capability='hinata_io' AND key='cabinet'",
-  ).bind(machine.shop_id, c.req.param("id")).first<{ value_json: string; changed_at: string }>();
-  return c.json({ cabinet: row ? JSON.parse(row.value_json) : null, changedAt: row?.changed_at ?? null });
+  const rows = (await c.env.DB.prepare(
+    "SELECT key, value_json, changed_at FROM device_state WHERE shop_id=? AND device_id=? AND capability='hinata_io' AND key IN ('cabinet','readers','version','link')",
+  ).bind(machine.shop_id, c.req.param("id")).all<{ key: string; value_json: string; changed_at: string }>()).results;
+  const row = (key: string) => rows.find((item) => item.key === key);
+  const value = (key: string) => { const found = row(key); return found ? JSON.parse(found.value_json) : null; };
+  return c.json({
+    cabinet: value("cabinet"), changedAt: row("cabinet")?.changed_at ?? null,
+    // Null for an IO that predates reporting them. While it is offline these are what it last said.
+    io: { version: value("version"), readers: value("readers"), online: value("link") === "online" },
+  });
 });
 
 /** Ask a direct-connected IO to read its cabinet's books now, for when the board seems out of date. */

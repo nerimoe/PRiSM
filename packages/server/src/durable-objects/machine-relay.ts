@@ -18,6 +18,8 @@ import {
   parseCabinetEvent,
   parseCabinetSnapshot,
   parseClientHello,
+  parseReadersEvent,
+  type IoReader,
   parseHaStates,
   parseHeartbeat,
   parseIoEvent,
@@ -37,6 +39,8 @@ const CABINET_KEY = "cabinet-books";
 const CABINET_JUDGED_KEY = "cabinet-judged";
 /** Whether the cabinet was last at its limit, so pages hear only when that flips. */
 const COIN_FULL_KEY = "coin-full";
+/** The reader list last stored, so an unchanged heartbeat writes nothing. */
+const READERS_KEY = "readers";
 /** How long an RPC to the IO may take; reading its books takes milliseconds. */
 const RPC_TIMEOUT_MS = 5000;
 const ONLINE_KEY = "online";
@@ -508,6 +512,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const previous = ws.deserializeAttachment() as Attachment;
       const session = previous.session ?? crypto.randomUUID();
       ws.serializeAttachment({ ...previous, e2ee: hello.e2ee, ha, session, seenAt: Date.now() } satisfies Attachment);
+      if (hello.ioVersion) await this.ioVersion(hello.ioVersion);
       const channel = await this.channel();
       if (ha && channel?.channel) {
         await this.ctx.storage.put(HA_SESSION_KEY, session);
@@ -545,12 +550,23 @@ export class MachineRelay extends BaseDurableObject<Env> {
       // The beat repeats the latest books, so a missed snapshot event is made up
       // for here; an unchanged one changes nothing.
       if (heartbeat.cabinet) await this.cabinet(heartbeat.cabinet);
+      // The whole list, once the IO has one, in case a change was missed.
+      if (heartbeat.readers) await this.readers(heartbeat.readers);
       return;
     }
 
     const books = parseCabinetEvent(parsed);
     if (books) {
       await this.cabinet(books);
+      return;
+    }
+
+    const readers = parseReadersEvent(parsed);
+    if (readers) {
+      await this.readers(readers.readers);
+      const { change } = readers;
+      if (change) await this.record("reader", (bus, channel) =>
+        bus.signal({ device: { id: channel.machineId }, capability: "hinata_io", name: change.signal, payload: change.reader }));
       return;
     }
 
@@ -653,6 +669,21 @@ export class MachineRelay extends BaseDurableObject<Env> {
       await this.ctx.storage.put(CABINET_JUDGED_KEY, judged);
       await this.judgeCoinLimit();
     }
+  }
+
+  private ioVersion(version: string) {
+    return this.record("version", (bus, channel) =>
+      bus.reportMany([{ device: { id: channel.machineId }, capability: "hinata_io", key: "version", value: version, quiet: true }]),
+    );
+  }
+
+  /** The readers an IO has now, replacing the list stored when it differs. */
+  private async readers(readers: IoReader[]) {
+    const encoded = JSON.stringify(readers);
+    if ((await this.ctx.storage.get(READERS_KEY)) === encoded) return;
+    await this.ctx.storage.put(READERS_KEY, encoded);
+    await this.record("readers", (bus, channel) =>
+      bus.reportMany([{ device: { id: channel.machineId }, capability: "hinata_io", key: "readers", value: readers, quiet: true }]));
   }
 
   private async resourceName(channel: Channel): Promise<string> {

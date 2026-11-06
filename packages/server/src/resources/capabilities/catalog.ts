@@ -183,9 +183,13 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     "cabinet.coin": { activity: true, store: true },
     "cabinet.consumed": { activity: true, store: true },
     "cabinet.reset": { activity: false, store: true },
+    // Told by the IO when it sees a reader come or go.
+    "reader.connected": { activity: false, store: true },
+    "reader.disconnected": { activity: false, store: true },
   },
   // `cabinet`: the latest book snapshot the IO read, whose truth is the cabinet's.
-  state: { link: { authority: "owned" }, cabinet: { authority: "external" } },
+  // `readers` and `version`: what the IO says it has connected and what it is.
+  state: { link: { authority: "owned" }, cabinet: { authority: "external" }, readers: { authority: "external" }, version: { authority: "external" } },
   available(action, config, secrets) {
     const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
     if (!connected) return false;
