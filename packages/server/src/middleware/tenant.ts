@@ -48,6 +48,7 @@ import {
 } from "@prism/core";
 import type { AppBindings, Env, PrismAppDependencies, TenantShop } from "../bindings.js";
 import { jsonError } from "../http.js";
+import { scopedReads } from "../read-scope.js";
 import { sha256Hex, toBase64Url } from "../crypto.js";
 import { createDeviceActionService, coinCooldownMs } from "../resources/capabilities/actions.js";
 import { listDeviceStates, listMachineConnections } from "../resources/capabilities/legacy-views.js";
@@ -661,7 +662,7 @@ export function getOrCreateShopDependencies(
   // `env` is stable per deployment, so it is not part of the cache key beyond
   // the encryption key that already distinguishes local from hosted runtimes.
   if (cached?.settings === settings && cached.encryptionKey === encryptionKey) return cached.deps;
-  const deps = createShopDependencies({ db, shop, encryptionKey, env });
+  const deps = createShopDependencies({ db: scopedReads(db), shop, encryptionKey, env });
   byShop.set(shop.id, { settings, encryptionKey, deps });
   return deps;
 }

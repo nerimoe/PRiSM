@@ -11,7 +11,7 @@ import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
-import { loadResource, mahjongConfigOf } from "../../resources/resource.js";
+import { loadResource, mahjongConfigOf, type Resource } from "../../resources/resource.js";
 import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 
@@ -20,8 +20,8 @@ type C = Context<AppBindings, any, any>;
 export type MahjongRuntime = Pick<C, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
 export type { MahjongConfig } from "../../resources/capabilities/catalog.js";
 /** The table's plan and size; its size is the resource's capacity. */
-async function mahjongConfig(c: Pick<C, "env">, machine: ScannedResource) {
-  const device = await loadResource(c.env.DB, machine.shop_id, machine.id);
+async function mahjongConfig(c: Pick<C, "env">, machine: ScannedResource, known?: Resource | null) {
+  const device = known ?? await loadResource(c.env.DB, machine.shop_id, machine.id);
   const config = device ? mahjongConfigOf(device) : null;
   return device && config ? { ...config, capacity: device.capacity } : null;
 }
@@ -29,8 +29,8 @@ async function mahjongConfig(c: Pick<C, "env">, machine: ScannedResource) {
 const liveSeats = liveSeatsSql;
 
 /** Seats at a table; `mine` marks the viewer's seat: the signed-in user's, or a player's for the bot. */
-export async function mahjongState(c: Pick<C, "env"> | C, machine: ScannedResource, viewer?: { playerId: string }) {
-  const config = await mahjongConfig(c, machine);
+export async function mahjongState(c: Pick<C, "env"> | C, machine: ScannedResource, viewer?: { playerId: string }, device?: Resource | null) {
+  const config = await mahjongConfig(c, machine, device);
   if (!config) return null;
   const result = await c.env.DB.prepare(`SELECT p.id AS playerId, p.display_name AS name,
     CASE WHEN ${viewer ? "ms.player_id=?" : "a.user_id=?"} THEN 1 ELSE 0 END AS mine,

@@ -15,6 +15,7 @@ import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { checkShopLocation } from "../../middleware/geo.js";
+import { withReadScope } from "../../read-scope.js";
 import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type DeviceState } from "../../resources/capabilities/device-state.js";
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
@@ -97,18 +98,20 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
       // A seat here is billed for already, by the plan the seat runs on.
       if(!running&&!await createOccupancy({db:c.env.DB,shopId:shop.id}).holds(machine.id,player.playerId))gate="entry";
     }
-    if(gate==="entry"&&bills&&!billing){
-      // A player not yet registered here has nothing running, so the preview is
-      // simply everything the plan needs.
-      const preview=await billingRead(()=>resourceBilling.preview({resourceId:machine.id,playerId:player?.playerId??""}));
-      if(preview)billing={preview};
-    }
-    // What the page shows as this resource's pricing: its own plan and every
-    // plan that bills with it, as the player's locked release defines them.
-    if(planId&&gate!=="binding"&&!billing?.error){
-      // Caps only matter where the rules are read before confirming.
-      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId:player?.playerId??"",withCaps:gate==="entry"}));
-      if(rules)billing={...billing,rules:{
+    // Only confirming shows what it would start and the resource's pricing: its
+    // own plan and every plan that bills with it, as the player's locked release
+    // defines them. A player already in reads neither.
+    if(gate==="entry"&&planId&&!billing){
+      const playerId=player?.playerId??""; // Not yet registered here: nothing is running, so everything the plan needs.
+      const [preview,rules]=await Promise.all([
+        billingRead(()=>resourceBilling.preview({resourceId:machine.id,playerId})),
+        billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId,withCaps:true})),
+      ]);
+      // `billingRead` set any failure as these ran.
+      const failure=(billing as {error?:{code:string;message:string}}|null)?.error;
+      billing=failure?{error:failure}:null;
+      if(preview&&!failure)billing={preview};
+      if(rules&&!failure)billing={...(billing??{}),rules:{
         ...rules,
         plans:rules.plans.map(plan=>({...plan,config:toPricingConfigManagementView(plan.config)})),
         ...(rules.caps?{caps:{
@@ -124,7 +127,7 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
   const live=device?await readLiveState(c.env.DB,shop.id,device):null;
   return {
     gate,coinUsed:false,billing,
-    mahjong:gate==="ready"?await mahjongState(c,machine):null,
+    mahjong:gate==="ready"&&bound("mahjong")?await mahjongState(c,machine,undefined,device):null,
     power:gate==="ready"&&bound("power")&&options.includePower
       ?await resourcePowerState(c,machine):"unmanaged",
     climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
@@ -134,10 +137,10 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
 
 resourceSessionRouter.get("/session/state", async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
-  return c.json(await sessionState(c,machine,{
+  return c.json(await withReadScope(()=>sessionState(c,machine,{
     includePower:c.req.query("includePower")!=="0",
     includeClimate:c.req.query("includeClimate")!=="0",
-  }));
+  })));
 });
 
 /**
@@ -148,7 +151,7 @@ resourceSessionRouter.get("/session/bootstrap", async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   return c.json({
     machine:await publicResource(c,machine),
-    state:optionalUser(c)?await sessionState(c,machine,{includePower:false,includeClimate:false}):null,
+    state:optionalUser(c)?await withReadScope(()=>sessionState(c,machine,{includePower:false,includeClimate:false})):null,
   });
 });
 

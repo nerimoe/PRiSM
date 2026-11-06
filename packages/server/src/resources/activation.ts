@@ -139,9 +139,11 @@ export function createResourceBilling(dependencies: {
   async function activeSession(input: { resourceId: string; playerId: string }) {
     const pricingConfigId = await planOf(input.resourceId);
     if (!pricingConfigId) return null;
-    if (await unpriced(input.playerId)) return placeholderOf(input.playerId);
+    // A player already billing this plan is the common case, and needs no catalog to tell.
     const active = await dependencies.sessions.findActiveByPlayerId(input.playerId);
-    return active.find((session) => session.pricingConfigId === pricingConfigId) ?? null;
+    const running = active.find((session) => session.pricingConfigId === pricingConfigId);
+    if (running) return running;
+    return (await unpriced(input.playerId)) ? placeholderOf(input.playerId) : null;
   }
 
   /** A start names what it bills; a resource named must have a plan. */
