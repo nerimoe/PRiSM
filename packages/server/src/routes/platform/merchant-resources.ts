@@ -11,7 +11,7 @@ import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjong
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
 import { capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
-import { idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
+import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
   normalizeHaUrl,
@@ -105,6 +105,10 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
   const climate = await describeHa(c, device, "climate");
   const embedded = hinata?.transport === "embedded";
   const coinKey = hinata?.coinKey ?? 32;
+  const botConfig = device.capabilities.get("bot")?.config as BotConfig | undefined;
+  const botToken = botConfig?.tokenId ? await c.env.DB.prepare(
+    "SELECT last_used_at FROM api_tokens WHERE shop_id=? AND id=? AND role='integration' AND status='active'",
+  ).bind(device.shopId, botConfig.tokenId).first<{ last_used_at: string | null }>() : null;
   return {
     id: device.id,
     publicId: device.publicId,
@@ -127,13 +131,14 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     mahjong: mahjongConfigOf(device),
     // The token itself is only returned when it is issued.
     bot: (() => {
-      const config = device.capabilities.get("bot")?.config as BotConfig | undefined;
-      if (!config) return null;
-      const { tokenId: _token, ...settings } = config;
+      if (!botConfig) return null;
+      const { tokenId: _token, ...settings } = botConfig;
       return settings;
     })(),
     // Whether the bot has a live credential, told like a device's relay token.
-    hasBotToken: !!device.capabilities.get("bot")?.config.tokenId,
+    hasBotToken: !!botToken,
+    botLastUsedAt: botToken?.last_used_at ?? null,
+    botOnline: null as boolean | null,
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,
@@ -180,7 +185,10 @@ async function relayStatus(
 }
 
 async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicId: string, canConfigure: boolean) {
-  const [status, bindings] = await Promise.all([relayStatus(c, devices), billingBindings(c, devices)]);
+  const [status, bindings, bots] = await Promise.all([
+    relayStatus(c, devices), billingBindings(c, devices),
+    devices.some((device) => device.capabilities.has("bot")) ? connectedBots(c.env, devices[0]!.shopId) : null,
+  ]);
   return Promise.all(devices.map(async (device) => {
     const presented = await presentResource(c, device, shopPublicId, canConfigure);
     const live = status.get(device.id);
@@ -195,6 +203,7 @@ async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicI
       occupancyMinutes: binding?.occupancyMinutes ?? 15,
       relayOnline: live ? live.online : null,
       relayE2ee: live ? live.e2ee : null,
+      botOnline: device.capabilities.has("bot") && bots !== null ? bots.includes(device.id) : null,
     };
   }));
 }
@@ -244,6 +253,7 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
     .bind(c.req.param("id")).first<{ shop_id: string }>();
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c,user,machine.shop_id);
+  await shopTimes(c, machine.shop_id);
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
     .listEvents({ deviceId: c.req.param("id"), limit });
@@ -297,7 +307,7 @@ merchantResourceRouter.post("/machines/:id/cabinet/refresh", async (c) => {
   return c.json({ cabinet, readAt: new Date(readAtMs).toISOString() });
 });
 
-/** Times in occupancy answers are shown in the shop's time zone, as the rest of the shop's data is. */
+/** Resource event and occupancy times use the shop's display zone. */
 async function shopTimes(c: C, shopId: string) {
   const row = await c.env.DB.prepare(
     "SELECT COALESCE((SELECT json_extract(value_json, '$.timeZone') FROM app_settings WHERE shop_id = ? AND key = 'store.profile'), 'Asia/Shanghai') AS time_zone",
@@ -482,7 +492,7 @@ const machineInput=z.object({
   // How many people can use it at once; 0 for one nobody occupies (an air
   // conditioner). A mahjong table's is its table size.
   capacity:z.number().int().min(0).max(16).optional(),
-  // How long someone counts as on it after the last sign of them; also its idle time.
+  // How long someone counts as on it after the last eligible swipe or coin.
   occupancyMinutes:z.number().int().min(1).max(1440).optional(),
   mahjong:z.object({
     // A table bills one plan; what it stacks on is that plan's `requires`.
@@ -788,9 +798,11 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
   const used=await c.env.DB.prepare(
     `SELECT 1 FROM machine_login_events WHERE machine_id=?
      UNION ALL SELECT 1 FROM player_operations WHERE device_id=?
-     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=? LIMIT 1`,
-  ).bind(id,id,machine.shop_id,id).first();
-  if(used)jsonError(409,"机台已有操作记录，请改为停用","MACHINE_HAS_HISTORY");
+     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=?
+     UNION ALL SELECT 1 FROM resource_occupancies WHERE shop_id=? AND resource_id=?
+     UNION ALL SELECT 1 FROM mahjong_seats WHERE shop_id=? AND machine_id=? LIMIT 1`,
+  ).bind(id,id,machine.shop_id,id,machine.shop_id,id,machine.shop_id,id).first();
+  if(used)jsonError(409,"资源已有使用记录，请改为停用","MACHINE_HAS_HISTORY");
   const botToken=await c.env.DB.prepare(
     "SELECT json_extract(config_json,'$.tokenId') AS tokenId FROM device_capabilities WHERE shop_id=? AND device_id=? AND capability='bot'",
   ).bind(machine.shop_id,id).first<{tokenId:string|null}>();
@@ -805,7 +817,7 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
     c.env.DB.prepare("DELETE FROM device_state WHERE shop_id=? AND device_id=?").bind(machine.shop_id,id),
     c.env.DB.prepare("DELETE FROM machines WHERE id=? AND shop_id=?").bind(id,machine.shop_id),
   ]);
-  // A deleted bot's connection ends; the others learn the shop changed.
-  if(botToken?.tokenId)notifyBotsChangedAfter(c,machine.shop_id);
+  notifyBotsChangedAfter(c,machine.shop_id);
+  afterHaChange(c,machine.shop_id);
   return c.json({ok:true});
 });

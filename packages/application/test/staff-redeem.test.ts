@@ -67,6 +67,10 @@ class MemoryRedeemRepository implements RedeemRepository {
     return 0;
   }
 
+  async getRedemptionCounts() {
+    return { codeUses: 0, playerPresentUses: 0 };
+  }
+
   async hasPlayerRedeemedPresent(): Promise<boolean> {
     return false;
   }

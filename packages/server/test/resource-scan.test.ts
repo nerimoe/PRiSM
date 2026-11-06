@@ -96,6 +96,63 @@ async function fixture() {
   return { sqlite, call, scan, active, app, env };
 }
 
+describe("resource deletion", () => {
+  beforeEach(() => clearShopDependenciesCache());
+
+  it("deletes a newly added resource and refuses a user outside the shop", async () => {
+    const { sqlite, call } = await fixture();
+    try {
+      sqlite.run("PRAGMA foreign_keys=ON");
+      const created = await call("POST", "/api/v1/merchant/machines", OWNER, { shopId: "shop", name: "临时资源" });
+      expect(created.status).toBe(201);
+      const id = created.body.machine.id;
+      expect((await call("DELETE", `/api/v1/merchant/machines/${id}`, PLAYER)).status).toBe(403);
+      expect((await call("DELETE", `/api/v1/merchant/machines/${id}`, OWNER)).status).toBe(200);
+      expect(sqlite.query("SELECT id FROM machines WHERE id=?").get(id)).toBeNull();
+      expect(sqlite.query("SELECT id FROM machines WHERE id='cabinet'").get()).not.toBeNull();
+    } finally { sqlite.close(); }
+  });
+
+  for (const source of ["occupancy", "seat"]) it(`preserves a resource with ${source} records`, async () => {
+    const { sqlite, call } = await fixture();
+    try {
+      sqlite.run("PRAGMA foreign_keys=ON");
+      if (source === "occupancy") sqlite.run(
+        "INSERT INTO resource_occupancies(shop_id,id,resource_id,player_id,source,started_at,last_seen_at,ended_at) VALUES ('shop','stay','cabinet','p1','hinata_io',?,?,?)", [NOW, NOW, NOW]);
+      else sqlite.run("INSERT INTO mahjong_seats(shop_id,player_id,machine_id,session_id,joined_at) VALUES ('shop','p1','cabinet','seat-session',?)", [NOW]);
+      const result = await call("DELETE", "/api/v1/merchant/machines/cabinet", OWNER);
+      expect(result.status).toBe(409);
+      expect(result.body.error.code).toBe("MACHINE_HAS_HISTORY");
+      expect(sqlite.query("SELECT id FROM machines WHERE id='cabinet'").get()).not.toBeNull();
+    } finally { sqlite.close(); }
+  });
+
+  it("revokes a deleted Bot's credential and refreshes connected clients", async () => {
+    const { sqlite, call, app, env } = await fixture();
+    try {
+      sqlite.run("PRAGMA foreign_keys=ON");
+      const created = await call("POST", "/api/v1/merchant/machines", OWNER, { shopId: "shop", name: "临时 Bot", bot: {} });
+      expect(created.status).toBe(201);
+      const id = created.body.machine.id;
+      const { tokenId } = sqlite.query("SELECT json_extract(config_json,'$.tokenId') AS tokenId FROM device_capabilities WHERE device_id=? AND capability='bot'").get(id) as { tokenId: string };
+      const refreshed: string[] = [], tasks: Promise<unknown>[] = [];
+      env.SHOP_HUB = { getByName: () => ({
+        async botsChanged() { refreshed.push("bots"); },
+        async refresh(shopId: string) { refreshed.push(shopId); },
+      }) } as any;
+      const response = await app.fetch(new Request(`https://prism.test/api/v1/merchant/machines/${id}`, {
+        method: "DELETE", headers: { authorization: `Bearer ${OWNER}` },
+      }), env, { waitUntil(task: Promise<unknown>) { tasks.push(task); }, passThroughOnException() {} } as any);
+      await Promise.all(tasks);
+      expect(response.status).toBe(200);
+      expect(sqlite.query("SELECT status FROM api_tokens WHERE shop_id='shop' AND id=?").get(tokenId)).toEqual({ status: "revoked" });
+      expect(sqlite.query("SELECT 1 FROM device_capabilities WHERE device_id=?").get(id)).toBeNull();
+      expect(refreshed).toContain("bots");
+      expect(refreshed).toContain("shop");
+    } finally { sqlite.close(); }
+  });
+});
+
 describe("scanning a resource", () => {
   beforeEach(() => clearShopDependenciesCache());
   afterEach(() => clearShopDependenciesCache());

@@ -24,7 +24,7 @@ type Place = { resourceId: string; resourceName: string; botId?: string };
 
 /** What older bots understand, set only on the announcements they always got. */
 type LegacyKind =
-  | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system" }
+  | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system" | "ha" }
   | { kind: "card"; started: boolean }
   | { kind: "coin"; started: boolean }
   | { kind: "occupancy" };

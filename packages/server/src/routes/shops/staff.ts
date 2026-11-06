@@ -327,6 +327,27 @@ staffRouter.get("/players/:playerId/sessions/history", async (c) => {
   return c.json(toSessionHistoryView(sessions));
 });
 
+// Player Checkouts: every bill the player has settled, archived ones included, newest first.
+staffRouter.get("/players/:playerId/checkouts", async (c) => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  const deps = getShopDeps(c);
+  if (!deps.staffQueries.listReportCheckouts) {
+    jsonError(503, "Report queries are not configured.", "STAFF_REPORT_QUERIES_NOT_CONFIGURED");
+  }
+  const rawOffset = Number(c.req.query("offset") ?? 0);
+  const rawLimit = Number(c.req.query("limit") ?? 50);
+  const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+  const limit = Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+  const records = await deps.staffQueries.listReportCheckouts({
+    playerId: c.req.param("playerId"), archive: "all", offset, limit: limit + 1,
+  });
+  return c.json({
+    records: records.slice(0, limit),
+    page: { limit, offset, hasMore: records.length > limit },
+  });
+});
+
 // Player Session History Detail
 staffRouter.get("/players/:playerId/sessions/:sessionId/history", async (c) => {
   const shop = getShop(c);

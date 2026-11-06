@@ -39,7 +39,7 @@ const setReportArchive = (
     },
   );
 
-function payment(record: StaffReportCheckout, t: (key: string) => string) {
+export function payment(record: StaffReportCheckout, t: (key: string) => string) {
   return record.externalPayment
     ? `${t("现场收款")} · ${t(({ wechat: "微信", alipay: "支付宝", cash: "现金", other: "其他" } as Record<string, string>)[record.externalPayment.method] ?? record.externalPayment.method)}`
     : t("资产结算");
@@ -360,7 +360,7 @@ function ReportArchiveAction({
   );
 }
 
-function ReportDetail({
+export function ReportDetail({
   checkoutId,
   close,
   changed,

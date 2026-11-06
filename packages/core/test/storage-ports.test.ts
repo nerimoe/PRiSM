@@ -118,6 +118,13 @@ class InMemoryRedeemRepository implements RedeemRepository {
     return this.records.filter((record) => record.codeId === codeId).length;
   }
 
+  async getRedemptionCounts(codeId: string, playerId: string, presentId: string) {
+    return {
+      codeUses: this.records.filter((record) => record.codeId === codeId).length,
+      playerPresentUses: this.records.filter((record) => record.playerId === playerId && record.presentId === presentId).length,
+    };
+  }
+
   async hasPlayerRedeemedPresent(playerId: string, presentId: string): Promise<boolean> {
     return this.records.some((record) => record.playerId === playerId && record.presentId === presentId);
   }

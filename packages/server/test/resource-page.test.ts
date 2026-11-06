@@ -86,6 +86,11 @@ describe("what the page shows", () => {
     expect(ids(table(seat("甲"), seat("乙")))).toEqual(["mahjong", "seat-full"]);
   });
 
+  it("confirms at a table by sitting down, which also checks the machine's location rule", () => {
+    const over = { ...caps("mahjong"), gate: "entry" as const, geo: { checkin: false, machine: true }, billing: { preview: { revision: "r" } } };
+    expect(block(over, "entry")).toMatchObject({ action: "mahjong.join", requires: "consent", payload: { expectedRevision: "r" }, needsLocation: true });
+  });
+
   it("is worded in the player's language, with no text left behind", () => {
     const over = { ...caps("coin"), locale: "en" as const, gate: "entry" as const, billing: {} };
     expect(block(over, "entry").label).toBe("Confirm");
@@ -250,6 +255,35 @@ describe("reading and acting on the page", () => {
     expect(blockIds(read.page)).toEqual(["disabled"]);
     const old = await app.fetch(new Request(`https://prism.test/api/v1/devices/session/state?ticket=${encodeURIComponent(ticket)}`, { headers: headers() }), env);
     expect(old.status).toBe(403);
+    sqlite.close();
+  });
+
+  it("sits a player down from the confirmation page, tells the table's pages, and gets them up again", async () => {
+    const { sqlite, page, act, env } = await fixture();
+    sqlite.run("DELETE FROM device_capabilities WHERE device_id='cab'");
+    sqlite.run("UPDATE machines SET capacity=2 WHERE id='cab'");
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop','cab','mahjong',?,'{}',?,?)`,
+      [JSON.stringify({ pricingConfigIds: ["plan"] }), NOW, NOW],
+    );
+    const told: Array<[unknown, string]> = [];
+    (env as any).SHOP_HUB = { getByName: () => new Proxy({}, {
+      get: (_, name) => async (...args: unknown[]) => { if (name === "pagesChanged") told.push(args as [unknown, string]); },
+    }) };
+    const button = (await page()).page.blocks.at(-1);
+    expect(button.action).toBe("mahjong.join");
+    const seated = await act(button.action, { ...button.payload, consent: true });
+    expect(seated.status).toBe(200);
+    expect(seated.data.ok).toBe(true);
+    expect(blockIds(seated.data.page)).toEqual(["mahjong", "seat"]);
+    expect(seated.data.page.blocks[0].seats).toEqual([{ name: "一号", mine: true }]);
+    expect(seated.data.page.blocks[1].action).toBe("mahjong.leave");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(told).toContainEqual([{ player: "p1" }, "seat"]);
+    const left = await act("mahjong.leave");
+    expect(left.data.ok).toBe(true);
+    expect(left.data.page.blocks.find((block: any) => block.kind === "mahjong")?.seats ?? []).toEqual([]);
     sqlite.close();
   });
 

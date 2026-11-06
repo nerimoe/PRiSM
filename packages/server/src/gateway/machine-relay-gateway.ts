@@ -89,7 +89,7 @@ export type MachineRelayNamespace = {
     }): Promise<{ ok: boolean; error?: string; awaited?: Awaited }>;
     sendKeyPress(input: { key: number; messageId: string; expiresAt: number; count?: number }):
       Promise<{ ok: boolean; error?: string }>;
-    watchHa(watch: HaWatch | null): Promise<{ ok: boolean }>;
+    watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }>;
     readCabinet(): Promise<{ ok: true; cabinet: CabinetSnapshot } | { ok: false; error: string }>;
     startCardCapture(input: {
       id: string; shopId: string; userId: string; playerId: string; expiresAt: number;

@@ -8,13 +8,14 @@ import { encryptSecret } from "../src/crypto.js";
 import { createDeviceActionService } from "../src/resources/capabilities/actions.js";
 import { loadResource } from "../src/resources/resource.js";
 import { readClimate, readLiveState, readShopLiveStates } from "../src/resources/capabilities/device-state.js";
+import { newHaConnection, writeHaConnection } from "../src/resources/capabilities/ha-connections.js";
 import { createD1DatabaseFromSqlite, platformSchema } from "../src/local-server.js";
 
 const KEY = "unit-test-encryption-key";
 const SHOP = "shop-1";
 const NOW = new Date("2026-10-20T10:00:00.000Z");
 
-async function fixture(options: { activeSession?: boolean } = {}) {
+async function fixture(options: { activeSession?: boolean; admit?: (resourceId: string) => boolean } = {}) {
   const sqlite = new Database(":memory:");
   for (const statement of [...sqliteSchema, ...platformSchema]) sqlite.run(statement);
   const db = createD1DatabaseFromSqlite(sqlite);
@@ -58,6 +59,7 @@ async function fixture(options: { activeSession?: boolean } = {}) {
     sessions: { async findActiveByPlayerId(playerId: string) { return sessions.filter((s) => s.playerId === playerId); } } as never,
     deviceEvents: createDeviceEventRepository(createD1Executor(db, SHOP)),
     playerIdentities: { async listByPlayerId() { return []; } } as never,
+    ...(options.admit ? { resourceAdmits: async ({ resourceId }: { resourceId: string }) => options.admit!(resourceId) } : {}),
     coinCooldownMs: async () => 0,
     now: () => NOW,
     id: () => `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
@@ -130,6 +132,36 @@ describe("climate capability", () => {
     expect(operations().map((operation) => [operation.device_id, operation.action])).toEqual([
       ["ac", "climate.off"], ["m1", "power.off"], ["room", "power.off"], ["room", "climate.off"],
     ]);
+  });
+
+  for (const capability of ["power", "climate"] as const) for (const on of [true, false])
+  it(`switches each shared ${capability} actuator once for all, on=${on}`, async () => {
+    const { service, machine, calls, operations, db, sqlite } = await fixture();
+    try {
+      const connection = await newHaConnection("https://ha.test", "token", KEY);
+      const other = await newHaConnection("https://ha.other", "token", KEY);
+      for (const c of [connection, other]) await writeHaConnection(db, SHOP, c).run();
+      for (const id of ["m1", "m2", "m3"]) {
+        await machine(id, id, { [capability]: `${capability === "power" ? "switch" : "climate"}.shared` });
+        sqlite.run("UPDATE device_capabilities SET config_json=?,secret_json='{}' WHERE device_id=?",
+          [JSON.stringify({ connectionId: id === "m3" ? other.id : connection.id, entityId: `${capability === "power" ? "switch" : "climate"}.shared` }), id]);
+      }
+      const command = await service.requestDeviceAction({ actor: staff, target: { kind: "facility", ref: "all" }, type: on ? "power.on" : "power.off" });
+      expect(command).toMatchObject({ status: "acked", payload: { deviceLabel: "所有设备" } });
+      expect(calls.map((call) => call.url)).toEqual(["https://ha.test", "https://ha.other"].map((url) => `${url}/api/services/${capability === "power" ? "switch" : "climate"}/turn_${on ? "on" : "off"}`));
+      expect(operations().map((o) => o.device_id)).toEqual(["m1", "m3"]);
+    } finally { sqlite.close(); }
+  });
+
+  it("checks every shared resource's admission before deduplicating all-device commands", async () => {
+    const { service, machine, calls, sqlite } = await fixture({ activeSession: true, admit: (id) => id === "m1" });
+    try {
+      await machine("m1", "舞萌", { power: "switch.shared" });
+      await machine("m2", "中二", { power: "switch.shared" });
+      await expect(service.requestDeviceAction({ actor: { type: "player", playerId: "p1" }, target: { kind: "facility", ref: "all" }, type: "power.on" }))
+        .rejects.toMatchObject({ code: "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION" });
+      expect(calls).toEqual([]);
+    } finally { sqlite.close(); }
   });
 
   it("asks Home Assistant when nothing watches the device, and records nothing", async () => {

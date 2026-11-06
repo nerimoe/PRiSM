@@ -1,6 +1,6 @@
 import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
-import { decryptSecret } from "../crypto.js";
+import { decryptSecret, sha256Hex } from "../crypto.js";
 import type { DeviceBus } from "../resources/capabilities/bus.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import { listHaConnections } from "../resources/capabilities/ha-connections.js";
@@ -9,8 +9,9 @@ import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/c
 import { loadResource } from "../resources/resource.js";
 import { idleReminderText, shopEventFrame } from "../resources/shop-events.js";
 import { findBotByToken } from "../resources/bot.js";
-import { sha256Hex } from "../crypto.js";
 import { announcedTypes, botMessage, type BotMessage } from "@prism/core";
+import type { ShopEvent } from "../resources/shop-events.js";
+import { climatePower } from "../resources/capabilities/idle-power.js";
 import {
   climateState,
   deviceView,
@@ -114,6 +115,7 @@ type Candidate = {
   machineId: string;
   /** The relay channel an IO is reached through; a bot is reached on its own socket. */
   channel: string;
+  session?: string;
   since: number;
   /** A bot's name for the board. */
   label?: string;
@@ -130,6 +132,7 @@ type Link = {
 type Watcher = {
   machineId: string;
   channel: string;
+  session?: string;
   label?: string;
   term: number;
   leaseUntil: number;
@@ -141,9 +144,8 @@ type Watcher = {
    * term — but until a report arrives that could only have come after the
    * power-off, what it says is not treated as evidence of the present.
    *
-   * The value is the number of the report that placed the hold. Anything at or
-   * before that number — including the rest of the very report that revealed the
-   * power-off — cannot lift it; only a later report can.
+   * Reports and holds share an ordered timestamp. A report already waiting
+   * when the hold was placed cannot lift it.
    */
   held?: number;
 };
@@ -238,10 +240,10 @@ const WRITE_CHUNK = 40;
  * and a second bot takes the other one. An IO fills a slot no bot wants, and is sent home when a bot
  * arrives once the watchers that stay have delivered what it carried, so the handover has no gap. A
  * candidate that just failed (it cannot reach Home Assistant, or went quiet) ranks behind healthy
- * ones for a while, whatever it is. Each watcher holds a lease renewed by every report; one that
- * leaves, is switched off, fails or goes quiet past the lease is dropped and the next candidate takes
- * its place. Every report carries the term of the assignment it answers, so a replaced watcher's
- * reports are ignored.
+ * ones for a while, whatever it is. Each watcher holds a lease renewed by every report. Power-offs
+ * keep the assignment pending outside the shop's slots until a later heartbeat proves it survived;
+ * leaving, failing or going quiet past the lease releases it. Every report carries the term of the
+ * assignment it answers, so a replaced watcher's reports are ignored.
  *
  * A connection is *watched* when some live watcher has it subscribed and has
  * delivered its full state. Only then does `ha_event_connections` hold it, and
@@ -298,6 +300,31 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   private bots(): WebSocket[] {
     return this.ctx.getWebSockets("bot");
+  }
+
+  /** Live sockets, including bots connected before credential usage was recorded. */
+  async connectedBots(): Promise<string[]> {
+    const shopId = await this.shopId();
+    if (!shopId) return [];
+    const hashes = await Promise.all(this.bots().filter((ws) => ws.readyState === 1).map(async (ws) => {
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      return attachment?.kind === "bot" ? sha256Hex(attachment.token) : "";
+    }));
+    if (!hashes.length) return [];
+    const rows = await this.env.DB.prepare(
+      `SELECT m.id, t.id AS tokenId, t.last_used_at FROM api_tokens t
+       JOIN device_capabilities c ON c.shop_id=t.shop_id AND c.capability='bot'
+         AND json_extract(c.config_json,'$.tokenId')=t.id
+       JOIN machines m ON m.shop_id=c.shop_id AND m.id=c.device_id
+       WHERE t.shop_id=? AND t.role='integration' AND t.status='active' AND m.enabled=1
+         AND t.token_hash IN (SELECT value FROM json_each(?))`,
+    ).bind(shopId, JSON.stringify(hashes)).all<{ id: string; tokenId: string; last_used_at: string | null }>();
+    const now = new Date().toISOString();
+    const missing = rows.results.filter((row) => !row.last_used_at);
+    if (missing.length) await this.env.DB.batch(missing.map((row) => this.env.DB.prepare(
+      "UPDATE api_tokens SET last_used_at=? WHERE shop_id=? AND id=? AND last_used_at IS NULL",
+    ).bind(now, shopId, row.tokenId)));
+    return rows.results.map((row) => row.id);
   }
 
   /** A device page connecting; the Worker route has checked its user and ticket. */
@@ -581,13 +608,15 @@ export class ShopHub extends BaseDurableObject<Env> {
       .sort((a, b) => Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) || a.machineId.localeCompare(b.machineId))
       .map((watcher) => {
         const links = Object.values(watcher.links);
-        const state = links.some((link) => link.connected && link.snapshot)
-          ? "watching"
-          : links.some((link) => link.connected)
-            ? "subscribing"
-            : links.length
-              ? "unreachable"
-              : "starting";
+        const state = watcher.held !== undefined
+          ? "confirming"
+          : links.some((link) => link.connected && link.snapshot)
+            ? "watching"
+            : links.some((link) => link.connected)
+              ? "subscribing"
+              : links.length
+                ? "unreachable"
+                : "starting";
         return isBot(watcher.machineId)
           ? { id: watcher.machineId, kind: "bot", name: watcher.label ?? DEFAULT_BOT_NAME, state }
           : { id: watcher.machineId, kind: "device", deviceId: watcher.machineId, state };
@@ -606,34 +635,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     this.toBoards(frame);
   }
 
-  /** How many clients watch at once in this shop. */
-  /**
-   * How many watchers this shop may have right now.
-   *
-   * One more than the shop's number while an IO with no track record is going
-   * through a power-off: its machine is dark, its IO may or may not be, and the
-   * shop should not be left with a hole in the meantime. One extra at most,
-   * however many machines go off at once, and never past the platform's ceiling.
-   */
-  private async effectiveLimit(watchers: Watchers): Promise<number> {
-    const limit = await this.limit();
-    if (limit >= MAX_WATCHERS) return limit;
-    const observations = await this.load<Observations>("observations", {});
-    const reliabilities = await this.load<Reliabilities>("reliability", {});
-    const now = Date.now();
-    const covering = Object.values(observations).some((entry) => {
-      if (entry.result !== undefined) return false;
-      if (now - entry.startedAt >= OBSERVE_MS) return false;
-      if (watchers[entry.machineId]?.term !== entry.term) return false;
-      // An IO that has been through this before and kept reporting does not need
-      // covering: it is expected to outlive the power-off, and the shop's other
-      // watcher is already there. Covering every time would make the extra slot
-      // permanent for the shops that need it least.
-      return !reliabilities[entry.machineId]?.trusted;
-    });
-    return covering ? Math.min(limit + 1, MAX_WATCHERS) : limit;
-  }
-
+  /** How many confirmed watchers this shop aims to keep, excluding pending power-offs. */
   private async limit(): Promise<number> {
     const stored = await this.ctx.storage.get<number>("limit");
     return typeof stored === "number" && Number.isInteger(stored) && stored >= 1 && stored <= MAX_WATCHERS ? stored : DEFAULT_WATCHERS;
@@ -975,9 +977,9 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** An IO announcing it can watch Home Assistant has connected. */
-  async relayOnline(shopId: string, machineId: string, channel: string): Promise<void> {
+  async relayOnline(shopId: string, machineId: string, channel: string, options: { session?: string; restart?: boolean } = {}): Promise<void> {
     await this.rememberShop(shopId);
-    await this.addCandidate({ machineId, channel, since: Date.now() });
+    await this.addCandidate({ machineId, channel, session: options.session, since: Date.now() }, options.restart);
   }
 
   /** A bot that can watch Home Assistant has said hello. */
@@ -987,19 +989,22 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** A client that can watch has connected: it is a candidate, and may take a slot at once. */
-  private async addCandidate(candidate: Candidate): Promise<void> {
+  private async addCandidate(candidate: Candidate, restart = false): Promise<void> {
     const candidates = await this.load<Candidates>("candidates", {});
     const key = candidate.machineId;
     const known = candidates[key];
-    candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
-    await this.ctx.storage.put("candidates", candidates);
+    // Standby heartbeats must not reset their priority or failure cooldown.
+    if (known?.channel !== candidate.channel || known?.label !== candidate.label || known?.session !== candidate.session) {
+      candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
+      await this.ctx.storage.put("candidates", candidates);
+    }
     // A reconnecting client lost its assignment with the old connection, so its
     // watch has to be handed out again. One that is already here on the same
     // connection has not lost anything, and taking its watch away would cost a
     // fresh subscription for no reason.
     const watchers = await this.load<Watchers>("watchers", {});
     const watcher = watchers[key];
-    if (watcher && known && watcher.channel === candidate.channel) return;
+    if (watcher && known && watcher.channel === candidate.channel && known.session === candidate.session && !restart) return;
     if (watcher) {
       delete watchers[key];
       await this.ctx.storage.put("watchers", watchers);
@@ -1008,9 +1013,11 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** That IO is gone. Its watch, if it had one, moves to another. */
-  async relayOffline(shopId: string, machineId: string): Promise<void> {
+  async relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void> {
     await this.rememberShop(shopId);
     const candidates = await this.load<Candidates>("candidates", {});
+    // A late close or expiry from the previous socket must not remove its replacement.
+    if (options && candidates[machineId]?.session !== options.session) return;
     delete candidates[machineId];
     await this.ctx.storage.put("candidates", candidates);
     await this.drop(machineId);
@@ -1047,44 +1054,42 @@ export class ShopHub extends BaseDurableObject<Env> {
    */
   async poweredOff(shopId: string, machineId: string, options: { confirmed?: boolean } = {}): Promise<void> {
     await this.rememberShop(shopId);
+    const heldAt = this.reportTime();
     const watchers = await this.load<Watchers>("watchers", {});
-    const watcher = watchers[machineId];
-    // Nothing to observe: this machine is not watching. Its power state still
-    // matters to whoever is, through the facts the next report carries.
-    if (!watcher) return;
-
+    const candidates = await this.load<Candidates>("candidates", {});
+    const targets = await this.load<Targets>("targets", {});
+    const group = Object.values(targets).find((list) => list.some((target) => target.deviceId === machineId && target.capability === "power"));
+    const affected = new Set([machineId, ...(group ?? []).filter((target) => target.capability === "power").map((target) => target.deviceId)]);
     const observations = await this.load<Observations>("observations", {});
-    const open = observations[machineId];
-    // The same power-off, arriving a second time: the platform's command and Home
-    // Assistant's report of it are one event, and counting them twice would make
-    // one power-off look like two failures.
-    //
-    // "The same" means the same assignment — a watcher that has been given a new
-    // term since is on a new run, and its machine going off again is a new
-    // power-off even if the last one never settled. Without that check a machine
-    // switched off twice in three minutes would have its second power-off
-    // ignored, and its watch would never be held back.
-    const sameRun = !!open && open.result === undefined && open.term === watcher.term;
-    if (sameRun) {
-      // The second arrival of the same power-off only adds what it knows.
-      if (options.confirmed && !open.confirmed) {
-        observations[machineId] = { ...open, confirmed: true };
-        await this.ctx.storage.put("observations", observations);
-        await this.fill();
+    let changed = false;
+    for (const id of affected) {
+      const watcher = watchers[id];
+      if (!watcher) {
+        // A standby on the same supply is not cover. Its next heartbeat or
+        // hello may offer it again, proving that its IO survived the power-off.
+        if (candidates[id]) {
+          delete candidates[id];
+          changed = true;
+        }
+        continue;
       }
-      return;
+      const open = observations[id];
+      // The command and HA confirmation of the same assignment count once.
+      if (open && open.result === undefined && open.term === watcher.term) {
+        if (options.confirmed && !open.confirmed) {
+          observations[id] = { ...open, confirmed: true };
+          changed = true;
+        }
+        continue;
+      }
+      observations[id] = { machineId: id, term: watcher.term, startedAt: Date.now(), confirmed: !!options.confirmed };
+      watchers[id] = { ...watcher, held: heldAt };
+      changed = true;
     }
-    // A fresh power-off: replace whatever was settled last time.
-    observations[machineId] = {
-      machineId,
-      term: watcher.term,
-      startedAt: Date.now(),
-      confirmed: !!options.confirmed,
-    };
+    if (!changed) return;
+    // Mark the whole supply before selecting cover, not one machine at a time.
+    await this.ctx.storage.put("candidates", candidates);
     await this.ctx.storage.put("observations", observations);
-    // Its assignment stays exactly as it is; only its word stops being taken for
-    // the present until it reports again, which a dead IO cannot do.
-    watchers[machineId] = { ...watcher, held: Date.now() };
     await this.ctx.storage.put("watchers", watchers);
     await this.publish(watchers);
     await this.fill();
@@ -1206,7 +1211,7 @@ export class ShopHub extends BaseDurableObject<Env> {
    * Hand a watcher what to watch, or with null take it away. An IO is reached through its relay, a bot
    * on its own socket. False when it could not be told.
    */
-  private async tell(watcher: Pick<Watcher, "machineId" | "channel">, watch: HaWatch | null): Promise<boolean> {
+  private async tell(watcher: Pick<Watcher, "machineId" | "channel" | "session">, watch: HaWatch | null): Promise<boolean> {
     if (isBot(watcher.machineId)) {
       const socket = this.botSocket(watcher.machineId);
       if (!socket) return false;
@@ -1220,7 +1225,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const relay = machineRelayNamespace(this.env);
     if (!relay) return false;
     try {
-      return (await relay.getByName(watcher.channel).watchHa(watch)).ok;
+      return (await relay.getByName(watcher.channel).watchHa(watch, watcher.session)).ok;
     } catch {
       return false;
     }
@@ -1248,14 +1253,16 @@ export class ShopHub extends BaseDurableObject<Env> {
    * database calls in between would otherwise let both think so and push it twice.
    */
   private reports: Promise<unknown> = Promise.resolve();
+  private reportClock = 0;
 
+  private reportTime(): number {
+    return (this.reportClock = Math.max(Date.now(), this.reportClock + 1));
+  }
 
   async haReport(shopId: string, machineId: string, report: HaReport): Promise<void> {
-    // When the report reached the hub, before it queued behind others: a hold
-    // placed after this moment cannot be lifted by this report.
     // When it was handed to us, not when it got its turn: a hold placed while
     // this report waits its turn belongs after it, and must not be lifted by it.
-    const arrivedAt = Date.now();
+    const arrivedAt = this.reportTime();
     const turn = this.reports.then(() => this.takeReport(shopId, machineId, report, arrivedAt));
     this.reports = turn.catch(() => undefined);
     return turn;
@@ -1275,12 +1282,14 @@ export class ShopHub extends BaseDurableObject<Env> {
     // report cannot say that — the one that revealed the power-off is itself a
     // state report, and would vouch for itself.
     const wasHeld = current.held !== undefined
+      && arrivedAt > current.held
       && report.method === "ha.status"
       && report.params.connected;
 
     if (report.method === "ha.states") {
       // The facts are stored before the connection can be announced as watched.
-      const applied = await this.apply(connection, report.params.states);
+      const link = current.links[connection];
+      const applied = await this.apply(connection, report.params.states, !report.params.full && !!link?.connected && link.snapshot);
       if (applied === "failed") {
         await this.resync(machineId, term, connection);
         return;
@@ -1337,7 +1346,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.publish(watchers);
     // A watcher that was outranked keeps going until the ones that stay have this; a snapshot may be
     // what lets it go.
-    if (Object.keys(watchers).length > (await this.effectiveLimit(watchers))) await this.fill();
+    if (Object.keys(watchers).length > (await this.limit())) await this.fill();
   }
 
   /**
@@ -1406,8 +1415,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
           .bind(shopId, id).first<{ name: string }>();
         await this.shopEvent(shopEventFrame({
-          type: "request.power.idle_off", kind: "power", resourceId: id, resourceName: resource?.name ?? id,
-          state: "off", by: "system", player: null,
+          type: "request.power.idle_off", resourceId: id, resourceName: resource?.name ?? id, player: null,
         }));
       }
     } catch (error) {
@@ -1513,14 +1521,18 @@ export class ShopHub extends BaseDurableObject<Env> {
     const candidates = await this.load<Candidates>("candidates", {});
     const shopId = await this.shopId();
     let changed = this.pruneBots(candidates, watchers);
-    const limit = await this.effectiveLimit(watchers);
+    const limit = await this.limit();
     const now = Date.now();
-    const kept = new Set<string>();
+    // Keep pending assignments so their original heartbeat can restore them,
+    // but refill their slots even if an earlier replacement also went dark.
+    const held = Object.values(watchers).filter((watcher) => watcher.held !== undefined);
+    const kept = new Set(held.map((watcher) => watcher.machineId));
     let built = false;
     let watch: Omit<HaWatch, "term"> | null = null;
     if (shopId) {
       for (const candidate of this.ranked(candidates, watchers, now, await this.load<Reliabilities>("reliability", {}))) {
-        if (kept.size >= limit) break;
+        if (kept.size >= limit + held.length) break;
+        if (kept.has(candidate.machineId)) continue;
         if (watchers[candidate.machineId]) {
           kept.add(candidate.machineId);
           continue;
@@ -1537,6 +1549,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         const watcher: Watcher = {
           machineId: candidate.machineId,
           channel: candidate.channel,
+          session: candidate.session,
           ...(candidate.label ? { label: candidate.label } : {}),
           term: 0,
           leaseUntil: 0,
@@ -1569,7 +1582,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const covered = announced.every((connection) =>
       [...kept].some((key) => {
         const link = watchers[key]?.links[connection];
-        return !!watchers[key] && watchers[key]!.leaseUntil > now && !!link?.connected && link.snapshot;
+        return !!watchers[key] && watchers[key]!.held === undefined && watchers[key]!.leaseUntil > now && !!link?.connected && link.snapshot;
       }),
     );
     if (!covered) return false;
@@ -1687,7 +1700,7 @@ export class ShopHub extends BaseDurableObject<Env> {
    * second watcher saw the same event, or saw it later), changes nothing. False
    * when the facts could not be stored.
    */
-  private async apply(connectionId: string, reported: HaEntityState[]): Promise<"stored" | "failed" | "power-off"> {
+  private async apply(connectionId: string, reported: HaEntityState[], announcePower: boolean): Promise<"stored" | "failed" | "power-off"> {
     const shopId = await this.shopId();
     if (!shopId) return "stored";
     const states = await this.load<Record<string, WatchedState>>("states", {});
@@ -1695,11 +1708,10 @@ export class ShopHub extends BaseDurableObject<Env> {
     const applied: Record<string, WatchedState> = {};
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
+    const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
     let powerMoved = false;
     /** Machines this report says lost power: their watch is released, as on any power-off. */
     const lostPower: string[] = [];
-    /** Machines Home Assistant saw switch on or off, told once the facts are stored. */
-    const switched: Array<{ deviceId: string; state: "on" | "off" }> = [];
     for (const item of reported) {
       const key = entityKey(connectionId, item.entity_id);
       const previous = applied[key] ?? states[key];
@@ -1708,6 +1720,18 @@ export class ShopHub extends BaseDurableObject<Env> {
       const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
       applied[key] = next;
       const at = item.last_changed ? new Date(item.last_changed) : undefined;
+      if (announcePower && previous) {
+        const deviceIds: string[] = [];
+        let state: "on" | "off" | null = null;
+        for (const target of targets[key] ?? []) {
+          const before = target.capability === "climate" ? climatePower(previous.state)
+            : previous.state === "on" || previous.state === "off" ? previous.state : null;
+          const after = target.capability === "climate" ? climatePower(next.state)
+            : next.state === "on" || next.state === "off" ? next.state : null;
+          if (before && after && before !== after) { deviceIds.push(target.deviceId); state = after; }
+        }
+        if (state) powerChanges.push({ deviceIds: [...new Set(deviceIds)], state, at: (at ?? new Date()).toISOString() });
+      }
       for (const target of targets[key] ?? []) {
         const device = { id: target.deviceId };
         if (target.capability === "power") {
@@ -1720,17 +1744,18 @@ export class ShopHub extends BaseDurableObject<Env> {
           // Only a real on-to-off move: `unavailable` reads as null, and a Home
           // Assistant hiccup must not release a working watch.
           if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
-          // A machine switched on or off, by the platform, an app or a button
-          // alike. A first snapshot, or coming back from `unavailable`, is not one.
-          if (power && (previous?.state === "on" || previous?.state === "off")) switched.push({ deviceId: target.deviceId, state: power });
         } else {
           const known = next.state !== "unavailable" && next.state !== "unknown";
           const view = known ? climateState(next.state, next.attributes) : null;
           // The page shows room temperature too, so it gets every change and the
           // log only gets the setting.
           writes.push({ device, capability: "climate", key: "view", value: view, quiet: true, ...(at ? { at } : {}) });
-          if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next)))
-            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(at ? { at } : {}) });
+          if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next))) {
+            // HA leaves last_changed alone when only temperature or fan settings change.
+            const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
+            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
+            if (previous) powerMoved = true;
+          }
           pushes.push([target.deviceId, { type: "state", climate: view }]);
         }
       }
@@ -1745,6 +1770,22 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
+    for (const change of powerChanges) {
+      try {
+        const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+          .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
+        const names = new Map(rows.results.map((row) => [row.id, row.name]));
+        const event: ShopEvent = {
+          type: change.state === "on" ? "power.on" : "power.off",
+          kind: "power", resourceId: change.deviceIds[0]!,
+          resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
+          state: change.state, by: "ha", player: null,
+        };
+        await this.shopEvent({ ...shopEventFrame(event), at: change.at });
+      } catch (error) {
+        console.error("HA power announcement failed", { shopId, error });
+      }
+    }
     // Pages and boards are told of a device's change only while the device is live, that is while
     // every Home Assistant connection it uses is announced. Until then a report is not yet the
     // device's state (a first snapshot, a held watcher); the announcement brings it once it is.
@@ -1760,13 +1801,6 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     // Switched on starts an idle countdown; switched off may end one.
     if (powerMoved) await this.touch(shopId);
-    for (const { deviceId, state } of switched) {
-      const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
-        .bind(shopId, deviceId).first<{ name: string }>();
-      await this.shopEvent(shopEventFrame({
-        type: state === "on" ? "power.on" : "power.off", resourceId: deviceId, resourceName: resource?.name ?? deviceId, player: null,
-      }));
-    }
     // Home Assistant confirming the machine is off: the same observation the
     // platform's own power-off opened, now with the machine's state as evidence
     // rather than only the command having been accepted.
@@ -1820,7 +1854,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const idle = await this.ctx.storage.get<IdleMemory>("idle");
     const candidates = await this.load<Candidates>("candidates", {});
     // An open slot is retried when a benched candidate becomes eligible again.
-    const retry = Object.keys(watchers).length < (await this.limit())
+    const retry = Object.values(watchers).filter((watcher) => watcher.held === undefined).length < (await this.limit())
       ? Object.values(candidates)
           .filter((candidate) => !watchers[candidate.machineId])
           .map((candidate) => candidate.benchedUntil)

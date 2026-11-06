@@ -165,6 +165,8 @@ function entryBlocks(input: PageInput, t: (text: string) => string): PageBlock[]
   // Confirming a state that has changed since this page was read is refused, not applied.
   const revision = billing?.preview?.revision;
   const payload = { ...(revision !== undefined ? { expectedRevision: revision } : {}), ...(cap.door ? { openDoor: true } : {}) };
+  // Confirming at a table is sitting down: the seat and its billing move together.
+  const action = cap.mahjong ? "mahjong.join" : "entry";
   return [
     { kind: "text", id: "entry-title", text: t("计费规则"), style: "heading" },
     ...(billing?.rules ? [{ kind: "pricing", id: "pricing", rules: billing.rules, changes: billing.preview ?? null } as const] : []),
@@ -172,7 +174,8 @@ function entryBlocks(input: PageInput, t: (text: string) => string): PageBlock[]
     {
       kind: "button", id: cap.door ? "door" : "entry", label: t(cap.door ? "入场并获取开门密码" : "确认"),
       ...(cap.door ? { icon: "door" as const, againLabel: t("重新获取密码") } : {}),
-      style: "primary", enabled: true, action: "entry", payload, requires: "consent", needsLocation: geo.checkin,
+      style: "primary", enabled: true, action, payload, requires: "consent",
+      needsLocation: geo.checkin || (cap.mahjong && geo.machine),
     },
   ];
 }

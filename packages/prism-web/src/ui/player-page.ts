@@ -113,6 +113,7 @@ export function openPageChannel(
   url: string,
   handlers: { onChanged(): void; onOpen(firstTime: boolean): void },
   make: (url: string) => WebSocket = (address) => new WebSocket(address),
+  hidden: () => boolean = () => typeof document !== "undefined" && document.visibilityState === "hidden",
 ) {
   let socket: WebSocket | null = null;
   let stopped = false;
@@ -133,6 +134,9 @@ export function openPageChannel(
     from.onopen = from.onmessage = from.onclose = null;
     try { from.close(); } catch { /* Already gone. */ }
     clearTimeout(retry);
+    // A page in the background reads nothing, so it cannot learn its ticket has expired. Nobody is
+    // looking at it either: it connects again when it comes back, through `wake`.
+    if (hidden()) return;
     retry = setTimeout(connect, RECONNECT_MS[Math.min(failures++, RECONNECT_MS.length - 1)]);
   };
   const ping = (on: WebSocket) => {

@@ -7,18 +7,24 @@
 -- integration credential now gets its bot resource up front, in the default
 -- resource group, keeping the credential (so a running bot does not disconnect).
 --
--- The id is derived from the credential so re-running cannot duplicate it, and
+-- Token ids are unique only within a shop, while machine ids are global. Encode
+-- both parts separately so equal token ids and ambiguous separators cannot collide.
+-- The id is derived from the shop and credential so re-running cannot duplicate it, and
 -- the insert leaves any shop that already has bot resources alone unless the
 -- credential is not the one a bot resource names.
 INSERT INTO machines(id, public_id, shop_id, name, enabled, kind, aliases_json, hinata_url_encrypted)
 SELECT
-  'bot-' || t.id,
+  'bot-' || lower(hex(t.shop_id)) || '-' || lower(hex(t.id)),
   lower(hex(randomblob(6))),
   t.shop_id,
   CASE WHEN t.label IS NULL OR trim(t.label) = '' THEN 'Bot' ELSE t.label END,
   1, 'machine', '[]', ''
 FROM api_tokens t
 WHERE t.role = 'integration' AND t.status = 'active'
+  AND NOT EXISTS (
+    SELECT 1 FROM machines m
+    WHERE m.shop_id = t.shop_id AND m.id = 'bot-' || lower(hex(t.shop_id)) || '-' || lower(hex(t.id))
+  )
   AND NOT EXISTS (
     SELECT 1 FROM device_capabilities c
     WHERE c.shop_id = t.shop_id AND c.capability = 'bot'
@@ -28,7 +34,7 @@ WHERE t.role = 'integration' AND t.status = 'active'
 INSERT INTO device_capabilities(shop_id, device_id, capability, config_json, secret_json, created_at, updated_at)
 SELECT
   t.shop_id,
-  'bot-' || t.id,
+  'bot-' || lower(hex(t.shop_id)) || '-' || lower(hex(t.id)),
   'bot',
   json_object('tokenId', t.id),
   '{}',
@@ -36,7 +42,7 @@ SELECT
   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 FROM api_tokens t
 WHERE t.role = 'integration' AND t.status = 'active'
-  AND EXISTS (SELECT 1 FROM machines m WHERE m.id = 'bot-' || t.id AND m.shop_id = t.shop_id)
+  AND EXISTS (SELECT 1 FROM machines m WHERE m.id = 'bot-' || lower(hex(t.shop_id)) || '-' || lower(hex(t.id)) AND m.shop_id = t.shop_id)
   AND NOT EXISTS (
     SELECT 1 FROM device_capabilities c
     WHERE c.shop_id = t.shop_id AND c.capability = 'bot'

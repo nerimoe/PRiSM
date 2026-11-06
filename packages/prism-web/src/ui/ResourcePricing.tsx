@@ -72,7 +72,6 @@ export function ResourcePricing({
   const { segments, error, loading } = usePlansDaySegments([...plans, ...capConfigs], now.date, zone);
   const change = (planId: string) =>
     changes?.started.some((item) => item.planId === planId) ? "新增" : changes?.kept.some((item) => item.planId === planId) ? "保留" : null;
-  const unsettled = rules.caps?.unsettled ?? 0;
   return (
     <section className="grid gap-3 text-left" aria-label={t("计费规则")} aria-busy={loading}>
       {error && <p role="alert" className="text-sm text-coral">{error}</p>}
@@ -97,20 +96,11 @@ export function ResourcePricing({
           </div>
         )}
         <Axis />
-        {(!!changes?.stopped.length || unsettled > 0) && (
-          <div className="grid gap-2 border-t border-ink/10 pt-3 text-sm">
-            {!!changes?.stopped.length && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-ink/60">{t("结束方案")}</span>
-                <span className="truncate">{changes.stopped.map((item) => item.planName).join("、")}</span>
-              </div>
-            )}
-            {unsettled > 0 && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="text-ink/60">{t("已计")}</span>
-                <span className="font-semibold tabular-nums">{money(unsettled)}</span>
-              </div>
-            )}
+        {/* The running bill is not repeated here: the account menu has it, in full. */}
+        {!!changes?.stopped.length && (
+          <div className="flex items-baseline justify-between gap-3 border-t border-ink/10 pt-3 text-sm">
+            <span className="text-ink/60">{t("确认后结束")}</span>
+            <span className="truncate">{changes.stopped.map((item) => item.planName).join("、")}</span>
           </div>
         )}
       </div>
@@ -174,7 +164,7 @@ function PlanLane({
         pick={pick}
       />
       {row && first && (
-        <p className="truncate text-xs text-ink/55">
+        <p className="truncate text-xs tabular-nums text-ink/55">
           {first.isClosed ? t("不计费") : first.label} {row.startLabel}–{row.endLabel}
           {cap
             ? ` · ${capText(cap, t)}`
@@ -211,23 +201,28 @@ function CapLane({ cap, segments, nowMinute }: { cap: SharedCapView; segments: S
     <div className="grid gap-2">
       <LaneHeader
         title={<span className="truncate font-semibold">{cap.name}</span>}
-        value={first ? (counted ? capText(cap, t) : first.isClosed ? t("不封顶") : `${t("封顶")} ${money(first.priceCap ?? 0)}`) : ""}
+        value={first ? (counted ? capText(cap, t) : capWindowText(first, t)) : ""}
         quiet
       />
       <Strip
         segments={segments}
         rows={rows}
         nowMinute={nowMinute}
-        height="h-1.5"
+        height="h-2"
         accent="var(--color-mint)"
-        tone={(s) => ({ background: s.isClosed ? "transparent" : "rgb(var(--color-ink) / .12)" })}
+        // A gap no window covers is outlined, so it reads as uncovered rather than as nothing.
+        tone={(s) =>
+          s.isClosed
+            ? { border: "1px dashed rgb(var(--color-ink) / .3)", borderRadius: 9999 }
+            : { background: "rgb(var(--color-ink) / .12)" }}
+        name={(s) => (s.isClosed ? t("未覆盖") : s.label)}
         fill={(s) => filled.get(s) ?? 0}
         picked={picked}
         pick={pick}
       />
       {row && first && (
-        <p className="truncate text-xs text-ink/55">
-          {first.isClosed ? t("不封顶") : first.label} {row.startLabel}–{row.endLabel}
+        <p className="truncate text-xs tabular-nums text-ink/55">
+          {first.isClosed ? t("未覆盖") : first.label} {row.startLabel}–{row.endLabel}
         </p>
       )}
     </div>
@@ -238,7 +233,7 @@ function LaneHeader({ title, value, quiet = false }: { title: ReactNode; value: 
   return (
     <div className="flex items-baseline justify-between gap-3 text-sm">
       <span className="flex min-w-0 items-center gap-2">{title}</span>
-      <span className={`shrink-0 tabular-nums ${quiet ? "text-xs" : "font-semibold"}`}>{value}</span>
+      <span className={`shrink-0 tabular-nums ${quiet ? "" : "font-semibold"}`}>{value}</span>
     </div>
   );
 }
@@ -254,6 +249,7 @@ function Strip({
   height,
   accent,
   tone,
+  name = (s) => s.label,
   fill,
   picked,
   pick,
@@ -265,6 +261,8 @@ function Strip({
   /** The lane's colour, which rims the knob marking now. */
   accent: string;
   tone: (s: Segment) => CSSProperties;
+  /** What a piece is called to a screen reader. */
+  name?: (s: Segment) => string;
   fill?: (s: Segment) => number;
   picked: PeriodRow | null;
   pick: (row: PeriodRow) => void;
@@ -280,7 +278,7 @@ function Strip({
             type="button"
             className={`relative min-w-0 overflow-hidden rounded-full outline-offset-2 ${picked && row === picked ? "outline outline-2 outline-ink/60" : ""}`}
             style={{ flex: `${minutes} 1 0` }}
-            aria-label={`${row?.startLabel ?? s.startLabel}–${row?.endLabel ?? s.endLabel} ${s.label}`}
+            aria-label={`${row?.startLabel ?? s.startLabel}–${row?.endLabel ?? s.endLabel} ${name(s)}`}
             onClick={() => row && pick(row)}
           >
             <span className="absolute inset-0" style={tone(s)} />
@@ -336,7 +334,12 @@ function isNow(row: PeriodRow | null | undefined, nowMinute: number) {
 function capText(cap: CapProgressView, t: Translate) {
   return cap.paidBefore >= cap.priceCap
     ? `${t("已达封顶")} ${money(cap.priceCap)}`
-    : `${t("已计")} ${money(cap.paidBefore)} / ${t("封顶")} ${money(cap.priceCap)}`;
+    : `${t("累计")} ${money(cap.paidBefore)} / ${t("封顶")} ${money(cap.priceCap)}`;
+}
+
+/** A cap window not yet counting: its cap, or none when no window covers it or its cap is 0. */
+function capWindowText(s: Segment, t: Translate) {
+  return s.isClosed ? t("未覆盖") : (s.priceCap ?? 0) > 0 ? `${t("封顶")} ${money(s.priceCap!)}` : t("不封顶");
 }
 
 function priceText(s: Segment, t: Translate) {

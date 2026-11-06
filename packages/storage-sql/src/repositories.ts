@@ -1051,6 +1051,16 @@ function createRedeemRepository(
       return row?.count ?? 0;
     },
 
+    async getRedemptionCounts(codeId, playerId, presentId) {
+      const row = await input.executor.first<{ codeUses: number; playerPresentUses: number }>(
+        `SELECT
+           (SELECT COUNT(*) FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)} AND code_id = ?) AS codeUses,
+           (SELECT COUNT(*) FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)} AND player_id = ? AND present_id = ?) AS playerPresentUses`,
+        [codeId, playerId, presentId],
+      );
+      return row!;
+    },
+
     async hasPlayerRedeemedPresent(playerId, presentId) {
       const row = await input.executor.first<{ count: number }>(
         `SELECT COUNT(*) AS count FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) WHERE player_id = ? AND present_id = ?`,

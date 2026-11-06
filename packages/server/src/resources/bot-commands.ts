@@ -37,6 +37,7 @@ import {
   errorReply,
   historyMessage,
   itemsMessage,
+  forPlayer,
   mahjongJoinedMessage,
   mahjongLeftMessage,
   mahjongTablesMessage,
@@ -232,13 +233,15 @@ async function seatedPlayer(ctx: BotCommandContext, machineId: string, register:
 
 const join: BotCommand = {
   effect: true,
+  target: "optional",
   async run(ctx, [raw]) {
     const ref = raw?.trim();
     if (!ref) return say("请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。");
     const table = await mahjongTable(ctx, ref);
     const player = await seatedPlayer(ctx, table.id, true);
-    const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: true, confirmedForPlayer: true, viewer: { playerId: player.id } });
-    return saying(mahjongJoinedMessage({ name: table.name, ...moved.mahjong }));
+    const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: true, onBehalf: true, body: {}, viewer: { playerId: player.id } });
+    const message = mahjongJoinedMessage({ name: table.name, ...moved.mahjong! });
+    return saying(ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
   },
 };
 
@@ -369,6 +372,7 @@ export const botCommands: Record<string, BotCommand> = {
   上桌: join,
   下桌: {
     effect: true,
+    target: "optional",
     async run(ctx, [raw]) {
       const ref = raw?.trim();
       const named = ref ? await mahjongTable(ctx, ref) : null;
@@ -379,8 +383,9 @@ export const botCommands: Record<string, BotCommand> = {
         const seat = (await mahjongState(runtime(ctx), table, { playerId: player.id }))?.seats.find((candidate) => candidate.playerId === player.id);
         if (!seat) continue;
         await seatedPlayer(ctx, table.id, false);
-        const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: false, confirmedForPlayer: true, viewer: { playerId: player.id } });
-        return saying(mahjongLeftMessage({ name: table.name, ...moved.mahjong }, seat.playing, moved.billing?.remaining ?? []));
+        const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: false, onBehalf: true, body: {}, viewer: { playerId: player.id } });
+        const message = mahjongLeftMessage({ name: table.name, ...moved.mahjong! }, seat.playing, moved.billing?.remaining ?? []);
+        return saying(ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
       }
       return say(named ? `你当前不在 ${named.name}。` : "你当前未在任何麻将桌上。");
     },

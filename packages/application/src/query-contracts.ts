@@ -233,7 +233,8 @@ export type StaffQueries = {
   listDeviceStates?(): Promise<DeviceState[]>;
   listMachineConnections?(): Promise<MachineConnection[]>;
   getReportsSummary?(input: StaffReportsSummaryInput): Promise<StaffReportsSummary>;
-  listReportCheckouts?(input: StaffReportsSummaryInput & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
+  /** Checkouts settled in a range, or every checkout of one player when `playerId` is given. */
+  listReportCheckouts?(input: (StaffReportsSummaryInput | { playerId: string }) & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
   getReportCheckout?(checkoutId: string): Promise<StaffReportCheckoutDetail | null>;
   listReportSettlements?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportSettlementListItem[]>;
   listReportPlayers?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportPlayerListItem[]>;

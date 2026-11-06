@@ -14,7 +14,7 @@ import { leaseContext } from "#lease-context";
 export const PLAYER_BILLING_LOCK_SCOPE = "player.assets";
 
 /**
- * Runs `action` while holding a TTL lease, failing fast when another holder has it.
+ * Runs `action` while holding a TTL lease; contention fails fast unless waitMs is set.
  *
  * Re-entrant within one async call chain: a caller already holding the same
  * scope and resource runs `action` directly, so a route that takes the player
@@ -27,22 +27,23 @@ export async function withOperationLease<T>(input: {
   id?: () => string;
   now: () => Date;
   ttlMs?: number;
+  waitMs?: number;
 }, action: () => Promise<T>): Promise<T> {
   if (!input.repository) return action();
   const key = `${input.scope}\u0000${input.resourceId}`;
   const held = leaseContext.held();
   if (held?.has(key)) return action();
 
-  const now = input.now();
   const lockId = input.id?.() ?? crypto.randomUUID();
-  const acquired = await input.repository.acquire(
-    input.scope,
-    input.resourceId,
-    lockId,
-    now,
-    new Date(now.getTime() + (input.ttlMs ?? 60_000)),
-  );
-  if (!acquired) throw new PrismDomainError("Operation is already in progress.", "OPERATION_IN_PROGRESS");
+  const deadline = performance.now() + (input.waitMs ?? 0);
+  while (true) {
+    const now = input.now();
+    if (await input.repository.acquire(input.scope, input.resourceId, lockId, now,
+      new Date(now.getTime() + (input.ttlMs ?? 60_000)))) break;
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new PrismDomainError("Operation is already in progress.", "OPERATION_IN_PROGRESS");
+    await new Promise((resolve) => setTimeout(resolve, Math.min(50 + Math.random() * 50, remaining)));
+  }
   try {
     return await leaseContext.run(new Set([...(held ?? []), key]), action);
   } finally {

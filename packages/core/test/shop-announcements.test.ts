@@ -24,7 +24,7 @@ describe("shop announcement catalog", () => {
 
   it("reads a bot set with switches as the types they meant", () => {
     expect(announcedTypes({ announcePower: true, announceCards: true, announceCoins: false })).toEqual([
-      "request.power.on", "request.power.off", "request.power.idle_off", "card",
+      "power.on", "power.off", "card",
     ]);
     expect(announcedTypes({})).toEqual([]);
   });
@@ -38,7 +38,7 @@ describe("shop announcement catalog", () => {
     expect(switchesFor(["card", "request.power.on"])).toEqual({
       announceIdle: false, announcePower: false, announceStarts: false, announceCards: true, announceCoins: false,
     });
-    expect(switchesFor(["request.power.on", "request.power.off", "request.power.idle_off", "idle.reminder"]))
+    expect(switchesFor(["power.on", "power.off", "idle.reminder"]))
       .toMatchObject({ announcePower: true, announceIdle: true });
     // A list read back from its own switches says the same thing.
     const list = announcedTypes(switchesFor(["start", "request.coin"]));

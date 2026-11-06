@@ -25,6 +25,8 @@ Swift `Date` 与 JavaScript `Date` 解析带偏移时间后得到绝对时间点
 
 商户生成兑换码时填写的到期时间也按店铺时区解释，转换为 UTC 后提交；不会误用操作员电脑的时区。
 
+资源的「操作记录」与「占用记录」按该资源关联的店铺时区显示。`GET /api/v1/merchant/machines/:id/events` 与占用记录接口共用店铺展示时区查询，响应中的 `at` 携带事件发生日期对应的偏移（包括跨日与夏令时）；历史记录在数据库中继续保存 UTC。
+
 ## 字段范围与兼容
 
 - `startedAt`、`endedAt`、`settledAt`、`createdAt`、`expiresAt`、收费实际边界、报表 `from/to`、时间轴事件 `at` 等事件字段按店铺时间输出；店铺无关接口保持 UTC。

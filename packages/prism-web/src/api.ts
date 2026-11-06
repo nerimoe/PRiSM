@@ -165,6 +165,10 @@ export type Resource = {
   bot?: BotSettings | null;
   /** Whether the bot has an active credential, as a device has a relay token. */
   hasBotToken?: boolean;
+  /** First authenticated use of the current bot credential, not its live connection status. */
+  botLastUsedAt?: string | null;
+  /** A current authenticated Bot WebSocket; null when the hub cannot be queried. */
+  botOnline?: boolean | null;
   /** The group whose default plan this resource bills; "default" for the shop's default group. */
   resourceGroupId?: string;
   /** A plan of its own that replaces the group's; null to follow the group. */
@@ -571,7 +575,7 @@ export const Api = {
       body: JSON.stringify(input),
     }),
   deleteResource: (id: string) =>
-    api<{ ok: true }>(`/api/v1/merchant/machines/${id}`, { method: "DELETE" }),
+    api<{ ok: true }>(`/api/v1/merchant/machines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   shopMembers: (shopId: string) =>
     api<{ members: ShopMember[] }>(
       `/api/v1/merchant/shop-members?shopId=${encodeURIComponent(shopId)}`,

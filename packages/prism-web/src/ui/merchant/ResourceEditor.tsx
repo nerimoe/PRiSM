@@ -83,6 +83,7 @@ export function ResourceEditor({
   // empty array is the correct starting point for a device without aliases.
   const [aliases, setAliases] = useState<string[]>(value?.aliases ?? []);
   const [enabled, setEnabled] = useState(value ? !!value.enabled : true);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   // Empty for a new resource: the server picks 1 for a cabinet with an IO, 0 otherwise.
   const [resourceCapacity, setResourceCapacity] = useState(value?.capacity === undefined ? "" : String(value.capacity));
   const [occupancyMinutes, setOccupancyMinutes] = useState(String(value?.occupancyMinutes ?? 15));
@@ -316,8 +317,17 @@ export function ResourceEditor({
     );
   }
 
+  if (value && confirmDelete) return (
+    <ActionForm key="delete" label="确认删除资源" done={done} submit={() => Api.deleteResource(value.id)}>
+      <p className="font-medium">{t("确定删除资源「{name}」？", { name: value.name })}</p>
+      <p className="text-sm text-ink/60">{t("删除后，资源二维码和接入凭据将失效，无法恢复。已有使用记录的资源请改为停用。")}</p>
+      <button type="button" className={`${buttonQuiet} justify-self-start`} onClick={() => setConfirmDelete(false)}>{t("取消")}</button>
+    </ActionForm>
+  );
+
   return (
     <ActionForm
+      key="edit"
       sticky
       noValidate
       done={done}
@@ -414,7 +424,7 @@ export function ResourceEditor({
         });
         // Whether it is never switched off lives with the shop's idle rules, keyed by device.
         const own = idle.settings?.devices[saved.machine.id];
-        if (caps.power && !!own?.exclude !== idleExclude) {
+        if ((caps.power || caps.climate) && !!own?.exclude !== idleExclude) {
           await api(idlePath(shopId, `/devices/${encodeURIComponent(saved.machine.id)}`), {
             method: "PUT",
             body: JSON.stringify({ exclude: idleExclude }),
@@ -512,6 +522,12 @@ export function ResourceEditor({
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           {t("启用")}
         </label>
+        {value && (
+          <button type="button" className={`${buttonQuiet} justify-self-start text-coral`} onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={15} aria-hidden="true" />
+            {t("删除资源")}
+          </button>
+        )}
         </>
       )}
       {pane === "usage" && (
@@ -610,6 +626,10 @@ export function ResourceEditor({
               <Hint>{t("与电源控制是同一个 Home Assistant，令牌可以留空，沿用电源的令牌。")}</Hint>
             )}
             <Hint>{t("可选的模式、风速和温度范围以空调实体自己上报的为准。")}</Hint>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={idleExclude} onChange={(e) => setIdleExclude(e.target.checked)} />
+              {t("从不自动关机")}
+            </label>
           </div>
         </CapabilityPane>
       )}

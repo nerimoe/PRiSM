@@ -235,6 +235,7 @@ export type RedeemRepository = {
   saveRedeemCodes?(codes: readonly RedeemCode[]): Promise<void>;
   listRedeemCodes(): Promise<RedeemCode[]>;
   listRedeemRecords(): Promise<RedeemRecord[]>;
+  getRedemptionCounts(codeId: string, playerId: string, presentId: string): Promise<{ codeUses: number; playerPresentUses: number }>;
   countRedeemCodeUses(codeId: string): Promise<number>;
   hasPlayerRedeemedPresent(playerId: string, presentId: string): Promise<boolean>;
   saveRedeemRecord(record: RedeemRecord): Promise<void>;

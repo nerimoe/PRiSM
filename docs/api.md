@@ -161,6 +161,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 兑换响应中的 `grantedAssets` 只包含本次兑换实际增加且当前可向玩家展示的资产，使用 `assetName` 返回后台配置的展示名称，`quantity` 是本次增加量。兑换后的完整可用持有量放在 `currentHoldings`；响应不再提供含义重复的 `holdings` 别名。
 
+公共码的并发兑换最多等待码锁 10 秒，期间不占用玩家资产锁；超过等待预算返回 `OPERATION_IN_PROGRESS`。礼物已领过返回 `PRESENT_ONCE_PER_PLAYER_REDEEMED`（「您已经领取过这份礼物」），公共码次数耗尽返回 `REDEEM_CODE_MAX_USE_REACHED`（「兑换码已被领完」），礼物内容限领达到上限返回 `PRESENT_GRANT_LIMIT_REACHED`；这些正常拒绝均为行内提示，不引导玩家反复重试。
+
 所有玩家当前资产读取统一执行同一组规则：持有数量必须大于 0，持有记录和关联资产定义都必须已生效且未过期，资产定义必须存在且未归档，玩家视图还会排除 `hiddenFromPlayer` 项。钱包、资产列表、兑换与结账回执均使用该统一结果；员工审计接口仍可查看过期、归档和隐藏记录。
 
 员工读取 `/rpc/staff/players/:playerId/assets` 时仍会得到全部当前持有记录，但每条 holding 由同一个统一入口附加 `availability`（`available` / `unavailable`）和 `unavailableReasons`。原因码覆盖数量非正、持有记录未生效或已过期、资产定义缺失、归档、未生效或已过期；Staff Web 只负责筛选和翻译原因，不自行按浏览器时间重新判断。该读取不会回写或清理数据库。
@@ -189,6 +191,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players/:playerId/assets/adjustments` | 按 `holdingId` 精确调整/扣减/ revoke 某条玩家持有记录，避免同类资产的不同有效期记录互相混淆。 |
 | `POST` | `/rpc/staff/players/:playerId/wallet/adjustment` | 按 `amount` 与 `reason` 调整玩家钱包；正数增加充值余额，负数执行余额冲正。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/history` | 查询该玩家的历史场次。 |
+| `GET` | `/rpc/staff/players/:playerId/checkouts` | 该玩家的全部结账单，含已归档（`archived: true`），按结账时间倒序；`limit`（默认 50，最多 200）/`offset` 分页，响应 `{records, page: {limit, offset, hasMore}}`，每条与 `/reports/checkouts` 相同。商户后台玩家面板的「消费记录」用它列出账单，点开读 `/reports/checkouts/:checkoutId` 显示完整时间轴。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/:sessionId/history` | 查询玩家某次结算的账单明细。 |
 | `GET` | `/rpc/staff/players/:playerId/redeem-records` | 查询该玩家的兑换记录，返回兑换码、礼物名称和兑换时间，用于玩家档案审计。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/preview` | 预览该玩家所有 active session 和未结 closed session 的统一结算结果；不关单、不扣款。 |
@@ -342,7 +345,7 @@ Bot 向玩家开放哪些命令由 Bot 自己配置，后台不做限制：后�
 | --- | --- | --- |
 | `POST` | `/rpc/integration/players/by-identity/resolve` | 按外部身份查找已绑定玩家。 |
 | `POST` | `/rpc/integration/players/by-identity/register` | 按外部身份查找或注册玩家，并自动绑定该身份。 |
-| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。请求带 `pricingConfigIds` 时开始其中第一个方案（`label` 作为场次显示名），这是给麻将还没交给平台的旧版 Bot 的兼容路径：旧版 Bot 上桌时按桌的方案开始计费、下桌时停止返回的那个场次，所以只结束麻将方案、不影响玩家的其他计费；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
+| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。旧版请求携带 `pricingConfigIds` 或 `label` 返回 `400 VALIDATION_FAILED`，已移除自行指定麻将方案的兼容路径；麻将改用统一上下桌接口；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
 | `POST` | `/rpc/integration/players/by-identity/presence` | 一位玩家是否在店：`{inShop, plans, occupying}`，`plans` 为在计费的方案，`occupying` 为正在占用的资源。只剩未结账单的玩家 `inShop: false`。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/preview` | 按外部身份预览玩家当前 session 结算。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/confirm` | 按外部身份确认玩家当前 session 结算。 |

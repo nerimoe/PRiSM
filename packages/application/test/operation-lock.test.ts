@@ -61,4 +61,31 @@ describe("withOperationLease", () => {
       `${PLAYER_BILLING_LOCK_SCOPE}:player-2`,
     ]);
   });
+
+  test("waits for contention without entering the action early", async () => {
+    const locks = memoryLocks();
+    let release!: () => void;
+    const first = withOperationLease(lease(locks), () => new Promise<void>((resolve) => { release = resolve; }));
+    await Promise.resolve();
+    let entered = false;
+    const second = withOperationLease({ ...lease(locks), waitMs: 500 }, async () => { entered = true; return "done"; });
+    await Promise.resolve();
+    expect(entered).toBe(false);
+    release();
+    await first;
+    expect(await second).toBe("done");
+  });
+
+  test("stops waiting when the deadline expires and leaves the holder alone", async () => {
+    const locks = memoryLocks();
+    let release!: () => void;
+    const first = withOperationLease(lease(locks), () => new Promise<void>((resolve) => { release = resolve; }));
+    await Promise.resolve();
+    await expect(withOperationLease({ ...lease(locks), waitMs: 10 }, async () => { throw new Error("must not enter"); }))
+      .rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS" });
+    await expect(withOperationLease(lease(locks), async () => undefined)).rejects.toMatchObject({ code: "OPERATION_IN_PROGRESS" });
+    release();
+    await first;
+    expect(await withOperationLease(lease(locks), async () => "released")).toBe("released");
+  });
 });

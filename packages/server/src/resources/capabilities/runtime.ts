@@ -188,7 +188,7 @@ async function announceAction(runtime: DeviceRuntime, input: PerformInput, playe
   const announce = (event: ShopEvent) => announceShopEvent(runtime.env, runtime.shopId, event);
   if (input.action === "power.on" || input.action === "power.off") {
     const state = input.action === "power.on" ? "on" : "off";
-    await announce({ type: `request.power.${state}`, kind: "power", ...place, state, by: input.actor.type, player: who });
+    await announce({ type: `request.power.${state}`, ...place, player: who });
   } else if (input.action === "aime.scan") {
     await announce({ type: "request.card", ...place, player: who });
   } else if (input.action === "coin") {
@@ -245,14 +245,12 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
             console.error("Occupancy update failed", { shopId: runtime.shopId, deviceId: input.device.id, error });
             return { started: null };
           });
-        // The hub's own idle power-off (notifyHub false) is announced by the hub.
         if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
       }
       // The command was accepted, which is all this can know: Home Assistant
       // answers the same whether or not the machine actually went dark. The hub
       // starts an observation and waits for the state to confirm it.
-      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded"
-        && input.device.capabilities.has("hinata_io")) {
+      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded") {
         await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
       }
       // What a power or climate action left the device in, read back the same

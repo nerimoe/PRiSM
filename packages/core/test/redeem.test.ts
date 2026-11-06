@@ -3,6 +3,23 @@ import { describe, expect, it } from "bun:test";
 import { PrismDomainError, redeemGift } from "../src/index";
 
 describe("redeemGift", () => {
+  it("applies gift and per-item limits to repository counts as well as history records", () => {
+    const redeem = (playerPresentUses: number, oncePerPlayer = false) => redeemGift({
+      playerId: "player-1",
+      code: { id: "code", code: "PUBLIC", presentId: "gift", activeAt: null, expiresAt: null, maxUseCount: 100 },
+      present: { id: "gift", name: "Gift", oncePerPlayer, grants: [
+        { assetType: "coupon", assetCode: "welcome", amount: 1, mergeStrategy: "stack", maxPerPlayer: 1, activeAt: null, expiresAt: null },
+      ] },
+      existingHoldings: [],
+      redemptionCounts: { codeUses: 20, playerPresentUses },
+      now: new Date("2026-06-07T10:00:00.000Z"),
+      idFactory: () => "holding",
+    });
+    expect(redeem(0).assetLedgerEntries).toHaveLength(1);
+    expect(() => redeem(1)).toThrow(expect.objectContaining({ code: "PRESENT_GRANT_LIMIT_REACHED" }) as PrismDomainError);
+    expect(() => redeem(1, true)).toThrow(expect.objectContaining({ code: "PRESENT_ONCE_PER_PLAYER_REDEEMED" }) as PrismDomainError);
+  });
+
   it("redeems an active code and grants present assets", () => {
     const result = redeemGift({
       playerId: "player-1",

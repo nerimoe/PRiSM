@@ -20,7 +20,7 @@ import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type 
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
-import { mahjongState, operateMahjong } from "./mahjong.js";
+import { mahjongState, operateMahjong, previewMahjong } from "./mahjong.js";
 
 export const resourceSessionRouter=new Hono<AppBindings>();
 export const merchantResourceActionRouter=new Hono<AppBindings>();
@@ -124,10 +124,11 @@ export async function readGate(c:C,machine:ScannedResource,device:Resource|null)
     // defines them. A player already in reads neither.
     if(gate==="entry"&&planId&&!billing){
       const playerId=player?.playerId??""; // Not yet registered here: nothing is running, so everything the plan needs.
-      const [preview,rules]=await Promise.all([
-        billingRead(()=>resourceBilling.preview({resourceId:machine.id,playerId})),
-        billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId,withCaps:true})),
-      ]);
+      // At a table the preview includes the seat move, and may start the game's plan rather than the waiting one.
+      const preview=await billingRead<ResourceBillingPreview|null>(()=>bound("mahjong")
+        ?previewMahjong(c,machine,playerId)
+        :resourceBilling.preview({resourceId:machine.id,playerId}));
+      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId,pricingConfigId:preview?.pricingConfigId,withCaps:true}));
       // `billingRead` set any failure as these ran.
       const failure=(billing as {error?:{code:string;message:string}}|null)?.error;
       billing=failure?{error:failure}:null;

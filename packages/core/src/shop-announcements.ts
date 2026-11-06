@@ -49,7 +49,7 @@ export function isShopAnnouncementType(value: string): value is ShopAnnouncement
  */
 export const legacyAnnounceSwitches = {
   announceIdle: ["idle.reminder"],
-  announcePower: ["request.power.on", "request.power.off", "request.power.idle_off"],
+  announcePower: ["power.on", "power.off"],
   announceStarts: ["start"],
   announceCards: ["card"],
   announceCoins: ["request.coin"],

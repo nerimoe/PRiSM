@@ -1177,6 +1177,12 @@ describe("createSqliteRepositories", () => {
     await expect(
       repositories.redeems.countRedeemCodeUses("code-1"),
     ).resolves.toBe(1);
+    await expect(repositories.redeems.getRedemptionCounts("code-1", "player-1", "present-1"))
+      .resolves.toEqual({ codeUses: 1, playerPresentUses: 1 });
+    await expect(repositories.redeems.getRedemptionCounts("other-code", "player-1", "present-1"))
+      .resolves.toEqual({ codeUses: 0, playerPresentUses: 1 });
+    await expect(repositories.redeems.getRedemptionCounts("code-1", "other-player", "present-1"))
+      .resolves.toEqual({ codeUses: 1, playerPresentUses: 0 });
     await expect(repositories.redeems.listRedeemCodes()).resolves.toMatchObject(
       [
         {

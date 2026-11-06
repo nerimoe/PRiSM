@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
-import { timestampDisplayParts } from "@prism/core";
 import {
   AirVent,
   ChevronRight,
@@ -22,6 +21,7 @@ import {
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
 import { ClimateControls, climateModeName, climateSummary, type ClimateState } from "../ClimateControls";
 import { useI18n } from "../../i18n";
+import { billTime } from "../bill-time";
 import {
   date,
   input,
@@ -34,7 +34,7 @@ import {
   useCopy,
   useMerchant,
   useResource,
-  type LivePlayer,
+  type Player,
 } from "./shared";
 import {
   canOperateCoin,
@@ -171,7 +171,7 @@ export function ResourcesPage() {
   );
   async function refresh() {
     setRefreshing(true);
-    await Promise.all([readStates(), readOccupancy()]);
+    await Promise.all([readStates(), readOccupancy(), load().catch((e) => setError(e.message))]);
     setRefreshing(false);
   }
   const load = useCallback(
@@ -185,6 +185,12 @@ export function ResourcesPage() {
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, [load]);
+  const hasConnections = (devices ?? []).some((device) => device.bot || isDirectConnect(device));
+  useEffect(() => {
+    if (!hasConnections) return;
+    const timer = setInterval(() => void load().catch(() => {}), 15_000);
+    return () => clearInterval(timer);
+  }, [hasConnections, load]);
   const hasStateDevices = (devices ?? []).some((device) => {
     const caps = resourceCapabilities(device);
     return caps.power || caps.climate;
@@ -254,17 +260,18 @@ export function ResourcesPage() {
   const reloadAll = () => {
     void load();
     void resourceGroups.reload();
+    window.dispatchEvent(new Event("prism-shop-settings"));
   };
   return (
     <div className="grid gap-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="text-xl font-semibold">{t("店内资源")}</h2>
         <div className="flex flex-wrap items-center gap-2">
-          {hasStateDevices && (
+          {(hasStateDevices || hasConnections) && (
             <button
               type="button"
               className={button}
-              disabled={refreshing || (states === null && !statesFailed)}
+              disabled={refreshing || (hasStateDevices && states === null && !statesFailed)}
               onClick={() => void refresh()}
             >
               <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
@@ -515,13 +522,14 @@ function ResourceQR({ device }: { device: Resource }) {
 /** The idle power-off ahead: the time it happens and how long until then. */
 function IdleCountdown({ at }: { at: string }) {
   const { t } = useI18n();
+  const { timeZone } = useMerchant();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 15_000);
     return () => clearInterval(timer);
   }, []);
   const minutes = Math.max(0, Math.ceil((Date.parse(at) - now) / 60_000));
-  const time = timestampDisplayParts(at)?.time ?? "";
+  const time = billTime(at, timeZone || undefined).time;
   return (
     <span className="flex items-center gap-1.5 tabular-nums text-amber-600" title={t("闲置自动关机")}>
       <Timer size={13} aria-hidden="true" />
@@ -646,9 +654,7 @@ function ResourceCard({
                 {occupant.displayName ?? occupant.playerId}
               </Link>
             ))
-          ) : (
-            <span className="text-ink/45">{t("空闲")}</span>
-          )}
+          ) : null}
         </div>
       )}
       {!configured && canWrite && (
@@ -658,19 +664,22 @@ function ResourceCard({
           </button>
         </div>
       )}
-      {(caps.power || caps.climate || isDirectConnect(device)) && (
+      {(caps.power || caps.climate || isDirectConnect(device) || caps.bot) && (
         <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-5 text-xs">
           {(caps.power || caps.climate) && (
             <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
           )}
-          {caps.power && powerOffAt && state?.power !== "off" && <IdleCountdown at={powerOffAt} />}
-          {isDirectConnect(device) && (
-            <span className="flex items-center gap-1.5 text-ink/60">
+          {powerOffAt && ((caps.power && state?.power !== "off") || (caps.climate && state?.climate?.mode !== "off")) && <IdleCountdown at={powerOffAt} />}
+          {[
+            ...(isDirectConnect(device) ? [{ kind: "io", online: device.relayOnline, up: "机台在线", down: "机台离线" }] : []),
+            ...(caps.bot ? [{ kind: "bot", online: device.botOnline, up: "Bot 在线", down: "Bot 离线" }] : []),
+          ].map(({ kind, online, up, down }) => (
+            <span key={kind} className="flex items-center gap-1.5 text-ink/60">
               <span
                 className={
-                  device.relayOnline === true
+                  online === true
                     ? "text-mint"
-                    : device.relayOnline === false
+                    : online === false
                       ? "text-coral"
                       : "text-ink/35"
                 }
@@ -679,14 +688,14 @@ function ResourceCard({
                 ●
               </span>
               {t(
-                device.relayOnline === true
-                  ? "机台在线"
-                  : device.relayOnline === false
-                    ? "机台离线"
+                online === true
+                  ? up
+                  : online === false
+                    ? down
                     : "连接未知",
               )}
             </span>
-          )}
+          ))}
         </div>
       )}
       <footer className="mt-auto flex items-center justify-between gap-2 border-t border-ink/10 px-4 py-2">
@@ -935,8 +944,8 @@ function ResourceActions({
   const { t } = useI18n();
   const caps = resourceCapabilities(device);
   const groups = deviceActionGroups(device);
-  const players = useResource<{ players: LivePlayer[] }>(
-    caps.mahjong ? "live-players" : null,
+  const players = useResource<{ players: Player[] }>(
+    caps.mahjong ? "players" : null,
   );
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [cardNumber, setCardNumber] = useState("");
@@ -992,9 +1001,9 @@ function ResourceActions({
       setBusy("");
     }
   }
-  // Seating needs an entry, so only players who are in the shop are offered.
-  const playerOptions = (players.data?.players ?? []).map((player) => ({
-    id: player.playerId,
+  // Staff may confirm billing and seat any active player registered at this shop.
+  const playerOptions = (players.data?.players ?? []).filter(player => player.status === "active").map((player) => ({
+    id: player.id,
     name: player.displayName,
   }));
   const seated = new Set(table?.seats.map((seat) => seat.playerId));

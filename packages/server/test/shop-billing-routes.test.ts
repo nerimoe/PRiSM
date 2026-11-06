@@ -1430,7 +1430,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(Array.isArray(walletData.wallet)).toBe(true);
   });
 
-  it("runs Koishi's nested identity flow through real API routes and D1 (entry, table, leave, preview)", async () => {
+  it("runs Koishi's nested identity flow through real API routes and D1 (resource plans, stop, preview)", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, botToken } = await setupShopFixture(db, sqlite);
     const app = createTestApp();
@@ -1469,30 +1469,30 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       // encrypted machine fields.
       sqlite.run("ALTER TABLE machines ADD COLUMN hinata_url_encrypted TEXT");
       const entry = await post("/players/by-identity/session/start", {
-        identity, label: "音游区间", entry: true,
+        identity,
       });
       expect(entry.status).toBe(200);
       const entryBody = await entry.json() as { session: { id: string; playerId: string } };
       expect(entryBody.session.playerId).toBe(playerId);
 
-      // A bot from before platform mahjong starts a table by naming its plan:
-      // that plan starts as a session of its own, beside the visit.
+      // Obsolete bots may not start a named Mahjong plan through the login endpoint.
       const named = await post("/players/by-identity/session/start", {
-        identity, label: "麻将 A 桌", entry: false, pricingConfigIds: ["mahjong-table-a"],
+        identity, label: "麻将 A 桌", pricingConfigIds: ["mahjong-table-a"],
       });
-      expect(named.status).toBe(200);
-      const tableBody = await named.json() as { session: { id: string; playerId: string }; created: boolean };
-      expect(tableBody.created).toBe(true);
-      expect(tableBody.session.playerId).toBe(playerId);
-      expect(tableBody.session.id).not.toBe(entryBody.session.id);
-
-      // A plan bills a player once: a login on a bot whose own plan is the table's
-      // reuses that session instead of charging the plan a second time.
+      expect(named.status).toBe(400);
+      // Only the bot resource's actual binding determines what login starts.
       sqlite.run(
         `UPDATE machines SET pricing_config_override_id='mahjong-table-a'
          WHERE shop_id=? AND id IN (SELECT device_id FROM device_capabilities WHERE shop_id=? AND capability='bot')`,
         [shopId, shopId],
       );
+      const started = await post("/players/by-identity/session/start", { identity });
+      expect(started.status).toBe(200);
+      const tableBody = await started.json() as { session: { id: string; playerId: string }; created: boolean };
+      expect(tableBody.created).toBe(true);
+      expect(tableBody.session.playerId).toBe(playerId);
+      expect(tableBody.session.id).not.toBe(entryBody.session.id);
+
       const again = await post("/players/by-identity/session/start", { identity });
       expect(again.status).toBe(200);
       const againBody = await again.json() as { session: { id: string }; created: boolean };
@@ -1531,7 +1531,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       sqlite.run("UPDATE shop_billing_settings SET auto_register=0 WHERE shop_id=?", [shopId]);
       const blockedRegistration = await post("/players/by-identity/session/start", {
         identity: { provider: "onebot", subject: "unknown-new-player" },
-        autoRegister: true, label: "麻将 A 桌", entry: false,
+        autoRegister: true,
       });
       expect([400, 404]).toContain(blockedRegistration.status);
       expect((await blockedRegistration.json() as { error: { code: string } }).error.code)
@@ -1781,6 +1781,45 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(flags?.checkin_geo).toBe(1);
     expect(flags?.checkout_geo).toBe(0);
     expect(flags?.machine_geo).toBe(1);
+  });
+
+  it("lists every checkout of one player, archived ones included, newest first", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    for (const id of ["mine", "other"]) {
+      sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',CURRENT_TIMESTAMP)", [shopId, id, id]);
+    }
+    const checkout = (id: string, player: string, settledAt: string, total: number) =>
+      sqlite.run(
+        "INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)",
+        [shopId, id, player, total, total, settledAt],
+      );
+    checkout("old", "mine", "2025-01-01T10:00:00.000Z", 1200);
+    checkout("new", "mine", "2026-10-01T10:00:00.000Z", 3400);
+    checkout("archived", "mine", "2026-06-01T10:00:00.000Z", 500);
+    checkout("theirs", "other", "2026-10-02T10:00:00.000Z", 999);
+    sqlite.run(
+      "INSERT INTO checkout_report_states(shop_id,checkout_id,archived,updated_at,updated_by) VALUES (?,'archived',1,CURRENT_TIMESTAMP,'staff')",
+      [shopId],
+    );
+    const headers = { Authorization: `Bearer ${staffSessionToken}` };
+    const list = async (query: string) => {
+      const response = await app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/players/mine/checkouts${query}`, { headers }), env,
+      );
+      expect(response.status).toBe(200);
+      return await response.json() as { records: { checkoutId: string; total: number; archived: boolean }[]; page: { hasMore: boolean } };
+    };
+    const all = await list("");
+    expect(all.records.map((record) => [record.checkoutId, record.total, record.archived])).toEqual([
+      ["new", 34, false], ["archived", 5, true], ["old", 12, false],
+    ]);
+    expect(all.page.hasMore).toBe(false);
+    const first = await list("?limit=2");
+    expect(first.records.map((record) => record.checkoutId)).toEqual(["new", "archived"]);
+    expect(first.page.hasMore).toBe(true);
+    expect((await list("?limit=2&offset=2")).records.map((record) => record.checkoutId)).toEqual(["old"]);
   });
 
   it("rejects invalid checkout report ranges and archive filters with stable error codes", async () => {

@@ -130,6 +130,24 @@ const homeAssistant = () => {
 };
 
 describe("device page state", () => {
+  for (const power of ["on", "off", null]) it(`accepts the merchant keep-on action and validates real power=${power}`, async () => {
+    const { call, watch, sqlite } = await fixture();
+    watch();
+    sqlite.run("UPDATE device_state SET value_json=? WHERE device_id='cab' AND key='power'", [JSON.stringify(power)]);
+    const ha = homeAssistant();
+    const operationId = crypto.randomUUID();
+    try {
+      const response = await call("/api/v1/merchant/machines/cab/actions", ADMIN, {
+        method: "POST", body: JSON.stringify({ operationId, action: "power.keep" }),
+      });
+      expect(response.status).toBe(power === "on" ? 200 : 502);
+      expect(sqlite.query("SELECT action,status,staff_id FROM device_operations WHERE id=?").get(operationId)).toEqual({
+        action: "power.keep", status: power === "on" ? "succeeded" : "failed", staff_id: "user:boss",
+      });
+      expect(ha.calls).toEqual([]);
+    } finally { ha.spy.mockRestore(); sqlite.close(); }
+  });
+
   it("answers a signed-out scan with the machine and no state", async () => {
     const { call, jsonAs, ticket, sqlite } = await fixture();
     const ha = homeAssistant();
@@ -413,7 +431,7 @@ describe("board live channel", () => {
 });
 
 describe("telling bots what happened", () => {
-  it("announces a power action with who did it and the bot that asked, but leaves the hub's own idle power-off to the hub", async () => {
+  it("does not announce accepted power commands before HA confirms a transition, including Bot and idle commands", async () => {
     const { db, env, hub, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
@@ -421,18 +439,17 @@ describe("telling bots what happened", () => {
       const device = (await loadResource(db, "shop-id", "cab"))!;
       const bus = createRuntimeBus({ db, env, shopId: "shop-id" });
       await bus.perform({ device, action: "power.on", actor: { type: "player", playerId: "p1" }, payload: { viaBot: "bot-1" } });
-      expect(hub.events).toEqual([expect.objectContaining({
-        kind: "power", state: "on", by: "player", resourceId: "cab", resourceName: "Cabinet", botId: "bot-1",
-        player: { playerId: "p1", displayName: "Alice", identities: [] },
-      })]);
+      await bus.perform({ device, action: "power.off", actor: { type: "staff", staffId: "boss" } });
       await createRuntimeBus({ db, env, shopId: "shop-id", notifyHub: false })
         .perform({ device, action: "power.off", actor: { type: "system" } });
-      expect(hub.events).toHaveLength(1);
+      // A request is only that, and says so; older bots hear nothing until Home Assistant confirms.
+      expect((hub.events as Array<Record<string, unknown>>).map((event) => event.type)).toEqual(["request.power.on", "request.power.off"]);
+      expect((hub.events as Array<Record<string, unknown>>).some((event) => "kind" in event)).toBe(false);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });
 
-describe("switching a HINATA IO off", () => {
+describe("switching a shared power supply off", () => {
   const off = async (machine: string, runtime: { notifyHub?: boolean } = {}) => {
     const { db, env, hub, sqlite } = await fixture();
     const ha = homeAssistant();
@@ -448,8 +465,11 @@ describe("switching a HINATA IO off", () => {
     expect(await off("io")).toEqual({ status: "succeeded", poweredOff: [["shop-id", "io"]] });
   });
 
-  it("says nothing for a device that is not an IO, or when the hub switched it off itself", async () => {
-    expect((await off("cab")).poweredOff).toEqual([]);
+  it("also tells the hub for a resource without an IO, since other IOs may share its power", async () => {
+    expect((await off("cab")).poweredOff).toEqual([["shop-id", "cab"]]);
+  });
+
+  it("leaves the hub's own power-offs to the hub", async () => {
     expect((await off("io", { notifyHub: false })).poweredOff).toEqual([]);
   });
 

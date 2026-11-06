@@ -67,6 +67,7 @@ routes/
 - `POST /players`: 创建或录入新玩家。
 - `PATCH /players/:playerId/status`: 变更玩家状态（启用/禁用）。
 - `GET /players/:playerId/assets`: 查看指定玩家的资产与账本。
+- `GET /players/:playerId/checkouts`: 该玩家的全部结账单（含已归档），按结账时间倒序，`limit`/`offset` 分页，结构同 `/reports/checkouts`；明细读 `/reports/checkouts/:checkoutId`。
 - `POST /players/:playerId/assets/grants`: 店员向玩家发放/赠送指定资产。
 - `POST /players/:playerId/assets/adjustments`: 店员调整玩家的资产持有量。
 - `POST /players/:playerId/wallet/adjustment`: 店员快捷调整玩家的充值钱包余额。

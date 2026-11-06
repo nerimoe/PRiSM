@@ -244,6 +244,11 @@ export function mahjongTablesMessage(tables: Table[]): BotMessage {
   })].join("\n"));
 }
 
+/** What a staff member did for someone says who that was. */
+export function forPlayer(who: Addressee, message: BotMessage): BotMessage {
+  return botMessage("玩家 ", ...reference(who), "\n", message);
+}
+
 export function mahjongJoinedMessage(table: Table): BotMessage {
   const seated = table.seats.length;
   if (table.seats.find((seat) => seat.mine)?.playing) return botMessage(`已加入 ${table.name}，麻将计费已开始。当前 ${seated}/${table.capacity} 人。`);
@@ -342,6 +347,16 @@ const ACTION_REASONS: Record<string, string> = {
   COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中，请稍后再试",
   COIN_CABINET_FULL: "达到机台投币上限",
   BILLING_DISABLED,
+  OPERATION_IN_PROGRESS: "其他操作正在处理中，请稍后再试。",
+  REDEEM_CODE_NOT_FOUND: "兑换码无效，请检查后再试。",
+  REDEEM_CODE_NOT_ACTIVE: "兑换码尚未生效。",
+  REDEEM_CODE_EXPIRED: "兑换码已过期。",
+  PRESENT_EXPIRED: "兑换码已过期。",
+  PRESENT_NOT_ACTIVE: "这份礼物当前无法兑换。",
+  PRESENT_ARCHIVED: "这份礼物当前无法兑换。",
+  REDEEM_CODE_MAX_USE_REACHED: "兑换码已被领完。",
+  PRESENT_ONCE_PER_PLAYER_REDEEMED: "您已经领取过这份礼物，无需重复兑换。",
+  PRESENT_GRANT_LIMIT_REACHED: "您已达到这份礼物的领取上限。",
 };
 
 const GENERIC = "操作失败，请稍后再试。";

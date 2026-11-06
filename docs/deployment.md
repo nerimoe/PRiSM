@@ -134,7 +134,7 @@ bun run deploy:beta
 
 构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，注入根 SemVer 和 Git 提交号。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
 
-`wrangler.jsonc` 把 Worker 固定放在东京（`placement.region: "aws:ap-northeast-1"`），也就是 D1（APAC）附近，而不是访客最近的边缘节点。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到东京执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
+`wrangler.jsonc` 把 Worker 固定放在台湾（`placement.region: "gcp:asia-east1"`），而不是访客最近的边缘节点。选它是因为要离中国比东京更近，并且这个值是 Cloudflare 文档里明确给出的示例；香港等区域的标识文档没有列出，没有使用。之前固定在东京（`aws:ap-northeast-1`，D1 的 APAC 附近），代价是东京不是离中国最近的位置；改到台湾后 Worker 和 D1 之间多了一段距离，每次查询的往返可能变长，部署后请用响应头 `cf-placement` 和 `x-response-time` 对比，必要时再调整。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到所选区域执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
 
 ### 自动维护部署
 
@@ -152,6 +152,8 @@ bun run deploy:beta
 任意阶段失败都不自动解除维护或回滚数据库。若已经恢复后公开健康检查失败，脚本尝试重新阻止业务；如果网络故障使维护状态无法确认，明确报告而不声称恢复成功。重跑同一流程即可接管失败部署并跳过已完成迁移。并行部署可能因所有者变化安全中止，请为同一 Worker 串行运行构建。
 
 恢复操作须使用日志中的目标数据库和书签；不要仅回滚 Worker 到旧 stable，因为表结构可能已升级。书签是在屏障启用后取得的，恢复该数据库仍保留维护屏障。通常先修复并重新运行 `deploy:beta`；确需恢复旧版时，由管理员恢复对应 D1 书签和匹配的 Worker，再确认兼容性并明确解除 `prism_deployment_gate` 的维护状态。脚本不会自动恢复数据库或删除业务记录。
+
+若最后成功记录是 `0042_resource_occupancy.sql`，随后出现 `UNIQUE constraint failed: machines.id`，检查 `0043_legacy_bot_resources.sql`。旧实现用 `bot-凭据ID` 创建全局资源，而 `api_tokens.id` 只在店铺内唯一，跨店同名凭据或已有同名资源会冲突。修复后的 ID 分别编码店铺 ID 和凭据 ID；已有 Bot 的 ID、公开入口、配置及令牌保持原样。该修复直接纠正尚未完成的 0043，不能只追加更晚的迁移，因为部署会先停在失败的旧文件。将修复合入生产分支后重跑完整部署，已成功的 0042 及之前文件会跳过，失败的 0043 会重新执行；不需要删资源、撤销 0042 或手工解除维护。已经成功应用 0043 的数据库仍按迁移记录跳过，不重命名现有资源。
 
 Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及 Time Travel info 权限；无须手工配置维护令牌或新增 KV namespace。
 

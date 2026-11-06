@@ -120,6 +120,20 @@ describe("the page's channel", () => {
     channel.close();
   });
 
+  test("does not keep reconnecting from the background, and connects again on coming back", async () => {
+    FakeSocket.made = [];
+    let hidden = true;
+    const channel = openPageChannel("ws://x", { onChanged() {}, onOpen() {} }, (url) => new FakeSocket(url) as unknown as WebSocket, () => hidden);
+    FakeSocket.made[0]!.open();
+    FakeSocket.made[0]!.drop();
+    await Bun.sleep(1050);
+    expect(FakeSocket.made).toHaveLength(1);
+    hidden = false;
+    channel.wake();
+    expect(FakeSocket.made).toHaveLength(2);
+    channel.close();
+  });
+
   test("closes for good", async () => {
     const { channel, socket } = open();
     socket().open();
