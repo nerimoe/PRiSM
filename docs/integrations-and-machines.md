@@ -54,7 +54,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - 心跳：发送文本 `ping`，回复 `pong`（Workers 上由运行时自动回复，不唤醒 Hub）。
 - `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台就替它判断、写话、按 Bot 设置播报。旧插件发 `{"type":"hello","reminderLeadSeconds":300,"announcements":"message"}`：插件告诉 Hub 闲置关机前多久提醒，以及它直接播报平台写好的话（见下）。之后 Hub 推送 `{"type":"event","event":"idle.reminder","data":{"reason":"shop_empty"|"device_idle","at":<关机时间 ms>,"devices":[{"id","name"}]}}`；Koishi 发到 Bot 设置的播报群。多个 Bot 连接时取最长的提前量。只有开了「设备闲置」播报、设置了播报群且提前量大于 0 时才声明。
 - `{"type":"event","event":"shop.event","data":…}`：店内动态，Hub 发给所有在线 Bot，每个 Bot 按自己的设置决定播不播。每条带 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台的勾选列表也从它生成。分三组，**请求和事件互不关联**：
-  - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.swallowed`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。
+  - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。
   - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。
   - **提醒**：`idle.reminder`，走下面的 `idle.reminder` 帧，不是 `shop.event`。
   **说什么由平台写**：每条还带 `message`，即要播报的话（`resources/shop-events.ts` 的 `announcementText`），格式见下文「Bot 消息」；没有玩家时平台直接写好（如「未绑定的卡」）。`idle.reminder` 帧同样带 `message`（分钟数按发出时计算）。Bot 在 `hello` 里声明 `"announcements":"message"` 后，Hub 读出它的 Bot 资源和类型列表，存在这条连接上，**只发它勾选的类型**，也不发它自己命令引起的那条；Bot 设置一改就会收到 `config.changed`、重发 `hello`，列表随之更新。这样的 Bot 收到就发，不再自己判断播不播、怎么措辞，平台新增类型或改措辞都不用更新插件。
@@ -198,7 +198,7 @@ await client.requestScanByIdentity(
 | --- | --- | --- | --- | --- | --- |
 | `power` | `connectionId`、`entityId`（`switch.*`/`input_boolean.*`） | —（旧绑定：`binding`，见下文「店铺 Home Assistant 连接」） | `power.on`、`power.off` | — | `power`，外部权威（事件驱动读存储，无状态现查） |
 | `climate` | `connectionId`、`entityId`（`climate.*`） | —（同上） | `climate.on`、`climate.off`、`climate.set_mode`、`climate.set_temperature`、`climate.set_fan_mode` | — | `climate`，外部权威（同上） |
-| `hinata_io` | `transport`（`external`/`embedded`）、`coinKey`、`coinAfterSwipe`、`coinCap`（直连，见「投币上限」）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`coin` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.swallowed`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
+| `hinata_io` | `transport`（`external`/`embedded`）、`coinKey`、`coinAfterSwipe`、`coinCap`（直连，见「投币上限」）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`coin` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
 | `door` | `lockId` | — | `door.open` | — | — |
 | `mahjong` | `capacity`、`pricingConfigIds`（最多一个方案） | — | —（上下桌走麻将流程） | — | — |
 
@@ -318,11 +318,11 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 机台 IO 开启 `cabinetMonitor=1` 后（协议见 hinata-aimeio-rs 的 `docs/remote-protocol.md`「机台状态」），每当 amdaemon 的 `sysfile.dat` 变化就发 `event.cabinetSnapshot`，心跳 `io.heartbeat` 里的 `cabinet` 也带同一份。内容是解析好的计费设置、两个玩家槽的 `credit`/`remain`、累计计数器（`total_coin`、`coin_credit`、`service_credit`、`emoney_credit`、`total_credit` 等），读失败时只有 `error`。IO 只报事实，含义由平台判断：
 
-- `MachineRelay` 保存最近一份**读成功**的账本，下一份与它比较（`resources/capabilities/cabinet.ts`）：`total_coin` 增加是 `cabinet.coin`；增加了但 `coin_credit` 和 `remain` 都没动是 `cabinet.swallowed`（例如机台已满 24 个币）；「原有的 + 新给的（投币、服务、电子支付）− 现有的」大于 0 是 `cabinet.consumed`；任一计数器变小是 `cabinet.reset`（清账），这一步不再推别的。计数器是累计的，漏收的快照由下一份补齐，心跳最多晚 60 秒。读失败的那份也存下来给看板看，但不参与比较。
+- `MachineRelay` 保存最近一份**读成功**的账本，下一份与它比较（`resources/capabilities/cabinet.ts`）：`total_coin` 增加是 `cabinet.coin`（平台不判断投的币有没有变成币，玩家在机台上看得到）；「原有的 + 新给的（投币、服务、电子支付）− 现有的」大于 0 是 `cabinet.consumed`；任一计数器变小是 `cabinet.reset`（清账），这一步不再推别的。计数器是累计的，漏收的快照由下一份补齐，心跳最多晚 60 秒。读失败的那份也存下来给看板看，但不参与比较。
 - 推出的事件记为 `hinata_io` 的 `signal`，并作为同名类型播报（没有 `player`：账本说不出是谁投的）。账本本身存为设备状态 `cabinet`，不记事件。
 - 后台「操作」面板的 HINATA IO 一栏显示 `GET /api/v1/merchant/machines/:id/cabinet` 的账本；「刷新机台状态」调 `POST …/cabinet/refresh`，平台向 IO 发 JSON-RPC `cabinet.getSnapshot`（5 秒超时），回答按普通快照处理并返回。这是平台第一个发给 IO 的 RPC，`MachineRelay` 按请求 `id` 匹配回答。
 
-**投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台里最多几个币」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「机台里的币已经够了，先玩完再投」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
+**投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
 
 #### 扫码刷卡的结果
 

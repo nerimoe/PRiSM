@@ -340,7 +340,7 @@ const ACTION_REASONS: Record<string, string> = {
   DEVICE_NOT_FOUND: "设备不存在",
   SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家未绑定 Aime 卡",
   COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中，请稍后再试",
-  COIN_CABINET_FULL: "机台里的币已经够了，先玩完再投",
+  COIN_CABINET_FULL: "达到机台投币上限",
   BILLING_DISABLED,
 };
 

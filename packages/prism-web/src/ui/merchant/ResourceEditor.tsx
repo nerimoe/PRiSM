@@ -680,7 +680,7 @@ export function ResourceEditor({
                 </label>
               </div>
               {embedded && (
-                <Field label="机台里最多几个币">
+                <Field label="机台投币上限">
                   <input
                     className={input}
                     type="number"
@@ -694,7 +694,7 @@ export function ResourceEditor({
                 </Field>
               )}
               {embedded && (
-                <Hint>{t("机台里的币达到这个数时，平台不再投币，防止先存很多币再结账。需要机台开启 cabinetMonitor；读不到机台的币数时按投币冷却处理。")}</Hint>
+                <Hint>{t("机台内的币达到上限后，平台不再投币。需要机台开启 cabinetMonitor；读不到币数时按投币冷却处理。")}</Hint>
               )}
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>
@@ -861,8 +861,8 @@ export function ResourceEditor({
                 };
                 return (
                   [
-                    ["event", "现场发生的事"],
-                    ["request", "通过平台的操作"],
+                    ["event", "现场事件"],
+                    ["request", "平台操作"],
                     ["notice", "提醒"],
                   ] as const
                 ).map(([family, heading]) => (
@@ -878,7 +878,7 @@ export function ResourceEditor({
                 ));
               })()}
               <p className="text-xs text-ink/55">
-                {t("现场发生的事来自机台和 Home Assistant 的回报，不论是在平台、App 还是机器上操作的，都只播报一次。通过平台的操作只说明有人在平台上发起了它，不代表机器真的完成了。两边都勾选会各说一次。投币入账、吞币等需要机台开启 cabinetMonitor。提前量为 0 时不做闲置提醒。通过这个 Bot 自己的命令做的操作不会再播报一遍。")}
+                {t("现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。提前量为 0 时不发闲置提醒。本 Bot 自己执行的命令不会再次播报。")}
               </p>
             </fieldset>
           </div>

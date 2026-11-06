@@ -181,7 +181,6 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     "led.set": { activity: false, store: false },
     // Read by the platform from two of the cabinet's book snapshots (`cabinet.ts`).
     "cabinet.coin": { activity: true, store: true },
-    "cabinet.swallowed": { activity: true, store: true },
     "cabinet.consumed": { activity: true, store: true },
     "cabinet.reset": { activity: false, store: true },
   },

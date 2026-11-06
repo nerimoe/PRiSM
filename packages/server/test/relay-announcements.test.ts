@@ -79,14 +79,13 @@ describe("what a cabinet's books tell the platform", () => {
     // A snapshot event was missed; the beat carries the whole difference.
     await report("io.heartbeat", { ha: [], cabinet: read(4, 4, 220, 60) });
     expect(told.map(({ type, detail }) => ({ type, detail }))).toEqual([
-      { type: "cabinet.coin", detail: { coins: 1, credited: 1, credit: 5 } },
-      { type: "cabinet.coin", detail: { coins: 1, credited: 0, credit: 4 } },
-      { type: "cabinet.swallowed", detail: { coins: 1, credit: 4 } },
+      { type: "cabinet.coin", detail: { coins: 1, credit: 5 } },
+      { type: "cabinet.coin", detail: { coins: 1, credit: 4 } },
       { type: "cabinet.consumed", detail: { credits: 1, credit: 4 } },
     ]);
     expect(told.every((event) => event.label && !("kind" in event) && event.player === null)).toBe(true);
     const logged = sqlite.query<{ name: string }, []>("SELECT name FROM device_events WHERE kind='signal' ORDER BY rowid").all();
-    expect(logged.map((row) => row.name)).toEqual(["cabinet.coin", "cabinet.coin", "cabinet.swallowed", "cabinet.consumed"]);
+    expect(logged.map((row) => row.name)).toEqual(["cabinet.coin", "cabinet.coin", "cabinet.consumed"]);
     const state = sqlite.query<{ value_json: string }, []>(
       "SELECT value_json FROM device_state WHERE capability='hinata_io' AND key='cabinet'",
     ).get();

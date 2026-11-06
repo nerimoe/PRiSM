@@ -841,15 +841,14 @@ const actionLabels: Record<string, string> = {
   "card.state": "读卡状态变化",
   "card.consumed": "卡片已送入游戏",
   "led.set": "灯光",
-  "cabinet.coin": "投币入账",
-  "cabinet.swallowed": "吞币",
-  "cabinet.consumed": "扣币开局",
+  "cabinet.coin": "机台投币",
+  "cabinet.consumed": "开局扣币",
   "cabinet.reset": "投币计数清零",
 };
 
 type Books = {
   players: Array<{ credit: number; remain: number }>;
-  bookkeeping: { totalCoin: number; coinCredit: number };
+  bookkeeping: { totalCoin: number };
 } | { error: string };
 
 /**
@@ -879,13 +878,12 @@ function CabinetBooks({ deviceId }: { deviceId: string }) {
     }
   }
   const summary =
-    books === undefined ? t("读取…")
-    : books === null ? t("机台没有上报币数（需开启 cabinetMonitor）")
-    : "error" in books ? t("机台读取失败：{error}", { error: books.error })
-    : t("机台里 {credit} 个币 · 累计投币 {coins} · 换成币 {credited}", {
+    books === undefined ? t("读取中…")
+    : books === null ? t("未上报币数（需开启 cabinetMonitor）")
+    : "error" in books ? t("币数读取失败：{error}", { error: books.error })
+    : t("当前 {credit} 币 · 累计投币 {coins}", {
         credit: books.players[0]?.credit ?? 0,
         coins: books.bookkeeping.totalCoin,
-        credited: books.bookkeeping.coinCredit,
       });
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm">

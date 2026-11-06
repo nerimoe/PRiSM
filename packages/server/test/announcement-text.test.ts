@@ -24,10 +24,10 @@ describe("what the platform tells a bot to say", () => {
   });
 
   it("puts the facts of a cabinet's books into its words", () => {
-    expect(announcementText({ ...place, type: "cabinet.swallowed", player: null, detail: { coins: 2, credit: 24 } }))
-      .toBe("⚠️ 舞萌 吞了 2 个币，机台里已有 24 个");
+    expect(announcementText({ ...place, type: "cabinet.coin", player: null, detail: { coins: 2, credit: 24 } }))
+      .toBe("🪙 舞萌 投币 2 个，当前 24 币");
     expect(announcementText({ ...place, type: "cabinet.consumed", player: null, detail: { credits: 1, credit: 3 } }))
-      .toBe("🎮 舞萌 开局用了 1 个币，还剩 3 个");
+      .toBe("🎮 舞萌 开局消耗 1 币，剩余 3 币");
   });
 
   it("sends the message with the label in every frame", () => {

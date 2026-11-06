@@ -68,7 +68,7 @@ const CATALOG: Record<string, Entry> = {
   // Expected in normal use: shown by the control the player touched.
   DEVICE_POWER_OFF: { body: t("请先开机", "Turn the machine on first."), level: "warning", display: "inline" },
   COIN_COOLDOWN: { body: t("请稍后再投币", "Please wait before adding another coin."), level: "info", display: "inline" },
-  COIN_CABINET_FULL: { body: t("机台里的币已经够了，先玩完再投", "The machine already has enough credit. Play first."), level: "info", display: "inline" },
+  COIN_CABINET_FULL: { body: t("达到机台投币上限", "Coin limit reached"), level: "info", display: "inline" },
   RATE_LIMITED: { body: t("操作过于频繁，请稍后再试", "Too many attempts. Please wait a moment."), level: "info", display: "inline" },
   OPERATION_PENDING: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
   OPERATION_IN_PROGRESS: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },

@@ -8,8 +8,6 @@
  * - `cabinet.reset`: a counter went down. Only clearing the books does that, so
  *   nothing else is read into the same step.
  * - `cabinet.coin`: coins went in (`total_coin` rose).
- * - `cabinet.swallowed`: coins went in and nothing came of them: no credit and
- *   no part of one. A cabinet that is full (24 credits on a maimai) does this.
  * - `cabinet.consumed`: credits were spent, mostly by starting a game. What the
  *   cabinet had, plus what it was given since, minus what it has now.
  *
@@ -24,8 +22,7 @@ export type CabinetBooks = Extract<CabinetSnapshot, { players: unknown }>;
 
 export type CabinetChange =
   | { type: "cabinet.reset"; detail: { credit: number } }
-  | { type: "cabinet.coin"; detail: { coins: number; credited: number; credit: number } }
-  | { type: "cabinet.swallowed"; detail: { coins: number; credit: number } }
+  | { type: "cabinet.coin"; detail: { coins: number; credit: number } }
   | { type: "cabinet.consumed"; detail: { credits: number; credit: number } };
 
 export function isCabinetBooks(snapshot: CabinetSnapshot | null | undefined): snapshot is CabinetBooks {
@@ -42,11 +39,7 @@ export function cabinetChanges(before: CabinetBooks, after: CabinetBooks): Cabin
   const changes: CabinetChange[] = [];
   const coins = a.totalCoin - b.totalCoin;
   const credited = a.coinCredit - b.coinCredit;
-  if (coins > 0) {
-    changes.push({ type: "cabinet.coin", detail: { coins, credited, credit } });
-    const remainRose = after.players[0]!.remain > before.players[0]!.remain;
-    if (credited === 0 && !remainRose) changes.push({ type: "cabinet.swallowed", detail: { coins, credit } });
-  }
+  if (coins > 0) changes.push({ type: "cabinet.coin", detail: { coins, credit } });
   const given = credited + (a.serviceCredit - b.serviceCredit) + (a.emoneyCredit - b.emoneyCredit);
   const spent = before.players[0]!.credit + given - credit;
   if (spent > 0) changes.push({ type: "cabinet.consumed", detail: { credits: spent, credit } });

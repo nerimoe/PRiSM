@@ -69,10 +69,9 @@ export function announcementText(event: ShopEvent): string {
     case "start": return `🎮 ${who} 在 ${place} 上机`;
     case "request.card": return `💳 ${who} 通过平台在 ${place} 刷卡`;
     case "request.coin": return `🪙 ${who} 在 ${place} 投币`;
-    case "cabinet.coin": return `🪙 ${place} 投进 ${n("coins")} 个币，机台里现有 ${n("credit")} 个`;
-    case "cabinet.swallowed": return `⚠️ ${place} 吞了 ${n("coins")} 个币，机台里已有 ${n("credit")} 个`;
-    case "cabinet.consumed": return `🎮 ${place} 开局用了 ${n("credits")} 个币，还剩 ${n("credit")} 个`;
-    case "cabinet.reset": return `🧾 ${place} 的投币计数已清零`;
+    case "cabinet.coin": return `🪙 ${place} 投币 ${n("coins")} 个，当前 ${n("credit")} 币`;
+    case "cabinet.consumed": return `🎮 ${place} 开局消耗 ${n("credits")} 币，剩余 ${n("credit")} 币`;
+    case "cabinet.reset": return `🧾 ${place} 投币计数已清零`;
     case "idle.reminder": return `${shopAnnouncementLabel(event.type)}：${place}`;
   }
 }

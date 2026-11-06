@@ -287,7 +287,7 @@ describe("a bot's commands", () => {
       "权限不足",
       // A refusal, in the bot's words.
       "您当前没有未结算的账单，无需结账。",
-      "这个命令平台还不认识，请更新 Bot 或联系店员",
+      "不支持这个命令",
     ]);
     sqlite.close();
   });

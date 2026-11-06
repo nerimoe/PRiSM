@@ -113,9 +113,9 @@ describe("a bot is a resource", () => {
       announcePower: true, announceCards: true,
     });
     // A list decides; unknown types are dropped, and the switches follow it.
-    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceEvents: ["power.on", "card", "cabinet.swallowed", "nope"] } });
+    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceEvents: ["power.on", "card", "cabinet.consumed", "nope"] } });
     expect((await bot(old.token).get("bot")).body.settings).toMatchObject({
-      announceEvents: ["power.on", "card", "cabinet.swallowed"],
+      announceEvents: ["power.on", "card", "cabinet.consumed"],
       announcePower: false, announceCards: true, announceCoins: false,
     });
     // An editor that only knows switches is still heard: its switch replaces the list.

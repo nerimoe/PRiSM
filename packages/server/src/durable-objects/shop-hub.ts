@@ -847,6 +847,9 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     await this.remember(replayKey, { frames } as never);
     send(frames);
+    // Entries, checkouts and device commands can start or end an idle countdown.
+    const shopId = await this.shopId();
+    if (shopId) await this.touch(shopId);
   }
 
   /**

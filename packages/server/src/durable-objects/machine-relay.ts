@@ -144,7 +144,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     if (!answer) return { ok: false, error: "机台没有回应" };
     if (answer.error) return { ok: false, error: typeof answer.error.message === "string" ? answer.error.message : "机台读取失败" };
     const cabinet = parseCabinetSnapshot(answer.result);
-    if (!cabinet) return { ok: false, error: "机台没有读取机台状态的功能，或未开启 cabinetMonitor" };
+    if (!cabinet) return { ok: false, error: "机台不支持读取币数，或未开启 cabinetMonitor" };
     await this.cabinet(cabinet);
     return { ok: true, cabinet };
   }

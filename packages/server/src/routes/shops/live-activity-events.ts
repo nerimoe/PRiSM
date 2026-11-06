@@ -104,7 +104,7 @@ export function extractSessionIds(
  * Looks up the sessions a response touched, keyed by id, to recover their start/end times.
  * Missing rows simply yield no push rather than a wrong timer.
  */
-async function loadSessions(c: C, shopId: string, ids: string[]): Promise<Map<string, SessionRow>> {
+async function loadSessions(c: Pick<C, "env">, shopId: string, ids: string[]): Promise<Map<string, SessionRow>> {
   const found = new Map<string, SessionRow>();
   if (ids.length === 0) return found;
   const placeholders = ids.map(() => "?").join(",");
@@ -141,7 +141,7 @@ type StartTokenRow = {
  * response the player or staff member is waiting on.
  */
 export async function pushSessionEvent(
-  c: C,
+  c: Pick<C, "env">,
   input: {
     shopId: string;
     playerId: string;
