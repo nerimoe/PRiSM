@@ -19,7 +19,13 @@ export async function purgeExpiredPlatformState(
       `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE expires_at < ? ORDER BY expires_at LIMIT 500)`,
     ).bind(before),
   );
-  await env.DB.batch(statements);
+  await env.DB.batch([
+    ...statements,
+    // How pages fared is only useful while it is recent.
+    env.DB.prepare(
+      "DELETE FROM page_reports WHERE rowid IN (SELECT rowid FROM page_reports WHERE reported_at < ? ORDER BY reported_at LIMIT 500)",
+    ).bind(new Date(+now - 30 * 24 * 3600_000).toISOString()),
+  ]);
 }
 
 export async function handleScheduledCron(

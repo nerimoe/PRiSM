@@ -9,6 +9,7 @@ import { ShopHero, SessionSignIn } from "./SessionContent";
 import { Api, ApiError, InlineError, type Card, type MachineLoginResult, type Notice, type PublicResource } from "../api";
 import { useNotice } from "./NoticeProvider";
 import { useAuth } from "./AuthContext";
+import { pageReport } from "./page-report";
 
 type CardOutcome = NonNullable<MachineLoginResult["card"]>;
 const CARD_TEXT: Record<CardOutcome, string> = {
@@ -59,6 +60,7 @@ function ResourceSessionLoader({
   useEffect(() => {
     let cancelled = false;
     setPage({ kind: "loading" });
+    pageReport.start();
     // One request for the machine and the page's state; an older address form has only the machine.
     const first = ticket.startsWith("v1.")
       ? Api.bootstrap<ResourceState>(ticket)
@@ -68,10 +70,12 @@ function ResourceSessionLoader({
         if (!cancelled) {
           setActiveShop(result.machine.shop.publicId ?? "");
           setPage({ kind: "session", machine: result.machine, state: result.state });
+          if (result.machine.publicId) pageReport.opened(result.machine.publicId);
         }
       })
       .catch((caught) => {
         if (cancelled) return;
+        pageReport.openFailed();
         if (caught instanceof ApiError && caught.sessionExpired) {
           onExpired();
           return;

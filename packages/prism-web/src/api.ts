@@ -1,5 +1,6 @@
 import { activeLocale, rememberPlayerText } from "./i18n";
 import { PlayerReadCache, subscribeRead } from "./player-read-cache";
+import { pageReport } from "./ui/page-report";
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -325,17 +326,27 @@ async function fetchApi<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const send = () => fetch(path, {
-    ...options,
-    cache: "no-store",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json",
-      // Player-facing text comes back in this language.
-      "accept-language": activeLocale(),
-      ...options.headers,
-    },
-  });
+  const send = async () => {
+    const startedAt = performance.now();
+    try {
+      const answer = await fetch(path, {
+        ...options,
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          // Player-facing text comes back in this language.
+          "accept-language": activeLocale(),
+          ...options.headers,
+        },
+      });
+      pageReport.request(options.method ?? "GET", performance.now() - startedAt, true);
+      return answer;
+    } catch (error) {
+      if (!options.signal?.aborted) pageReport.request(options.method ?? "GET", performance.now() - startedAt, false);
+      throw error;
+    }
+  };
   let response: Response;
   try { response = await send(); }
   catch (error) {

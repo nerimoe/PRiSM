@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClimateState } from "./ClimateControls";
+import { pageReport } from "./page-report";
 
 /**
  * What a device page is told of its device's power and air conditioner. A key
@@ -98,8 +99,10 @@ export function useResourceLive(ticket: string, enabled: boolean, handlers: Live
     const connect = () => {
       const url = new URL(`/api/v1/devices/session/ws?ticket=${encodeURIComponent(ticket)}`, window.location.href);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      const connectingAt = performance.now();
       const opened = new WebSocket(url);
       socket = opened;
+      opened.onopen = () => pageReport.socketOpened(performance.now() - connectingAt);
       opened.onmessage = (event) => {
         const frame = parseLiveFrame(String(event.data));
         if (!frame) return;
@@ -108,6 +111,7 @@ export function useResourceLive(ticket: string, enabled: boolean, handlers: Live
       };
       opened.onclose = () => {
         if (socket !== opened) return;
+        pageReport.socketDropped();
         set({ connected: false, dropped: current.connected || current.dropped });
         if (!stopped) retry = setTimeout(connect, RETRY_MS[Math.min(failures++, RETRY_MS.length - 1)]);
       };
