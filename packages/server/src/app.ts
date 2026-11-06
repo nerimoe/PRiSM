@@ -24,6 +24,7 @@ import { cardsRouter } from "./routes/platform/cards.js";
 import { resourceTicketRouter, resourceQrRouter } from "./routes/platform/resource-ticket.js";
 import { machineLoginRouter } from "./routes/platform/machine-login.js";
 import { resourceSessionRouter, merchantResourceActionRouter } from "./routes/platform/resource-session.js";
+import { createResourcePageRouter } from "./routes/platform/resource-page.js";
 import { pageReportRouter } from "./routes/platform/page-report.js";
 import { appleAppSiteAssociationResponse, androidAssetLinksResponse } from "./routes/platform/apple.js";
 import { munetAuthRouter, appclipAuthRouter, munetCallbackRouter } from "./routes/platform/munet-routes.js";
@@ -114,6 +115,9 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/machines", resourceTicketRouter);
   app.route("/api/v1/machines", machineLoginRouter);
   app.route("/api/v1/devices", resourceSessionRouter);
+  app.route("/api/v1/devices", createResourcePageRouter((c, request) => Promise.resolve(app.fetch(request, c.env, (() => {
+    try { return c.executionCtx; } catch { return undefined; }
+  })()))));
   app.route("/api/v1/devices", pageReportRouter);
   app.route("/api/v1/merchant", merchantResourceActionRouter);
   app.route("/t", resourceQrRouter);

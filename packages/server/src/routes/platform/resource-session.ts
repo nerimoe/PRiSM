@@ -10,7 +10,7 @@ import { toPricingConfigManagementView } from "../shops/views.js";
 import { getShopForMachine, requireShopPlayer } from "./machine-login.js";
 import { publicResource, resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
 import { executeResourceAction, actionSchema, resourceClimateState, resourcePowerState } from "./resource-actions.js";
-import { has, hinataConfigOf, loadResource } from "../../resources/resource.js";
+import { has, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
 import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
@@ -62,11 +62,32 @@ type C=Context<AppBindings,any,any>;
  * have not moved to `device`.
  */
 async function sessionState(c:C,machine:ScannedResource,options:{includePower:boolean;includeClimate:boolean}){
+  const loaded=await loadResource(c.env.DB,machine.shop_id,machine.id);
+  const {shop,device,gate,billing}=await readGate(c,machine,loaded);
+  if(gate==="disabled")jsonError(403,"店铺玩家资格已停用","PLAYER_DISABLED");
+  const bound=(id:Parameters<typeof has>[1])=>!!device&&has(device,id);
+  // The first read never waits on Home Assistant: a device that is not live is filled in by the page's channel.
+  const live=device?await readLiveState(c.env.DB,shop.id,device):null;
+  return {
+    gate,coinUsed:false,billing,
+    mahjong:gate==="ready"&&bound("mahjong")?await mahjongState(c,machine,undefined,device):null,
+    power:gate==="ready"&&bound("power")&&options.includePower
+      ?await resourcePowerState(c,machine):"unmanaged",
+    climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
+    device:device&&live?.watching?{watching:true,...deviceView(device,live)}:{watching:false},
+  };
+}
+
+/**
+ * What stands between the player and the resource: an identity to bind, billing
+ * to confirm, or a membership that was disabled. `device` is the resource as the
+ * caller already loaded it.
+ */
+export async function readGate(c:C,machine:ScannedResource,device:Resource|null){
   const user=requireUser(c);
   const shop=await getShopForMachine(c,machine.shop_public_id);
-  let gate:"ready"|"binding"|"entry"="ready";
+  let gate:"ready"|"binding"|"entry"|"disabled"="ready";
   let billing:{preview?:ResourceBillingPreview;error?:{code:string;message:string};rules?:unknown}|null=null;
-  const device=await loadResource(c.env.DB,shop.id,machine.id);
   const bound=(id:Parameters<typeof has>[1])=>!!device&&has(device,id);
   const resourceBilling=getOrCreateShopDependencies(c.env.DB,shop,c.env.URL_ENCRYPTION_KEY,c.env).resourceBilling;
   /** A resource that cannot bill is shown as such instead of failing the page. */
@@ -92,7 +113,7 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
     ).bind(shop.id,user.id,shop.id,user.id).first<{playerId:string|null;status:string|null;identityBound:number}>();
     if(shop.identity_binding_required&&!player?.identityBound)gate="binding";
     else if(!player?.playerId)gate=bills?"entry":"ready";
-    else if(player.status!=="active")jsonError(403,"店铺玩家资格已停用","PLAYER_DISABLED");
+    else if(player.status!=="active")gate="disabled";
     else if(bills){
       const running=await billingRead(()=>resourceBilling.activeSession({resourceId:machine.id,playerId:player.playerId!}));
       // A seat here is billed for already, by the plan the seat runs on.
@@ -123,16 +144,7 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
       }};
     }
   }
-  // The first read never waits on Home Assistant: a device that is not live is filled in by the page's channel.
-  const live=device?await readLiveState(c.env.DB,shop.id,device):null;
-  return {
-    gate,coinUsed:false,billing,
-    mahjong:gate==="ready"&&bound("mahjong")?await mahjongState(c,machine,undefined,device):null,
-    power:gate==="ready"&&bound("power")&&options.includePower
-      ?await resourcePowerState(c,machine):"unmanaged",
-    climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
-    device:device&&live?.watching?{watching:true,...deviceView(device,live)}:{watching:false},
-  };
+  return {shop,device,gate,billing};
 }
 
 resourceSessionRouter.get("/session/state", async c=>{

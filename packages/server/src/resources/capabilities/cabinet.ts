@@ -53,6 +53,23 @@ export function cabinetChanges(before: CabinetBooks, after: CabinetBooks): Cabin
 export const COIN_SETTLE_MS = 2000;
 
 /**
+ * Where a cabinet stands against its `coinCap`: `unknown` when no limit is set or
+ * the books are not known now (no IO reporting them, or its link is down).
+ */
+export async function coinLimit(db: D1DatabaseLike, shopId: string, device: Resource): Promise<"full" | "room" | "unknown"> {
+  const cap = hinataConfigOf(device)?.coinCap ?? null;
+  if (cap === null) return "unknown";
+  const rows = await db.prepare(
+    "SELECT key, value_json FROM device_state WHERE shop_id = ? AND device_id = ? AND capability = 'hinata_io' AND key IN ('cabinet', 'link')",
+  ).bind(shopId, device.id).all<{ key: string; value_json: string }>();
+  const state = Object.fromEntries(rows.results.map((row) => [row.key, JSON.parse(row.value_json) as unknown]));
+  const books = state.cabinet as { players?: Array<{ credit: number }> } | undefined;
+  const credit = books?.players?.[0]?.credit;
+  if (state.link !== "online" || typeof credit !== "number") return "unknown";
+  return credit >= cap ? "full" : "room";
+}
+
+/**
  * Whether a coin through the platform may go in, judged by the cabinet's books.
  *
  * - `full`: the cabinet already holds the device's `coinCap` credits.
@@ -68,16 +85,8 @@ export async function coinGate(
   operationId: string,
   now = new Date(),
 ): Promise<"ok" | "full" | "settling" | "unknown"> {
-  const cap = hinataConfigOf(device)?.coinCap ?? null;
-  if (cap === null) return "unknown";
-  const rows = await db.prepare(
-    "SELECT key, value_json FROM device_state WHERE shop_id = ? AND device_id = ? AND capability = 'hinata_io' AND key IN ('cabinet', 'link')",
-  ).bind(shopId, device.id).all<{ key: string; value_json: string }>();
-  const state = Object.fromEntries(rows.results.map((row) => [row.key, JSON.parse(row.value_json) as unknown]));
-  const books = state.cabinet as { players?: Array<{ credit: number }> } | undefined;
-  const credit = books?.players?.[0]?.credit;
-  if (state.link !== "online" || typeof credit !== "number") return "unknown";
-  if (credit >= cap) return "full";
+  const limit = await coinLimit(db, shopId, device);
+  if (limit !== "room") return limit;
   const claim = await db.prepare(
     `INSERT INTO operation_locks(shop_id,scope,resource_id,lock_id,expires_at,acquired_at)
      VALUES (?,'device.coin-settle',?,?,?,?)
