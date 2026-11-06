@@ -863,7 +863,7 @@ type Books = {
 } | { error: string };
 
 /**
- * What the cabinet's own books say (an IO with `cabinetMonitor=1`), with a way
+ * What the cabinet's own books say (an IO the platform has asked to report them), with a way
  * to have the IO read them again when they look out of date.
  */
 function CabinetBooks({ deviceId }: { deviceId: string }) {
@@ -894,7 +894,7 @@ function CabinetBooks({ deviceId }: { deviceId: string }) {
   }
   const summary =
     books === undefined ? t("读取中…")
-    : books === null ? t("未上报币数（需开启 cabinetMonitor）")
+    : books === null ? t("未上报币数（游戏没有 sysfile.dat，或 IO 版本太旧）")
     : "error" in books ? t("币数读取失败：{error}", { error: books.error })
     : t("当前 {credit} 币 · 累计投币 {coins}", {
         credit: books.players[0]?.credit ?? 0,

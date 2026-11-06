@@ -5,7 +5,7 @@ import { optionalUser } from "../../middleware/auth.js";
 import type { Notice } from "../../notices.js";
 import { requestLocale } from "../../notices.js";
 import { withReadScope } from "../../read-scope.js";
-import { coinLimit } from "../../resources/capabilities/cabinet.js";
+import { coinLimit, ioConnected } from "../../resources/capabilities/cabinet.js";
 import { readDeviceState } from "../../resources/capabilities/device-state.js";
 import { pageCode, renderPage, type Page } from "../../resources/page.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
@@ -20,7 +20,7 @@ const NO_CAPABILITIES = { power: false, climate: false, card: false, coin: false
 /**
  * Reads what the page depends on and renders it. A read asks nothing it will not
  * show: a player still confirming costs no device reads, and the books are read
- * only when a coin button is on the page.
+ * only when a coin button is on the page. Only a direct-connected IO has a link to read.
  */
 export function readPage(c: C, machine: ScannedResource): Promise<Page> {
   return withReadScope(async () => {
@@ -35,7 +35,9 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
     const state = ready && device && (capabilities.power || capabilities.climate)
       ? await readDeviceState({ db: c.env.DB, env: c.env, shopId }, device)
       : null;
-    const coinButton = ready && device && capabilities.coin && !io?.coinAfterSwipe && state?.power !== "off";
+    const ioWaiting = !!ready && !!device && io?.transport === "embedded" && (capabilities.card || capabilities.coin)
+      && state?.power !== "off" && !(await ioConnected(c.env.DB, shopId, device.id));
+    const coinButton = ready && device && capabilities.coin && !io?.coinAfterSwipe && state?.power !== "off" && !ioWaiting;
     const [coin, mahjong, billing] = await Promise.all([
       coinButton ? coinLimit(c.env.DB, shopId, device) : null,
       ready && device && capabilities.mahjong ? mahjongState(c, machine, undefined, device) : null,
@@ -65,6 +67,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       power: state?.power ?? null,
       climate: state?.climate ?? null,
       coinFull: coin === "full",
+      ioWaiting,
       mahjong,
     });
   });

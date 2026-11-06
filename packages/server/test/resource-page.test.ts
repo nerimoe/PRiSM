@@ -23,7 +23,7 @@ const input = (over: Partial<PageInput> = {}): PageInput => ({
   capabilities: { power: false, climate: false, card: false, coin: false, door: false, mahjong: false },
   billed: false, coinAfterSwipe: false, cardCapture: false,
   geo: { checkin: false, machine: false },
-  signedIn: true, gate: "ready", billing: null, power: null, climate: null, coinFull: false, mahjong: null,
+  signedIn: true, gate: "ready", billing: null, power: null, climate: null, coinFull: false, ioWaiting: false, mahjong: null,
   ...over,
 });
 const caps = (...names: Array<keyof PageInput["capabilities"]>) =>
@@ -76,6 +76,15 @@ describe("what the page shows", () => {
     expect(ids({ ...caps("power", "card", "coin", "door", "climate"), power: "off" })).toEqual(["door", "climate", "power-off", "power"]);
     // An unreadable switch must not lock players out.
     expect(ids({ ...caps("power", "card", "coin"), power: null })).toEqual(["cards", "coin"]);
+  });
+
+  it("waits for the IO instead of offering the card and coin, keeping everything else", () => {
+    expect(ids({ ...caps("door", "climate", "card", "coin"), ioWaiting: true })).toEqual(["door", "climate", "io-waiting"]);
+    expect(block({ ...caps("coin"), ioWaiting: true, locale: "en" }, "io-waiting").text).toBe("Waiting for the machine to connect");
+    // Off comes first: turning on is what there is to do.
+    expect(ids({ ...caps("power", "card"), power: "off", ioWaiting: true })).toEqual(["power-off", "power"]);
+    // Nothing of the IO's on the page, so nothing to wait for.
+    expect(ids({ ...caps("door"), ioWaiting: true })).toEqual(["door"]);
   });
 
   it("seats and unseats at the table, and says when it is full", () => {
@@ -181,7 +190,8 @@ describe("reading and acting on the page", () => {
   afterEach(() => clearShopDependenciesCache());
 
   it("goes from signing in to confirming to playing", async () => {
-    const { sqlite, page, act } = await fixture();
+    const { sqlite, page, act, books } = await fixture();
+    books(0);
     expect(blockIds((await page(false)).page)).toEqual(["signin"]);
 
     const entering = await page();
@@ -287,8 +297,32 @@ describe("reading and acting on the page", () => {
     sqlite.close();
   });
 
-  it("costs about what the older read did, plus the books and whether anything is billing", async () => {
+  it("waits for a direct-connected IO, and offers its actions once it connects", async () => {
+    const { sqlite, page, act, books } = await fixture();
+    const button = (await page()).page.blocks.at(-1);
+    const entered = await act("entry", { ...button.payload, consent: true });
+    expect(blockIds(entered.data.page)).toEqual(["io-waiting"]);
+    books(0);
+    expect(blockIds((await page()).page)).toEqual(["cards", "coin"]);
+    sqlite.run("UPDATE device_state SET value_json='\"offline\"' WHERE key='link'");
+    expect(blockIds((await page()).page)).toEqual(["io-waiting"]);
+    sqlite.close();
+  });
+
+  it("does not wait on an IO the platform has no link to", async () => {
     const { sqlite, page, act } = await fixture();
+    const button = (await page()).page.blocks.at(-1);
+    await act("entry", { ...button.payload, consent: true });
+    sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='cab'", [JSON.stringify({ transport: "external", coinKey: 32 })]);
+    sqlite.run("UPDATE device_capabilities SET secret_json=? WHERE device_id='cab'", [JSON.stringify({ url: "x", password: "x" })]);
+    clearShopDependenciesCache();
+    expect(blockIds((await page()).page)).toEqual(["cards", "coin"]);
+    sqlite.close();
+  });
+
+  it("costs about what the older read did, plus the books and whether anything is billing", async () => {
+    const { sqlite, page, act, books } = await fixture();
+    books(0);
     const entering = await page();
     expect(entering.queries).toBeLessThanOrEqual(15);
     const button = entering.page.blocks.at(-1);
@@ -296,7 +330,7 @@ describe("reading and acting on the page", () => {
     clearShopDependenciesCache();
     const ready = await page();
     expect(blockIds(ready.page)).toEqual(["cards", "coin"]);
-    expect(ready.queries).toBeLessThanOrEqual(12);
+    expect(ready.queries).toBeLessThanOrEqual(13);
     sqlite.close();
   });
 });

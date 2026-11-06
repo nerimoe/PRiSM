@@ -110,7 +110,7 @@ describe("what a cabinet's books tell the platform", () => {
     await relay.webSocketMessage(sockets[0] as any, JSON.stringify({
       jsonrpc: "2.0", id: request.id, error: { code: -32603, message: "cabinet monitor is disabled ([aimeio] cabinetMonitor=0)" },
     }));
-    expect(await reading).toEqual({ ok: false, error: "cabinet monitor is disabled ([aimeio] cabinetMonitor=0)" });
+    expect(await reading).toEqual({ ok: false, error: "这台 IO 没有读取机台状态（游戏没有 sysfile.dat，或 IO 版本太旧）" });
   });
 
   it("stores a failed read without comparing it, and compares the next good one with the last good one", async () => {
@@ -162,6 +162,17 @@ describe("what an IO says of its readers", () => {
     relay.webSocketMessage(sockets[0], JSON.stringify({ action: "CLIENT_HELLO", body: { auth: "bearer", events: [], ...body } }));
 
   const beat = (report: any, readers: unknown[] | undefined) => report("io.heartbeat", { ha: [], ...(readers ? { readers } : {}) });
+
+  it("turns cabinet reporting on for a token connection, in memory, and for no other", async () => {
+    const { relay, sockets } = await fixture();
+    const turnedOn = () => sockets[0]!.sent.some((sent: string) => sent.includes("io.setLiveConfig"));
+    await hello(relay, sockets, { auth: undefined });
+    expect(turnedOn()).toBe(false);
+    await hello(relay, sockets, { e2ee: true });
+    expect(turnedOn()).toBe(false);
+    await hello(relay, sockets, {});
+    expect(JSON.parse(sockets[0]!.sent.at(-1)!)).toEqual({ jsonrpc: "2.0", method: "io.setLiveConfig", params: { key: "cabinetMonitor", value: "1" } });
+  });
 
   it("keeps the version from the hello, which says nothing of readers", async () => {
     const { relay, sockets, sqlite } = await fixture();

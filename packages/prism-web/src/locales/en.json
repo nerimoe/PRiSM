@@ -1861,7 +1861,7 @@
   "现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。提前量为 0 时不发闲置提醒。本 Bot 自己执行的命令不会再次播报。": "Events at the shop come from the cabinets and Home Assistant and are announced once, wherever they were triggered. A platform request only means someone asked for it, not that the machine did it. Tick both to announce each. Coin events need cabinetMonitor on the cabinet. A lead of 0 sends no idle reminder. This bot's own commands are not announced again.",
   "读取失败": "Could not read",
   "读取中…": "Reading…",
-  "未上报币数（需开启 cabinetMonitor）": "Credits not reported (needs cabinetMonitor)",
+  "未上报币数（游戏没有 sysfile.dat，或 IO 版本太旧）": "Credits not reported (the game has no sysfile.dat, or the IO is too old)",
   "币数读取失败：{error}": "Could not read credits: {error}",
   "当前 {credit} 币 · 累计投币 {coins}": "{credit} credits · {coins} coins in total",
   "刷新机台状态": "Refresh cabinet",

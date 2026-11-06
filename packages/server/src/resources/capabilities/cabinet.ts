@@ -69,6 +69,14 @@ export async function coinLimit(db: D1DatabaseLike, shopId: string, device: Reso
   return credit >= cap ? "full" : "room";
 }
 
+/** Whether the device's direct-connected IO is connected now. */
+export async function ioConnected(db: D1DatabaseLike, shopId: string, deviceId: string): Promise<boolean> {
+  const row = await db.prepare(
+    "SELECT value_json FROM device_state WHERE shop_id = ? AND device_id = ? AND capability = 'hinata_io' AND key = 'link'",
+  ).bind(shopId, deviceId).first<{ value_json: string }>();
+  return row?.value_json === JSON.stringify("online");
+}
+
 /**
  * Whether a coin through the platform may go in, judged by the cabinet's books.
  *

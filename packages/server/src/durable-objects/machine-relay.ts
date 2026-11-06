@@ -153,7 +153,10 @@ export class MachineRelay extends BaseDurableObject<Env> {
     }
     const answer = await reply;
     if (!answer) return { ok: false, error: "机台没有回应" };
-    if (answer.error) return { ok: false, error: typeof answer.error.message === "string" ? answer.error.message : "机台读取失败" };
+    if (answer.error) {
+      const message = typeof answer.error.message === "string" ? answer.error.message : "";
+      return { ok: false, error: message.includes("cabinetMonitor") ? "这台 IO 没有读取机台状态（游戏没有 sysfile.dat，或 IO 版本太旧）" : `机台读取失败：${message}` };
+    }
     const cabinet = parseCabinetSnapshot(answer.result);
     if (!cabinet) return { ok: false, error: "机台不支持读取币数，或未开启 cabinetMonitor" };
     await this.cabinet(cabinet);
@@ -201,6 +204,9 @@ export class MachineRelay extends BaseDurableObject<Env> {
     );
     // Without a link the books no longer count, so the coin button is no longer held by them.
     await this.judgeCoinLimit();
+    // A page shows the IO's actions only while it is connected.
+    const channel = await this.channel();
+    if (channel) await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "link");
   }
 
   /** Open pages hear when the cabinet reaches or leaves its limit, and only then. Never gets in the way of the machine. */
@@ -513,6 +519,12 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const session = previous.session ?? crypto.randomUUID();
       ws.serializeAttachment({ ...previous, e2ee: hello.e2ee, ha, session, seenAt: Date.now() } satisfies Attachment);
       if (hello.ioVersion) await this.ioVersion(hello.ioVersion);
+      // Its books, without anyone editing the machine's config. It holds this only until it
+      // restarts. An IO too old to know this, or whose game has no sysfile.dat, declines;
+      // neither needs an answer.
+      if (hello.authenticated && !hello.e2ee) {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", method: "io.setLiveConfig", params: { key: "cabinetMonitor", value: "1" } }));
+      }
       const channel = await this.channel();
       if (ha && channel?.channel) {
         await this.ctx.storage.put(HA_SESSION_KEY, session);

@@ -78,6 +78,8 @@ export type PageInput = {
   power: "on" | "off" | null;
   climate: unknown;
   coinFull: boolean;
+  /** A direct-connected IO has not connected, so nothing can reach the machine yet. */
+  ioWaiting: boolean;
   mahjong: { capacity: number; seats: Array<{ name: string; mine: boolean; playing: boolean }> } | null;
 };
 
@@ -104,6 +106,7 @@ const EN: Record<string, string> = {
   "已满桌": "The table is full",
   "上桌": "Sit down",
   "下桌": "Leave the table",
+  "等待机台连接": "Waiting for the machine to connect",
   "投币": "Insert coin",
   "达到机台投币上限": "Coin limit reached",
 };
@@ -137,6 +140,10 @@ function pageBlocks(input: PageInput): PageBlock[] {
     return blocks;
   }
   if (cap.mahjong && input.mahjong) blocks.push(...mahjongBlocks(input.mahjong, t, geo.machine));
+  if ((cap.card || cap.coin) && input.ioWaiting) {
+    blocks.push({ kind: "text", id: "io-waiting", text: t("等待机台连接"), style: "heading" });
+    return blocks;
+  }
   if (cap.card)
     blocks.push({ kind: "cards", id: "cards", enabled: true, capture: input.cardCapture, action: "card.swipe", needsLocation: geo.machine });
   if (cap.coin && !input.coinAfterSwipe)

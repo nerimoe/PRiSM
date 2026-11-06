@@ -325,6 +325,7 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 - `MachineRelay` 保存最近一份**读成功**的账本，下一份与它比较（`resources/capabilities/cabinet.ts`）：`total_coin` 增加是 `cabinet.coin`（平台不判断投的币有没有变成币，玩家在机台上看得到）；「原有的 + 新给的（投币、服务、电子支付）− 现有的」大于 0 是 `cabinet.consumed`；任一计数器变小是 `cabinet.reset`（清账），这一步不再推别的。计数器是累计的，漏收的快照由下一份补齐，心跳最多晚 60 秒。读失败的那份也存下来给看板看，但不参与比较。
 - 推出的事件记为 `hinata_io` 的 `signal`，并作为同名类型播报（没有 `player`：账本说不出是谁投的）。账本本身存为设备状态 `cabinet`，不记事件。
+- 令牌直连的 IO（不是端到端加密）发 hello 后，平台接着发 `io.setLiveConfig cabinetMonitor=1`，不用改机器上的配置文件。IO 只记在内存里，每次连接平台都再发一次；旧版 IO 不认识这个方法，游戏没有 `sysfile.dat` 时 IO 不会开始读，这两种都只回一个错误，平台不处理。
 - 后台「操作」面板的 HINATA IO 一栏显示 `GET /api/v1/merchant/machines/:id/cabinet` 的账本；「刷新机台状态」调 `POST …/cabinet/refresh`，平台向 IO 发 JSON-RPC `cabinet.getSnapshot`（5 秒超时），回答按普通快照处理并返回。这是平台第一个发给 IO 的 RPC，`MachineRelay` 按请求 `id` 匹配回答。
 
 **投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。

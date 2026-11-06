@@ -308,7 +308,8 @@ merchantResourceRouter.post("/machines/:id/cabinet/refresh", async (c) => {
   if (!hinata || hinata.transport !== "embedded" || !hinata.channel || !relay)
     jsonError(409, "只有直连本平台的机台能读取机台状态", "DEVICE_ACTION_UNSUPPORTED");
   const read = await relay.getByName(hinata.channel).readCabinet();
-  if (!read.ok) jsonError(502, read.error, "DEVICE_UNAVAILABLE");
+  // Not DEVICE_UNAVAILABLE, whose fixed wording would hide the reason from the operator asking.
+  if (!read.ok) jsonError(409, read.error, "CABINET_READ_FAILED");
   const { revision: _revision, readAtMs, ...cabinet } = read.cabinet;
   return c.json({ cabinet, readAt: new Date(readAtMs).toISOString() });
 });
