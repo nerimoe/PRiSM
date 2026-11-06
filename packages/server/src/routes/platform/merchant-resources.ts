@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 import { createD1Executor, type D1BoundStatementLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import { announcedTypes, legacyAnnounceSwitches, switchesFor } from "@prism/core";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
@@ -136,6 +137,7 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,
+    coinCap: hinata?.coinCap ?? null,
     relayConnection: embedded ? "embedded" : "external",
     // The token itself is only ever returned once, at mint time. What the board
     // needs afterwards is whether one exists and where the device should point.
@@ -258,6 +260,41 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
       payload: event.payload,
     })),
   });
+});
+
+/**
+ * A cabinet's books as last reported by its IO (`cabinetMonitor=1`): credits on
+ * the machine and the coin counters. `cabinet` is null for a device whose IO
+ * has never reported them.
+ */
+merchantResourceRouter.get("/machines/:id/cabinet", async (c) => {
+  const user = requireUser(c);
+  const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
+    .bind(c.req.param("id")).first<{ shop_id: string }>();
+  if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
+  await assertResourceShop(c, user, machine.shop_id);
+  const row = await c.env.DB.prepare(
+    "SELECT value_json, changed_at FROM device_state WHERE shop_id=? AND device_id=? AND capability='hinata_io' AND key='cabinet'",
+  ).bind(machine.shop_id, c.req.param("id")).first<{ value_json: string; changed_at: string }>();
+  return c.json({ cabinet: row ? JSON.parse(row.value_json) : null, changedAt: row?.changed_at ?? null });
+});
+
+/** Ask a direct-connected IO to read its cabinet's books now, for when the board seems out of date. */
+merchantResourceRouter.post("/machines/:id/cabinet/refresh", async (c) => {
+  const user = requireUser(c);
+  const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
+    .bind(c.req.param("id")).first<{ shop_id: string }>();
+  if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
+  await assertResourceShop(c, user, machine.shop_id);
+  const device = await loadResource(c.env.DB, machine.shop_id, c.req.param("id"));
+  const hinata = device ? hinataConfigOf(device) : null;
+  const relay = machineRelayNamespace(c.env);
+  if (!hinata || hinata.transport !== "embedded" || !hinata.channel || !relay)
+    jsonError(409, "只有直连本平台的机台能读取机台状态", "DEVICE_ACTION_UNSUPPORTED");
+  const read = await relay.getByName(hinata.channel).readCabinet();
+  if (!read.ok) jsonError(502, read.error, "DEVICE_UNAVAILABLE");
+  const { revision: _revision, readAtMs, ...cabinet } = read.cabinet;
+  return c.json({ cabinet, readAt: new Date(readAtMs).toISOString() });
 });
 
 /** Times in occupancy answers are shown in the shop's time zone, as the rest of the shop's data is. */
@@ -407,6 +444,9 @@ const machineInput=z.object({
   ttlockLockId:z.number().int().positive().nullable().optional(),
   coinKey:z.number().int().min(0).max(65535).default(32),
   coinAfterSwipe:z.boolean().default(false),
+  // The most credits a platform coin may leave on a cabinet that reports its
+  // books (direct connection only); null for no limit.
+  coinCap:z.number().int().min(1).max(99).nullable().optional(),
   // Choosing `embedded` points the device at this platform instead of an
   // external relay. Existing devices stay on `external`, so nothing changes
   // until a store opts in per machine.
@@ -430,6 +470,8 @@ const machineInput=z.object({
     announceStarts:z.boolean().optional(),
     announceCards:z.boolean().optional(),
     announceCoins:z.boolean().optional(),
+    // Announcement types from the catalog; unknown ones are dropped on save.
+    announceEvents:z.array(z.string().min(1).max(40)).max(40).nullable().optional(),
   }).strict().nullable().optional(),
   rotateBotToken:z.boolean().optional(),
   // Billing: the group whose default plan the resource bills (null or
@@ -576,7 +618,8 @@ async function nextCapabilities(
     // orphan a connected device.
     const channel=before?.channel??`m_${randomToken(16)}`;
     const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,channel},secrets,credentialHash});
+    const coinCap=body.coinCap!==undefined?body.coinCap:before?.coinCap??null;
+    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,coinCap,channel},secrets,credentialHash});
   }else if(secrets.url){
     const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
     if(coinAfterSwipe&&!secrets.password)
@@ -626,7 +669,15 @@ async function nextBot(
       "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,?,'integration','prism_integration',?,'active',?)",
     ).bind(shopId,tokenId,name,await sha256Hex(token),now));
   }
-  const config=capabilities.bot.config.parse({...before,...body.bot,tokenId});
+  const parsed=capabilities.bot.config.parse({...before,...body.bot,tokenId});
+  // A list decides what is told, and the switches older bots read follow it. An
+  // editor that only knows switches sets them, and the list gives way to them.
+  const touchesSwitches=Object.keys(legacyAnnounceSwitches).some(key=>body.bot&&key in body.bot);
+  const list=body.bot?.announceEvents!==undefined?body.bot.announceEvents
+    :touchesSwitches?null:parsed.announceEvents;
+  const config=list
+    ?{...parsed,announceEvents:announcedTypes({announceEvents:list}),...switchesFor(list)}
+    :{...parsed,announceEvents:null};
   next.set("bot",{config,secrets:{},credentialHash:null});
   return {statements,token};
 }
@@ -754,5 +805,7 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
     c.env.DB.prepare("DELETE FROM device_state WHERE shop_id=? AND device_id=?").bind(machine.shop_id,id),
     c.env.DB.prepare("DELETE FROM machines WHERE id=? AND shop_id=?").bind(id,machine.shop_id),
   ]);
+  // A deleted bot's connection ends; the others learn the shop changed.
+  if(botToken?.tokenId)notifyBotsChangedAfter(c,machine.shop_id);
   return c.json({ok:true});
 });

@@ -841,7 +841,62 @@ const actionLabels: Record<string, string> = {
   "card.state": "读卡状态变化",
   "card.consumed": "卡片已送入游戏",
   "led.set": "灯光",
+  "cabinet.coin": "投币入账",
+  "cabinet.swallowed": "吞币",
+  "cabinet.consumed": "扣币开局",
+  "cabinet.reset": "投币计数清零",
 };
+
+type Books = {
+  players: Array<{ credit: number; remain: number }>;
+  bookkeeping: { totalCoin: number; coinCredit: number };
+} | { error: string };
+
+/**
+ * What the cabinet's own books say (an IO with `cabinetMonitor=1`), with a way
+ * to have the IO read them again when they look out of date.
+ */
+function CabinetBooks({ deviceId }: { deviceId: string }) {
+  const { t } = useI18n();
+  const [books, setBooks] = useState<Books | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ cabinet: Books | null }>(`/api/v1/merchant/machines/${deviceId}/cabinet`)
+      .then((r) => setBooks(r.cabinet))
+      .catch(() => setBooks(null));
+  }, [deviceId]);
+  async function refresh() {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api<{ cabinet: Books }>(`/api/v1/merchant/machines/${deviceId}/cabinet/refresh`, { method: "POST" });
+      setBooks(r.cabinet);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("读取失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const summary =
+    books === undefined ? t("读取…")
+    : books === null ? t("机台没有上报币数（需开启 cabinetMonitor）")
+    : "error" in books ? t("机台读取失败：{error}", { error: books.error })
+    : t("机台里 {credit} 个币 · 累计投币 {coins} · 换成币 {credited}", {
+        credit: books.players[0]?.credit ?? 0,
+        coins: books.bookkeeping.totalCoin,
+        credited: books.bookkeeping.coinCredit,
+      });
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <span className="text-ink/70">{summary}</span>
+      <button type="button" className={button} disabled={busy} onClick={() => void refresh()}>
+        {t("刷新机台状态")}
+      </button>
+      {error && <span className="text-xs text-red-600">{error}</span>}
+    </div>
+  );
+}
 
 type MahjongSeat = { playerId: string; name: string; playing: boolean };
 type MahjongTable = { capacity: number; seats: MahjongSeat[] };
@@ -1068,6 +1123,7 @@ function ResourceActions({
                   </button>
                 </div>
               )}
+              {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}
               {id === "mahjong" && (
                 <>
                   <div className="grid gap-1">

@@ -14,6 +14,8 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
   - `pricing-time`：默认时间计费和优先级时间计费规则。
   - `redeem`：礼物兑换规则与礼物赠送。
   - `device-command`：设备动作授权、设施/游戏机器目标分类、执行器选择、投币冷却、响应确认（ACK）和过期状态流转。
+  - `bot-message`：平台写给 Bot 说的话的格式（文字片段和玩家片段，玩家由 Bot 按聊天平台称呼），播报和各命令的回复（服务端 `resources/bot-replies.ts`，命令在 `resources/bot-commands.ts`）都用它。
+  - `shop-announcements`：Bot 可播报的类型目录（事件／请求／提醒三组，各带可读名称），以及 Bot 设置里的类型列表与旧版五个开关的互相换算。服务端、后台编辑器和兼容逻辑都读这一处。
   - `storage-ports`：场次、资产、兑换记录、结算、设备命令、玩家和计费配置的仓储契约（Repository Ports）。
 - `packages/storage-sql`：兼容 SQLite/D1 的 DDL、写仓储和 SQL 读模型。需要聚合多张表的列表由这里用单条关联查询完成，再调用 core 的统一领域判断；运行时适配器仅提供 SQL 执行器。
 - `packages/adapter-sqlite`：本地部署下的 Bun SQLite 执行器包装。
@@ -33,7 +35,7 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
     - `web-assets.ts`：静态前端 SPA 资源代理与维护期拦截。
     - `shops/`：多租户店铺级业务路由（`player.ts`, `staff.ts`, `integration.ts`, `pricing.ts`, `assets.ts`, `cashier.ts`, `redeem.ts`）。依托 `tenantMiddleware` 依赖注入直接调用应用层服务，彻底废除了旧版的虚拟 HTTP 请求转发（`createPrismApp().fetch()`）。
   - `src/legacy`：遗留单店 API 集中隔离与弃用管理模块。收拢旧版未携带 `:shopCode` 的单店 API（`/api/v1/player/*`, `/api/v1/staff/*`, `/api/v1/integration/*`, `/api/v1/setup/*`），自动附加 `X-API-Deprecated: true`、`X-API-Replacement`、`Link` 与 `Warning` 弃用标头，并提供回退租户解析与详细迁移指南，详见 [packages/server/src/legacy/README.md](../packages/server/src/legacy/README.md)。
-  - `src/devices`：设备模型。`capabilities.ts` 是能力目录（电源、HINATA IO、门锁、麻将：配置校验、动作、设备回报、状态权威），`device.ts` 读取设备及其能力，`configure.ts` 写能力，`bus.ts` 是记录动作、回报与状态的唯一入口，`runtime.ts` 把动作接到硬件驱动，`actions.ts` 实现 Bot／员工／integration 的设备动作，`legacy-registries.ts` 把旧版店铺设置里的设备注册表转成设备，`legacy-views.ts` 提供旧的设备状态与机台连接视图。详见 [集成与设备](integrations-and-machines.md)。
+  - `src/devices`：设备模型。`capabilities.ts` 是能力目录（电源、HINATA IO、门锁、麻将：配置校验、动作、设备回报、状态权威），`device.ts` 读取设备及其能力，`configure.ts` 写能力，`bus.ts` 是记录动作、回报与状态的唯一入口，`runtime.ts` 把动作接到硬件驱动，`actions.ts` 实现 Bot／员工／integration 的设备动作，`cabinet.ts` 从机台账本的两次快照推出投币、吞币、扣币与清零，并按账本判断投币上限，`legacy-registries.ts` 把旧版店铺设置里的设备注册表转成设备，`legacy-views.ts` 提供旧的设备状态与机台连接视图。详见 [集成与设备](integrations-and-machines.md)。
   - `src/hardware`：硬件驱动，只负责与设备通信：HINATA IO 外部中继（`hinata.ts`，PBKDF2/AES-GCM）、直连中继协议（`aimeio-relay.ts`）、TTLock 云 API（`ttlock.ts`）、Home Assistant（`home-assistant.ts`）。
   - `src/gateway` 与 `src/durable-objects/machine-relay.ts`：机台直连 `/io/ws`。网关在握手前按设备令牌鉴权并解析通道，`MachineRelay` Durable Object 持有机台连接并把回报交给设备 bus。
   - `src/app.ts` 与 `src/worker.ts`：顶层 Hono 应用装配工厂（`createApp()` / `app`）与 Cloudflare Worker 入口点。整合 CORS、响应耗时、静态资源兜底代理（`serveWebAssets`）、领域错误分发转换、多租户及遗留路由挂载；Worker 入口导出 `fetch`、`scheduled` 定时任务处理器与 `LiveBilling` Durable Object。

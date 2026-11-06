@@ -39,8 +39,13 @@ export type ActionSpec = {
   staffOnly?: boolean;
   /** In a shop that bills, the resource's plan must be billing for the player. */
   requiresBilling?: boolean;
-  /** A device signal with this name marks the operation as confirmed. */
-  confirmedBy?: string;
+  /**
+   * What a caller may wait for after asking (`perform({ wait: true })`): the
+   * first device signal of this name that names the operation, for at most
+   * `timeoutMs`. Nothing about it is recorded; it only shapes that caller's
+   * answer, and the signal is an event like any other either way.
+   */
+  awaits?: { signal: string; timeoutMs: number };
   /** Do not persist the action's result payload (e.g. a temporary door code). */
   sensitiveResult?: boolean;
 };
@@ -90,6 +95,13 @@ const hinataConfig = z.object({
   transport: z.enum(["external", "embedded"]).default("external"),
   coinKey: z.number().int().min(0).max(65535).default(32),
   coinAfterSwipe: z.boolean().default(false),
+  /**
+   * The most credits a coin through the platform may leave on the cabinet;
+   * null for no limit. Read from the cabinet's own books, so it only applies
+   * to an IO that reports them (`cabinetMonitor=1`); without them the coin
+   * cooldown applies as before.
+   */
+  coinCap: z.number().int().min(1).max(99).nullable().default(null),
   /** Durable Object name for the embedded relay. Stable across token rotation. */
   channel: z.string().min(1).optional(),
 });
@@ -157,7 +169,9 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
   config: hinataConfig,
   secrets: ["url", "password"],
   actions: {
-    "aime.scan": { countsAsPlay: true, requiresBilling: true, confirmedBy: "card.consumed" },
+    // A game waiting for a card polls its reader continuously, so a card not
+    // taken within this means it is busy elsewhere; the IO drops it after 3 s.
+    "aime.scan": { countsAsPlay: true, requiresBilling: true, awaits: { signal: "card.consumed", timeoutMs: 4500 } },
     coin: { countsAsPlay: true, requiresBilling: true },
   },
   signals: {
@@ -165,8 +179,14 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     "card.consumed": { activity: true, store: true },
     // Games call the LED API every frame; idle attract screens do too.
     "led.set": { activity: false, store: false },
+    // Read by the platform from two of the cabinet's book snapshots (`cabinet.ts`).
+    "cabinet.coin": { activity: true, store: true },
+    "cabinet.swallowed": { activity: true, store: true },
+    "cabinet.consumed": { activity: true, store: true },
+    "cabinet.reset": { activity: false, store: true },
   },
-  state: { link: { authority: "owned" } },
+  // `cabinet`: the latest book snapshot the IO read, whose truth is the cabinet's.
+  state: { link: { authority: "owned" }, cabinet: { authority: "external" } },
   available(action, config, secrets) {
     const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
     if (!connected) return false;
@@ -241,11 +261,13 @@ const botConfig = z.object({
   /** How many minutes before an idle power-off the channels are warned; 0 for never. */
   idleReminderMinutes: z.number().int().min(0).max(120).default(5),
   /**
-   * Which news is told, each on its own: a device idling towards a power-off,
-   * a device switched on or off through the platform (the idle rule's
-   * power-offs included), someone starting on a resource (上机), a card
-   * reaching a cabinet, a coin. A card or a coin that starts someone is one
-   * message, said as a start when starts are told. All off by default.
+   * Which announcements are told, by type from `shopAnnouncementCatalog`. Null
+   * for a bot set before the catalog: its five switches below say what it tells.
+   */
+  announceEvents: z.array(z.string().min(1).max(40)).max(40).nullable().default(null),
+  /**
+   * The switches older bots read. Kept equal to what `announceEvents` amounts
+   * to (`switchesFor`) whenever the list is set. All off by default.
    */
   announceIdle: z.boolean().default(false),
   announcePower: z.boolean().default(false),

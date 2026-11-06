@@ -98,7 +98,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       format:string;version:number;scope:string;tables:{players:Array<{id:string}>};
     };
     expect(backup.format).toBe("prism-shop-data");
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(5);
     expect(backup.scope).toBe("business");
     expect(backup.tables.players.some(player=>player.id==="player-v2")).toBe(true);
 
@@ -135,7 +135,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(5);
     const {tables,...header}=backup;
     const post=async(url:string,payload:unknown)=>{
       return app.fetch(new Request(url,{
@@ -204,6 +204,42 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.close();
   });
 
+  it("restores a v4 business backup whose operations still record when they were confirmed",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    sqlite.run(
+      `INSERT INTO device_operations(shop_id,id,device_id,capability,action,status,counts_as_play,payload_json,requested_at)
+       VALUES ('source','old-scan',NULL,'hinata_io','aime.scan','succeeded',1,'{}','2026-01-01T00:00:00.000Z')`,
+    );
+    const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
+    const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
+    // What a v4 export of the same shop looked like: one more column per operation.
+    backup.version=4;
+    backup.tables.device_operations=backup.tables.device_operations!.map((row)=>({...row,confirmed_at:"2026-01-01T00:00:02.000Z"}));
+    expect(backup.tables.device_operations).toHaveLength(1);
+    const {tables,...header}=backup;
+    const destination="https://prism.test/api/v1/shops/destination/data";
+    const post=(url:string,payload:unknown)=>app.fetch(new Request(url,{
+      method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload),
+    }),env);
+    const {jobId}=((await (await post(`${destination}/imports`,header)).json()) as {data:{jobId:string}}).data;
+    let part=0;
+    for(const [table,rows] of Object.entries(tables)){
+      if(!rows.length)continue;
+      expect((await post(`${destination}/imports/${jobId}/parts`,{table,part,rows})).status).toBe(200);
+      part++;
+    }
+    const counts=Object.fromEntries(Object.entries(tables).map(([table,rows])=>[table,rows.length]));
+    const preview=((await (await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part})).json()) as {
+      data:{canImport:boolean;errors:string[];fingerprint:string};
+    }).data;
+    expect(preview.errors).toEqual([]);
+    const applied=await post(`${destination}/imports/${jobId}/apply`,{fingerprint:preview.fingerprint,operationId:crypto.randomUUID()});
+    expect(applied.status).toBe(200);
+    expect(sqlite.query("SELECT action,status FROM device_operations WHERE shop_id='destination' AND id='old-scan'").get())
+      .toEqual({action:"aime.scan",status:"succeeded"});
+    sqlite.close();
+  });
+
   it("round-trips a full configuration backup with the original settings and shop profile",async()=>{
     const {sqlite,env,app,headers}=await transferFixture();
     const source="https://prism.test/api/v1/shops/source/data";
@@ -219,7 +255,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(5);
     expect(backup.scope).toBe("configuration");
     const {tables,...header}=backup;
     const created=await call(`${dest}/imports`,header);

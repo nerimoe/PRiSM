@@ -217,7 +217,7 @@ async function metadata(c: C, shop: BillingShop, job: ExportJob) {
   const tables = currentTablesFor(job.scope);
   const result = await (c.env.DB as LegacyD1Database).batch<Record<string, string | number>>([
     (c.env.DB as LegacyD1Database).prepare(
-      `SELECT json_object('format','prism-shop-data','version',4,'scope',?,'exportedAt',?,
+      `SELECT json_object('format','prism-shop-data','version',5,'scope',?,'exportedAt',?,
       'source',json_object('publicId',s.public_id,'name',s.name,'timeZone',?,'origin',?,'location',json_object('latitude',s.latitude,'longitude',s.longitude,'radiusMeters',s.radius_meters)),
       'storage',json_object('timeZone','UTC','money','minor-units'),
       'shopProfile',json_object('name',s.name,'latitude',s.latitude,'longitude',s.longitude,'radiusMeters',s.radius_meters,'heroData',s.hero_data),

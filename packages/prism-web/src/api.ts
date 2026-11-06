@@ -130,6 +130,8 @@ export type Resource = {
   /** Actions this device can perform now, tagged with their capability. */
   actions?: { name: string; capability: string }[];
   coinAfterSwipe: boolean;
+  /** Most credits a platform coin may leave on the cabinet (direct connection); null for no limit. */
+  coinCap?: number | null;
   hasHinata: boolean;
   kind: "machine" | "door";
   hinataUrl: string | null;
@@ -181,7 +183,9 @@ export type BotSettings = {
   /** Channels the bot says everything in: idle warnings and what happens at the shop. */
   announceChannelIds: string[];
   idleReminderMinutes: number;
-  /** Which news is told, each on its own. */
+  /** What is told, by type from `shopAnnouncementCatalog`; null for a bot still set by the switches below. */
+  announceEvents: string[] | null;
+  /** The switches older bots read; the server keeps them in step with `announceEvents`. */
   announceIdle: boolean;
   announcePower: boolean;
   announceStarts: boolean;

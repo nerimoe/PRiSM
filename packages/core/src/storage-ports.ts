@@ -266,8 +266,6 @@ export type DeviceRecord = {
     failure: string | null;
     settledAt: Date;
   };
-  /** Only an operation aimed at `deviceId` can be confirmed by it. */
-  confirm?: { operationId: string; deviceId: string; confirmedAt: Date };
   /**
    * Without `event` the state is only stored: a view that changes too often to
    * be worth a log row, such as an air conditioner's room temperature.

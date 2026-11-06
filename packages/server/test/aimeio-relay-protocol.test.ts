@@ -8,6 +8,8 @@ import {
   parseClientHello,
   parseHaReport,
   parseHaStates,
+  parseCabinetEvent,
+  parseCabinetSnapshot,
   parseHeartbeat,
   parseIoEvent,
   prepareMessageForClient,
@@ -115,10 +117,34 @@ describe("relay client hello", () => {
     ).toEqual(["ha.watch"]);
   });
 
+  it("reads the cabinet books an IO reports, alone or in its heartbeat", () => {
+    const read = {
+      revision: 8, read_at_ms: 1793987190957,
+      credit_config: { chute_type: 0, coin_rate: [1, 1], cost: [1, 1, 1, 1, 1, 1, 1, 1], coin_amount: 100 },
+      players: [{ credit: 4, remain: 0 }, { credit: 4, remain: 0 }],
+      bookkeeping: { coin_chute: [218, 0], total_coin: 218, coin_credit: 59, service_credit: 0, emoney_coin: 0, emoney_credit: 0, total_credit: 59 },
+    };
+    const books = {
+      revision: 8, readAtMs: 1793987190957,
+      players: [{ credit: 4, remain: 0 }, { credit: 4, remain: 0 }],
+      bookkeeping: { totalCoin: 218, coinCredit: 59, serviceCredit: 0, emoneyCredit: 0, totalCredit: 59 },
+      creditConfig: read.credit_config,
+    };
+    expect(parseCabinetEvent({ jsonrpc: "2.0", method: "event.cabinetSnapshot", params: { ...read, session_id: "s", sequence: 3 } })).toEqual(books);
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [], cabinet: read } })?.cabinet).toEqual(books);
+    // A failed read says only that it failed.
+    expect(parseCabinetSnapshot({ revision: 2, read_at_ms: 5, error: "backup: copy differs" })).toEqual({ revision: 2, readAtMs: 5, error: "backup: copy differs" });
+    // Anything malformed is not taken for books.
+    expect(parseCabinetSnapshot({ ...read, players: [{ credit: -1, remain: 0 }] })).toBeNull();
+    expect(parseCabinetSnapshot({ ...read, bookkeeping: { total_coin: 1 } })).toBeNull();
+    expect(parseCabinetSnapshot({ ...read, revision: undefined })).toBeNull();
+    expect(parseCabinetEvent({ jsonrpc: "2.0", id: 1, method: "event.cabinetSnapshot", params: read })).toBeNull();
+  });
+
   it("reads the IO heartbeat, with and without Home Assistant health", () => {
     // A beat with nothing to say still proves the machine is alive.
-    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } })).toEqual({ ha: [] });
-    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat" })).toEqual({ ha: [] });
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat", params: { ha: [] } })).toEqual({ ha: [], cabinet: null });
+    expect(parseHeartbeat({ jsonrpc: "2.0", method: "io.heartbeat" })).toEqual({ ha: [], cabinet: null });
     expect(parseHeartbeat({
       jsonrpc: "2.0", method: "io.heartbeat",
       params: { ha: [
@@ -129,7 +155,7 @@ describe("relay client hello", () => {
     })).toEqual({ ha: [
       { connection: "ha_1", term: 3, connected: true, error: null },
       { connection: "ha_2", term: 3, connected: false, error: "refused with HTTP 401" },
-    ] });
+    ], cabinet: null });
     // Not a heartbeat, and a request (which has an id) is never one.
     expect(parseHeartbeat({ method: "ha.states", params: {} })).toBeNull();
     expect(parseHeartbeat({ id: 1, method: "io.heartbeat", params: { ha: [] } })).toBeNull();

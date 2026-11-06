@@ -422,7 +422,6 @@ describe("createPrismNeoMigrationPlan", () => {
         payload: { count: 2, legacyCoinRecordId: 91 },
         requestedAt: new Date("2026-01-05T00:00:00.000Z"),
         settledAt: new Date("2026-01-05T00:00:00.000Z"),
-        confirmedAt: null,
       },
     ]);
   });

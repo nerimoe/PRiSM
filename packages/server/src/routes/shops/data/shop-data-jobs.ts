@@ -21,6 +21,7 @@ import { owner, targetState, snapshotSql, snapshotBindings, snapshotKey } from "
 import {
   fullHeaderSchema,
   fullTables,
+  importColumns,
   schemasFor,
   uploadBytes,
   validateRows,
@@ -674,12 +675,11 @@ async function applyJob(
     ? v2DeviceStatements(db, shop.id, job.id, header.scope === "configuration")
     : null;
   if (v2Devices) statements.push(...v2Devices.capabilities);
-  const schemas = schemasFor(header.version);
   for (const table of tables) {
     if (table === "machines" || table === "account_links" || !rowsCount[table]) continue;
     // v2 history tables are converted with the machines above; their devices must exist first.
     if (table === "device_commands" || table === "device_states" || table === "machine_connections") continue;
-    const cols = schemas[table].columns.map((c) => c.name),
+    const cols = importColumns(table, header.version),
       expressions = cols.map((col) => `json_extract(payload_json,'$.${col}')`);
     let filter = "";
     if (table === "player_identities") filter = " AND json_extract(payload_json,'$.provider')!='web-account'";
@@ -814,7 +814,7 @@ async function applyJob(
   statements.push(...missingFrontDeskStatements(db, shop.id));
   if (header.settings.billingEnabled === false) statements.push(...freeShopStatements(db, shop.id));
   if (rowsCount.account_links) {
-    const cols = schemas.account_links.columns.map((c) => c.name);
+    const cols = schemasFor(header.version).account_links.columns.map((c) => c.name);
     statements.push(
       db
         .prepare(

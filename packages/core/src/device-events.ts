@@ -57,8 +57,6 @@ export type DeviceOperation = {
   payload: Record<string, unknown>;
   requestedAt: Date;
   settledAt: Date | null;
-  /** When the device itself confirmed the effect (e.g. the card reached the game). */
-  confirmedAt: Date | null;
 };
 
 export type DeviceStateValue = {

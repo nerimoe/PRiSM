@@ -37,7 +37,6 @@ type OperationRow = {
   payload_json: string;
   requested_at: string;
   settled_at: string | null;
-  confirmed_at: string | null;
 };
 
 type StateRow = {
@@ -51,7 +50,7 @@ type StateRow = {
 };
 
 const operationColumns =
-  "id, device_id, capability, action, parent_id, player_id, staff_id, status, counts_as_play, failure, payload_json, requested_at, settled_at, confirmed_at";
+  "id, device_id, capability, action, parent_id, player_id, staff_id, status, counts_as_play, failure, payload_json, requested_at, settled_at";
 
 function parseObject(value: string | null): Record<string, unknown> {
   if (!value) return {};
@@ -105,7 +104,6 @@ function toOperation(row: OperationRow): DeviceOperation {
     payload: parseObject(row.payload_json),
     requestedAt: new Date(row.requested_at),
     settledAt: row.settled_at ? new Date(row.settled_at) : null,
-    confirmedAt: row.confirmed_at ? new Date(row.confirmed_at) : null,
   };
 }
 
@@ -192,7 +190,7 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
         const op = input.operation;
         statements.push({
           sql: `INSERT INTO device_operations (shop_id, ${operationColumns})
-                VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           params: [
             op.id,
             op.deviceId,
@@ -207,7 +205,6 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
             JSON.stringify(op.payload),
             op.requestedAt.toISOString(),
             op.settledAt?.toISOString() ?? null,
-            op.confirmedAt?.toISOString() ?? null,
           ],
         });
       }
@@ -224,14 +221,6 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
             input.settle.settledAt.toISOString(),
             input.settle.operationId,
           ],
-        });
-      }
-
-      if (input.confirm) {
-        statements.push({
-          sql: `UPDATE device_operations SET confirmed_at = ?
-                WHERE shop_id = ${shop} AND id = ? AND device_id = ? AND confirmed_at IS NULL`,
-          params: [input.confirm.confirmedAt.toISOString(), input.confirm.operationId, input.confirm.deviceId],
         });
       }
 

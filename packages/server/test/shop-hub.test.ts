@@ -661,6 +661,33 @@ describe("ShopHub device pages", () => {
     expect(two!.sent).toEqual([{ type: "hello", watching: true, power: "on" }]);
   });
 
+  it("announces a machine Home Assistant saw switch, whoever switched it, but not a first snapshot", async () => {
+    const { hub, connectionId } = await fixture();
+    const told: Array<Record<string, unknown>> = [];
+    spyOn(hub, "shopEvent").mockImplementation(async (event: Record<string, unknown>) => { told.push(event); });
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
+    expect(told).toEqual([]);
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.b", "on", "2026-10-21T09:31:00.000Z", "2026-10-21T09:31:00.000Z"]], false));
+    expect(told.map(({ type, label, resourceId, player }) => ({ type, label, resourceId, player }))).toEqual([
+      { type: "power.off", label: "关机", resourceId: "m1", player: null },
+      { type: "power.on", label: "开机", resourceId: "m2", player: null },
+    ]);
+    // Older bots announce power from the platform's own requests; this is not one.
+    expect(told.every((event) => !("kind" in event))).toBe(true);
+  });
+
+  it("does not announce a machine coming back from unavailable", async () => {
+    const { hub, connectionId } = await fixture();
+    const told: unknown[] = [];
+    spyOn(hub, "shopEvent").mockImplementation(async (event: unknown) => { told.push(event); });
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "unavailable", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
+    expect(told).toEqual([]);
+  });
+
   it("reaches only the pages of the user it names", async () => {
     const { hub, sockets, drain } = await fixture();
     await open(hub, "m1", "u1");

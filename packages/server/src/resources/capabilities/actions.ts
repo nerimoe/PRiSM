@@ -25,6 +25,7 @@ import { actionSpec, capabilityForAction, isActionName, type ActionName } from "
 import { can, loadResources, matchesRef, type Resource } from "../resource.js";
 import { createCardStore } from "../cards.js";
 import { createRuntimeBus } from "./runtime.js";
+import { coinGate } from "./cabinet.js";
 
 export type DeviceActionDependencies = {
   db: D1DatabaseLike;
@@ -126,7 +127,18 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
         }
       }
 
+      // A cabinet that reports its books, with a coin limit, is judged by them;
+      // otherwise a player's coins keep the shop's cooldown.
+      let judged = false;
       if (playerId && action === "coin") {
+        for (const target of targets) {
+          const gate = await coinGate(deps.db, deps.shopId, target.device, deps.id(), deps.now());
+          if (gate === "full") throw new PrismDomainError("The cabinet already holds its coin limit.", "COIN_CABINET_FULL");
+          if (gate === "settling") throw new PrismDomainError("Coin command cooldown is active.", "COIN_COMMAND_COOLDOWN_ACTIVE");
+          judged ||= gate === "ok";
+        }
+      }
+      if (playerId && action === "coin" && !judged) {
         const cooldown = await deps.coinCooldownMs();
         const now = deps.now();
         const recent = (await deps.deviceEvents.listOperationsByPlayer(playerId)).filter(

@@ -104,6 +104,25 @@ describe("a bot is a resource", () => {
     });
   });
 
+  it("tells by type what it announces, with the switches older bots read kept in step", async () => {
+    const { bot, createBot, call } = await fixture();
+    // A bot set before the catalog: its switches become its list.
+    const old = await createBot({ announcePower: true, announceCards: true });
+    expect((await bot(old.token).get("bot")).body.settings).toMatchObject({
+      announceEvents: ["request.power.on", "request.power.off", "request.power.idle_off", "card"],
+      announcePower: true, announceCards: true,
+    });
+    // A list decides; unknown types are dropped, and the switches follow it.
+    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceEvents: ["power.on", "card", "cabinet.swallowed", "nope"] } });
+    expect((await bot(old.token).get("bot")).body.settings).toMatchObject({
+      announceEvents: ["power.on", "card", "cabinet.swallowed"],
+      announcePower: false, announceCards: true, announceCoins: false,
+    });
+    // An editor that only knows switches is still heard: its switch replaces the list.
+    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceCoins: true } });
+    expect((await bot(old.token).get("bot")).body.settings.announceEvents).toEqual(["card", "request.coin"]);
+  });
+
   it("gives a token issued before bots were resources a resource of its own", async () => {
     const { sqlite, bot, call } = await fixture();
     sqlite.run("INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','old','旧 Bot','integration','prism_integration',?,'active',?)",

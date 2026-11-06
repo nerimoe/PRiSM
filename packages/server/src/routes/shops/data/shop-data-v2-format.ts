@@ -37,6 +37,22 @@ export const extraSchema = [
  FOREIGN KEY(shop_id,staff_id) REFERENCES staff_users(shop_id,id))`,
 ] as const;
 
+/**
+ * v3 and v4 files record when a device confirmed an operation. v5 does not:
+ * what happened at a device is an event of its own. Import drops the column.
+ */
+const v4OperationSchema = [
+  `CREATE TABLE IF NOT EXISTS device_operations (
+    shop_id TEXT NOT NULL,id TEXT NOT NULL,device_id TEXT,capability TEXT NOT NULL,action TEXT NOT NULL,
+    parent_id TEXT,player_id TEXT,staff_id TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending','succeeded','failed')),
+    counts_as_play INTEGER NOT NULL DEFAULT 0 CHECK (counts_as_play IN (0,1)),
+    failure TEXT,payload_json TEXT NOT NULL DEFAULT '{}',requested_at TEXT NOT NULL,settled_at TEXT,confirmed_at TEXT,
+    PRIMARY KEY (shop_id, id),
+    FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id)
+  )`,
+] as const;
+
 /** v3 files predate resource groups: a machine row had no billing binding. */
 const v3MachineSchema = [
   `CREATE TABLE IF NOT EXISTS machines (
@@ -168,7 +184,7 @@ const v2BusinessTables = [
   "checkout_report_states",
 ] as const;
 export type FullTable = (typeof fullBusinessTables)[number] | (typeof v2BusinessTables)[number];
-/** The tables the current format (v4) carries; export writes exactly these. */
+/** The tables the current format (v5, and v4 before it) carries; export writes exactly these. */
 export const currentTablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>
   scope === "business" ? fullBusinessTables : fullConfigurationTables;
 const v3TablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>
@@ -220,7 +236,7 @@ function buildSchemas(tables: readonly FullTable[], ddl: readonly string[]) {
   return result;
 }
 
-/** The current (v4) table shapes. */
+/** The current (v5) table shapes. */
 export const schemas = buildSchemas(fullBusinessTables, [...sqliteSchema, ...extraSchema]);
 // A machine may only name a group the backup also carries.
 schemas.machines = {
@@ -235,17 +251,31 @@ for (const table of ["device_capabilities", "device_state"] as const)
     ...schemas[table],
     foreignKeys: [...schemas[table].foreignKeys, { table: "machines", columns: ["device_id"], referenced: ["id"] }],
   };
+const v4Operations = buildSchemas(["device_operations"], v4OperationSchema).device_operations;
+const v4Schemas = { ...schemas, device_operations: v4Operations };
 const v3Schemas = buildSchemas(v3BusinessTables, [...v3MachineSchema, ...sqliteSchema, ...extraSchema]);
 for (const table of ["device_capabilities", "device_state"] as const) v3Schemas[table] = schemas[table];
+v3Schemas.device_operations = v4Operations;
 const v2Schemas = buildSchemas(v2BusinessTables, [...v2DeviceSchema, ...sqliteSchema, ...extraSchema]);
 
-export function schemasFor(version: 1 | 2 | 3 | 4): Record<FullTable, TableSchema> {
-  return version === 4 ? schemas : version === 3 ? v3Schemas : v2Schemas;
+export type FormatVersion = 1 | 2 | 3 | 4 | 5;
+export function schemasFor(version: FormatVersion): Record<FullTable, TableSchema> {
+  return version === 5 ? schemas : version === 4 ? v4Schemas : version === 3 ? v3Schemas : v2Schemas;
+}
+
+/**
+ * The columns of a file's row that the current table still has. A column the
+ * format dropped since the file was written is left out instead of failing
+ * the insert.
+ */
+export function importColumns(table: FullTable, version: FormatVersion): string[] {
+  const current = new Set(schemas[table]?.columns.map((c) => c.name) ?? []);
+  return schemasFor(version)[table].columns.map((c) => c.name).filter((name) => current.size === 0 || current.has(name));
 }
 export const fullHeaderSchema = backupSchema
   .omit({ tables: true, version: true })
   .extend({
-    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
     shopProfile: z
       .object({
         name: z.string().min(1).max(80),
@@ -280,7 +310,7 @@ export function fullTables(header: FullHeader): readonly FullTable[] {
         ? v3TablesFor(header.scope)
         : currentTablesFor(header.scope);
 }
-export function validateRows(table: FullTable, rows: DataRow[], version: 1 | 2 | 3 | 4 = 4): string[] {
+export function validateRows(table: FullTable, rows: DataRow[], version: FormatVersion = 5): string[] {
   const errors: string[] = [],
     schema = schemasFor(version)[table];
   const columns = schema.columns

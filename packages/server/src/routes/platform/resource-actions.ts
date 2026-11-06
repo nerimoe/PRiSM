@@ -162,8 +162,10 @@ export async function executeResourceAction(
           windowSeconds: 60,
         },
       ]);
-      if (action === "coin" && !(await claimCoin(c, shop.id, machine.id, body.operationId))) {
-        jsonError(429, "请稍后再投币", "COIN_COOLDOWN");
+      if (action === "coin") {
+        const claim = await claimCoin(c, shop.id, device, body.operationId);
+        if (claim === "full") jsonError(409, "机台里的币已经够了，先玩完再投", "COIN_CABINET_FULL");
+        if (claim === "cooldown") jsonError(429, "请稍后再投币", "COIN_COOLDOWN");
       }
       // Opening a door starts the door's plan when the player agreed to it, as
       // scanning any other resource and confirming does.

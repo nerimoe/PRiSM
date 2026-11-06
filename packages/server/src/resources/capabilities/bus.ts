@@ -7,7 +7,7 @@
  *   perform(action)  request event + operation, run the capability, then the
  *                    result event that settles it; then re-observe any external
  *                    state the action touches instead of assuming its effect
- *   signal(...)      a fact the device reported; may confirm an operation
+ *   signal(...)      a fact the device reported
  *   setOwned(...)    an owned state value, with a change event when it differs
  *   observe(...)     an external state read live, recorded only when it moved
  *
@@ -34,13 +34,20 @@ export type ActionContext = {
   device: Resource;
   operationId: string;
   payload: Record<string, unknown>;
+  /** Set when the caller waits: the runner hands it to whatever receives the device's signals. */
+  awaits?: AwaitSpec;
 };
+
+export type AwaitSpec = { signal: string; timeoutMs: number };
+
+/** The signal a caller waited for, as the device reported it; null when none came in time. */
+export type Awaited = { name: string; payload: Record<string, unknown> } | null;
 
 /** Runs an action against real hardware. Throwing means the outcome is unknown. */
 export type ActionRunner = (context: ActionContext) => Promise<RunOutcome>;
 
 export type RunOutcome =
-  | { outcome: "ok"; result?: Record<string, unknown> }
+  | { outcome: "ok"; result?: Record<string, unknown>; awaited?: Awaited }
   /** `httpStatus` is what the hardware's HTTP endpoint answered, when it answered. */
   | { outcome: "failed"; message: string; httpStatus?: number }
   /** The request may or may not have reached the device (e.g. a network timeout). */
@@ -70,6 +77,8 @@ export type PerformInput = {
   transient?: Record<string, unknown>;
   /** The player a staff member acted for, when it was not the player themselves. */
   forPlayerId?: string;
+  /** Wait for what the action's spec `awaits`, before returning. */
+  wait?: boolean;
 };
 
 export type PerformResult = {
@@ -77,6 +86,11 @@ export type PerformResult = {
   /** Data the caller shows once and that is never stored (a door code, etc.). */
   result: Record<string, unknown>;
   httpStatus: number | null;
+  /**
+   * Only when the caller waited and the device can report back: the signal, or
+   * null when it did not come in time. Absent when there was nothing to wait on.
+   */
+  awaited?: Awaited;
 };
 
 export type DeviceBus = ReturnType<typeof createDeviceBus>;
@@ -163,7 +177,6 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         payload,
         requestedAt,
         settledAt: null,
-        confirmedAt: null,
       };
       await deps.events.record({
         events: [
@@ -191,6 +204,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
           device: input.device,
           operationId,
           payload: { ...payload, ...(input.transient ?? {}) },
+          ...(input.wait && action.awaits ? { awaits: action.awaits } : {}),
         });
       } catch (error) {
         outcome = { outcome: "unknown", message: error instanceof Error ? error.message : "设备未响应" };
@@ -231,12 +245,14 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         operation: { ...operation, status, failure, settledAt: status === "pending" ? null : settledAt },
         result: outcome.outcome === "ok" ? (outcome.result ?? {}) : {},
         httpStatus,
+        ...(outcome.outcome === "ok" && outcome.awaited !== undefined ? { awaited: outcome.awaited } : {}),
       };
     },
 
     /**
-     * Record something the device reported. If the signal confirms an action
-     * (e.g. the card reached the game) the operation it names is marked confirmed.
+     * Record something the device reported. It is a fact of its own: naming an
+     * operation (`operationId`) says which request it answered, and changes
+     * nothing about that request.
      */
     async signal(input: {
       device: Pick<Resource, "id">;
@@ -260,13 +276,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         payload: input.payload ?? {},
         playerId: input.playerId ?? null,
       });
-      const confirms =
-        !!input.operationId &&
-        Object.values(spec.actions).some((action) => action?.confirmedBy === input.name);
-      await deps.events.record({
-        events: [occurred],
-        ...(confirms ? { confirm: { operationId: input.operationId!, deviceId: input.device.id, confirmedAt: occurred.occurredAt } } : {}),
-      });
+      await deps.events.record({ events: [occurred] });
       return true;
     },
 

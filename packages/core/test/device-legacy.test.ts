@@ -8,7 +8,7 @@ function operation(overrides: Partial<DeviceOperation>): DeviceOperation {
   return {
     id: "op", deviceId: "cabinet", capability: "power", action: "power.on",
     parentId: null, status: "succeeded", countsAsPlay: false, failure: null,
-    payload: { deviceLabel: "舞萌" }, requestedAt: at, settledAt: at, confirmedAt: at,
+    payload: { deviceLabel: "舞萌" }, requestedAt: at, settledAt: at,
     ...overrides,
   } as DeviceOperation;
 }

@@ -155,7 +155,6 @@ function operation(overrides: Partial<DeviceOperation>): DeviceOperation {
     payload: {},
     requestedAt: new Date("2026-07-09T00:00:00.000Z"),
     settledAt: null,
-    confirmedAt: null,
     ...overrides,
   };
 }

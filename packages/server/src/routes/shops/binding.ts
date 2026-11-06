@@ -8,6 +8,10 @@ import { jsonError } from "../../http.js";
 import { notifyUserPages } from "../../durable-objects/shop-hub-client.js";
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { getShopDeps } from "../../middleware/tenant.js";
+import type { PrismAppDependencies } from "../../bindings.js";
+
+/** What binding needs of where it runs: a route's context, or the shop hub for a bot's command. */
+export type BindingRuntime = Pick<Context<AppBindings>, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
 
 export const confirmBindingSchema = z.object({
   code: z
@@ -29,8 +33,21 @@ export async function confirmPlatformBinding(
   shop: TenantShop,
   channel: "staff" | "integration",
 ) {
+  const body = await c.req.json();
+  const player = await confirmBinding(c, shop, getShopDeps(c), body, channel);
+  return c.json({ playerId: player.id, provider: player.provider, subject: player.subject });
+}
+
+/** Bind a chat identity to the web account whose code it gives. */
+export async function confirmBinding(
+  c: BindingRuntime,
+  shop: TenantShop,
+  deps: PrismAppDependencies,
+  input: unknown,
+  channel: "staff" | "integration",
+) {
   await enforceRateLimits(c, [{ key: `bind-confirm:${shop.id}`, limit: 20, windowSeconds: 60 }]);
-  const body = confirmBindingSchema.parse(await c.req.json());
+  const body = confirmBindingSchema.parse(input);
 
   const codeHash = await sha256(body.code);
   const nowIso = new Date().toISOString();
@@ -45,7 +62,6 @@ export async function confirmPlatformBinding(
     jsonError(410, "验证码已失效，请重新生成", "BINDING_CODE_EXPIRED");
   }
 
-  const deps = getShopDeps(c);
   const repos = createD1Repositories({
     db: c.env.DB,
     shopId: shop.id,
@@ -146,5 +162,5 @@ export async function confirmPlatformBinding(
   } catch {
     // Local server and tests: no execution context to keep the call alive.
   }
-  return c.json({ playerId: player.id, provider: body.provider, subject: body.subject });
+  return { id: player.id, provider: body.provider, subject: body.subject };
 }

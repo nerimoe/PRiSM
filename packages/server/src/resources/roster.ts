@@ -18,7 +18,7 @@
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { StaffActiveSessionListItem } from "@prism/application";
-import { buildPricingRelationGraph, isStartablePricingKind, type PricingConfig, type PricingRelationGraph } from "@prism/core";
+import { botMessage, buildPricingRelationGraph, isStartablePricingKind, type BotMessage, type BotMessagePlayer, type PricingConfig, type PricingRelationGraph } from "@prism/core";
 import type { OccupancyService, ResourceOccupancy } from "./occupancy/service.js";
 
 export type RosterMember = {
@@ -230,3 +230,36 @@ export function createRoster(dependencies: {
 }
 
 export type RosterService = ReturnType<typeof createRoster>;
+
+/** Where the whole-shop roster puts everyone who occupies no resource. */
+const OTHER_PLAYERS_LABEL = "其他";
+
+/**
+ * What a bot says for a roster. The whole shop lists players at the resource
+ * they occupy and everyone else together under 「其他」, whatever plan they
+ * bill; one resource or plan asked for by name (`named`) is listed as it is.
+ */
+export function rosterMessage(roster: Roster, named = false): BotMessage {
+  const groups: Array<{ heading: (count: number) => string; members: RosterMember[] }> = [];
+  const heading = (group: RosterGroup) => (count: number) =>
+    group.kind === "resource" ? `${group.name} ( ${count}/${group.capacity} )` : `${group.name} ( ${count}人 )`;
+  if (named) {
+    const [only] = roster.groups;
+    if (only && !only.members.length && roster.groups.length === 1) return botMessage(heading(only)(0));
+    for (const group of roster.groups) groups.push({ heading: heading(group), members: group.members });
+  } else {
+    for (const group of roster.groups) if (group.kind === "resource") groups.push({ heading: heading(group), members: group.members });
+    const others = roster.groups.flatMap((group) => (group.kind === "plan" ? group.members : []));
+    if (others.length) groups.push({ heading: (count) => `${OTHER_PLAYERS_LABEL} ( ${count}人 )`, members: others });
+  }
+  const shown = groups.filter((group) => group.members.length);
+  const total = shown.reduce((sum, group) => sum + group.members.length, 0);
+  if (!total) return botMessage("🫥 窝里目前没有玩家呢");
+  const parts: Array<string | BotMessagePlayer> = [`[总计 ${total} 人]`];
+  for (const group of shown) {
+    parts.push(`\n\n${group.heading(group.members.length)}：\n`);
+    group.members.forEach(({ playerId, displayName, identities }, index) =>
+      parts.push(index ? ", - " : "- ", { playerId, displayName, identities }));
+  }
+  return botMessage(...parts);
+}

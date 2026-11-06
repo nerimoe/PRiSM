@@ -5,10 +5,10 @@ import { withOperationLease } from "@prism/application";
 import type { Session } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
-import type { CardLoginResult } from "../../durable-objects/machine-relay.js";
 import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
-import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
+import { can, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
+import { coinGate } from "../../resources/capabilities/cabinet.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readPower } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
@@ -28,9 +28,7 @@ type C = Context<AppBindings, any, any>;
  * What the player is told about a card: taken by the game, never taken, or —
  * through a relay that reports nothing — just sent.
  */
-type CardOutcome = CardLoginResult | "sent";
-const isCardLoginResult = (value: unknown): value is CardLoginResult =>
-  value === "read" || value === "not_read";
+type CardOutcome = "read" | "not_read" | "sent";
 
 const machineLoginSchema = z.object({
   cardId: z.string().min(1, "请选择卡片"),
@@ -41,7 +39,7 @@ const machineLoginSchema = z.object({
   clientTimestamp: z.string().optional(),
 });
 
-export async function assertNotBanned(c: C, entries: Array<[string, string]>) {
+export async function assertNotBanned(c: Pick<C, "env">, entries: Array<[string, string]>) {
   for (const [subjectType, subjectValue] of entries) {
     const found = await c.env.DB.prepare(
       "SELECT id FROM bans WHERE subject_type=? AND subject_value=? AND (expires_at IS NULL OR expires_at>?)",
@@ -125,7 +123,20 @@ async function recordLoginEvent(c:C,event:{
   ).run();
 }
 
-export async function claimCoin(c:C,shopId:string,machineId:string,id:string) {
+/**
+ * Whether a coin through the platform may go in now. A cabinet that reports its
+ * books and has a coin limit is judged by them (`coinGate`); any other keeps the
+ * shop's coin cooldown.
+ */
+export async function claimCoin(c:C,shopId:string,device:Resource,id:string):Promise<"ok"|"cooldown"|"full"> {
+  const gate=await coinGate(c.env.DB,shopId,device,id);
+  if(gate==="ok")return "ok";
+  if(gate==="full")return "full";
+  if(gate==="settling")return "cooldown";
+  return await claimCooldown(c,shopId,device.id,id)?"ok":"cooldown";
+}
+
+async function claimCooldown(c:C,shopId:string,machineId:string,id:string) {
   const configured=await c.env.DB.prepare(
     "SELECT json_extract(value_json,'$.coinCooldownMs') AS cooldown FROM app_settings WHERE shop_id=? AND key='venue.operations'",
   ).bind(shopId).first<{cooldown:number|null}>();
@@ -183,11 +194,11 @@ async function handleLogin(c:C,routePublicId?:string) {
     "SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
   ).bind(shop.id,user.id).first<{player_id:string}>())?.player_id??null;
   // The card number reaches the machine only; the log keeps the card id. A
-  // direct-connect machine also reports whether the game took the card and how
-  // its reader answered; through a relay all we learn is that it was sent.
+  // direct-connect machine reports when the game took the card, which this
+  // waits for; through a relay all we learn is that it was sent.
   const scan=await bus.perform({
-    device,action:"aime.scan",actor,operationId,
-    payload:{cardId:card.id},transient:{accessCode:card.access_code,awaitLogin:true},
+    device,action:"aime.scan",actor,operationId,wait:true,
+    payload:{cardId:card.id},transient:{accessCode:card.access_code},
     ...(!playerId&&cardPlayerId?{forPlayerId:cardPlayerId}:{}),
   });
   if(scan.operation.status==="succeeded"&&cardPlayerId&&c.env.URL_ENCRYPTION_KEY) {
@@ -197,8 +208,7 @@ async function handleLogin(c:C,routePublicId?:string) {
   }
   const sent=scan.operation.status==="succeeded";
   const status=sent?"completed":scan.operation.status==="pending"?"unknown":"failed";
-  const login=scan.result.login;
-  const cardResult:CardOutcome|undefined=sent?(isCardLoginResult(login)?login:"sent"):undefined;
+  const cardResult:CardOutcome|undefined=!sent?undefined:scan.awaited===undefined?"sent":scan.awaited?"read":"not_read";
   await recordLoginEvent(c,{
     userId:user.id,cardId:card.id,machineId:machine.id,ip,
     lat:body.lat??null,lng:body.lng??null,accuracy:body.accuracy??null,
@@ -224,9 +234,10 @@ async function handleLogin(c:C,routePublicId?:string) {
     response.coin={operationId:coinId,status:"unknown"};
     try {
       // Coins for a game that never took the card are lost.
+      const claim=cardResult==="not_read"?null:await claimCoin(c,shop.id,device,coinId);
       if(cardResult==="not_read")response.coin={operationId:coinId,status:"skipped",reason:"CARD_NOT_READ"};
-      else if(!await claimCoin(c,shop.id,machine.id,coinId))response.coin={
-        operationId:coinId,status:"skipped",reason:"COIN_COOLDOWN",
+      else if(claim!=="ok")response.coin={
+        operationId:coinId,status:"skipped",reason:claim==="full"?"COIN_CABINET_FULL":"COIN_COOLDOWN",
       };
       else {
         const coin=await bus.perform({device,action:"coin",actor,operationId:coinId,parentOperationId:operationId});
@@ -244,6 +255,7 @@ async function handleLogin(c:C,routePublicId?:string) {
     ...(cardResult?[notice({not_read:"CARD_NOT_READ",read:"CARD_SENT",sent:"CARD_SENT"}[cardResult],locale)]:[]),
     ...(response.coin?.status==="sent"?[notice("COIN_SENT",locale)]
       :response.coin?.status==="skipped"&&response.coin.reason==="COIN_COOLDOWN"?[notice("COIN_SKIPPED",locale)]
+      :response.coin?.status==="skipped"&&response.coin.reason==="COIN_CABINET_FULL"?[notice("COIN_CABINET_FULL",locale)]
       :response.coin?.status==="failed"?[notice("COIN_FAILED",locale)]
       :response.coin?.status==="unknown"?[notice("COIN_UNKNOWN",locale)]:[]),
   ];

@@ -3,6 +3,8 @@ import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
 import { hinataIo } from "../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
+import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
+import { cabinetChanges, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
 import { shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
@@ -11,11 +13,15 @@ import {
   capabilitiesForAttachment,
   capabilitiesFromRequest,
   ioEventSource,
+  isRecord,
+  parseCabinetEvent,
+  parseCabinetSnapshot,
   parseClientHello,
   parseHaStates,
   parseHeartbeat,
   parseIoEvent,
   prepareMessageForClient,
+  type CabinetSnapshot,
   type ClientCapabilities,
   type IoEventMethod,
   type RelayMessage,
@@ -24,6 +30,10 @@ import {
 const STATE_KEY = "state-message";
 const CHANNEL_KEY = "channel";
 const CAPTURE_KEY = "card-capture";
+/** The last readable cabinet books, compared with the next ones. */
+const CABINET_KEY = "cabinet-books";
+/** How long an RPC to the IO may take; reading its books takes milliseconds. */
+const RPC_TIMEOUT_MS = 5000;
 /**
  * How long a silent machine is still believed alive.
  *
@@ -63,22 +73,14 @@ export type HaWatch = {
   connections: Array<{ id: string; urls: string[]; token: string; entities: string[] }>;
 };
 
-/**
- * What became of a card sent to a waiting game: the game took it from the
- * reader, or it expired unread because the game was not polling the reader.
- * Whether the game's server then accepted the card is not waited for.
- */
-export type CardLoginResult = "read" | "not_read";
-
-/** How long a card may wait for the game to take it. */
-export type CardWaitLimits = { readMs: number };
-
 /** A stored card is only worth replaying while the IO would still hold it. */
 type StoredCard = { message: RelayMessage; expiresAt: number; source?: string };
 
-type CardWait = {
+/** A caller waiting for the IO to report a signal that names its operation. */
+type SignalWait = {
+  signal: string;
   timer: ReturnType<typeof setTimeout>;
-  settle: (result: CardLoginResult) => void;
+  settle: (awaited: Awaited) => void;
 };
 
 let BaseDurableObject: typeof DurableObject;
@@ -105,10 +107,47 @@ try {
  */
 export class MachineRelay extends BaseDurableObject<Env> {
   /**
-   * Cards a caller is waiting on, by operation id. Memory is enough: the waiting
-   * call keeps the object awake, and nothing else reads these.
+   * Callers waiting for a signal, by the operation it must name. Memory is
+   * enough: the waiting call keeps the object awake, and nothing else reads these.
    */
-  private readonly waits = new Map<string, CardWait>();
+  private readonly waits = new Map<string, SignalWait>();
+
+  /** RPCs sent to the IO awaiting its answer, by request id. Memory only, like `waits`. */
+  private readonly rpcs = new Map<string, { timer: ReturnType<typeof setTimeout>; settle: (reply: Record<string, any> | null) => void }>();
+
+  /**
+   * Ask the IO to read its cabinet's books now (`cabinet.getSnapshot`), and
+   * handle what it read exactly like a snapshot it reported on its own. For an
+   * operator who thinks the platform's view is out of date.
+   */
+  async readCabinet(): Promise<{ ok: true; cabinet: CabinetSnapshot } | { ok: false; error: string }> {
+    const agents = this.agents();
+    if (agents.length === 0) return { ok: false, error: "机台未在线" };
+    if (agents.some((ws) => this.socketE2ee(ws))) return { ok: false, error: "该机台仍配置了 remotePassword（端到端加密），直连模式需要将其清空。" };
+    const id = crypto.randomUUID();
+    const reply = new Promise<Record<string, any> | null>((resolve) => {
+      const timer = setTimeout(() => {
+        this.rpcs.delete(id);
+        resolve(null);
+      }, RPC_TIMEOUT_MS);
+      this.rpcs.set(id, { timer, settle: resolve });
+    });
+    const request = JSON.stringify({ jsonrpc: "2.0", id, method: "cabinet.getSnapshot", params: {} });
+    for (const ws of agents) {
+      try {
+        ws.send(request);
+      } catch {
+        // A dead socket is reaped by the runtime; another may still answer.
+      }
+    }
+    const answer = await reply;
+    if (!answer) return { ok: false, error: "机台没有回应" };
+    if (answer.error) return { ok: false, error: typeof answer.error.message === "string" ? answer.error.message : "机台读取失败" };
+    const cabinet = parseCabinetSnapshot(answer.result);
+    if (!cabinet) return { ok: false, error: "机台没有读取机台状态的功能，或未开启 cabinetMonitor" };
+    await this.cabinet(cabinet);
+    return { ok: true, cabinet };
+  }
 
   private socketCapabilities(ws: WebSocket): ClientCapabilities {
     return capabilitiesForAttachment(ws.deserializeAttachment());
@@ -246,19 +285,19 @@ export class MachineRelay extends BaseDurableObject<Env> {
   /**
    * Deliver a card and remember it for replay.
    *
-   * `source` rides along so a later `event.cardConsumed` can be tied back to the
-   * exact operation that sent the card. With `wait`, the call returns only once
-   * the game has taken the card, or the read limit ran out.
+   * `source` rides along and the IO echoes it in its card reports. With `wait`,
+   * the call returns only once the IO reported that signal for this card, or
+   * the limit ran out (`awaited: null`).
    */
   async sendCard(input: {
     accessCode: string;
     source?: string;
     disposable?: boolean;
     duration?: number;
-    wait?: CardWaitLimits;
-  }): Promise<{ ok: boolean; error?: string; login?: CardLoginResult }> {
-    // The IO holds one card at a time, so a newer card ends any older wait.
-    for (const source of this.waits.keys()) this.finish(source, "not_read");
+    wait?: AwaitSpec;
+  }): Promise<{ ok: boolean; error?: string; awaited?: Awaited }> {
+    // The IO holds one card at a time, so a newer card ends the wait for an older one.
+    for (const [source, wait] of this.waits) if (wait.signal.startsWith("card.")) this.settle(source, null);
     const waiting = input.wait && input.source ? this.waitFor(input.source, input.wait) : null;
     const lifetime = input.duration ?? CARD_LIFETIME_MS;
     const sent = await this.deliver(
@@ -275,28 +314,35 @@ export class MachineRelay extends BaseDurableObject<Env> {
       { expiresAt: Date.now() + lifetime, ...(input.source ? { source: input.source } : {}) },
     );
     if (!sent.ok) {
-      if (input.source) this.finish(input.source, "not_read", false);
+      if (input.source) this.settle(input.source, null, false);
       return sent;
     }
-    return waiting ? { ok: true, login: await waiting } : sent;
+    return waiting ? { ok: true, awaited: await waiting } : sent;
   }
 
-  /** Start waiting before the card leaves, so a fast game cannot beat the wait. */
-  private waitFor(source: string, limits: CardWaitLimits): Promise<CardLoginResult> {
+  /** Start waiting before the command leaves, so a fast device cannot beat the wait. */
+  private waitFor(operationId: string, spec: AwaitSpec): Promise<Awaited> {
     return new Promise((resolve) => {
-      this.waits.set(source, {
-        timer: setTimeout(() => this.finish(source, "not_read"), limits.readMs),
+      this.waits.set(operationId, {
+        signal: spec.signal,
+        timer: setTimeout(() => this.settle(operationId, null), spec.timeoutMs),
         settle: resolve,
       });
     });
   }
 
-  private finish(source: string, result: CardLoginResult, settle = true) {
-    const wait = this.waits.get(source);
+  /** End a wait with what came in, or null. `answer: false` drops it unanswered. */
+  private settle(operationId: string, awaited: Awaited, answer = true) {
+    const wait = this.waits.get(operationId);
     if (!wait) return;
     clearTimeout(wait.timer);
-    this.waits.delete(source);
-    if (settle) wait.settle(result);
+    this.waits.delete(operationId);
+    if (answer) wait.settle(awaited);
+  }
+
+  /** A reported signal that names an operation answers whoever waits for it. */
+  private answer(name: string, operationId: string | null, payload: Record<string, unknown>) {
+    if (operationId && this.waits.get(operationId)?.signal === name) this.settle(operationId, { name, payload });
   }
 
   /**
@@ -372,6 +418,15 @@ export class MachineRelay extends BaseDurableObject<Env> {
     } catch {
       return;
     }
+    // An answer to an RPC this object sent.
+    if (isRecord(parsed) && typeof parsed.id === "string" && !("method" in parsed) && this.rpcs.has(parsed.id)) {
+      const pending = this.rpcs.get(parsed.id)!;
+      clearTimeout(pending.timer);
+      this.rpcs.delete(parsed.id);
+      pending.settle(parsed);
+      return;
+    }
+
     // The IO announces its transports on connect, before anything else.
     const hello = parseClientHello(parsed);
     if (hello) {
@@ -403,6 +458,15 @@ export class MachineRelay extends BaseDurableObject<Env> {
             .catch((error) => console.error("Shop hub haReport failed", error));
         }
       }
+      // The beat repeats the latest books, so a missed snapshot event is made up
+      // for here; an unchanged one changes nothing.
+      if (heartbeat.cabinet) await this.cabinet(heartbeat.cabinet);
+      return;
+    }
+
+    const books = parseCabinetEvent(parsed);
+    if (books) {
+      await this.cabinet(books);
       return;
     }
 
@@ -424,8 +488,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const name = SIGNAL_NAMES[event.method];
     const source = ioEventSource(event.params);
     if (event.method === "event.cardConsumed" && source) {
-      // The game took the card: that is all a waiting login needs.
-      this.finish(source, "read");
       // The game has the card, so a reconnect must not hand it over again.
       const stored = await this.ctx.storage.get<Partial<StoredCard>>(STATE_KEY);
       if (stored?.source === source) await this.ctx.storage.delete(STATE_KEY);
@@ -433,7 +495,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const card = reportedCard(event.params.card);
     // A card the platform did not send may be one a player is adding here.
     if (event.method === "event.cardStateChanged" && event.params.card && !source) await this.capture(card);
-    if (!hinataIo.signals[name]?.store) return;
     // Card numbers never leave this object: the log keeps the card's type and
     // whose it is.
     const payload = {
@@ -441,6 +502,8 @@ export class MachineRelay extends BaseDurableObject<Env> {
       card: withoutCardNumber(event.params.card),
       ...("previous_card" in event.params ? { previous_card: withoutCardNumber(event.params.previous_card) } : {}),
     };
+    this.answer(name, source, payload);
+    if (!hinataIo.signals[name]?.store) return;
     await this.record(name, (bus, channel) => this.signal(bus, channel, name, source, payload, card?.accessCode ?? null));
     // Someone is at this machine; its idle countdown starts over.
     if (hinataIo.signals[name]?.activity) await this.touchHub();
@@ -465,19 +528,48 @@ export class MachineRelay extends BaseDurableObject<Env> {
     await bus.signal({ device: { id: channel.machineId }, capability: "hinata_io", name, operationId: source, payload, playerId });
     const observed = await createOccupancy({ db: this.env.DB, shopId: channel.shopId })
       .observe({ resourceId: channel.machineId, event: { kind: "signal", name, payload, playerId } });
-    // A card on the reader is told here; one the platform sent (it names its
-    // operation) was told when the platform sent it.
-    if (name === "card.consumed" && !source) {
-      const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
-        .bind(channel.shopId, channel.machineId).first<{ name: string }>();
-      await announceShopEvent(this.env, channel.shopId, {
-        kind: "card",
-        resourceId: channel.machineId,
-        resourceName: resource?.name ?? channel.machineId,
-        player: await eventPlayer(this.env.DB, channel.shopId, playerId),
-        started: !!observed.started,
-      });
+    // The game took a card: whether it came from the reader or the platform,
+    // this is when it happened, so this is where it is told.
+    if (name === "card.consumed") {
+      const place = { resourceId: channel.machineId, resourceName: await this.resourceName(channel) };
+      const player = await eventPlayer(this.env.DB, channel.shopId, playerId);
+      const started = !!observed.started;
+      await announceShopEvent(this.env, channel.shopId, { type: "card", kind: "card", ...place, player, started });
+      // Older bots heard the start as part of the card; newer ones as its own.
+      if (started && player) await announceShopEvent(this.env, channel.shopId, { type: "start", ...place, player });
     }
+  }
+
+  /**
+   * The cabinet's books as the IO read them. The latest readable ones are kept
+   * here to compare the next with, and stored as the device's `cabinet` state
+   * (what the coin limit reads); what changed between two is recorded and told
+   * (`cabinet.ts`). A read that failed is stored too, so the board can say so,
+   * but is never compared: the next good read is compared with the last good one.
+   */
+  private async cabinet(snapshot: CabinetSnapshot) {
+    const before = await this.ctx.storage.get<CabinetBooks>(CABINET_KEY);
+    if (isCabinetBooks(snapshot)) await this.ctx.storage.put<CabinetBooks>(CABINET_KEY, snapshot);
+    const changes = isCabinetBooks(snapshot) && before ? cabinetChanges(before, snapshot) : [];
+    await this.record("cabinet", async (bus, channel) => {
+      const device = { id: channel.machineId };
+      const { revision: _revision, readAtMs: _read, ...value } = snapshot;
+      // The read itself is not news; only what changed between reads is.
+      await bus.reportMany([{ device, capability: "hinata_io", key: "cabinet", value, quiet: true }]);
+      if (!changes.length) return;
+      const place = { resourceId: channel.machineId, resourceName: await this.resourceName(channel) };
+      for (const change of changes) {
+        await bus.signal({ device, capability: "hinata_io", name: change.type, payload: change.detail });
+        await announceShopEvent(this.env, channel.shopId, { type: change.type, ...place, player: null, detail: change.detail });
+      }
+    });
+    if (changes.some((change) => hinataIo.signals[change.type]?.activity)) await this.touchHub();
+  }
+
+  private async resourceName(channel: Channel): Promise<string> {
+    const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
+      .bind(channel.shopId, channel.machineId).first<{ name: string }>();
+    return resource?.name ?? channel.machineId;
   }
 
   /** The player a platform operation was requested by or for. */

@@ -14,6 +14,7 @@ import {
   type LucideIcon,
   Bot,
 } from "lucide-react";
+import { announcedTypes, shopAnnouncementCatalog, switchesFor } from "@prism/core";
 import { Api, api, type BotSettings, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
@@ -127,6 +128,7 @@ export function ResourceEditor({
   const [coinAfterSwipe, setCoinAfterSwipe] = useState(
     value?.coinAfterSwipe ?? false,
   );
+  const [coinCap, setCoinCap] = useState(value?.coinCap ? String(value.coinCap) : "");
 
   const [lockId, setLockId] = useState(
     value?.ttlockLockId ? String(value.ttlockLockId) : "",
@@ -406,6 +408,7 @@ export function ResourceEditor({
               canCoin &&
               Number(coinKey) > 0 &&
               coinAfterSwipe,
+            ...(caps.hinata_io && embedded ? { coinCap: Number(coinCap) > 0 ? Number(coinCap) : null } : {}),
             ttlockLockId: caps.door ? Number(lockId) : null,
           }),
         });
@@ -676,6 +679,23 @@ export function ResourceEditor({
                   {t("刷卡后自动投一币")}
                 </label>
               </div>
+              {embedded && (
+                <Field label="机台里最多几个币">
+                  <input
+                    className={input}
+                    type="number"
+                    min="1"
+                    max="99"
+                    placeholder={t("不限制")}
+                    disabled={!canCoin || !coinKey}
+                    value={coinCap}
+                    onChange={(e) => setCoinCap(e.target.value)}
+                  />
+                </Field>
+              )}
+              {embedded && (
+                <Hint>{t("机台里的币达到这个数时，平台不再投币，防止先存很多币再结账。需要机台开启 cabinetMonitor；读不到机台的币数时按投币冷却处理。")}</Hint>
+              )}
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>
               )}
@@ -832,25 +852,33 @@ export function ResourceEditor({
                   onChange={(e) => changeBot({ idleReminderMinutes: Number(e.target.value) || 0 })}
                 />
               </Field>
-              <div className="grid gap-2">
-                <span className="text-sm">{t("播报这些")}</span>
-                {(
+              {(() => {
+                const chosen = new Set<string>(announcedTypes(bot));
+                const toggle = (type: string, on: boolean) => {
+                  const list = shopAnnouncementCatalog.map((entry) => entry.type)
+                    .filter((candidate) => (candidate === type ? on : chosen.has(candidate)));
+                  changeBot({ announceEvents: list, ...switchesFor(list) });
+                };
+                return (
                   [
-                    ["announceIdle", "设备闲置（关机前提醒）"],
-                    ["announcePower", "开机、关机（含闲置自动关机）"],
-                    ["announceStarts", "上机（刷卡或投币后开始占用机台）"],
-                    ["announceCards", "刷卡"],
-                    ["announceCoins", "投币"],
+                    ["event", "现场发生的事"],
+                    ["request", "通过平台的操作"],
+                    ["notice", "提醒"],
                   ] as const
-                ).map(([key, label]) => (
-                  <label key={key} className="flex items-center gap-2 text-sm">
-                    <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
-                    {t(label)}
-                  </label>
-                ))}
-              </div>
+                ).map(([family, heading]) => (
+                  <div key={family} className="grid gap-2">
+                    <span className="text-sm">{t(heading)}</span>
+                    {shopAnnouncementCatalog.filter((entry) => entry.family === family).map((entry) => (
+                      <label key={entry.type} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={chosen.has(entry.type)} onChange={(e) => toggle(entry.type, e.target.checked)} />
+                        {t(entry.label)}
+                      </label>
+                    ))}
+                  </div>
+                ));
+              })()}
               <p className="text-xs text-ink/55">
-                {t("刷卡或投币同时上机时只发一条：开了「上机」就按上机播报，否则按刷卡或投币播报。提前量为 0 时不做闲置提醒。通过这个 Bot 自己的命令做的操作不会再播报一遍。")}
+                {t("现场发生的事来自机台和 Home Assistant 的回报，不论是在平台、App 还是机器上操作的，都只播报一次。通过平台的操作只说明有人在平台上发起了它，不代表机器真的完成了。两边都勾选会各说一次。投币入账、吞币等需要机台开启 cabinetMonitor。提前量为 0 时不做闲置提醒。通过这个 Bot 自己的命令做的操作不会再播报一遍。")}
               </p>
             </fieldset>
           </div>
@@ -894,6 +922,7 @@ const defaultBotSettings: BotSettings = {
   doorPasswordOnEntry: false,
   announceChannelIds: [],
   idleReminderMinutes: 5,
+  announceEvents: [],
   announceIdle: false,
   announcePower: false,
   announceStarts: false,

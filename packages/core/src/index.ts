@@ -1,4 +1,5 @@
 export * from "./assets";
+export * from "./bot-message";
 export * from "./business-items";
 export * from "./device-command";
 export * from "./device-events";
@@ -14,6 +15,7 @@ export * from "./pricing-time";
 export * from "./redeem";
 export * from "./session";
 export * from "./session-transition";
+export * from "./shop-announcements";
 export * from "./settlement";
 export * from "./storage-ports";
 

@@ -693,20 +693,20 @@ export async function setTenantFromShop(
   c: Context<AppBindings>,
   shopRow: TenantShop,
 ): Promise<void> {
+  const shop = tenantShop(shopRow);
+  c.set("shop", shop);
+  c.set("responseTimeZone", shop.time_zone);
+  c.set("deps", getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env));
+}
+
+/** A shop row as tenant requests see it: one location check switch for all three. */
+export function tenantShop(shopRow: TenantShop): TenantShop {
   const enabled = +(!!(
     shopRow.checkin_geo ||
     shopRow.checkout_geo ||
     shopRow.machine_geo
   ));
-  const shop: TenantShop = {
-    ...shopRow,
-    checkin_geo: enabled,
-    checkout_geo: enabled,
-    machine_geo: enabled,
-  };
-  c.set("shop", shop);
-  c.set("responseTimeZone", shop.time_zone);
-  c.set("deps", getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env));
+  return { ...shopRow, checkin_geo: enabled, checkout_geo: enabled, machine_geo: enabled };
 }
 
 /** The shop row every tenant request reads, by code or ID. */
@@ -714,7 +714,12 @@ export async function loadTenantShop(
   c: Context<AppBindings>,
   shopCode: string,
 ): Promise<TenantShop | null> {
-  return c.env.DB.prepare(
+  return readTenantShop(c.env.DB, shopCode);
+}
+
+/** `loadTenantShop` without a request: the shop hub runs a bot's commands. */
+export async function readTenantShop(db: D1DatabaseLike, shopCode: string): Promise<TenantShop | null> {
+  return db.prepare(
     `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
       COALESCE(b.auto_register, 0) AS auto_register,
       COALESCE(b.identity_binding_required, 1) AS identity_binding_required,

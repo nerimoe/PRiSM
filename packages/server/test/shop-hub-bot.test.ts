@@ -124,7 +124,8 @@ describe("bot connection", () => {
     expect(state.has("touchAt")).toBe(true);
     await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [{ id: "m1", name: "舞萌" }] }]);
     expect(JSON.parse(ws.sent.at(-1)!)).toEqual({
-      type: "event", event: "idle.reminder", data: { reason: "shop_empty", at: 1, devices: [{ id: "m1", name: "舞萌" }] },
+      // The message comes along, for a bot that says what the platform writes.
+      type: "event", event: "idle.reminder", data: { reason: "shop_empty", at: 1, devices: [{ id: "m1", name: "舞萌" }], message: [{ text: "店里没人，1 分钟后全部关机" }] },
     });
     void send;
     sqlite.close();
@@ -193,5 +194,125 @@ describe("bot frames", () => {
     expect(botRequestUrl("s", "/version")?.pathname).toBe("/version");
     expect(botRequestUrl("s", "integration/sessions/active", { a: 1 })?.search).toBe("?a=1");
     expect(botRequestUrl("s", "player/me")).toBeNull();
+  });
+});
+
+describe("what a bot is told", () => {
+  /** A bot resource holding the test token, set to announce `types`. */
+  function botResource(sqlite: Database, types: string[] | null) {
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`,
+      [JSON.stringify({ tokenId: "t1", announceEvents: types })],
+    );
+  }
+  const event = (type: string, extra: Record<string, unknown> = {}) =>
+    ({ type, label: type, message: [{ text: `${type} 的话` }], resourceId: "m1", resourceName: "舞萌", player: null, ...extra });
+  const told = (ws: FakeSocket) =>
+    ws.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.type === "event").map((frame) => frame.data.type ?? frame.event);
+
+  it("sends a bot that says the platform's message only what it is set to tell, and not its own commands", async () => {
+    const { sqlite, hub, ws, send } = await fixture();
+    botResource(sqlite, ["card", "idle.reminder"]);
+    await send({ type: "hello", announcements: "message" });
+    await hub.shopEvent(event("card"));
+    await hub.shopEvent(event("power.on"));
+    await hub.shopEvent(event("card", { botId: "bot-res" }));
+    expect(told(ws)).toEqual(["card"]);
+  });
+
+  it("sends a bot that chooses for itself everything, as before", async () => {
+    const { sqlite, hub, ws, send } = await fixture();
+    botResource(sqlite, ["card"]);
+    await send({ type: "hello" });
+    await hub.shopEvent(event("card"));
+    await hub.shopEvent(event("power.on"));
+    expect(told(ws)).toEqual(["card", "power.on"]);
+  });
+
+  it("reads the choice again when the bot says hello again", async () => {
+    const { sqlite, hub, ws, send } = await fixture();
+    botResource(sqlite, ["card"]);
+    await send({ type: "hello", announcements: "message" });
+    sqlite.run(`UPDATE device_capabilities SET config_json=? WHERE device_id='bot-res'`, [JSON.stringify({ tokenId: "t1", announceEvents: ["power.on"] })]);
+    await send({ type: "hello", announcements: "message" });
+    await hub.shopEvent(event("card"));
+    await hub.shopEvent(event("power.on"));
+    expect(told(ws)).toEqual(["power.on"]);
+  });
+});
+
+describe("a bot's commands", () => {
+  function botResource(sqlite: Database, config: Record<string, unknown> = {}) {
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`,
+      [JSON.stringify({ tokenId: "t1", ...config })],
+    );
+  }
+  const from = { provider: "onebot", subject: "10001", name: "一号" };
+  const command = (id: string, name: string, args: string[] = [], extra: Record<string, unknown> = {}) =>
+    ({ type: "command", id, name, args, from, channel: "onebot:42", ...extra });
+  const says = (ws: FakeSocket) => ws.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.type === "say");
+  const text = (frame: { message: Array<{ text?: string; player?: { displayName: string } }> }) =>
+    frame.message.map((segment) => segment.text ?? `<${segment.player?.displayName}>`).join("");
+
+  it("runs a command once and says its answer, as a reply to it", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite);
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c1", "wallet")));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c1", "wallet")));
+    const [first, again] = says(ws);
+    expect(first).toMatchObject({ type: "say", replyTo: "c1", done: true });
+    expect(text(first)).toContain("💰 --- 钱包余额 ---");
+    // Sent again after a lost answer: the same words, and nobody registered twice.
+    expect(again).toEqual(first);
+    expect((sqlite.query("SELECT COUNT(*) AS n FROM players").get() as { n: number }).n).toBe(1);
+    sqlite.close();
+  });
+
+  it("decides who may do what: read-only mode, staff acting for others, and refusals in words", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, { playerCommands: "readonly", readOnlyNotice: "请扫码" });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c1", "coin", ["mai"])));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c2", "wallet", [], { target: { provider: "onebot", subject: "10002" } })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c3", "billing")));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c4", "nope")));
+    expect(says(ws).map(text)).toEqual([
+      "请扫码",
+      "权限不足",
+      // A refusal, in the bot's words.
+      "您当前没有未结算的账单，无需结账。",
+      "这个命令平台还不认识，请更新 Bot 或联系店员",
+    ]);
+    sqlite.close();
+  });
+
+  it("tells a commands bot the shop's news as words for the places it announces in", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, { announceEvents: ["card"], announceChannelIds: ["onebot:42", "onebot:43"] });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.shopEvent({ type: "card", message: [{ text: "💳 刷卡" }], resourceId: "m1", resourceName: "舞萌", player: null });
+    await hub.shopEvent({ type: "power.on", message: [{ text: "✅ 开机" }], resourceId: "m1", resourceName: "舞萌", player: null });
+    expect(says(ws)).toEqual([
+      { type: "say", to: "onebot:42", message: [{ text: "💳 刷卡" }] },
+      { type: "say", to: "onebot:43", message: [{ text: "💳 刷卡" }] },
+    ]);
+    expect(ws.sent.some((raw) => JSON.parse(raw).type === "event")).toBe(false);
+    sqlite.close();
+  });
+
+  it("ends a commands bot's connection once its token is revoked", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite);
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    sqlite.run("UPDATE api_tokens SET status='revoked'");
+    await hub.botsChanged();
+    expect(ws.closed?.code).toBe(4003);
+    sqlite.close();
   });
 });

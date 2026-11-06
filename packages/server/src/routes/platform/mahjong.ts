@@ -9,16 +9,18 @@ import { checkShopLocation } from "../../middleware/geo.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
-import type { AppBindings } from "../../bindings.js";
+import type { AppBindings, TenantShop } from "../../bindings.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import { loadResource, mahjongConfigOf } from "../../resources/resource.js";
 import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 
 type C = Context<AppBindings, any, any>;
+/** What seating needs of where it runs: a route's context, or the shop hub for a bot's command. */
+export type MahjongRuntime = Pick<C, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
 export type { MahjongConfig } from "../../resources/capabilities/catalog.js";
 /** The table's plan and size; its size is the resource's capacity. */
-async function mahjongConfig(c: C, machine: ScannedResource) {
+async function mahjongConfig(c: Pick<C, "env">, machine: ScannedResource) {
   const device = await loadResource(c.env.DB, machine.shop_id, machine.id);
   const config = device ? mahjongConfigOf(device) : null;
   return device && config ? { ...config, capacity: device.capacity } : null;
@@ -27,7 +29,7 @@ async function mahjongConfig(c: C, machine: ScannedResource) {
 const liveSeats = liveSeatsSql;
 
 /** Seats at a table; `mine` marks the viewer's seat: the signed-in user's, or a player's for the bot. */
-export async function mahjongState(c: C, machine: ScannedResource, viewer?: { playerId: string }) {
+export async function mahjongState(c: Pick<C, "env"> | C, machine: ScannedResource, viewer?: { playerId: string }) {
   const config = await mahjongConfig(c, machine);
   if (!config) return null;
   const result = await c.env.DB.prepare(`SELECT p.id AS playerId, p.display_name AS name,
@@ -38,12 +40,12 @@ export async function mahjongState(c: C, machine: ScannedResource, viewer?: { pl
     LEFT JOIN shop_player_accounts a ON a.shop_id=ms.shop_id AND a.player_id=ms.player_id
     LEFT JOIN sessions s ON s.shop_id=ms.shop_id AND s.id=ms.session_id
     WHERE ms.machine_id=? ORDER BY ms.joined_at,ms.player_id`)
-    .bind(viewer?.playerId ?? requireUser(c).id,machine.id).all<{playerId:string;name:string;mine:number;playing:number}>();
+    .bind(viewer?.playerId ?? requireUser(c as C).id,machine.id).all<{playerId:string;name:string;mine:number;playing:number}>();
   return { capacity: config.capacity, seats: result.results.map(s => ({ playerId:s.playerId, name:s.name, mine:!!s.mine, playing:!!s.playing })) };
 }
 
 /** A staff member seats a chosen player instead of themselves. */
-async function staffTargetPlayer(c: C, shopId: string, playerId: string) {
+async function staffTargetPlayer(c: Pick<C, "env">, shopId: string, playerId: string) {
   const player = await c.env.DB.prepare(
     "SELECT id,status FROM players WHERE shop_id=? AND id=?",
   ).bind(shopId, playerId).first<{id:string;status:string}>();
@@ -52,6 +54,9 @@ async function staffTargetPlayer(c: C, shopId: string, playerId: string) {
     jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
   return player;
 }
+
+/** A table after a move, and for someone getting up what still bills. */
+export type MahjongMove = { mahjong: NonNullable<Awaited<ReturnType<typeof mahjongState>>>; billing?: { remaining: string[] } };
 
 export async function operateMahjong(
   c: C,
@@ -79,6 +84,27 @@ export async function operateMahjong(
       : await requireShopPlayer(c,shop);
   const confirmedForPlayer = !!options.staff || !!options.bot;
   const joining = body.action === "mahjong.join" || body.action === "mahjong.seat";
+  // A bot's request is replayed by the shop hub, not by player operation records.
+  const once = (action: () => Promise<Response>) =>
+    options.bot ? action() : runPlayerOperation(c,shop.id,`mahjong/${machine.id}`,body,action);
+  return moveMahjong(c, shop, machine, player, { joining, confirmedForPlayer, viewer: options.bot, once: (action) => once(async () => c.json(await action())) });
+}
+
+/**
+ * Seat or unseat a player whose right to it the caller has checked: a route
+ * for a signed-in player or staff, or a bot's command. `once` runs the move
+ * at most once for a repeated request.
+ */
+export async function moveMahjong<T = MahjongMove>(
+  c: MahjongRuntime,
+  shop: TenantShop,
+  machine: ScannedResource,
+  player: { id: string },
+  options: { joining: boolean; confirmedForPlayer: boolean; viewer?: { playerId: string }; once?: (action: () => Promise<MahjongMove>) => Promise<T> },
+): Promise<T> {
+  const { joining, confirmedForPlayer } = options;
+  const config = await mahjongConfig(c, machine);
+  if (!config) jsonError(409,"这里不支持此操作","DEVICE_ACTION_UNSUPPORTED");
   const repos = createD1Repositories({db:c.env.DB,shopId:shop.id,id:()=>crypto.randomUUID(),now:()=>new Date()});
   const deps = getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env);
   const pricingSessions = deps.pricingSessions;
@@ -109,9 +135,7 @@ export async function operateMahjong(
       config:{...rule.provider,timeZone:rule.provider.timeZone ?? "UTC"},at:new Date(),
     })) jsonError(409,"当前不在麻将计费时段","PLAYER_SESSION_OUTSIDE_BILLABLE_TIME");
   }
-  // A bot's request is replayed by the shop hub, not by player operation records.
-  const once = (action: () => Promise<Response>) =>
-    options.bot ? action() : runPlayerOperation(c,shop.id,`mahjong/${machine.id}`,body,action);
+  const once = options.once ?? ((action: () => Promise<MahjongMove>) => action() as Promise<T>);
   return once(()=>withOperationLease({
     repository:repos.operationLocks,scope:"mahjong.table",resourceId:machine.id,id:()=>crypto.randomUUID(),now:()=>new Date(),
   },async()=>{
@@ -188,7 +212,9 @@ export async function operateMahjong(
     // What still bills after getting up, so the player knows leaving the shop is checking out.
     const remaining = joining || !billed ? undefined
       : (await pricingSessions.getActive(player.id)).active.map(plan => plan.planName);
-    return c.json({mahjong:await mahjongState(c,machine,options.bot),...(remaining ? { billing: { remaining } } : {})});
+    // `mine` is the viewer's seat: the bot's player, otherwise the signed-in user's.
+    const mahjong = (await mahjongState(c,machine,options.viewer))!;
+    return { mahjong, ...(remaining ? { billing: { remaining } } : {}) };
     });
   }).catch(error => {
     if (String(error).includes("PRICING_CONFIG_NOT_IN_RELEASE"))
@@ -241,7 +267,7 @@ async function openTable(
 }
 
 /** Whether the player could take a seat here, so staff seating never bills for a seat that is not there. */
-async function seatAvailable(c: C, shopId: string, machineId: string, playerId: string, capacity: number) {
+async function seatAvailable(c: Pick<C, "env">, shopId: string, machineId: string, playerId: string, capacity: number) {
   const row = await c.env.DB.prepare(`SELECT
     (SELECT COUNT(*) FROM (${liveSeats}) ms WHERE ms.machine_id=?) AS taken,
     EXISTS(SELECT 1 FROM (${liveSeats}) ms WHERE ms.shop_id=? AND ms.player_id=?) AS seated`)

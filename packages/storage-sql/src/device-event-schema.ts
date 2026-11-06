@@ -50,7 +50,6 @@ export const deviceEventSchema = [
     payload_json TEXT NOT NULL DEFAULT '{}',
     requested_at TEXT NOT NULL,
     settled_at TEXT,
-    confirmed_at TEXT,
     PRIMARY KEY (shop_id, id),
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id)
   )`,

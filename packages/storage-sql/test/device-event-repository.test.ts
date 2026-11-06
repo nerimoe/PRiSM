@@ -66,7 +66,6 @@ function operation(overrides: Partial<DeviceOperation> = {}): DeviceOperation {
     payload: {},
     requestedAt: new Date("2026-02-01T10:00:00.000Z"),
     settledAt: null,
-    confirmedAt: null,
     ...overrides,
   };
 }
@@ -115,17 +114,6 @@ describe("device event repository", () => {
       settle: { operationId: "op1", status: "failed", failure: "late", settledAt: new Date("2026-02-01T10:00:09.000Z") },
     });
     expect(await repo.getOperation("op1")).toMatchObject({ status: "succeeded", failure: null });
-  });
-
-  it("confirms an operation only the first time, and only from its own device", async () => {
-    const { repo } = fixture();
-    await repo.record({ events: [], operation: operation({ id: "scan", action: "aime.scan", capability: "hinata_io" }) });
-    const first = new Date("2026-02-01T10:00:04.000Z");
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m2", confirmedAt: new Date("2026-02-01T10:00:02.000Z") } });
-    expect((await repo.getOperation("scan"))!.confirmedAt).toBeNull();
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m1", confirmedAt: first } });
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m1", confirmedAt: new Date("2026-02-01T10:09:00.000Z") } });
-    expect((await repo.getOperation("scan"))!.confirmedAt).toEqual(first);
   });
 
   it("writes nothing when a batch part fails", async () => {

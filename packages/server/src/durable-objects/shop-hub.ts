@@ -7,6 +7,10 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
+import { idleReminderText, shopEventFrame } from "../resources/shop-events.js";
+import { findBotByToken } from "../resources/bot.js";
+import { sha256Hex } from "../crypto.js";
+import { announcedTypes, botMessage, type BotMessage } from "@prism/core";
 import {
   climateState,
   deviceView,
@@ -29,7 +33,10 @@ import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
 import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
 import type { HaWatch } from "./machine-relay.js";
 import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
-import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, type BotResponse } from "./shop-hub-bot.js";
+import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
+import { runBotCommand, type BotView } from "../resources/bot-commands.js";
+import { botConfigView, type BotResource } from "../resources/bot.js";
+import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
 import { app } from "../app.js";
 
 /**
@@ -37,7 +44,21 @@ import { app } from "../app.js";
  * from another bot's; `ha` and `name` come from its hello, and a bot that never said it can watch
  * Home Assistant is never given a watch.
  */
-type BotAttachment = { kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string };
+type BotAttachment = {
+  kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string;
+  /**
+   * For a bot that says what the platform writes: which bot resource it is and
+   * what it is set to announce, read at its hello (it says hello again whenever
+   * its settings change). Absent for a bot that chooses for itself.
+   */
+  announces?: { botId: string; types: string[] };
+  /**
+   * A bot that sends its players' commands (`commands: 1`): the platform runs
+   * them and tells it what to say, the shop's news included, in `say` frames
+   * to `channels`, the places it announces in.
+   */
+  commands?: { channels: string[] };
+};
 /** A player's device page, listening for that device's state and for changes to its own page. */
 type PageAttachment = { kind: "page"; deviceId: string; userId: string };
 /** A merchant's device board, listening for the state of every device in the shop. */
@@ -230,6 +251,8 @@ const WRITE_CHUNK = 40;
 export class ShopHub extends BaseDurableObject<Env> {
   /** Requests running now, so a resend while the first is in flight is not run twice. */
   private readonly running = new Set<string>();
+  /** What each connected commands bot is told, by token; cleared whenever the shop's bots are told something changed. */
+  private readonly botViews = new Map<string, { bot: BotResource; view: BotView }>();
   private shop: string | null = null;
   private lastResync = 0;
   /** The last watcher list sent to the boards, so a board hears only about a change. */
@@ -574,7 +597,23 @@ export class ShopHub extends BaseDurableObject<Env> {
   /** Something a bot is told about changed (its settings, staff, tables): each rereads it. */
   async botsChanged(): Promise<void> {
     const frame = JSON.stringify({ type: "config.changed" });
+    this.botViews.clear();
+    const shopId = (await this.shopId()) ?? "";
     for (const ws of this.bots()) {
+      // A commands bot's token is checked when it connects, not on every
+      // command: one revoked or disabled since is disconnected now.
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      if (attachment?.commands) {
+        const found = await this.botOf(shopId, attachment.token).catch(() => null);
+        if (!found || !found.bot.enabled) {
+          try {
+            ws.close(4003, "credentials revoked");
+          } catch {
+            // Already closed.
+          }
+          continue;
+        }
+      }
       try {
         ws.send(frame);
       } catch {
@@ -591,12 +630,26 @@ export class ShopHub extends BaseDurableObject<Env> {
   async shopEvent(event: Record<string, unknown>): Promise<void> {
     const frame = JSON.stringify({ type: "event", event: "shop.event", data: event });
     for (const ws of this.bots()) {
+      // A bot that says the platform's text only hears what it is set to tell,
+      // and not what its own command did: it answered that already.
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      const announces = attachment?.announces;
+      if (announces && (!announces.types.includes(String(event.type)) || event.botId === announces.botId)) continue;
       try {
-        ws.send(frame);
+        if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, event.message as BotMessage);
+        else ws.send(frame);
       } catch {
         // A bot that left misses it.
       }
     }
+  }
+
+  /** The bot resource a bot's token belongs to and what it is set to announce. */
+  private async botAnnounces(shopId: string, token: string): Promise<{ botId: string; types: string[] } | null> {
+    const row = await this.env.DB.prepare("SELECT id FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active'")
+      .bind(shopId, await sha256Hex(token)).first<{ id: string }>();
+    const bot = row ? await findBotByToken(this.env.DB, shopId, row.id) : null;
+    return bot ? { botId: bot.id, types: announcedTypes(bot.config) } : null;
   }
 
   async notifyUser(userId: string, frame: Record<string, unknown>): Promise<void> {
@@ -663,15 +716,28 @@ export class ShopHub extends BaseDurableObject<Env> {
       // allowed to watch hands its watch on first.
       if (attachment.ha && !frame.ha) await this.botGone(ws);
       const id = attachment.id ?? crypto.randomUUID();
-      ws.serializeAttachment({
-        ...attachment,
-        id,
-        reminderLeadMs: frame.reminderLeadSeconds === undefined ? null : frame.reminderLeadSeconds * 1000,
-        ha: frame.ha === true,
-        ...(frame.name ? { name: frame.name } : {}),
-      } satisfies BotAttachment);
       const shopId = (await this.shopId()) ?? "";
-      if (frame.ha) await this.botOnline(shopId, id, frame.name);
+      const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
+      const announces = commands
+        ? { botId: commands.bot.id, types: announcedTypes(commands.bot.config) }
+        : frame.announcements === "message" ? await this.botAnnounces(shopId, attachment.token) : null;
+      // Without anywhere to say it, or with idle news switched off, no reminder is planned.
+      const lead = commands
+        ? (announces!.types.includes("idle.reminder") && commands.bot.config.announceChannelIds.length && commands.bot.config.idleReminderMinutes > 0
+          ? commands.bot.config.idleReminderMinutes * 60 : undefined)
+        : frame.reminderLeadSeconds;
+      const { announces: _previous, commands: _was, ...rest } = attachment;
+      ws.serializeAttachment({
+        ...rest,
+        id,
+        reminderLeadMs: lead === undefined ? null : lead * 1000,
+        // A disabled commands bot answers that it is disabled and watches nothing.
+        ha: frame.ha === true && (!commands || commands.bot.enabled),
+        ...(frame.name ? { name: frame.name } : commands ? { name: commands.bot.name } : {}),
+        ...(announces ? { announces } : {}),
+        ...(commands ? { commands: { channels: commands.bot.config.announceChannelIds } } : {}),
+      } satisfies BotAttachment);
+      if (frame.ha && (!commands || commands.bot.enabled)) await this.botOnline(shopId, id, frame.name ?? commands?.bot.name);
       // Reminders may now be due earlier than the next planned check.
       await this.touch(shopId);
       return;
@@ -680,6 +746,10 @@ export class ShopHub extends BaseDurableObject<Env> {
       // Only a bot that said it can watch has anything to report; a stale or unassigned one is ignored.
       const shopId = await this.shopId();
       if (shopId && attachment.ha && attachment.id) await this.haReport(shopId, botKey(attachment.id), frame.report);
+      return;
+    }
+    if (frame.type === "command") {
+      await this.command(ws, attachment, frame);
       return;
     }
     const replayKey = `req:${frame.id}`;
@@ -719,6 +789,80 @@ export class ShopHub extends BaseDurableObject<Env> {
         // Already closed.
       }
     }
+  }
+
+  /**
+   * A player's command through a bot. Run once per command id: a command sent
+   * again (after a lost answer) is answered with what was said the first time.
+   */
+  private async command(ws: WebSocket, attachment: BotAttachment, frame: BotCommandFrame) {
+    const replayKey = `req:cmd:${frame.id}`;
+    const replay = await this.ctx.storage.get<{ frames: SayFrame[]; at: number }>(replayKey);
+    const send = (frames: SayFrame[]) => {
+      for (const said of frames) {
+        try {
+          ws.send(JSON.stringify(said));
+        } catch {
+          // The bot left; a resend gets the remembered answer.
+        }
+      }
+    };
+    if (replay) return send(replay.frames);
+    if (this.running.has(frame.id)) return;
+    this.running.add(frame.id);
+    let frames: SayFrame[];
+    try {
+      const shopId = (await this.shopId()) ?? "";
+      const found = await this.botOf(shopId, attachment.token);
+      const shopRow = found ? await readTenantShop(this.env.DB, shopId) : null;
+      if (!found || !shopRow) {
+        // Its credential no longer stands: the connection ends with this answer.
+        frames = [sayFrame(botMessage("Bot 凭据已失效"), { replyTo: frame.id, done: true })];
+        send(frames);
+        ws.close(4003, "credentials revoked");
+        return;
+      }
+      const shop = tenantShop(shopRow);
+      const says = found.bot.enabled
+        ? await runBotCommand({
+          env: this.env,
+          waitUntil: (promise) => this.ctx.waitUntil(promise),
+          shop,
+          deps: getOrCreateShopDependencies(this.env.DB, shop, this.env.URL_ENCRYPTION_KEY, this.env),
+          bot: found.bot,
+          view: found.view,
+          from: frame.from,
+          channel: frame.channel,
+          name: frame.name,
+          args: frame.args,
+          ...(frame.target ? { target: frame.target } : {}),
+        })
+        : [{ message: botMessage("Bot 已被店铺停用") }];
+      frames = says.map((said, index) => sayFrame(said.message, { replyTo: frame.id, to: said.to, done: index === says.length - 1 }));
+    } catch (error) {
+      console.error(JSON.stringify({ event: "bot_command_failed", command: frame.name, message: error instanceof Error ? error.message : String(error) }));
+      frames = [sayFrame(botMessage("操作失败，请稍后再试。"), { replyTo: frame.id, done: true })];
+    } finally {
+      this.running.delete(frame.id);
+    }
+    await this.remember(replayKey, { frames } as never);
+    send(frames);
+  }
+
+  /**
+   * The bot a token belongs to and what it is told, while the token stands.
+   * Kept until the shop's bots are told something changed.
+   */
+  private async botOf(shopId: string, token: string): Promise<{ bot: BotResource; view: BotView } | null> {
+    const cached = this.botViews.get(token);
+    if (cached) return cached;
+    const row = await this.env.DB.prepare("SELECT id FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active' AND role = 'integration'")
+      .bind(shopId, await sha256Hex(token)).first<{ id: string }>();
+    const bot = row ? await findBotByToken(this.env.DB, shopId, row.id) : null;
+    if (!bot) return null;
+    const found = { bot, view: await botConfigView(this.env.DB, shopId, bot) };
+    this.botViews.set(token, found);
+    return found;
   }
 
   private async remember(key: string, response: BotResponse) {
@@ -1204,10 +1348,10 @@ export class ShopHub extends BaseDurableObject<Env> {
       for (const id of result.poweredOff) {
         const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
           .bind(shopId, id).first<{ name: string }>();
-        await this.shopEvent({
-          kind: "power", resourceId: id, resourceName: resource?.name ?? id, state: "off", by: "system", player: null,
-          at: new Date().toISOString(),
-        });
+        await this.shopEvent(shopEventFrame({
+          type: "request.power.idle_off", kind: "power", resourceId: id, resourceName: resource?.name ?? id,
+          state: "off", by: "system", player: null,
+        }));
       }
     } catch (error) {
       console.error("Idle check failed", error);
@@ -1215,6 +1359,12 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /** How long before a power-off the shop's bots want to hear about it; null without one. */
+  /** The shop's news, said in each place a commands bot announces in. */
+  private sayTo(ws: WebSocket, channels: string[], message: BotMessage | undefined) {
+    if (!Array.isArray(message)) return;
+    for (const to of channels) ws.send(JSON.stringify(sayFrame(message, { to })));
+  }
+
   private async reminderLead(): Promise<number | null> {
     const leads = this.bots()
       .map((ws) => (ws.deserializeAttachment() as BotAttachment | null)?.reminderLeadMs)
@@ -1224,10 +1374,15 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   private async notify(notices: IdleNotice[]): Promise<void> {
     for (const notice of notices) {
-      const frame = JSON.stringify({ type: "event", event: "idle.reminder", data: notice });
+      const message = botMessage(idleReminderText(notice));
+      const frame = JSON.stringify({ type: "event", event: "idle.reminder", data: { ...notice, message } });
       for (const ws of this.bots()) {
+        const attachment = ws.deserializeAttachment() as BotAttachment | null;
+        const announces = attachment?.announces;
+        if (announces && !announces.types.includes("idle.reminder")) continue;
         try {
-          ws.send(frame);
+          if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, message);
+          else ws.send(frame);
         } catch {
           // A bot that left misses it; the power-off happens regardless.
         }
@@ -1486,6 +1641,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     let powerMoved = false;
     /** Machines this report says lost power: their watch is released, as on any power-off. */
     const lostPower: string[] = [];
+    /** Machines Home Assistant saw switch on or off, told once the facts are stored. */
+    const switched: Array<{ deviceId: string; state: "on" | "off" }> = [];
     for (const item of reported) {
       const key = entityKey(connectionId, item.entity_id);
       const previous = applied[key] ?? states[key];
@@ -1506,6 +1663,9 @@ export class ShopHub extends BaseDurableObject<Env> {
           // Only a real on-to-off move: `unavailable` reads as null, and a Home
           // Assistant hiccup must not release a working watch.
           if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
+          // A machine switched on or off, by the platform, an app or a button
+          // alike. A first snapshot, or coming back from `unavailable`, is not one.
+          if (power && (previous?.state === "on" || previous?.state === "off")) switched.push({ deviceId: target.deviceId, state: power });
         } else {
           const known = next.state !== "unavailable" && next.state !== "unknown";
           const view = known ? climateState(next.state, next.attributes) : null;
@@ -1543,6 +1703,13 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     // Switched on starts an idle countdown; switched off may end one.
     if (powerMoved) await this.touch(shopId);
+    for (const { deviceId, state } of switched) {
+      const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
+        .bind(shopId, deviceId).first<{ name: string }>();
+      await this.shopEvent(shopEventFrame({
+        type: state === "on" ? "power.on" : "power.off", resourceId: deviceId, resourceName: resource?.name ?? deviceId, player: null,
+      }));
+    }
     // Home Assistant confirming the machine is off: the same observation the
     // platform's own power-off opened, now with the machine's state as evidence
     // rather than only the command having been accepted.

@@ -42,7 +42,7 @@ const machineSelect = `SELECT machines.*, shops.name AS shop_name,
   LEFT JOIN shop_billing_settings b ON b.shop_id=shops.id`;
 
 /** A resource of a shop by its id, in the shape the scan routes use. */
-export async function loadScannedResource(c: Context<AppBindings>, shopId: string, id: string): Promise<ScannedResource | null> {
+export async function loadScannedResource(c: Pick<Context<AppBindings>, "env">, shopId: string, id: string): Promise<ScannedResource | null> {
   return c.env.DB.prepare(`${machineSelect} WHERE machines.shop_id=? AND machines.id=?`)
     .bind(shopId, id).first<ScannedResource>();
 }

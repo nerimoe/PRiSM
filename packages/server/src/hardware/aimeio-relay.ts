@@ -180,8 +180,74 @@ export type HaReport =
   | { method: "ha.status"; params: HaConnectionHealth }
   | { method: "ha.states"; params: { term: number; connection: string; full: boolean; states: HaEntityState[] } };
 
-/** A heartbeat from a connected IO, with whatever Home Assistant health it holds. */
-export type IoHeartbeat = { ha: HaConnectionHealth[] };
+/**
+ * A heartbeat from a connected IO, with whatever Home Assistant health it
+ * holds and, when it reads its cabinet (`cabinetMonitor=1`), the latest of that.
+ */
+export type IoHeartbeat = { ha: HaConnectionHealth[]; cabinet: CabinetSnapshot | null };
+
+/**
+ * What an IO read from the cabinet's amdaemon backup (`sysfile.dat`), as it
+ * read it. `error` when the file could not be read; then nothing else is known.
+ * The counters are cumulative and only go down when the cabinet's books are
+ * cleared.
+ */
+export type CabinetSnapshot =
+  | {
+      revision: number;
+      readAtMs: number;
+      players: Array<{ credit: number; remain: number }>;
+      bookkeeping: {
+        totalCoin: number;
+        coinCredit: number;
+        serviceCredit: number;
+        emoneyCredit: number;
+        totalCredit: number;
+      };
+      creditConfig: { cost: number[] } & Record<string, unknown>;
+    }
+  | { revision: number; readAtMs: number; error: string };
+
+const count = (value: unknown): number | null =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+
+/** The snapshot in an `event.cabinetSnapshot` or a heartbeat's `cabinet`; null when it is not one. */
+export function parseCabinetSnapshot(value: unknown): CabinetSnapshot | null {
+  if (!isRecord(value)) return null;
+  const revision = count(value.revision);
+  const readAtMs = count(value.read_at_ms);
+  if (revision === null || readAtMs === null) return null;
+  if (typeof value.error === "string") return { revision, readAtMs, error: value.error };
+  const book = isRecord(value.bookkeeping) ? value.bookkeeping : null;
+  const config = isRecord(value.credit_config) ? value.credit_config : null;
+  if (!book || !config || !Array.isArray(value.players)) return null;
+  const players = value.players.map((p) => (isRecord(p) ? { credit: count(p.credit), remain: count(p.remain) } : null));
+  if (!players.length || players.some((p) => !p || p.credit === null || p.remain === null)) return null;
+  const bookkeeping = {
+    totalCoin: count(book.total_coin),
+    coinCredit: count(book.coin_credit),
+    serviceCredit: count(book.service_credit),
+    emoneyCredit: count(book.emoney_credit),
+    totalCredit: count(book.total_credit),
+  };
+  if (Object.values(bookkeeping).some((v) => v === null)) return null;
+  const cost = Array.isArray(config.cost) ? config.cost.map(count) : [];
+  if (!cost.length || cost.some((v) => v === null)) return null;
+  return {
+    revision,
+    readAtMs,
+    players: players as Array<{ credit: number; remain: number }>,
+    bookkeeping: bookkeeping as Extract<CabinetSnapshot, { players: unknown }>["bookkeeping"],
+    creditConfig: { ...config, cost: cost as number[] },
+  };
+}
+
+/** `event.cabinetSnapshot`: the IO read something new from its cabinet. */
+export function parseCabinetEvent(value: unknown): CabinetSnapshot | null {
+  if (!isRecord(value) || value.method !== "event.cabinetSnapshot") return null;
+  if (value.id !== undefined && value.id !== null) return null;
+  return parseCabinetSnapshot(value.params);
+}
 
 export type HaEntityState = {
   entity_id: string;
@@ -224,7 +290,7 @@ export function parseHeartbeat(value: unknown): IoHeartbeat | null {
       error: typeof item.error === "string" ? item.error : null,
     });
   }
-  return { ha };
+  return { ha, cabinet: parseCabinetSnapshot(params.cabinet) };
 }
 
 /**

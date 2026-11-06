@@ -125,7 +125,7 @@ describe("pre-fork authenticated Aime machine login",()=>{
 });
 
 describe("direct-connect card login result",()=>{
-  async function embedded(login:string){
+  async function embedded(login:"read"|"not_read"){
     const ctx=await fixture();
     ctx.sqlite.run(
       `UPDATE device_capabilities SET config_json='{"transport":"embedded","channel":"m_test","coinKey":32,"coinAfterSwipe":true}',secret_json='{}'
@@ -133,7 +133,11 @@ describe("direct-connect card login result",()=>{
     );
     const cards:Array<Record<string,unknown>>=[],presses:unknown[]=[];
     (ctx.env as any).MACHINE_RELAY={getByName:()=>({
-      async sendCard(input:Record<string,unknown>){cards.push(input);return {ok:true,login};},
+      // The relay answers with the card report it waited for, or null.
+      async sendCard(input:Record<string,unknown>){
+        cards.push(input);
+        return {ok:true,awaited:login==="read"?{name:"card.consumed",payload:{}}:null};
+      },
       async sendKeyPress(input:unknown){presses.push(input);return {ok:true};},
     })};
     const res=await ctx.app.fetch(new Request("https://prism.test/api/v1/machines/login",{
@@ -153,7 +157,7 @@ describe("direct-connect card login result",()=>{
     expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([
       ["CARD_SENT","inline","已刷卡"],["COIN_SENT","inline","已投币"],
     ]);
-    expect(cards[0]?.wait).toEqual({readMs:4500});
+    expect(cards[0]?.wait).toEqual({signal:"card.consumed",timeoutMs:4500});
     // Coins follow a card the game took.
     expect(reply.coin?.status).toBe("sent");
     expect(presses).toHaveLength(1);

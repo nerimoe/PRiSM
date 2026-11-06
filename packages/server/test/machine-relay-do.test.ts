@@ -92,16 +92,17 @@ const consumed = (source: string, unit?: number) =>
   });
 const led = (unit: number, r: number, g: number, b: number) =>
   JSON.stringify({ jsonrpc: "2.0", method: "event.ledSet", params: { interface: "aimeio", unit_no: unit, r, g, b } });
-const LIMITS = { readMs: 30 };
+const WAIT = (timeoutMs: number) => ({ signal: "card.consumed", timeoutMs });
+const LIMITS = WAIT(30);
 
 describe("MachineRelay card login", () => {
   it("settles as soon as the game takes the card, without waiting for the reader light", async () => {
     const { relay, sockets, sqlite } = fixture();
     const ws = attachAgent(sockets);
     await relay.fetch(upgradeRequest());
-    const result = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: { readMs: 5000 } });
+    const result = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: WAIT(5000) });
     await relay.webSocketMessage(ws as any, consumed(OP, 1));
-    expect(await result).toEqual({ ok: true, login: "read" });
+    expect(await result).toMatchObject({ ok: true, awaited: { name: "card.consumed", payload: { unit_no: 1 } } });
     // A later reader colour is not recorded as a verdict.
     await relay.webSocketMessage(ws as any, led(1, 0, 0, 255));
     await Bun.sleep(5);
@@ -113,15 +114,15 @@ describe("MachineRelay card login", () => {
     const ws = attachAgent(sockets);
     const result = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: LIMITS });
     await relay.webSocketMessage(ws as any, led(0, 0, 0, 255));
-    expect((await result).login).toBe("not_read");
+    expect((await result).awaited).toBeNull();
   });
 
   it("ends an older wait when a newer card replaces it on the IO", async () => {
     const { relay, sockets } = fixture();
     attachAgent(sockets);
-    const first = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: { readMs: 5000 } });
+    const first = relay.sendCard({ accessCode: "01234567890123456789", source: OP, wait: WAIT(5000) });
     await relay.sendCard({ accessCode: "99887766554433221100" });
-    expect((await first).login).toBe("not_read");
+    expect((await first).awaited).toBeNull();
   });
 
   it("does not wait for a card that never reached a device", async () => {
@@ -287,38 +288,6 @@ describe("MachineRelay IO events", () => {
       }),
     );
     expect(events()).toEqual([{ name: "card.consumed", operation_id: "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", sequence: 2 }]);
-  });
-
-  it("confirms the card operation of this device that the consumed card came from", async () => {
-    const { relay, sockets, sqlite } = fixture();
-    const operationId = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-    for (const [id, device] of [[operationId, "machine-1"], ["7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", "machine-2"]]) {
-      sqlite.run(
-        `INSERT INTO device_operations(shop_id,id,device_id,capability,action,status,counts_as_play,payload_json,requested_at)
-         VALUES ('shop-1',?,?,'hinata_io','aime.scan','succeeded',1,'{}','2026-01-01T00:00:00.000Z')`,
-        [id, device],
-      );
-    }
-    const ws = attachAgent(sockets);
-    await relay.fetch(
-      new Request("https://prism.test/io/ws", {
-        headers: { Upgrade: "websocket", "x-prism-relay-shop": "shop-1", "x-prism-relay-machine": "machine-1" },
-      }),
-    );
-    for (const source of [operationId, "7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b"]) {
-      await relay.webSocketMessage(
-        ws as any,
-        JSON.stringify({ jsonrpc: "2.0", method: "event.cardConsumed", params: { card: { source } } }),
-      );
-    }
-    const confirmed = sqlite.query<{ id: string; confirmed_at: string | null }, []>(
-      "SELECT id, confirmed_at FROM device_operations ORDER BY id",
-    ).all();
-    // A device can only confirm its own operation, whatever source it echoes.
-    expect(confirmed.map((row) => [row.id, row.confirmed_at !== null])).toEqual([
-      [operationId, true],
-      ["7f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b", false],
-    ]);
   });
 
   it("never persists a per-frame LED update", async () => {

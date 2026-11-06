@@ -19,10 +19,6 @@ function memoryRepository() {
           operations.set(op.id, { ...op, status: input.settle.status, failure: input.settle.failure, settledAt: input.settle.settledAt });
         }
       }
-      if (input.confirm) {
-        const op = operations.get(input.confirm.operationId);
-        if (op && !op.confirmedAt) operations.set(op.id, { ...op, confirmedAt: input.confirm.confirmedAt });
-      }
       for (const { write, event } of input.states ?? []) {
         const key = `${write.deviceId}/${write.capability}/${write.key}`;
         const previous = state.get(key);
@@ -192,18 +188,33 @@ describe("device bus: perform", () => {
 });
 
 describe("device bus: signals and state", () => {
-  it("confirms the operation a card report names", async () => {
-    const { bus, operations } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
+  it("records a card report as its own event and leaves the request as it was", async () => {
+    const { bus, operations, events } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
     await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, operationId: "scan" });
+    const before = operations.get("scan");
     await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed", operationId: "scan" });
-    expect(operations.get("scan")!.confirmedAt).not.toBeNull();
+    expect(operations.get("scan")).toEqual(before);
+    expect(events.at(-1)).toMatchObject({ kind: "signal", name: "card.consumed", operationId: "scan", origin: "device" });
   });
 
-  it("does not let an unrelated signal confirm anything", async () => {
-    const { bus, operations } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
-    await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, operationId: "scan" });
-    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.state", operationId: "scan" });
-    expect(operations.get("scan")!.confirmedAt).toBeNull();
+  it("hands the runner what the action awaits only when the caller waits", async () => {
+    const seen: unknown[] = [];
+    const { bus } = busWith({
+      runners: {
+        "aime.scan": async ({ awaits }) => {
+          seen.push(awaits ?? null);
+          return { outcome: "ok", ...(awaits ? { awaited: { name: awaits.signal, payload: {} } } : {}) };
+        },
+        coin: async ({ awaits }) => (seen.push(awaits ?? null), { outcome: "ok" }),
+      },
+    });
+    const waited = await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, wait: true });
+    const plain = await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player });
+    // Coin declares nothing to wait for, so asking to wait changes nothing.
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, wait: true });
+    expect(seen).toEqual([{ signal: "card.consumed", timeoutMs: 4500 }, null, null]);
+    expect(waited.awaited).toEqual({ name: "card.consumed", payload: {} });
+    expect(plain.awaited).toBeUndefined();
   });
 
   it("drops per-frame telemetry instead of storing it", async () => {

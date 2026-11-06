@@ -16,16 +16,11 @@ import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
 import { doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
 import { deviceRead, machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
-import { announceShopEvent, eventPlayer } from "../shop-events.js";
+import { announceShopEvent, eventPlayer, type ShopEvent } from "../shop-events.js";
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
 const KEY_PRESS_TTL_MS = 30_000;
 const HA_TIMEOUT_MS = 10_000;
-/**
- * A game waiting for a card polls its reader continuously, so an unread card
- * means it is busy elsewhere; the IO drops the card after 3 s.
- */
-const CARD_LOGIN_WAIT = { readMs: 4500 };
 
 export type DeviceRuntime = {
   db: D1DatabaseLike;
@@ -100,22 +95,21 @@ function relayOutcome(result: { ok: boolean; status: number; error?: string }): 
 }
 
 function cardRunner(runtime: DeviceRuntime): ActionRunner {
-  return async ({ device, operationId, payload }) => {
+  return async ({ device, operationId, payload, awaits }) => {
     const accessCode = typeof payload.accessCode === "string" ? payload.accessCode : "";
     if (!accessCode) return { outcome: "failed", message: "缺少卡号" };
     const config = hinataConfigOf(device)!;
-    // `source` carries the operation id so the machine's card report can be
-    // tied back to this request.
+    // `source` carries the operation id, which the machine's card reports echo.
     if (config.transport === "embedded") {
       const relay = machineRelayNamespace(runtime.env);
       if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
       const sent = await relay.getByName(config.channel).sendCard({
         accessCode,
         source: operationId,
-        ...(payload.awaitLogin === true ? { wait: CARD_LOGIN_WAIT } : {}),
+        ...(awaits ? { wait: awaits } : {}),
       });
       if (!sent.ok) return { outcome: "failed", message: sent.error ?? "机台未在线" };
-      return { outcome: "ok", ...(sent.login ? { result: { login: sent.login } } : {}) };
+      return { outcome: "ok", ...(sent.awaited !== undefined ? { awaited: sent.awaited } : {}) };
     }
     const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
     if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
@@ -183,22 +177,27 @@ function doorRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
-/** What a successful platform action tells the shop's bots, if anything. */
+/**
+ * What a platform request tells the shop's bots: that it was asked for and the
+ * hardware accepted it. What then happened at the device is told by the device.
+ */
 async function announceAction(runtime: DeviceRuntime, input: PerformInput, playerId: string | null, started: boolean) {
   const viaBot = typeof input.payload?.viaBot === "string" ? input.payload.viaBot : null;
   const place = { resourceId: input.device.id, resourceName: input.device.name, ...(viaBot ? { botId: viaBot } : {}) };
-  const player = () => eventPlayer(runtime.db, runtime.shopId, playerId);
+  const who = await eventPlayer(runtime.db, runtime.shopId, playerId);
+  const announce = (event: ShopEvent) => announceShopEvent(runtime.env, runtime.shopId, event);
   if (input.action === "power.on" || input.action === "power.off") {
-    await announceShopEvent(runtime.env, runtime.shopId, {
-      kind: "power", ...place, state: input.action === "power.on" ? "on" : "off", by: input.actor.type, player: await player(),
-    });
+    const state = input.action === "power.on" ? "on" : "off";
+    await announce({ type: `request.power.${state}`, kind: "power", ...place, state, by: input.actor.type, player: who });
   } else if (input.action === "aime.scan") {
-    await announceShopEvent(runtime.env, runtime.shopId, { kind: "card", ...place, player: await player(), started });
+    await announce({ type: "request.card", ...place, player: who });
   } else if (input.action === "coin") {
-    await announceShopEvent(runtime.env, runtime.shopId, { kind: "coin", ...place, player: await player(), started });
-  } else if (started) {
-    const who = await player();
-    if (who) await announceShopEvent(runtime.env, runtime.shopId, { kind: "occupancy", ...place, player: who });
+    await announce({ type: "request.coin", kind: "coin", ...place, player: who, started });
+  }
+  // A coin is the only request that puts someone on a resource; older bots
+  // heard that as part of the coin, newer ones as a start of its own.
+  if (started && who) {
+    await announce(input.action === "coin" ? { type: "start", ...place, player: who } : { type: "start", kind: "occupancy", ...place, player: who });
   }
 }
 
