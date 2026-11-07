@@ -18,6 +18,7 @@ type ShopHubNamespace = {
     notifyUser(userId: string, frame: Record<string, unknown>): Promise<void>;
     botsChanged(): Promise<void>;
     pagesChanged(scope: PageScope, reason: string): Promise<void>;
+    cardRead(userId: string, deviceId: string): Promise<void>;
     connectedBots(): Promise<string[]>;
     shopEvent(event: Record<string, unknown>): Promise<void>;
     idleSchedule(): Promise<Record<string, number>>;
@@ -118,6 +119,15 @@ export async function pagesChanged(env: Env, shopId: string, scope: PageScope, r
     await shopHub(env, shopId)?.pagesChanged(scope, reason);
   } catch (error) {
     console.error("Shop hub page notify failed", error);
+  }
+}
+
+/** A player waiting to add a card at this device: the reader has one. Never throws. */
+export async function cardRead(env: Env, shopId: string, userId: string, deviceId: string): Promise<void> {
+  try {
+    await shopHub(env, shopId)?.cardRead(userId, deviceId);
+  } catch (error) {
+    console.error("Shop hub card read failed", error);
   }
 }
 

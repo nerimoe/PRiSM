@@ -1724,6 +1724,7 @@
   "这张卡已绑定到本店的其他玩家": "This card belongs to another player here",
   "不支持这种卡片": "This kind of card is not supported",
   "没有读到卡片": "No card was read",
+  "离开页面后已取消添加，请重新添加": "Adding was cancelled because you left the page. Please try again.",
   "正在连接机台…": "Connecting to the cabinet…",
   "请把卡片放在「{name}」的读卡器上": "Put your card on the reader of {name}",
   "网络较慢，正在重试": "The network is slow, trying again",

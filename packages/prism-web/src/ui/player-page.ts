@@ -96,11 +96,15 @@ export function pageChannelUrl(ticket: string, base: string) {
 
 /** Whether a frame from the channel says the page changed. Everything else is ignored. */
 export function isPageChanged(raw: unknown) {
-  if (typeof raw !== "string" || raw === "pong") return false;
+  return pageEvent(raw) === "event.pageChanged";
+}
+
+function pageEvent(raw: unknown) {
+  if (typeof raw !== "string" || raw === "pong") return null;
   try {
-    return (JSON.parse(raw) as { method?: unknown } | null)?.method === "event.pageChanged";
+    return (JSON.parse(raw) as { method?: unknown } | null)?.method;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -111,7 +115,7 @@ export function isPageChanged(raw: unknown) {
  */
 export function openPageChannel(
   url: string,
-  handlers: { onChanged(): void; onOpen(firstTime: boolean): void },
+  handlers: { onChanged(): void; onOpen(firstTime: boolean): void; onCardRead?(): void },
   make: (url: string) => WebSocket = (address) => new WebSocket(address),
   hidden: () => boolean = () => typeof document !== "undefined" && document.visibilityState === "hidden",
 ) {
@@ -160,6 +164,7 @@ export function openPageChannel(
       clearTimeout(waiting);
       waiting = undefined;
       if (isPageChanged(event.data)) handlers.onChanged();
+      else if (pageEvent(event.data) === "event.cardRead") handlers.onCardRead?.();
     };
     opened.onclose = () => {
       if (socket !== opened) return;

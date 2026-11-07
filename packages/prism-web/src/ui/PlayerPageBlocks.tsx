@@ -30,11 +30,12 @@ const localNote = (body: string): Notice =>
   ({ code: "CLIENT", level: "warning", display: "inline", flow: "none", title: null, body, actions: [] });
 
 /** Draws the page. Only what the player is in the middle of is kept here. */
-export function PlayerPageBlocks({ page, ticket, act, read, onExpired }: {
+export function PlayerPageBlocks({ page, ticket, act, read, cardAsks, onExpired }: {
   page: Page;
   ticket: string;
   act: Act;
   read: () => Promise<void>;
+  cardAsks: number;
   onExpired: () => void;
 }) {
   const { t } = useI18n();
@@ -162,6 +163,7 @@ export function PlayerPageBlocks({ page, ticket, act, read, onExpired }: {
                 resource={page.resource}
                 ticket={ticket}
                 act={act}
+                cardAsks={cardAsks}
                 blocked={!!busy}
                 onExpired={onExpired}
                 onRefresh={handlers.onRefresh}
@@ -219,11 +221,12 @@ function FeedbackIcon({ level }: { level: Notice["level"] }) {
 }
 
 /** The player's cards, swiping one, and adding one at the reader. They are not part of the page: they are read here. */
-function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefresh, onBusy, onAdding }: {
+function PlayerCards({ block, resource, ticket, act, cardAsks, blocked, onExpired, onRefresh, onBusy, onAdding }: {
   block: PageCards;
   resource: string;
   ticket: string;
   act: Act;
+  cardAsks: number;
   blocked: boolean;
   onExpired: () => void;
   onRefresh: () => void;
@@ -246,6 +249,18 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
     | null
   >(null);
   const captureRun = useRef(0);
+  /** The window open on the reader, so giving up can close it: left open, it adds the next card to this player. */
+  const openCapture = useRef<string | null>(null);
+  const cancelCapture = useCallback(() => {
+    captureRun.current += 1;
+    const id = openCapture.current;
+    openCapture.current = null;
+    // If this fails, the window closes by itself within seconds.
+    if (id) void Api.cancelCardCapture(id, ticket).catch(() => {});
+  }, [ticket]);
+  /** While waiting for the reader: asks what became of the card. */
+  const askCapture = useRef<(() => void) | null>(null);
+  useEffect(() => { askCapture.current?.(); }, [cardAsks]);
   const capturing = capture?.phase === "starting" || capture?.phase === "waiting";
 
   useEffect(() => {
@@ -259,14 +274,28 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
     return () => { cancelled = true; };
   }, [version]);
 
+  // Once the page has been hidden nobody may be there, and a card put down now could be anyone's.
+  const waitingForCard = capture?.phase === "waiting";
+  useEffect(() => {
+    if (!waitingForCard) return;
+    const left = () => {
+      if (document.visibilityState !== "hidden") return;
+      cancelCapture();
+      setCapture({ phase: "done", level: "error", message: t("离开页面后已取消添加，请重新添加") });
+    };
+    left();
+    document.addEventListener("visibilitychange", left);
+    return () => document.removeEventListener("visibilitychange", left);
+  }, [waitingForCard, cancelCapture, t]);
+
   useEffect(() => { onBusy(!!swiping || capturing); }, [swiping, capturing, onBusy]);
   useEffect(() => { onAdding(!!capture); }, [capture, onAdding]);
   useEffect(() => () => {
-    captureRun.current += 1;
+    cancelCapture();
     clearTimeout(feedbackTimer.current);
     onBusy(false);
     onAdding(false);
-  }, [onBusy, onAdding]);
+  }, [cancelCapture, onBusy, onAdding]);
 
   /** Shown for a few seconds; the page stays usable meanwhile. */
   const showFeedback = (next: typeof feedback) => {
@@ -295,6 +324,58 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
     }
   };
 
+  /**
+   * What became of the card, asked when told the reader has one, after a lost connection comes
+   * back, and once at the end of the window. Null when a newer attempt or a cancel took over.
+   */
+  const captureOutcome = (captureId: string, expiresAt: string, current: () => boolean) =>
+    new Promise<Awaited<ReturnType<typeof Api.cardCaptureResult>>["status"] | null>((resolve, reject) => {
+      let asking = false;
+      let again = false;
+      let ended = false;
+      const finish = (status: Awaited<ReturnType<typeof Api.cardCaptureResult>>["status"] | null) => {
+        clearTimeout(timer);
+        if (askCapture.current === ask) askCapture.current = null;
+        resolve(status);
+      };
+      const ask = () => {
+        if (!current()) return finish(null);
+        if (asking) {
+          again = true;
+          return;
+        }
+        asking = true;
+        Api.cardCaptureResult(captureId, ticket)
+          .then(({ status }) => {
+            asking = false;
+            if (status !== "waiting") finish(status);
+            else if (ended) finish("expired");
+            else if (again) {
+              again = false;
+              ask();
+            }
+          })
+          .catch((caught) => {
+            asking = false;
+            // An earlier ask can fail on a bad network; the next one says the same.
+            if (ended) {
+              clearTimeout(timer);
+              reject(caught);
+            } else if (again) {
+              again = false;
+              ask();
+            }
+          });
+      };
+      const timer = setTimeout(() => {
+        ended = true;
+        ask();
+      }, Math.max(0, Date.parse(expiresAt) + 2000 - Date.now()));
+      askCapture.current = ask;
+      // The card may have been read before this answer got here.
+      ask();
+    });
+
   /** Opens a short window and waits for the reader to report the card. A newer attempt or a cancel stops an older one waiting. */
   const startCapture = async () => {
     const run = ++captureRun.current;
@@ -303,16 +384,15 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
     try {
       const location = await operationLocation(block.needsLocation);
       const started = await Api.startCardCapture({ ticket, location });
-      if (!current()) return;
-      setCapture({ phase: "waiting" });
-      const deadline = Date.parse(started.expiresAt) + 2000;
-      let status: Awaited<ReturnType<typeof Api.cardCaptureResult>>["status"] = "waiting";
-      while (status === "waiting" && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-        if (!current()) return;
-        status = (await Api.cardCaptureResult(started.captureId, ticket)).status;
+      if (!current()) {
+        void Api.cancelCardCapture(started.captureId, ticket).catch(() => {});
+        return;
       }
-      if (!current()) return;
+      openCapture.current = started.captureId;
+      setCapture({ phase: "waiting" });
+      const status = await captureOutcome(started.captureId, started.expiresAt, current);
+      if (status === null || !current()) return;
+      openCapture.current = null;
       const added = status === "added" || status === "bound" || status === "exists";
       setCapture({
         phase: "done",
@@ -326,7 +406,10 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
       });
       if (added) setVersion((value) => value + 1);
     } catch (caught) {
-      if (current()) setCapture({ phase: "done", level: "error", message: caught instanceof Error ? errorText(caught.message) : t("请检查网络后重试") });
+      if (current()) {
+        openCapture.current = null;
+        setCapture({ phase: "done", level: "error", message: caught instanceof Error ? errorText(caught.message) : t("请检查网络后重试") });
+      }
     }
   };
 
@@ -347,7 +430,7 @@ function PlayerCards({ block, resource, ticket, act, blocked, onExpired, onRefre
             <>
               <Loader2 size={28} className="animate-spin text-mint" aria-hidden="true" />
               <p className="session-subtitle">{capture.phase === "starting" ? t("正在连接机台…") : t("请把卡片放在「{name}」的读卡器上", { name: resource })}</p>
-              <button type="button" className="session-action" onClick={() => { captureRun.current += 1; setCapture(null); }}>{t("取消")}</button>
+              <button type="button" className="session-action" onClick={() => { cancelCapture(); setCapture(null); }}>{t("取消")}</button>
             </>
           ) : capture.phase === "done" ? (
             <>

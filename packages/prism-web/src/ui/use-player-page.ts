@@ -21,6 +21,8 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
   const [failure, setFailure] = useState<string | null>(null);
   /** An attempt failed and another is under way. */
   const [slow, setSlow] = useState(false);
+  /** Goes up when a player waiting to add a card should ask what became of it. */
+  const [cardAsks, setCardAsks] = useState(0);
   const live = useRef({ reading: false, again: false, stopped: false, answers: 0, readAt: 0, opened: false, timer: undefined as ReturnType<typeof setTimeout> | undefined });
   /** Operation ids of what got no answer, so pressing again cannot do it twice. */
   const unanswered = useRef(new Map<string, string>());
@@ -139,7 +141,10 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
       onChanged: () => void read(),
       onOpen: (firstTime) => {
         if (!firstTime || Date.now() - live.current.readAt > FRESH_READ_MS) void read();
+        // A push may have been missed while there was no connection.
+        if (!firstTime) setCardAsks((value) => value + 1);
       },
+      onCardRead: () => setCardAsks((value) => value + 1),
     });
     const foreground = () => {
       if (document.visibilityState !== "visible") return;
@@ -155,5 +160,5 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
     };
   }, [connect, ticket, read]);
 
-  return { page, failure, slow, read, act };
+  return { page, failure, slow, read, act, cardAsks };
 }

@@ -465,6 +465,18 @@ export class ShopHub extends BaseDurableObject<Env> {
     this.tellChanged(this.drawnPages((page) => page.userId === account?.user_id || tables.has(page.deviceId)), reason);
   }
 
+  /** Only the page of the player waiting to add a card at this device. */
+  async cardRead(userId: string, deviceId: string): Promise<void> {
+    const encoded = JSON.stringify({ method: "event.cardRead", params: {} });
+    for (const ws of this.drawnPages((page) => page.userId === userId && page.deviceId === deviceId)) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
   private toPages(deviceId: string, frame: Record<string, unknown>) {
     this.tellChanged(this.drawnPages((page) => page.deviceId === deviceId), "device");
     const encoded = JSON.stringify(frame);

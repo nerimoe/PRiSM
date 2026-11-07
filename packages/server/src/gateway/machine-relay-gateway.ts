@@ -95,6 +95,7 @@ export type MachineRelayNamespace = {
       id: string; shopId: string; userId: string; playerId: string; expiresAt: number;
     }): Promise<{ ok: boolean; error?: string }>;
     cardCaptureResult(id: string, userId: string): Promise<{ status: string; cardType?: string }>;
+    cancelCardCapture(id: string, userId: string): Promise<void>;
     getCapabilities(): Promise<{
       online: boolean;
       e2ee: boolean;

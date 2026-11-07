@@ -222,6 +222,16 @@ resourceSessionRouter.get("/session/cards/capture/:id",async c=>{
   return c.json(await relay.getByName(io.channel).cardCaptureResult(c.req.param("id"),user.id));
 });
 
+resourceSessionRouter.delete("/session/cards/capture/:id",async c=>{
+  const user=requireUser(c);
+  const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
+  const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
+  const io=device?hinataConfigOf(device):null;
+  const relay=machineRelayNamespace(c.env);
+  if(io?.channel&&relay)await relay.getByName(io.channel).cancelCardCapture(c.req.param("id"),user.id);
+  return c.json({ok:true});
+});
+
 resourceSessionRouter.post("/session/actions",async c=>{
   requireUser(c);
   const body=actionSchema.parse(await c.req.json());

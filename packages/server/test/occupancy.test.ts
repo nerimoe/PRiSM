@@ -222,14 +222,63 @@ describe("a cabinet's card reports", () => {
     });
   }
 
-  it("adds the next card put on the reader to the player who opened the window", async () => {
+  it("says so when the card on the reader is of a kind that cannot be added", async () => {
+    const { sqlite, relay } = await relayFixture();
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    await (relay as any).capture(null);
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "unsupported" });
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds no card when nobody comes for it, as when the page was closed", async () => {
+    const { sqlite, relay, report } = await relayFixture();
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
+    const now = Date.now();
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: now + 1000 });
+    await report("event.cardStateChanged", CARD_B);
+    const later = Date.now;
+    Date.now = () => now + 2000;
+    try {
+      expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "expired" });
+    } finally {
+      Date.now = later;
+    }
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds no card once the player who opened the window has cancelled it", async () => {
     const { sqlite, relay, report } = await relayFixture();
     sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
     await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    // Only they can.
+    await relay.cancelCardCapture("cap", "someone-else");
+    await relay.cancelCardCapture("older", "user-2");
     expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "waiting" });
+    await relay.cancelCardCapture("cap", "user-2");
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "expired" });
     await report("event.cardStateChanged", CARD_B);
-    // Nobody else can read the outcome; its owner reads it once.
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds the next card put on the reader to the player who opened the window", async () => {
+    const { sqlite, relay, report } = await relayFixture();
+    const told: unknown[][] = [];
+    (relay as any).env.SHOP_HUB = { getByName: () => new Proxy({}, {
+      get: (_, name) => async (...args: unknown[]) => { if (name === "cardRead") told.push(args); },
+    }) };
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "waiting" });
+    expect(told).toEqual([]);
+    await report("event.cardStateChanged", CARD_B);
+    // Their page is told, and nothing is added until it asks.
+    expect(told.length).toBe(1);
+    expect(told[0]![0]).toBe("user-2");
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+    // Nobody else can read the outcome; its owner can ask again if the answer was lost.
     expect(await relay.cardCaptureResult("cap", "someone-else")).toEqual({ status: "expired" });
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "added", cardType: "aime" });
     expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "added", cardType: "aime" });
     expect(sqlite.query("SELECT user_id, card_type, access_code FROM cards").all())
       .toEqual([{ user_id: "user-2", card_type: "aime", access_code: CARD_B }]);

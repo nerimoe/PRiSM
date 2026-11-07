@@ -6,7 +6,7 @@ import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
 import { cabinetChanges, coinLimit, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
 import { loadResource } from "../resources/resource.js";
-import { pagesChanged, shopHub } from "./shop-hub-client.js";
+import { cardRead, pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
@@ -544,6 +544,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     // method the hub already reasons about.
     const heartbeat = parseHeartbeat(parsed);
     if (heartbeat) {
+      await this.dropExpiredCapture();
       const channel = await this.channel();
       if (channel?.channel && attachment?.ha) {
         // Reoffer after an outage; an empty HA list also says the IO lost its assignment.
@@ -720,32 +721,50 @@ export class MachineRelay extends BaseDurableObject<Env> {
     return { ok: true };
   }
 
-  /** What became of a capture window: still waiting, the card's outcome, or gone. */
+  /**
+   * What became of a capture window: still waiting, the card's outcome, or gone. A card
+   * the reader has reported is added now that its player asks, not when it was read.
+   * The outcome stays until the next window, so an answer lost on the way can be asked for again.
+   */
   async cardCaptureResult(id: string, userId: string): Promise<{ status: "waiting" | "expired" } | CardCaptureResult> {
     const capture = await this.ctx.storage.get<CardCapture>(CAPTURE_KEY);
     if (!capture || capture.id !== id || capture.userId !== userId) return { status: "expired" };
-    if (capture.result) {
-      await this.ctx.storage.delete(CAPTURE_KEY);
-      return capture.result;
-    }
+    if (capture.result) return capture.result;
     if (capture.expiresAt <= Date.now()) {
       await this.ctx.storage.delete(CAPTURE_KEY);
       return { status: "expired" };
     }
-    return { status: "waiting" };
+    if (capture.card === undefined) return { status: "waiting" };
+    let result: CardCaptureResult;
+    try {
+      result = await bindReaderCard(this.env.DB, this.env.URL_ENCRYPTION_KEY, capture, capture.card);
+    } catch (error) {
+      console.error("Card capture failed", error);
+      return { status: "waiting" };
+    }
+    const { card: _card, ...rest } = capture;
+    await this.ctx.storage.put(CAPTURE_KEY, { ...rest, result });
+    return result;
+  }
+
+  /** The player gave up: the next card on this reader is nobody's to add. */
+  async cancelCardCapture(id: string, userId: string): Promise<void> {
+    const capture = await this.ctx.storage.get<CardCapture>(CAPTURE_KEY);
+    if (capture?.id === id && capture.userId === userId) await this.ctx.storage.delete(CAPTURE_KEY);
   }
 
   private async capture(card: ReturnType<typeof reportedCard>) {
     const capture = await this.ctx.storage.get<CardCapture>(CAPTURE_KEY);
-    if (!capture || capture.result || capture.expiresAt <= Date.now()) return;
-    let result: CardCaptureResult;
-    try {
-      result = await bindReaderCard(this.env.DB, this.env.URL_ENCRYPTION_KEY, capture, card);
-    } catch (error) {
-      console.error("Card capture failed", error);
-      return;
-    }
-    await this.ctx.storage.put(CAPTURE_KEY, { ...capture, result });
+    if (!capture || capture.result || capture.card !== undefined || capture.expiresAt <= Date.now()) return;
+    await this.ctx.storage.put(CAPTURE_KEY, { ...capture, card });
+    const channel = await this.channel();
+    if (channel) await cardRead(this.env, capture.shopId, capture.userId, channel.machineId);
+  }
+
+  /** A card nobody came for does not stay in storage. */
+  private async dropExpiredCapture() {
+    const capture = await this.ctx.storage.get<CardCapture>(CAPTURE_KEY);
+    if (capture && capture.expiresAt <= Date.now()) await this.ctx.storage.delete(CAPTURE_KEY);
   }
 
   private async touchHub() {

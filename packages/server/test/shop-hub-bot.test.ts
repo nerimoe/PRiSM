@@ -436,6 +436,18 @@ describe("what a page drawn from /session/page hears", () => {
     sqlite.close();
   });
 
+  it("tells only the waiting player's page on that device that a card was read", async () => {
+    const { sqlite, hub, open } = await shop();
+    const waiting = await open("m1", "u1");
+    const sameDevice = await open("m1", "u2");
+    const sameUserElsewhere = await open("m2", "u1");
+    await hub.cardRead("u1", "m1");
+    expect(frames(waiting)).toEqual([{ method: "event.cardRead", params: {} }]);
+    expect(frames(sameDevice)).toEqual([]);
+    expect(frames(sameUserElsewhere)).toEqual([]);
+    sqlite.close();
+  });
+
   it("hears only what concerns it: its device, its player, or the whole shop", async () => {
     const { sqlite, hub, open } = await shop();
     const mine = await open("m1", "u1");

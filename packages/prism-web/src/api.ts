@@ -425,6 +425,11 @@ export const Api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  cancelCardCapture: (captureId: string, ticket: string) =>
+    api<{ ok: boolean }>(
+      `/api/v1/devices/session/cards/capture/${encodeURIComponent(captureId)}?ticket=${encodeURIComponent(ticket)}`,
+      { method: "DELETE" },
+    ),
   cardCaptureResult: (captureId: string, ticket: string) =>
     api<{ status: "waiting" | "expired" | "added" | "bound" | "exists" | "taken" | "unsupported"; cardType?: string }>(
       `/api/v1/devices/session/cards/capture/${encodeURIComponent(captureId)}?ticket=${encodeURIComponent(ticket)}`,
