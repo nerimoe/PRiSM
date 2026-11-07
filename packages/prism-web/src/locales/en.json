@@ -1886,5 +1886,11 @@
   "确认删除资源": "Confirm resource deletion",
   "确定删除资源「{name}」？": "Delete resource “{name}”?",
   "删除后，资源二维码和接入凭据将失效，无法恢复。已有使用记录的资源请改为停用。": "Deleting this resource invalidates its QR code and credentials and cannot be undone. Disable resources with usage history instead.",
-  "资源已有使用记录，请改为停用": "This resource has usage history. Disable it instead."
+  "资源已有使用记录，请改为停用": "This resource has usage history. Disable it instead.",
+  "更多": "More",
+  "{hours} 时 {minutes} 分": "{hours} h {minutes} min",
+  "{minutes} 分": "{minutes} min",
+  "读卡器 {count}": "Readers {count}",
+  "机内币数": "Credits on the cabinet",
+  "未计费": "Not billing"
 }

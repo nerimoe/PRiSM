@@ -114,6 +114,16 @@ describe("occupancy from a cabinet's events", () => {
     expect(history[0]!.endedAt!.getTime()).toBe(history[0]!.lastSeenAt.getTime() + 15 * MIN);
   });
 
+  it("says which occupants have a bill running at the shop", async () => {
+    const { sqlite, db } = database();
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES ('shop','s2','p2','2026-01-01','active','[]')");
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES ('shop','s1','p1','2026-01-01','closed','[]')");
+    const occupancy = createOccupancy({ db, shopId: "shop" });
+    await occupancy.observe({ resourceId: "cab", event: { kind: "action", action: "coin", playerId: "p1" } });
+    await occupancy.observe({ resourceId: "cab", event: { kind: "action", action: "coin", playerId: "p2" } });
+    expect((await occupancy.current())[0]!.occupants.map((o) => [o.playerId, o.billing])).toEqual([["p1", false], ["p2", true]]);
+  });
+
   it("ignores switching a cabinet on and anything done without a player", async () => {
     const { db } = database();
     const occupancy = createOccupancy({ db, shopId: "shop" });

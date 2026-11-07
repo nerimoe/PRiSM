@@ -184,10 +184,49 @@ async function relayStatus(
   return status;
 }
 
+/** What a direct IO last reported, kept short for the board. Null for an IO that never reported it. */
+export type IoSummary = { version: string | null; readers: number | null; credit: number | null };
+
+/**
+ * What every direct-connected IO in the shop last reported, in one read: its
+ * version, how many readers it has, and the credits on its cabinet. The
+ * operations panel reads the details (reader firmware, coin counters) itself.
+ */
+async function ioSummaries(c: C, devices: readonly Resource[]): Promise<Map<string, IoSummary>> {
+  const summaries = new Map<string, IoSummary>();
+  const embedded = devices.filter((device) => hinataConfigOf(device)?.transport === "embedded");
+  const shopId = embedded[0]?.shopId;
+  if (!shopId) return summaries;
+  const rows = (await c.env.DB.prepare(
+    `SELECT device_id, key, value_json FROM device_state
+     WHERE shop_id = ? AND capability = 'hinata_io' AND key IN ('version','readers','cabinet')
+       AND device_id IN (SELECT value FROM json_each(?))`,
+  ).bind(shopId, JSON.stringify(embedded.map((device) => device.id)))
+    .all<{ device_id: string; key: string; value_json: string }>()).results;
+  for (const device of embedded) summaries.set(device.id, { version: null, readers: null, credit: null });
+  for (const row of rows) {
+    const summary = summaries.get(row.device_id)!;
+    let value: unknown;
+    try {
+      value = JSON.parse(row.value_json);
+    } catch {
+      continue;
+    }
+    if (row.key === "version" && typeof value === "string") summary.version = value;
+    if (row.key === "readers" && Array.isArray(value)) summary.readers = value.length;
+    if (row.key === "cabinet" && value && typeof value === "object") {
+      const credit = (value as { players?: Array<{ credit?: unknown }> }).players?.[0]?.credit;
+      if (typeof credit === "number") summary.credit = credit;
+    }
+  }
+  return summaries;
+}
+
 async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicId: string, canConfigure: boolean) {
-  const [status, bindings, bots] = await Promise.all([
+  const [status, bindings, bots, io] = await Promise.all([
     relayStatus(c, devices), billingBindings(c, devices),
     devices.some((device) => device.capabilities.has("bot")) ? connectedBots(c.env, devices[0]!.shopId) : null,
+    ioSummaries(c, devices),
   ]);
   return Promise.all(devices.map(async (device) => {
     const presented = await presentResource(c, device, shopPublicId, canConfigure);
@@ -204,6 +243,8 @@ async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicI
       relayOnline: live ? live.online : null,
       relayE2ee: live ? live.e2ee : null,
       botOnline: device.capabilities.has("bot") && bots !== null ? bots.includes(device.id) : null,
+      // What a direct IO last said; null for any other device. Shown as last reported while it is offline.
+      io: io.get(device.id) ?? null,
     };
   }));
 }
@@ -346,6 +387,7 @@ merchantResourceRouter.get("/machines/occupancy", async (c) => {
         startedAt: occupant.since.toISOString(),
         lastSeenAt: occupant.lastSeenAt.toISOString(),
         expiresAt: occupant.expiresAt?.toISOString() ?? null,
+        billing: occupant.billing,
       })),
     })),
   });

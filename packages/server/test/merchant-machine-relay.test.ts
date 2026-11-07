@@ -157,6 +157,29 @@ describe("embedded relay machine configuration", () => {
     expect(JSON.stringify(body)).not.toContain("prism_io_");
   });
 
+  it("lists what each direct IO last reported, read once for the shop", async () => {
+    const { app, env, sqlite } = fixture();
+    const reported = await create(app, env, { relayConnection: "embedded" });
+    const silent = await create(app, env, { relayConnection: "embedded" });
+    const relayed = await create(app, env, {});
+    const now = new Date().toISOString();
+    for (const [key, value] of [
+      ["version", "2.4.1"],
+      ["readers", [{ chipId: "a", firmwareTimestamp: 1, commitHash: "x" }, { chipId: "b", firmwareTimestamp: 1, commitHash: "y" }]],
+      ["cabinet", { players: [{ credit: 3, remain: 0 }], bookkeeping: { totalCoin: 120 } }],
+    ] as const)
+      sqlite.run(
+        "INSERT INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at) VALUES ('shop-1',?,'hinata_io',?,?,'observed',?)",
+        [reported.body.machine.id, key, JSON.stringify(value), now],
+      );
+    const listed = (await (await app.fetch(new Request("https://prism.test/api/v1/merchant/machines?shopId=shop-1"), env)).json()) as any;
+    const of = (id: string) => listed.machines.find((machine: any) => machine.id === id).io;
+    expect(of(reported.body.machine.id)).toEqual({ version: "2.4.1", readers: 2, credit: 3 });
+    // An IO that never reported has nothing to show yet; a relayed machine has no IO facts at all.
+    expect(of(silent.body.machine.id)).toEqual({ version: null, readers: null, credit: null });
+    expect(of(relayed.body.machine.id)).toBeNull();
+  });
+
   it("rotates the token without changing the channel, so a live device is not orphaned", async () => {
     const { app, env, sqlite } = fixture();
     const created = await create(app, env, { relayConnection: "embedded" });

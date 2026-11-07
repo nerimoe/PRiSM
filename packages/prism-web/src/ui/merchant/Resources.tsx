@@ -3,23 +3,27 @@ import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
   AirVent,
-  ChevronRight,
+  Bot,
+  Coins,
+  Cpu,
   CreditCard,
   DoorOpen,
   Gamepad2,
+  History,
+  LayoutGrid,
+  Lock,
+  MoreHorizontal,
   Pencil,
   Plus,
   Power,
   Printer,
   QrCode,
   RefreshCw,
-  Ungroup,
-  Bot,
-  Users,
   Timer,
+  Ungroup,
 } from "lucide-react";
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
-import { ClimateControls, climateModeName, climateSummary, type ClimateState } from "../ClimateControls";
+import { ClimateControls, climateModeIcon, climateModeName, climateSummary } from "../ClimateControls";
 import { useI18n } from "../../i18n";
 import { billTime } from "../bill-time";
 import {
@@ -37,7 +41,6 @@ import {
   type Player,
 } from "./shared";
 import {
-  canOperateCoin,
   capabilityOrder,
   deviceActionGroups,
   deviceActions,
@@ -62,20 +65,18 @@ import {
 import { HaWatchersPanel } from "./HaWatchers";
 import { useBoardLive } from "./use-board-live";
 import { useAuth } from "../AuthContext";
+import { stayLength, tileView, type Tone } from "./resource-tile";
 
 type Filter = "all" | CapabilityId | "unconfigured";
 
-/** Capability pills get one icon and one accent each, so a card reads at a glance. */
-const capabilityChips: Record<
-  CapabilityId,
-  { icon: typeof Power; label: string }
-> = {
-  power: { icon: Power, label: "电源" },
-  climate: { icon: AirVent, label: "空调" },
-  hinata_io: { icon: CreditCard, label: "刷卡" },
-  door: { icon: DoorOpen, label: "门锁" },
-  mahjong: { icon: Ungroup, label: "麻将桌" },
-  bot: { icon: Bot, label: "Bot" },
+/** The type filter's label for each capability. */
+const capabilityLabels: Record<CapabilityId, string> = {
+  power: "电源",
+  climate: "空调",
+  hinata_io: "刷卡",
+  door: "门锁",
+  mahjong: "麻将桌",
+  bot: "Bot",
 };
 
 /**
@@ -319,7 +320,7 @@ export function ResourcesPage() {
         {(
           [
             ["all", "全部"],
-            ...capabilityOrder.map((id) => [id, capabilityChips[id].label] as const),
+            ...capabilityOrder.map((id) => [id, capabilityLabels[id]] as const),
             ["unconfigured", "未配置"],
           ] as [Filter, string][]
         ).filter(([key]) => key === "all" || counts[key]).map(([key, label]) => (
@@ -378,7 +379,7 @@ export function ResourcesPage() {
                   )}
                 </header>
                 {resources.length ? (
-                  <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {resources.map((device) => (
                       <ResourceCard
                         key={device.id}
@@ -519,31 +520,96 @@ function ResourceQR({ device }: { device: Resource }) {
   );
 }
 
-/** The idle power-off ahead: the time it happens and how long until then. */
-function IdleCountdown({ at }: { at: string }) {
-  const { t } = useI18n();
-  const { timeZone } = useMerchant();
+/** Minutes are enough for a stay or a countdown; the tiles re-render on this. */
+function useMinuteClock() {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 15_000);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
-  const minutes = Math.max(0, Math.ceil((Date.parse(at) - now) / 60_000));
-  const time = billTime(at, timeZone || undefined).time;
+  return now;
+}
+
+const toneClass: Record<Tone, string> = {
+  on: "bg-mint/15 text-mint",
+  off: "bg-ink/[0.06] text-ink/35",
+  bad: "bg-coral/15 text-coral",
+  unsure: "text-ink/35 ring-1 ring-inset ring-ink/20",
+};
+
+/** One small status capsule; a value that is not live keeps its colour but loses its fill. */
+function StatusPill({ tone, live = true, label, children }: { tone: Tone; live?: boolean; label: string; children: React.ReactNode }) {
+  const hollow = !live && tone !== "unsure";
   return (
-    <span className="flex items-center gap-1.5 tabular-nums text-amber-600" title={t("闲置自动关机")}>
-      <Timer size={13} aria-hidden="true" />
-      {minutes > 0
-        ? t("{time} 自动关机（{minutes} 分钟后）", { time, minutes })
-        : t("{time} 自动关机", { time })}
+    <span
+      className={`inline-flex h-6 min-w-6 items-center justify-center gap-1 rounded-full px-1.5 text-xs font-semibold tabular-nums ${
+        hollow ? `${tone === "on" ? "text-mint ring-mint/45" : "text-ink/35 ring-ink/20"} ring-1 ring-inset` : toneClass[tone]
+      }`}
+      title={label}
+      aria-label={label}
+    >
+      {children}
     </span>
   );
 }
 
+/** Records and edit, behind the tile's ⋯. The QR code is the way in for players, so it stays out. */
+function TileMenu({ name, canWrite, onHistory, onEdit }: {
+  name: string;
+  canWrite: boolean;
+  onHistory: () => void;
+  onEdit: () => void;
+}) {
+  const { t } = useI18n();
+  const menu = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event instanceof PointerEvent && event.target instanceof Node && menu.current?.contains(event.target)) return;
+      if (menu.current) menu.current.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  const item = "flex w-full items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-left text-sm hover:bg-ink/5";
+  const pick = (action: () => void) => () => {
+    if (menu.current) menu.current.open = false;
+    action();
+  };
+  return (
+    <details ref={menu} className="relative z-10" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary
+        className="focus-ring grid size-8 cursor-pointer list-none place-items-center rounded-lg text-ink/40 hover:bg-ink/5 hover:text-ink [&::-webkit-details-marker]:hidden"
+        aria-label={`${t("更多")} ${name}`}
+      >
+        <MoreHorizontal size={16} aria-hidden="true" />
+      </summary>
+      <div className="absolute bottom-full right-0 mb-1 grid min-w-36 rounded-xl border border-ink/10 bg-panel p-1 shadow-soft">
+        <button type="button" className={item} onClick={pick(onHistory)}>
+          <History size={15} aria-hidden="true" />
+          {t("操作记录")}
+        </button>
+        {canWrite && (
+          <button type="button" className={item} onClick={pick(onEdit)}>
+            <Pencil size={15} aria-hidden="true" />
+            {t("编辑")}
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /**
- * A card states what the device is for, what it can do, and its live power
- * state. Secondary actions live behind an overflow menu: three equal-weight
- * buttons used to overflow the card as soon as the labels grew.
+ * A resource as a tile. It is lit while its power is on; the round icon says what it is, the
+ * capsules on the right say power, air conditioner and IO, the pills are who is on it, and the
+ * bottom row holds credits and the idle power-off. Clicking the tile opens its operations.
  */
 function ResourceCard({
   device,
@@ -575,234 +641,151 @@ function ResourceCard({
   onEdit: () => void;
 }) {
   const { t } = useI18n();
+  const { timeZone } = useMerchant();
+  const now = useMinuteClock();
   const caps = resourceCapabilities(device);
   const enabled = !!device.enabled;
   const configured = Object.values(caps).some(Boolean);
-  const actions = deviceActions(device);
-  // Seating a player is a mahjong operation even though the catalog lists no
-  // device action for that capability.
-  const hasControls = actions.length > 0 || !!caps.mahjong;
-  // The capability chips carry the device's purpose, so the card has no
-  // separate subtitle saying the same thing again.
-  const chips = capabilityOrder.filter((id) => caps[id]);
+  // Seating a player is a mahjong operation even though the catalog lists no device action for it.
+  const hasControls = deviceActions(device).length > 0 || !!caps.mahjong;
+  const view = tileView(device, state, occupancy, powerOffAt, stateFailed);
+  const TypeIcon = caps.bot ? Bot : caps.mahjong ? LayoutGrid : caps.hinata_io ? Gamepad2 : caps.door ? Lock : caps.power ? Power : caps.climate ? AirVent : QrCode;
+  const open = canWrite && hasControls && enabled ? onAct : onHistory;
+  const first = view.seats?.occupants[0];
+  const stay = first ? stayLength(first.startedAt, now) : null;
+  const ClimateIcon = (view.climate?.mode && climateModeIcon(view.climate.mode)) || AirVent;
+  const powerLabel = view.power?.tone === "on" ? t("已开机") : view.power?.tone === "off" ? t("已关机") : t("电源状态未知");
+  const ioLabel = view.io?.tone === "on" ? t("机台在线") : view.io?.tone === "off" ? t("机台离线") : t("连接未知");
   return (
     <article
-      className={`flex flex-col rounded-xl border border-ink/10 bg-panel ${
-        enabled ? "" : "opacity-60"
-      }`}
+      className={`relative flex min-h-44 min-w-0 flex-col gap-2.5 rounded-2xl p-3.5 transition-colors ${
+        view.lit ? "bg-panel shadow-soft ring-1 ring-ink/5 dark:bg-surface" : "bg-ink/[0.035] dark:bg-panel"
+      } ${enabled ? "" : "opacity-45"}`}
     >
-      <div className="flex items-center gap-3 px-5 py-4">
+      {/* The whole tile opens its operations; the links and the menu sit above this. */}
+      <button
+        type="button"
+        className="focus-ring absolute inset-0 rounded-2xl"
+        aria-label={`${device.name} · ${t(canWrite && hasControls && enabled ? "操作" : "操作记录")}`}
+        onClick={open}
+      />
+      <div className="pointer-events-none relative flex items-start justify-between gap-2">
         <span
-          className={`grid size-11 shrink-0 place-items-center rounded-xl ${
-            caps.door && !configured
-              ? "bg-ink/5 text-ink/40"
-              : "bg-mint/10 text-mint"
+          className={`grid size-10 shrink-0 place-items-center rounded-full ${
+            view.tone === "bad" ? "bg-coral text-white" : view.tone === "on" ? "bg-mint text-white" : "bg-ink/[0.08] text-ink/50"
           }`}
+          aria-hidden="true"
         >
-          {caps.bot ? <Bot size={22} /> : caps.door ? <DoorOpen size={22} /> : <Gamepad2 size={22} />}
+          <TypeIcon size={19} />
         </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate font-semibold">{device.name}</h3>
-          {!enabled && (
-            <p className="mt-1 text-xs text-ink/50">{t("已停用")}</p>
+        <span className="flex flex-wrap justify-end gap-1">
+          {/* A power-only device's round icon already says on or off; its capsule only adds doubt. */}
+          {view.power && (TypeIcon !== Power || !view.power.live || view.power.tone === "unsure") && (
+            <StatusPill tone={view.power.tone} live={view.power.live} label={`${t("电源")} ${powerLabel}`}>
+              <Power size={13} aria-hidden="true" />
+            </StatusPill>
           )}
-        </div>
-      </div>
-      {chips.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2 px-5 text-xs text-ink/70">
-          {chips.map((id) => {
-            const chip = capabilityChips[id];
-            const Icon = chip.icon;
-            return (
-              <span
-                key={id}
-                className="inline-flex items-center gap-1.5 rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/70"
-              >
-                <Icon size={13} />
-                {t(chip.label)}
-                {id === "hinata_io" && isDirectConnect(device) && (
-                  <span className="text-mint">{t("直连")}</span>
-                )}
-              </span>
-            );
-          })}
-          {caps.hinata_io && canOperateCoin(device) && device.coinAfterSwipe && (
-            <span className="inline-flex items-center rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/60">
-              {t("刷卡后投币")}
-            </span>
+          {view.climate && (
+            <StatusPill tone={view.climate.tone} live={view.climate.live} label={`${t("空调")} ${climateSummary(state?.climate ?? null, t)}`}>
+              <ClimateIcon size={13} aria-hidden="true" />
+              {view.climate.temperature !== null && `${view.climate.temperature}°`}
+            </StatusPill>
           )}
-          {caps.door && device.ttlockLockId && (
-            <span className="inline-flex items-center rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/60">
-              TTLock · {device.ttlockLockId}
-            </span>
-          )}
-        </div>
-      )}
-      {occupancy && (
-        <div className="mb-4 flex min-w-0 flex-wrap items-center gap-1.5 px-5 text-xs">
-          <span className="flex shrink-0 items-center gap-1 tabular-nums text-ink/60" title={t("占用")}>
-            <Users size={13} aria-hidden="true" />
-            {occupancy.occupants.length}/{occupancy.capacity}
-          </span>
-          {occupancy.occupants.length ? (
-            occupancy.occupants.map((occupant) => (
-              <Link
-                key={occupant.playerId}
-                className="focus-ring max-w-[10rem] truncate rounded-md bg-mint/10 px-2 py-1 font-medium text-mint hover:bg-mint/20"
-                to={playerHref(occupant.playerId)}
-              >
-                {occupant.displayName ?? occupant.playerId}
-              </Link>
-            ))
-          ) : null}
-        </div>
-      )}
-      {!configured && canWrite && (
-        <div className="px-5 pt-3">
-          <button type="button" className={`${primary} min-h-9 px-3 py-1`} onClick={onEdit}>
-            {t("配置能力")}
-          </button>
-        </div>
-      )}
-      {(caps.power || caps.climate || isDirectConnect(device) || caps.bot) && (
-        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-5 text-xs">
-          {(caps.power || caps.climate) && (
-            <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
-          )}
-          {powerOffAt && ((caps.power && state?.power !== "off") || (caps.climate && state?.climate?.mode !== "off")) && <IdleCountdown at={powerOffAt} />}
-          {[
-            ...(isDirectConnect(device) ? [{ kind: "io", online: device.relayOnline, up: "机台在线", down: "机台离线" }] : []),
-            ...(caps.bot ? [{ kind: "bot", online: device.botOnline, up: "Bot 在线", down: "Bot 离线" }] : []),
-          ].map(({ kind, online, up, down }) => (
-            <span key={kind} className="flex items-center gap-1.5 text-ink/60">
-              <span
-                className={
-                  online === true
-                    ? "text-mint"
-                    : online === false
-                      ? "text-coral"
-                      : "text-ink/35"
-                }
-                aria-hidden="true"
-              >
-                ●
-              </span>
-              {t(
-                online === true
-                  ? up
-                  : online === false
-                    ? down
-                    : "连接未知",
+          {view.io && (
+            <StatusPill
+              tone={view.io.tone}
+              label={view.io.tone === "on" && view.io.readers !== null ? `${ioLabel} · ${t("读卡器 {count}", { count: view.io.readers })}` : ioLabel}
+            >
+              <Cpu size={13} aria-hidden="true" />
+              {view.io.tone === "on" && view.io.readers !== null && (
+                <>
+                  <span className="mx-0.5 h-3 w-px bg-current opacity-30" aria-hidden="true" />
+                  {view.io.readers > 0 ? (
+                    Array.from({ length: view.io.readers }, (_, index) => <CreditCard key={index} size={13} aria-hidden="true" />)
+                  ) : (
+                    <span className="flex items-center gap-0.5 text-coral">
+                      <CreditCard size={13} aria-hidden="true" />0
+                    </span>
+                  )}
+                </>
               )}
-            </span>
+            </StatusPill>
+          )}
+        </span>
+      </div>
+      <div className="pointer-events-none relative min-w-0">
+        <h3 className={`truncate text-[15px] font-semibold leading-5 ${view.lit ? "" : "text-ink/70"}`}>{device.name}</h3>
+        <p className="min-h-4 text-xs leading-4 tabular-nums text-ink/50">
+          {!enabled
+            ? t("已停用")
+            : stay
+              ? stay.hours
+                ? t("{hours} 时 {minutes} 分", stay)
+                : t("{minutes} 分", stay)
+              : ""}
+        </p>
+      </div>
+      {view.seats && (
+        <div className="relative flex flex-wrap gap-1.5">
+          {view.seats.occupants.map((occupant) => (
+            <Link
+              key={occupant.playerId}
+              className={`focus-ring inline-flex h-6 max-w-[7.5rem] items-center truncate rounded-full px-2.5 text-xs font-medium text-mint ${
+                occupant.billing === false ? "ring-1 ring-inset ring-mint/45 hover:bg-mint/10" : "bg-mint/15 hover:bg-mint/25"
+              }`}
+              to={playerHref(occupant.playerId)}
+              title={occupant.billing === false ? t("未计费") : undefined}
+            >
+              {occupant.displayName ?? occupant.playerId}
+            </Link>
+          ))}
+          {Array.from({ length: Math.max(0, view.seats.capacity - view.seats.occupants.length) }, (_, index) => (
+            <span key={index} className="pointer-events-none h-6 w-10 rounded-full border-[1.5px] border-dashed border-ink/15" aria-hidden="true" />
           ))}
         </div>
       )}
-      <footer className="mt-auto flex items-center justify-between gap-2 border-t border-ink/10 px-4 py-2">
-        {canWrite && hasControls && (
-          <button
-            type="button"
-            className={`${primary} min-h-9 flex-1 px-3 py-1 text-xs`}
-            disabled={!enabled}
-            onClick={onAct}
-          >
-            {t("操作")}
-          </button>
-        )}
-        {canWrite && (
-          <button
-            type="button"
-            className={`${button} min-h-9 ${hasControls ? "" : "flex-1"} px-3 py-1 text-xs`}
-            onClick={onEdit}
-          >
-            <Pencil size={14} />
-            {t("编辑")}
-          </button>
-        )}
-        <button
-          type="button"
-          className={`${buttonQuiet} min-h-9 px-2 text-xs`}
-          onClick={onHistory}
-        >
-          {t("操作记录")}
-          <ChevronRight size={15} className="text-ink/35" />
+      {!configured && canWrite && (
+        <button type="button" className={`${primary} relative z-10 min-h-8 justify-self-start px-3 py-1 text-xs`} onClick={onEdit}>
+          {t("配置能力")}
         </button>
-        {/* A bot is not something players scan. */}
-        {!device.bot && (
-          <button
-            type="button"
-            className={`${buttonQuiet} grid size-9 shrink-0 place-items-center px-0`}
-            aria-label={`${t("资源二维码")} ${device.name}`}
-            onClick={onQR}
+      )}
+      <div className="relative mt-auto flex min-h-8 items-center gap-2.5 text-[13px] tabular-nums">
+        {view.coins && (
+          <span
+            className={`pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold ${view.coins.old ? "text-ink/35" : ""}`}
+            title={t("机内币数")}
           >
-            <QrCode size={16} />
-          </button>
+            <Coins size={15} className={view.coins.old ? "" : "text-amber-500"} aria-hidden="true" />
+            {view.coins.value}
+            {view.coins.cap !== null && <span className="font-normal text-ink/40">/ {view.coins.cap}</span>}
+          </span>
         )}
-      </footer>
+        {view.powerOffAt && (
+          <span className="pointer-events-none flex shrink-0 items-center gap-1 whitespace-nowrap font-semibold text-amber-600 dark:text-amber-400" title={t("闲置自动关机")}>
+            <Timer size={14} aria-hidden="true" />
+            {billTime(view.powerOffAt, timeZone || undefined).time}
+          </span>
+        )}
+        <span className="relative z-10 ml-auto flex items-center gap-0.5">
+          {/* A bot is not something players scan. */}
+          {!device.bot && (
+            <button
+              type="button"
+              className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium text-ink/70 ring-1 ring-inset ring-ink/15 hover:bg-ink/5 hover:text-ink"
+              aria-label={`${t("资源二维码")} ${device.name}`}
+              onClick={onQR}
+            >
+              <QrCode size={15} aria-hidden="true" />
+              {t("二维码")}
+            </button>
+          )}
+          <TileMenu name={device.name} canWrite={canWrite} onHistory={onHistory} onEdit={onEdit} />
+        </span>
+      </div>
     </article>
   );
 }
 
-/**
- * A device's power and air conditioner as the board knows them, with the 实时 /
- * 非实时 label the backend gave it. A value the backend has not said yet is being
- * read; one it said as null is unknown.
- */
-function LiveStatus({
-  state,
-  failed,
-  power: hasPower,
-  climate: hasClimate,
-}: {
-  state: BoardState | null;
-  failed: boolean;
-  power: boolean;
-  climate: boolean;
-}) {
-  const { t } = useI18n();
-  const powerWaiting = !failed && state?.power === undefined;
-  const climateWaiting = !failed && state?.climate === undefined;
-  const power = failed ? "unknown" : powerWaiting ? "loading" : state?.power ?? "unknown";
-  const running = !!state?.climate && state.climate.mode !== "off";
-  return (
-    <>
-      {state && (
-        <span
-          className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
-            state.watching ? "bg-mint/10 text-mint" : "bg-ink/5 text-ink/55"
-          }`}
-        >
-          {t(state.watching ? "实时" : "非实时")}
-        </span>
-      )}
-      {hasPower && (
-        <span className={`flex items-center gap-1.5 ${power === "on" ? "text-mint" : "text-ink/50"}`}>
-          <span
-            className={`size-1.5 rounded-full ${power === "on" ? "bg-mint" : "bg-ink/30"}`}
-            aria-hidden="true"
-          />
-          {t(
-            power === "on"
-              ? "已开机"
-              : power === "off"
-                ? "已关机"
-                : power === "loading"
-                  ? "读取电源状态…"
-                  : "电源状态未知",
-          )}
-        </span>
-      )}
-      {hasClimate && (
-        <span className={`flex items-center gap-1.5 ${running ? "text-mint" : "text-ink/50"}`}>
-          <AirVent size={13} aria-hidden="true" />
-          {climateWaiting
-            ? t("读取空调状态…")
-            : t("空调：{mode}", { mode: climateSummary(state?.climate ?? null, t) })}
-        </span>
-      )}
-    </>
-  );
-}
 /**
  * Pair each request with its result so an action is one line. A result whose
  * request fell outside the loaded page is shown on its own.

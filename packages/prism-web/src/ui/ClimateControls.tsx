@@ -59,6 +59,8 @@ const fanNames: Record<string, string> = {
 };
 
 export const climateModeName = (mode: string) => modeNames[mode] ?? mode;
+/** The icon for a running mode; null for off or a mode without one. */
+export const climateModeIcon = (mode: string): LucideIcon | null => modeIcons[mode] ?? null;
 const fanName = (mode: string) => fanNames[mode.toLowerCase()] ?? mode;
 
 type Translate = (message: string, values?: Record<string, string | number>) => string;

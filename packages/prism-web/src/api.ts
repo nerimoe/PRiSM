@@ -107,7 +107,8 @@ export type ResourceOccupancyView = {
   capacity: number;
   /** The capability that decides who is on it, e.g. `hinata_io` or `mahjong`. */
   source: string;
-  occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null }>;
+  /** `billing`: the player has a bill running at the shop; a seat can be held before one starts. */
+  occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null; billing?: boolean }>;
 };
 
 /** One stay on a resource, newest first in the history. */
@@ -133,6 +134,8 @@ export type Resource = {
   coinAfterSwipe: boolean;
   /** Most credits a platform coin may leave on the cabinet (direct connection); null for no limit. */
   coinCap?: number | null;
+  /** What a direct IO last reported: version, reader count, credits on the cabinet. Null for any other device. */
+  io?: { version: string | null; readers: number | null; credit: number | null } | null;
   hasHinata: boolean;
   kind: "machine" | "door";
   hinataUrl: string | null;
