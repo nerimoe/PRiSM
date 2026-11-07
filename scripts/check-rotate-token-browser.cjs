@@ -86,11 +86,12 @@ async function openEditor(botMachines = machines) {
 }
 
 async function openResource(page, expect = "接入凭据") {
-  // The resource row's own 编辑 button opens the editor; its side nav has one
+  // The tile's own 编辑, behind its ⋯, opens the editor; its side nav has one
   // entry per capability, and the bot is the last.
-  // The card for this bot, not the group header's own 编辑.
+  // The tile for this bot, not the group header's own 编辑.
   const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "店铺 Bot" }) });
-  await card.getByRole("button", { name: "编辑" }).click();
+  await card.getByRole("button", { name: "更多 店铺 Bot", exact: true }).click();
+  await card.getByRole("button", { name: "编辑", exact: true }).click();
   const nav = page.getByRole("navigation", { name: "资源设置" });
   await nav.waitFor();
   await nav.getByRole("button", { name: "店铺 Bot" }).click();
@@ -167,7 +168,8 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
     const { browser, page, patches, exceptions } = await openEditor();
     try {
       const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "店铺 Bot" }) });
-      await card.getByRole("button", { name: "编辑" }).click();
+      await card.getByRole("button", { name: "更多 店铺 Bot", exact: true }).click();
+      await card.getByRole("button", { name: "编辑", exact: true }).click();
       const nav = page.getByRole("navigation", { name: "资源设置" });
       await nav.waitFor();
       await nav.getByRole("button", { name: "刷卡 · HINATA IO" }).click();

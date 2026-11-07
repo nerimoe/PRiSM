@@ -545,6 +545,7 @@ function StatusPill({ tone, live = true, label, children }: { tone: Tone; live?:
       className={`inline-flex h-6 min-w-6 items-center justify-center gap-1 rounded-full px-1.5 text-xs font-semibold tabular-nums ${
         hollow ? `${tone === "on" ? "text-mint ring-mint/45" : "text-ink/35 ring-ink/20"} ring-1 ring-inset` : toneClass[tone]
       }`}
+      role="img"
       title={label}
       aria-label={label}
     >
@@ -585,6 +586,7 @@ function TileMenu({ name, canWrite, onHistory, onEdit }: {
   return (
     <details ref={menu} className="relative z-10" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary
+        role="button"
         className="focus-ring grid size-8 cursor-pointer list-none place-items-center rounded-lg text-ink/40 hover:bg-ink/5 hover:text-ink [&::-webkit-details-marker]:hidden"
         aria-label={`${t("更多")} ${name}`}
       >
@@ -654,7 +656,14 @@ function ResourceCard({
   const first = view.seats?.occupants[0];
   const stay = first ? stayLength(first.startedAt, now) : null;
   const ClimateIcon = (view.climate?.mode && climateModeIcon(view.climate.mode)) || AirVent;
-  const powerLabel = view.power?.tone === "on" ? t("已开机") : view.power?.tone === "off" ? t("已关机") : t("电源状态未知");
+  // A value the backend has not said yet is being read; one it said as null is unknown.
+  const powerLabel = view.power?.tone === "on" ? t("已开机") : view.power?.tone === "off" ? t("已关机")
+    : !stateFailed && state?.power === undefined ? t("读取电源状态…") : t("电源状态未知");
+  // Whether a value is followed live is drawn (hollow when not); it is said here, once the board has read it.
+  const liveTag = (live: boolean) => (state ? ` · ${t(live ? "实时" : "非实时")}` : "");
+  const powerName = view.power ? `${t("电源")} ${powerLabel}${liveTag(view.power.live)}` : "";
+  // A power-only device's round icon already says on or off; its capsule would only repeat it.
+  const powerPill = !!view.power && (TypeIcon !== Power || !view.power.live || view.power.tone === "unsure");
   const ioLabel = view.io?.tone === "on" ? t("机台在线") : view.io?.tone === "off" ? t("机台离线") : t("连接未知");
   return (
     <article
@@ -674,19 +683,18 @@ function ResourceCard({
           className={`grid size-10 shrink-0 place-items-center rounded-full ${
             view.tone === "bad" ? "bg-coral text-white" : view.tone === "on" ? "bg-mint text-white" : "bg-ink/[0.08] text-ink/50"
           }`}
-          aria-hidden="true"
+          {...(view.power && !powerPill ? { role: "img", title: powerName, "aria-label": powerName } : { "aria-hidden": true })}
         >
-          <TypeIcon size={19} />
+          <TypeIcon size={19} aria-hidden="true" />
         </span>
         <span className="flex flex-wrap justify-end gap-1">
-          {/* A power-only device's round icon already says on or off; its capsule only adds doubt. */}
-          {view.power && (TypeIcon !== Power || !view.power.live || view.power.tone === "unsure") && (
-            <StatusPill tone={view.power.tone} live={view.power.live} label={`${t("电源")} ${powerLabel}`}>
+          {view.power && powerPill && (
+            <StatusPill tone={view.power.tone} live={view.power.live} label={powerName}>
               <Power size={13} aria-hidden="true" />
             </StatusPill>
           )}
           {view.climate && (
-            <StatusPill tone={view.climate.tone} live={view.climate.live} label={`${t("空调")} ${climateSummary(state?.climate ?? null, t)}`}>
+            <StatusPill tone={view.climate.tone} live={view.climate.live} label={`${t("空调")} ${!stateFailed && state?.climate === undefined ? t("读取空调状态…") : climateSummary(state?.climate ?? null, t)}${liveTag(view.climate.live)}`}>
               <ClimateIcon size={13} aria-hidden="true" />
               {view.climate.temperature !== null && `${view.climate.temperature}°`}
             </StatusPill>
