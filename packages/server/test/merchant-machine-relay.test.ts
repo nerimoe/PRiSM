@@ -232,9 +232,9 @@ describe("embedded relay machine configuration", () => {
     // The relay password means nothing to a direct connection and is dropped.
     expect(JSON.parse(io(sqlite).secret_json).password).toBeUndefined();
     // A coin after a card stops at the cabinet's limit, so it needs one.
-    const patch = (body: unknown) => app.fetch(new Request(`https://prism.test/api/v1/merchant/machines/${created.body.machine.id}`, {
+    const patch = async (body: unknown) => (await (await app.fetch(new Request(`https://prism.test/api/v1/merchant/machines/${created.body.machine.id}`, {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    }), env).then((res) => res.json() as Promise<any>);
+    }), env)).json()) as any;
     expect((await patch({ coinAfterSwipe: true })).machine.coinAfterSwipe).toBe(false);
     expect((await patch({ coinAfterSwipe: true, coinCap: 3 })).machine.coinAfterSwipe).toBe(true);
   });
