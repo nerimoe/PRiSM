@@ -179,7 +179,7 @@ describe("a cabinet's card reports", () => {
         method,
         params: { interface: "aimeio", unit_no: 0, backend: "Hinata", card: { source: "HINATA(1)", card: { type: "aime", id: "", accessCode } } },
       }));
-    return { sqlite, db, relay, report };
+    return { sqlite, db, relay, report, agent };
   }
 
   it("logs whose card it was instead of its number, has its owner occupy the cabinet, and ignores an unknown card", async () => {
@@ -201,6 +201,34 @@ describe("a cabinet's card reports", () => {
     const [cab] = await createOccupancy({ db, shopId: "shop" }).current();
     expect(cab!.occupants.map((occupant) => [occupant.playerId, occupant.displayName])).toEqual([["p1", "Alice"]]);
   });
+
+  for (const scenario of ["coins", "unbilled", "no-limit", "full", "no-books", "not-set"] as const) {
+    it(`coins after a card the game took only for a player billing here, below a limit read from the books: ${scenario}`, async () => {
+      const { sqlite, db, report, agent } = await relayFixture();
+      sqlite.run("UPDATE resource_groups SET default_pricing_config_id='arcade' WHERE shop_id='shop' AND id='default'");
+      if (scenario !== "unbilled") sqlite.run(`INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json)
+        VALUES ('shop','billing','p1','2026-01-01','active','["arcade"]')`);
+      sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='cab' AND capability='hinata_io'", [JSON.stringify({
+        transport: "embedded", channel: "chan", coinKey: 32, coinAfterSwipe: scenario !== "not-set",
+        coinCap: scenario === "no-limit" ? null : 2,
+      })]);
+      const put = (key: string, value: unknown) => sqlite.run(
+        `INSERT OR REPLACE INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at)
+         VALUES ('shop','cab','hinata_io',?,?,'observed','2026-01-01T00:00:00.000Z')`, [key, JSON.stringify(value)]);
+      put("link", "online");
+      if (scenario !== "no-books") put("cabinet", { players: [{ credit: scenario === "full" ? 2 : 0, remain: 0 }], bookkeeping: {} });
+      await createCardStore(db, "shop", KEY).bind({ playerId: "p1", card: { type: "aime", accessCode: CARD_A }, source: "scan" });
+      await report("event.cardConsumed", CARD_A);
+      const presses = agent.sent.filter((message) => message.includes("KEY_PRESS"));
+      expect(presses).toHaveLength(scenario === "coins" ? 1 : 0);
+      if (scenario === "coins") {
+        expect(JSON.parse(presses[0]!).body).toMatchObject({ key: 32, count: 1 });
+        expect(sqlite.query("SELECT action, player_id, status FROM device_operations WHERE action='coin'").all())
+          .toEqual([{ action: "coin", player_id: "p1", status: "succeeded" }]);
+      }
+      sqlite.close();
+    });
+  }
 
   for (const scenario of ["unbilled", "wrong-plan", "closed", "other-shop", "free", "disabled-group", "override", "valid-group", "valid-override"] as const) {
     it(`requires the card owner's active billing for the resource's effective plan: ${scenario}`, async () => {

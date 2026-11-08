@@ -153,20 +153,17 @@ describe("direct-connect card login result",()=>{
     const {res,reply,cards,presses}=await embedded("read");
     expect(res.status).toBe(200);
     expect(reply.card).toBe("read");
-    // The row shows both outcomes; neither interrupts.
-    expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([
-      ["CARD_SENT","inline","已刷卡"],["COIN_SENT","inline","已投币"],
-    ]);
+    expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([["CARD_SENT","inline","已刷卡"]]);
     expect(cards[0]?.wait).toEqual({signal:"card.consumed",timeoutMs:4500});
-    // Coins follow a card the game took.
-    expect(reply.coin?.status).toBe("sent");
-    expect(presses).toHaveLength(1);
+    // A coin after the card is the relay's, on the game's report of taking it.
+    expect(reply.coin).toBeUndefined();
+    expect(presses).toEqual([]);
   });
 
   it("does not insert coins for a card the game never took",async()=>{
     const {reply,presses}=await embedded("not_read");
     expect(reply.card).toBe("not_read");
-    expect(reply.coin).toMatchObject({status:"skipped",reason:"CARD_NOT_READ"});
+    expect((reply as any).notices.map((n:any)=>n.code)).toEqual(["CARD_NOT_READ"]);
     expect(presses).toEqual([]);
   });
 });

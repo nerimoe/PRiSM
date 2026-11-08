@@ -148,8 +148,8 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
   return {
     /** What an action or a device signal says about who is on a resource. */
     /** Record what an action or signal says about who is on a resource; `started` is whoever it put on newly. */
-    async observe(input: { resourceId: string; event: OccupancyEvent; at?: Date }): Promise<{ started: { playerId: string } | null }> {
-      const none = { started: null };
+    async observe(input: { resourceId: string; event: OccupancyEvent; at?: Date }): Promise<{ started: { playerId: string } | null; counted: boolean }> {
+      const none = { started: null, counted: false };
       const at = input.at ?? now();
       const [resource] = await settings(input.resourceId);
       if (!resource || resource.provider.held) return none;
@@ -196,7 +196,7 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
           : []),
       ];
       if (statements.length) await db.batch(statements);
-      return { started: plan.start ? { playerId: plan.start.playerId } : null };
+      return { started: plan.start ? { playerId: plan.start.playerId } : null, counted: true };
     },
 
     /** A held occupant left on their own (got up from a seat). */

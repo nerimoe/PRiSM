@@ -1855,7 +1855,7 @@
   "{time} 自动关机": "Off at {time}",
   "不限制": "No limit",
   "机台投币上限": "Coin limit",
-  "机台内的币达到上限后，平台不再投币。需要机台开启 cabinetMonitor；读不到币数时按投币冷却处理。": "At the limit, the platform stops inserting coins. Needs cabinetMonitor on the cabinet; if the count cannot be read, the coin cooldown applies.",
+  "机台内的币达到上限后，平台不再投币。需要 IO 1.2.4 及以上；读不到币数时按投币冷却处理，刷卡自动投币不生效。": "At the limit, the platform stops inserting coins. Needs IO 1.2.4 or later; if the count cannot be read, the coin cooldown applies and no coin follows a card.",
   "现场事件": "Events at the shop",
   "平台操作": "Platform requests",
   "提醒": "Reminders",

@@ -676,14 +676,13 @@ async function nextCapabilities(
     // The channel is independent of the token so rotating the key does not
     // orphan a connected device.
     const channel=before?.channel??`m_${randomToken(16)}`;
-    const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
     const coinCap=body.coinCap!==undefined?body.coinCap:before?.coinCap??null;
+    // A coin after a card stops at the limit, so there is none without one.
+    const coinAfterSwipe=coinKey>0&&coinCap!=null&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
     next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,coinCap,channel},secrets,credentialHash});
   }else if(secrets.url){
-    const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    if(coinAfterSwipe&&!secrets.password)
-      jsonError(400,"自动投币需要 HINATA IO 连接密码","DEVICE_CONFIGURATION_REQUIRED");
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe},secrets,credentialHash:null});
+    // An external relay never says the game took a card, which is what a coin after one waits for.
+    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe:false},secrets,credentialHash:null});
   }else{
     next.delete("hinata_io");
   }

@@ -132,7 +132,8 @@ describe("pre-fork merchant machine lifecycle",()=>{
     expect(created.status).toBe(201);
     const {machine}=await created.json() as {machine:Record<string,unknown>&{id:string}};
     expect(machine).toMatchObject({
-      hasHinata:true,hinataUrl:"https://relay.example/io",hasPassword:true,coinKey:40,coinAfterSwipe:true,
+      // An external relay never reports a card being taken, so no coin follows one.
+      hasHinata:true,hinataUrl:"https://relay.example/io",hasPassword:true,coinKey:40,coinAfterSwipe:false,
       homeAssistant:{url:"https://ha.example",entityId:"switch.cabinet"},ttlockLockId:77,relayConnection:"external",
     });
     const rows=()=>sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];

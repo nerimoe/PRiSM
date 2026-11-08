@@ -104,3 +104,33 @@ export async function coinGate(
   ).bind(shopId, device.id, operationId, new Date(now.getTime() + COIN_SETTLE_MS).toISOString(), now.toISOString()).first();
   return claim ? "ok" : "settling";
 }
+
+/**
+ * Whether a coin through the platform may go in now. A cabinet that reports its
+ * books and has a coin limit is judged by them (`coinGate`); any other keeps the
+ * shop's coin cooldown.
+ */
+export async function claimCoin(db:D1DatabaseLike,shopId:string,device:Resource,id:string):Promise<"ok"|"cooldown"|"full"> {
+  const gate=await coinGate(db,shopId,device,id);
+  if(gate==="ok")return "ok";
+  if(gate==="full")return "full";
+  if(gate==="settling")return "cooldown";
+  return await claimCooldown(db,shopId,device.id,id)?"ok":"cooldown";
+}
+
+async function claimCooldown(db:D1DatabaseLike,shopId:string,machineId:string,id:string) {
+  const configured=await db.prepare(
+    "SELECT json_extract(value_json,'$.coinCooldownMs') AS cooldown FROM app_settings WHERE shop_id=? AND key='venue.operations'",
+  ).bind(shopId).first<{cooldown:number|null}>();
+  const raw=configured?.cooldown;
+  const cooldown=typeof raw==="number"&&Number.isInteger(raw)&&raw>=0?raw:60000;
+  const now=Date.now();
+  const claim=await db.prepare(
+    `INSERT INTO operation_locks(shop_id,scope,resource_id,lock_id,expires_at,acquired_at)
+     VALUES (?,'device.coin',?,?,?,?)
+     ON CONFLICT(shop_id,scope,resource_id) DO UPDATE SET
+       lock_id=excluded.lock_id,expires_at=excluded.expires_at,acquired_at=excluded.acquired_at
+     WHERE operation_locks.expires_at<=excluded.acquired_at RETURNING lock_id`,
+  ).bind(shopId,machineId,id,new Date(now+cooldown).toISOString(),new Date(now).toISOString()).first();
+  return !!claim;
+}

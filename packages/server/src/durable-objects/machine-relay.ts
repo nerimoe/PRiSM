@@ -4,8 +4,8 @@ import type { Env } from "../bindings.js";
 import { hinataIo } from "../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
-import { cabinetChanges, coinLimit, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
-import { loadResource } from "../resources/resource.js";
+import { cabinetChanges, coinGate, coinLimit, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
+import { can, hinataConfigOf, loadResource } from "../resources/resource.js";
 import { cardRead, pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
@@ -650,7 +650,27 @@ export class MachineRelay extends BaseDurableObject<Env> {
       await announceShopEvent(this.env, channel.shopId, { type: "card", kind: "card", ...place, player, started });
       // Older bots heard the start as part of the card; newer ones as its own.
       if (started && player) await announceShopEvent(this.env, channel.shopId, { type: "start", ...place, player });
+      // The same test that keeps the cabinet from idling: a known player billing for it.
+      if (observed.counted && playerId) await this.coinAfterCard(channel, playerId, source);
     }
+  }
+
+  /**
+   * One coin for the card the game just took, when the cabinet is set to coin
+   * after a card. Only below a coin limit read from the cabinet's own books:
+   * an IO that does not report them, or a cabinet with no limit, gets none.
+   */
+  private async coinAfterCard(channel: Channel, playerId: string, cardOperation: string | null) {
+    const device = await loadResource(this.env.DB, channel.shopId, channel.machineId);
+    if (!device || !hinataConfigOf(device)?.coinAfterSwipe || !can(device, "coin")) return;
+    const operationId = crypto.randomUUID();
+    if (await coinGate(this.env.DB, channel.shopId, device, operationId) !== "ok") return;
+    // The key press is this object's own; it is not sent out and back to reach it.
+    const env = { ...this.env, MACHINE_RELAY: { getByName: () => this } } as unknown as Env;
+    await createRuntimeBus({ db: this.env.DB, env, shopId: channel.shopId }).perform({
+      device, action: "coin", actor: { type: "player", playerId }, operationId,
+      ...(cardOperation ? { parentOperationId: cardOperation } : {}),
+    });
   }
 
   /**

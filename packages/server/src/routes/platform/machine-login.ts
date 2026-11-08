@@ -8,8 +8,7 @@ import type { AppBindings, TenantShop } from "../../bindings.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
-import { can, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
-import { coinGate } from "../../resources/capabilities/cabinet.js";
+import { can, loadResource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readPower } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
@@ -126,36 +125,6 @@ async function recordLoginEvent(c:C,event:{
   ).run();
 }
 
-/**
- * Whether a coin through the platform may go in now. A cabinet that reports its
- * books and has a coin limit is judged by them (`coinGate`); any other keeps the
- * shop's coin cooldown.
- */
-export async function claimCoin(c:C,shopId:string,device:Resource,id:string):Promise<"ok"|"cooldown"|"full"> {
-  const gate=await coinGate(c.env.DB,shopId,device,id);
-  if(gate==="ok")return "ok";
-  if(gate==="full")return "full";
-  if(gate==="settling")return "cooldown";
-  return await claimCooldown(c,shopId,device.id,id)?"ok":"cooldown";
-}
-
-async function claimCooldown(c:C,shopId:string,machineId:string,id:string) {
-  const configured=await c.env.DB.prepare(
-    "SELECT json_extract(value_json,'$.coinCooldownMs') AS cooldown FROM app_settings WHERE shop_id=? AND key='venue.operations'",
-  ).bind(shopId).first<{cooldown:number|null}>();
-  const raw=configured?.cooldown;
-  const cooldown=typeof raw==="number"&&Number.isInteger(raw)&&raw>=0?raw:60000;
-  const now=Date.now();
-  const claim=await c.env.DB.prepare(
-    `INSERT INTO operation_locks(shop_id,scope,resource_id,lock_id,expires_at,acquired_at)
-     VALUES (?,'device.coin',?,?,?,?)
-     ON CONFLICT(shop_id,scope,resource_id) DO UPDATE SET
-       lock_id=excluded.lock_id,expires_at=excluded.expires_at,acquired_at=excluded.acquired_at
-     WHERE operation_locks.expires_at<=excluded.acquired_at RETURNING lock_id`,
-  ).bind(shopId,machineId,id,new Date(now+cooldown).toISOString(),new Date(now).toISOString()).first();
-  return !!claim;
-}
-
 async function handleLogin(c:C,routePublicId?:string) {
   const user=requireUser(c);
   const body=machineLoginSchema.parse(await c.req.json());
@@ -218,10 +187,7 @@ async function handleLogin(c:C,routePublicId?:string) {
     lat:body.lat??null,lng:body.lng??null,accuracy:body.accuracy??null,
     result:sent?"sent":"failed",responseCode:scan.httpStatus,errorMessage:scan.operation.failure,
   });
-  const response:{
-    operationId:string;status:string;card?:CardOutcome;
-    coin?:{status:"sent"|"skipped"|"failed"|"unknown";operationId:string;reason?:string}
-  }={operationId,status,...(cardResult?{card:cardResult}:{})};
+  const response:{operationId:string;status:string;card?:CardOutcome}={operationId,status,...(cardResult?{card:cardResult}:{})};
   await c.env.DB.prepare(
     "UPDATE player_operations SET status=?,result_json=? WHERE shop_id=? AND user_id=? AND id=?",
   ).bind(status,JSON.stringify(response),shop.id,user.id,operationId).run();
@@ -233,36 +199,11 @@ async function handleLogin(c:C,routePublicId?:string) {
   if(!sent)jsonError(502,
     status==="unknown"?"设备离线或连接地址不正确，请联系店员":"设备连接失败，请联系店员检查配置",
     "DEVICE_UNAVAILABLE",response);
-  if(hinataConfigOf(device)?.coinAfterSwipe&&can(device,"coin")) {
-    const coinId=crypto.randomUUID();
-    response.coin={operationId:coinId,status:"unknown"};
-    try {
-      // Coins for a game that never took the card are lost.
-      const claim=cardResult==="not_read"?null:await claimCoin(c,shop.id,device,coinId);
-      if(cardResult==="not_read")response.coin={operationId:coinId,status:"skipped",reason:"CARD_NOT_READ"};
-      else if(claim!=="ok")response.coin={
-        operationId:coinId,status:"skipped",reason:claim==="full"?"COIN_CABINET_FULL":"COIN_COOLDOWN",
-      };
-      else {
-        const coin=await bus.perform({device,action:"coin",actor,operationId:coinId,parentOperationId:operationId});
-        response.coin.status=coin.operation.status==="succeeded"?"sent":coin.operation.status==="pending"?"unknown":"failed";
-      }
-    }catch{response.coin.status="unknown";}
-    await c.env.DB.prepare(
-      "UPDATE player_operations SET result_json=? WHERE shop_id=? AND user_id=? AND id=?",
-    ).bind(JSON.stringify(response),shop.id,user.id,operationId).run();
-  }
   touchShopHubAfter(c,shop.id);
-  // What the card row shows: the card's outcome, then the coin's.
+  // What the card row shows. A coin after the card, if any, follows the game
+  // taking it (the relay's card report), not this answer.
   const locale=requestLocale(c.req.header("accept-language"));
-  const notices=[
-    ...(cardResult?[notice({not_read:"CARD_NOT_READ",read:"CARD_SENT",sent:"CARD_SENT"}[cardResult],locale)]:[]),
-    ...(response.coin?.status==="sent"?[notice("COIN_SENT",locale)]
-      :response.coin?.status==="skipped"&&response.coin.reason==="COIN_COOLDOWN"?[notice("COIN_SKIPPED",locale)]
-      :response.coin?.status==="skipped"&&response.coin.reason==="COIN_CABINET_FULL"?[notice("COIN_CABINET_FULL",locale)]
-      :response.coin?.status==="failed"?[notice("COIN_FAILED",locale)]
-      :response.coin?.status==="unknown"?[notice("COIN_UNKNOWN",locale)]:[]),
-  ];
+  const notices=cardResult?[notice({not_read:"CARD_NOT_READ",read:"CARD_SENT",sent:"CARD_SENT"}[cardResult],locale)]:[];
   return c.json({ok:true,...response,notices});
   };
   return body.operationId

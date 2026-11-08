@@ -7,7 +7,7 @@ import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
-import { assertNotBanned, claimCoin, getShopForMachine as getBillingShop, requireShopPlayer, requireResourcePlan } from "./machine-login.js";
+import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer, requireResourcePlan } from "./machine-login.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import type { AppBindings } from "../../bindings.js";
 import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
@@ -17,6 +17,7 @@ import { readClimate, readPower, type ClimateState } from "../../resources/capab
 import { createCardStore } from "../../resources/cards.js";
 import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
+import { claimCoin } from "../../resources/capabilities/cabinet.js";
 import type { ActionName } from "../../resources/capabilities/catalog.js";
 
 type C = Context<AppBindings, any, any>;
@@ -164,7 +165,7 @@ export async function executeResourceAction(
         },
       ]);
       if (action === "coin") {
-        const claim = await claimCoin(c, shop.id, device, body.operationId);
+        const claim = await claimCoin(c.env.DB, shop.id, device, body.operationId);
         if (claim === "full") jsonError(409, "达到机台投币上限", "COIN_CABINET_FULL");
         if (claim === "cooldown") jsonError(429, "请稍后再投币", "COIN_COOLDOWN");
       }

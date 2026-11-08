@@ -26,7 +26,6 @@ export type Card = {
 };
 
 export type PublicResource = {
-  coinAfterSwipe: boolean;
   /** A card can be added at this cabinet's reader. */
   cardCapture?: boolean;
   kind: "machine" | "door";

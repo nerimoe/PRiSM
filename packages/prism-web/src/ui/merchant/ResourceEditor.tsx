@@ -415,8 +415,10 @@ export function ResourceEditor({
             coinKey: caps.hinata_io && canCoin ? Number(coinKey || 0) : 0,
             coinAfterSwipe:
               caps.hinata_io &&
+              embedded &&
               canCoin &&
               Number(coinKey) > 0 &&
+              Number(coinCap) > 0 &&
               coinAfterSwipe,
             ...(caps.hinata_io && embedded ? { coinCap: Number(coinCap) > 0 ? Number(coinCap) : null } : {}),
             ttlockLockId: caps.door ? Number(lockId) : null,
@@ -689,15 +691,17 @@ export function ResourceEditor({
                     onChange={(e) => setCoinKey(e.target.value)}
                   />
                 </Field>
-                <label className="flex items-end gap-2 pb-3 text-sm">
-                  <input
-                    type="checkbox"
-                    disabled={!canCoin || !coinKey}
-                    checked={coinAfterSwipe}
-                    onChange={(e) => setCoinAfterSwipe(e.target.checked)}
-                  />
-                  {t("刷卡后自动投一币")}
-                </label>
+                {embedded && (
+                  <label className="flex items-end gap-2 pb-3 text-sm">
+                    <input
+                      type="checkbox"
+                      disabled={!canCoin || !coinKey || !(Number(coinCap) > 0)}
+                      checked={coinAfterSwipe}
+                      onChange={(e) => setCoinAfterSwipe(e.target.checked)}
+                    />
+                    {t("刷卡后自动投一币")}
+                  </label>
+                )}
               </div>
               {embedded && (
                 <Field label="机台投币上限">
@@ -714,7 +718,7 @@ export function ResourceEditor({
                 </Field>
               )}
               {embedded && (
-                <Hint>{t("机台内的币达到上限后，平台不再投币。需要机台开启 cabinetMonitor；读不到币数时按投币冷却处理。")}</Hint>
+                <Hint>{t("机台内的币达到上限后，平台不再投币。需要 IO 1.2.4 及以上；读不到币数时按投币冷却处理，刷卡自动投币不生效。")}</Hint>
               )}
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>

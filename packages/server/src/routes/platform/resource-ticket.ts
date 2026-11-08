@@ -108,14 +108,14 @@ export async function publicResource(c: Context<AppBindings>, m: ScannedResource
     : { power: false, climate: false, card: false, coin: false, door: false, mahjong: false };
   const io = device ? hinataConfigOf(device) : null;
   return {
-    publicId: m.public_id, name: m.name, kind: m.kind, coinAfterSwipe: !!io?.coinAfterSwipe,
+    publicId: m.public_id, name: m.name, kind: m.kind,
     capabilities,
     // Using it needs its plan running for the player; a free resource needs nothing.
     billed: !!m.billed,
     // Only a cabinet connected directly reports the cards on its reader.
     cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,
     // Native apps render the full device flow only for a plain card cabinet.
-    webOnly: !!io?.coinAfterSwipe || !!m.billed || !capabilities.card ||
+    webOnly: !!m.billed || !capabilities.card ||
       capabilities.door || capabilities.power || capabilities.climate,
     shop: {
       name: m.shop_name, publicId: m.shop_public_id,
