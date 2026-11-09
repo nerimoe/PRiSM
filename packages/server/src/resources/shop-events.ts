@@ -9,7 +9,7 @@
  * they keep saying what they said before.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
-import { botMessage, shopAnnouncementLabel, type BotMessage, type ShopAnnouncementType } from "@prism/core";
+import { botMessage, renderBotReplyTemplate, shopAnnouncementLabel, type BotMessage, type ShopAnnouncementType } from "@prism/core";
 import type { Env } from "../bindings.js";
 import { sendShopEvent } from "../durable-objects/shop-hub-client.js";
 
@@ -77,9 +77,15 @@ export function announcementText(event: ShopEvent): string {
 }
 
 /** The announcement as a bot message: the player a segment the bot names as its chat knows them. */
-export function announcementMessage(event: ShopEvent): BotMessage {
-  const [first = "", ...rest] = announcementText(event).split(PLAYER_PLACEHOLDER);
-  return botMessage(first, ...rest.flatMap((text) => (event.player ? [event.player, text] : [text])));
+export function announcementMessage(event: ShopEvent, templates?: Record<string, string>, fallback?: BotMessage): BotMessage {
+  const [first = "", ...rest] = (fallback ? "" : announcementText(event)).split(PLAYER_PLACEHOLDER);
+  const message = fallback ?? botMessage(first, ...rest.flatMap((text) => (event.player ? [event.player, text] : [text])));
+  const n = (key: string) => String(typeof event.detail?.[key] === "number" ? event.detail[key] : 0);
+  return renderBotReplyTemplate(`announce.${event.type}.message`, templates, message, {
+    device: event.resourceName || event.resourceId,
+    player: event.player ?? (event.type === "request.power.on" || event.type === "request.power.off" ? "店员" : "未绑定的卡"),
+    coins: n("coins"), credits: n("credits"), credit: n("credit"),
+  });
 }
 
 /** The frame a bot receives: the announcement with its label, its message and its time. */
@@ -96,6 +102,14 @@ export function idleReminderText(
   if (notice.reason === "shop_empty") return `店里没人，${minutes} 分钟后全部关机`;
   const names = notice.devices.map((device) => device.name).join("、");
   return `${names} 闲置中，${minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟`;
+}
+
+/** Idle warnings use the same per-bot templates as the shop's other news. */
+export function idleReminderMessage(notice: Parameters<typeof idleReminderText>[0], templates?: Record<string, string>, now = Date.now()): BotMessage {
+  return renderBotReplyTemplate(`announce.idle.reminder.${notice.reason}`, templates, botMessage(idleReminderText(notice, now)), {
+    devices: notice.devices.map(device => device.name).join("、"),
+    minutes: String(Math.max(1, Math.round((notice.at - now) / 60_000))),
+  });
 }
 
 /** Tell the shop's bots. Best effort: an event that cannot be sent is logged and dropped. */

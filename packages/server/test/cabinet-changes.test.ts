@@ -36,7 +36,25 @@ describe("what changed at a cabinet between two reads of its books", () => {
     ]);
     // Service credits are given too.
     expect(cabinetChanges(books(0), books(0, { serviceCredit: 1, totalCredit: 60 }))).toEqual([
+      { type: "cabinet.credit", detail: { credits: 1, credit: 0 } },
       { type: "cabinet.consumed", detail: { credits: 1, credit: 0 } },
+    ]);
+  });
+
+  it("records service/payment credits and balance increases without coins", () => {
+    expect(cabinetChanges(books(4), books(7, { serviceCredit: 1, emoneyCredit: 2, totalCredit: 62 }))).toEqual([
+      { type: "cabinet.credit", detail: { credits: 3, credit: 7 } },
+    ]);
+    expect(cabinetChanges(books(4), books(5))).toEqual([
+      { type: "cabinet.credit", detail: { credits: 1, credit: 5 } },
+    ]);
+    expect(cabinetChanges(books(4), books(5, { coinCredit: 60, totalCredit: 60 }))).toEqual([
+      { type: "cabinet.credit", detail: { credits: 1, credit: 5 } },
+    ]);
+    expect(cabinetChanges(books(4), books(6, { totalCoin: 219, coinCredit: 60, serviceCredit: 2, totalCredit: 62 }))).toEqual([
+      { type: "cabinet.coin", detail: { coins: 1, credit: 6 } },
+      { type: "cabinet.credit", detail: { credits: 2, credit: 6 } },
+      { type: "cabinet.consumed", detail: { credits: 1, credit: 6 } },
     ]);
   });
 

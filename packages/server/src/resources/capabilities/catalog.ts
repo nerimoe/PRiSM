@@ -15,6 +15,14 @@
  *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
+import { botReplyTemplateError } from "@prism/core";
+
+export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
+  for (const [key, text] of Object.entries(templates)) {
+    const message = botReplyTemplateError(key, text);
+    if (message) ctx.addIssue({ code: "custom", path: [key], message });
+  }
+});
 
 export type CapabilityId = "power" | "climate" | "hinata_io" | "door" | "mahjong" | "bot";
 
@@ -181,6 +189,8 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     "led.set": { activity: false, store: false },
     // Read by the platform from two of the cabinet's book snapshots (`cabinet.ts`).
     "cabinet.coin": { activity: true, store: true },
+    // A service/balance adjustment alone is not evidence someone is playing.
+    "cabinet.credit": { activity: false, store: true },
     "cabinet.consumed": { activity: true, store: true },
     "cabinet.reset": { activity: false, store: true },
     // Told by the IO when it sees a reader come or go.
@@ -236,6 +246,7 @@ export const mahjong: CapabilitySpec<MahjongConfig> = {
  * doors) is derived, never configured here.
  */
 const botConfig = z.object({
+  replyTemplates: botReplyTemplatesSchema.default({}),
   /** The integration token the bot connects with. */
   tokenId: z.string().min(1),
   /** `readonly`: players may only bind, look up and redeem through the bot. */

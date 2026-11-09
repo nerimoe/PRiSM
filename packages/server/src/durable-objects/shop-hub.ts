@@ -7,7 +7,7 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
-import { idleReminderText, shopEventFrame } from "../resources/shop-events.js";
+import { announcementMessage, idleReminderMessage, shopEventFrame } from "../resources/shop-events.js";
 import { findBotByToken } from "../resources/bot.js";
 import { announcedTypes, botMessage, type BotMessage } from "@prism/core";
 import type { ShopEvent } from "../resources/shop-events.js";
@@ -690,7 +690,6 @@ export class ShopHub extends BaseDurableObject<Env> {
    * own settings whether and where to say it.
    */
   async shopEvent(event: Record<string, unknown>): Promise<void> {
-    const frame = JSON.stringify({ type: "event", event: "shop.event", data: event });
     for (const ws of this.bots()) {
       // A bot that says the platform's text only hears what it is set to tell,
       // and not what its own command did: it answered that already.
@@ -698,8 +697,12 @@ export class ShopHub extends BaseDurableObject<Env> {
       const announces = attachment?.announces;
       if (announces && (!announces.types.includes(String(event.type)) || event.botId === announces.botId)) continue;
       try {
-        if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, event.message as BotMessage);
-        else ws.send(frame);
+        const templates = attachment?.announces
+          ? (await this.botOf((await this.shopId()) ?? "", attachment.token))?.bot.config.replyTemplates : undefined;
+        const message = Array.isArray(event.message)
+          ? announcementMessage(event as ShopEvent, templates, event.message as BotMessage) : event.message as BotMessage;
+        if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, message);
+        else ws.send(JSON.stringify({ type: "event", event: "shop.event", data: { ...event, message } }));
       } catch {
         // A bot that left misses it.
       }
@@ -1451,15 +1454,16 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   private async notify(notices: IdleNotice[]): Promise<void> {
     for (const notice of notices) {
-      const message = botMessage(idleReminderText(notice));
-      const frame = JSON.stringify({ type: "event", event: "idle.reminder", data: { ...notice, message } });
       for (const ws of this.bots()) {
         const attachment = ws.deserializeAttachment() as BotAttachment | null;
         const announces = attachment?.announces;
         if (announces && !announces.types.includes("idle.reminder")) continue;
         try {
+          const templates = attachment?.announces
+            ? (await this.botOf((await this.shopId()) ?? "", attachment.token))?.bot.config.replyTemplates : undefined;
+          const message = idleReminderMessage(notice, templates);
           if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, message);
-          else ws.send(frame);
+          else ws.send(JSON.stringify({ type: "event", event: "idle.reminder", data: { ...notice, message } }));
         } catch {
           // A bot that left misses it; the power-off happens regardless.
         }

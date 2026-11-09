@@ -82,6 +82,27 @@ describe("a bot is a resource", () => {
   beforeEach(() => clearShopDependenciesCache());
   afterEach(() => clearShopDependenciesCache());
 
+  it("validates and persists per-bot replies, and can restore defaults", async () => {
+    const { bot, createBot, call } = await fixture();
+    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}", "announce.card.message": "{player} 正在 {device} 刷卡" };
+    const first = await createBot({ replyTemplates: templates });
+    const other = await createBot();
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    expect((await bot(other.token).get("bot")).body.settings.replyTemplates).toEqual({});
+    for (const replyTemplates of [
+      { "wallet.success": "{balnce}" }, { "billing.success": "已结账" },
+      { "unknown.success": "hello" }, { "announce.card.message": "{player} {unknown}" }, { "announce.idle.reminder.shop_empty": "快关机了" }, { "bind.success": "<at id='all'/>" },
+    ]) {
+      const result = await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates } });
+      expect(result.status).toBe(422);
+    }
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { playerCommands: "readonly" } });
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates: {} } });
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual({});
+  });
+
   it("issues its token once and tells it its settings and what the shop knows", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot({ playerCommands: "readonly", announceChannelIds: ["group-1"] });

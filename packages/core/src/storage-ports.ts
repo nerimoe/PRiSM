@@ -276,7 +276,7 @@ export type DeviceRecord = {
 
 export type DeviceEventRepository = {
   record(input: DeviceRecord): Promise<void>;
-  listEvents(input: { deviceId: string; limit: number }): Promise<DeviceEvent[]>;
+  listEvents(input: { deviceId: string; limit: number; before?: string }): Promise<DeviceEvent[]>;
   getOperation(id: string): Promise<DeviceOperation | null>;
   listOperationsByPlayer(playerId: string): Promise<DeviceOperation[]>;
   listRecentOperations(limit: number): Promise<DeviceOperation[]>;

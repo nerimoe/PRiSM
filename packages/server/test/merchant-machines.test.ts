@@ -70,6 +70,27 @@ function fixture() {
 }
 
 describe("pre-fork merchant machine lifecycle",()=>{
+  it("returns a cursor and coin details so all stored history can be read across pages", async () => {
+    const { app, env, sqlite } = fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet')");
+    const payload = { coins: 2, previousCredit: 4, credit: 6 };
+    for (const id of ["a", "b", "c"]) {
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,payload_json,occurred_at)
+        VALUES ('shop-1',?,'cab','hinata_io','signal','cabinet.coin','device',?,'2026-10-29T16:08:00.000Z')`, [id, JSON.stringify(payload)]);
+    }
+    const get = async (query: string) => (await (await app.fetch(new Request(
+      `https://prism.test/api/v1/merchant/machines/cab/events?limit=2${query}`,
+    ), env)).json()) as { events: { id: string; payload: unknown }[]; nextCursor: string | null };
+    const first = await get("");
+    expect(first.events.map((e) => e.id)).toEqual(["c", "b"]);
+    expect(first.events[0]!.payload).toEqual(payload);
+    expect(first.nextCursor).toBe("b");
+    const last = await get(`&before=${first.nextCursor}`);
+    expect(last.events.map((e) => e.id)).toEqual(["a"]);
+    expect(last.nextCursor).toBeNull();
+    sqlite.close();
+  });
+
   it("returns operation history in the resource's shop zone, including midnight and daylight saving", async () => {
     const { app, env, sqlite } = fixture();
     const api = new Hono<AppBindings>();

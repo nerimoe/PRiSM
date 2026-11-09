@@ -8,6 +8,7 @@
  * - `cabinet.reset`: a counter went down. Only clearing the books does that, so
  *   nothing else is read into the same step.
  * - `cabinet.coin`: coins went in (`total_coin` rose).
+ * - `cabinet.credit`: service/payment credits or a balance increase without a coin.
  * - `cabinet.consumed`: credits were spent, mostly by starting a game. What the
  *   cabinet had, plus what it was given since, minus what it has now.
  *
@@ -23,6 +24,7 @@ export type CabinetBooks = Extract<CabinetSnapshot, { players: unknown }>;
 export type CabinetChange =
   | { type: "cabinet.reset"; detail: { credit: number } }
   | { type: "cabinet.coin"; detail: { coins: number; credit: number } }
+  | { type: "cabinet.credit"; detail: { credits: number; credit: number } }
   | { type: "cabinet.consumed"; detail: { credits: number; credit: number } };
 
 export function isCabinetBooks(snapshot: CabinetSnapshot | null | undefined): snapshot is CabinetBooks {
@@ -41,6 +43,8 @@ export function cabinetChanges(before: CabinetBooks, after: CabinetBooks): Cabin
   const credited = a.coinCredit - b.coinCredit;
   if (coins > 0) changes.push({ type: "cabinet.coin", detail: { coins, credit } });
   const given = credited + (a.serviceCredit - b.serviceCredit) + (a.emoneyCredit - b.emoneyCredit);
+  const other = given - (coins > 0 ? credited : 0) + Math.max(0, credit - before.players[0]!.credit - given);
+  if (other > 0) changes.push({ type: "cabinet.credit", detail: { credits: other, credit } });
   const spent = before.players[0]!.credit + given - credit;
   if (spent > 0) changes.push({ type: "cabinet.consumed", detail: { credits: spent, credit } });
   return changes;

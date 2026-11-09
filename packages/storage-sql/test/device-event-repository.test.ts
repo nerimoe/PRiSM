@@ -79,6 +79,22 @@ const powerState = (value: string) => ({
 });
 
 describe("device event repository", () => {
+  it("pages tied timestamps without skipping events or accepting another device/shop's cursor", async () => {
+    const { db, repo } = fixture();
+    const at = new Date("2026-02-01T10:00:00.000Z");
+    await repo.record({ events: ["a", "b", "c"].map((id) => event({ id, occurredAt: at })) });
+    await repo.record({ events: [event({ id: "other-device", deviceId: "m2", occurredAt: at })] });
+    const otherShop = createDeviceEventRepository({ ...executorFor(db), shopId: "other" });
+    await otherShop.record({ events: [event({ id: "other-shop", occurredAt: at })] });
+    const first = await repo.listEvents({ deviceId: "m1", limit: 2 });
+    expect(first.map((e) => e.id)).toEqual(["c", "b"]);
+    await repo.record({ events: [event({ id: "newer", occurredAt: new Date(at.getTime() + 1000) })] });
+    expect((await repo.listEvents({ deviceId: "m1", limit: 2, before: first.at(-1)!.id })).map((e) => e.id)).toEqual(["a"]);
+    for (const before of ["missing", "other-device", "other-shop"]) {
+      expect(await repo.listEvents({ deviceId: "m1", limit: 2, before })).toEqual([]);
+    }
+  });
+
   it("records a change only when the value actually changes", async () => {
     const { repo } = fixture();
     await repo.record({ events: [], states: [{ write: powerState("on"), event: event({ payload: { from: null, to: "on" } }) }] });

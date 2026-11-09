@@ -254,13 +254,16 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
       if (statements.length) await executor.batch(statements);
     },
 
-    async listEvents({ deviceId, limit }) {
+    async listEvents({ deviceId, limit, before }) {
       const rows = await executor.all<EventRow>(
         `SELECT id, device_id, capability, kind, name, operation_id, parent_operation_id, origin,
                 player_id, staff_id, payload_json, occurred_at
          FROM device_events WHERE shop_id = ${shop} AND device_id = ?
+         ${before ? `AND (occurred_at, id) < (
+           SELECT occurred_at, id FROM device_events WHERE shop_id = ${shop} AND device_id = ? AND id = ?
+         )` : ""}
          ORDER BY occurred_at DESC, id DESC LIMIT ?`,
-        [deviceId, limit],
+        [deviceId, ...(before ? [deviceId, before] : []), limit],
       );
       return rows.map(toEvent);
     },

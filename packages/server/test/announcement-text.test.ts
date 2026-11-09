@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { shopAnnouncementCatalog } from "@prism/core";
-import { announcementMessage, announcementText, idleReminderText, shopEventFrame } from "../src/resources/shop-events.js";
+import { announcementMessage, announcementText, idleReminderMessage, idleReminderText, shopEventFrame } from "../src/resources/shop-events.js";
 
 const place = { resourceId: "m1", resourceName: "舞萌" };
 const alice = { playerId: "p1", displayName: "Alice", identities: [] };
@@ -21,6 +21,20 @@ describe("what the platform tells a bot to say", () => {
   it("makes the player a segment of the message, for the bot to name", () => {
     expect(announcementMessage({ ...place, type: "card", player: alice })).toEqual([{ text: "💳 " }, { player: alice }, { text: " 在 舞萌 刷卡" }]);
     expect(announcementMessage({ ...place, type: "card", player: null })).toEqual([{ text: "💳 未绑定的卡 在 舞萌 刷卡" }]);
+  });
+
+  it("customizes each announcement with facts and keeps the player as a segment", () => {
+    const templates = { "announce.card.message": "{device} 欢迎 {player}", "announce.cabinet.coin.message": "{device}：投入 {coins}，余额 {credit}" };
+    expect(announcementMessage({ ...place, type: "card", player: alice }, templates)).toEqual([{ text: "舞萌 欢迎 " }, { player: alice }]);
+    expect(announcementMessage({ ...place, type: "card", player: null }, templates)).toEqual([{ text: "舞萌 欢迎 未绑定的卡" }]);
+    expect(announcementMessage({ ...place, type: "cabinet.coin", player: null, detail: { coins: 2, credit: 24 } }, templates)).toEqual([{ text: "舞萌：投入 2，余额 24" }]);
+    expect(announcementMessage({ ...place, type: "card", player: alice }, { "announce.card.message": "{unknown}" })).toEqual(announcementMessage({ ...place, type: "card", player: alice }));
+  });
+
+  it("customizes both idle reminder reasons with current remaining minutes", () => {
+    const templates = { "announce.idle.reminder.shop_empty": "本店将在 {minutes} 分钟后关机", "announce.idle.reminder.device_idle": "{devices} 将在 {minutes} 分钟后关机" };
+    expect(idleReminderMessage({ reason: "shop_empty", at: 5 * 60000, devices: [] }, templates, 60000)).toEqual([{ text: "本店将在 4 分钟后关机" }]);
+    expect(idleReminderMessage({ reason: "device_idle", at: 10000, devices: [{ name: "舞萌" }] }, templates, 0)).toEqual([{ text: "舞萌 将在 1 分钟后关机" }]);
   });
 
   it("puts the facts of a cabinet's books into its words", () => {

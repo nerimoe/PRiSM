@@ -309,6 +309,18 @@ describe("what a bot is told", () => {
     expect(told(ws)).toEqual(["card"]);
   });
 
+  it("also customizes event frames for bots that declare message announcements", async () => {
+    const { sqlite, hub, ws, send } = await fixture();
+    botResource(sqlite, ["card", "idle.reminder"]);
+    sqlite.run(`UPDATE device_capabilities SET config_json=json_set(config_json,'$.replyTemplates',json(?)) WHERE device_id='bot-res'`, [JSON.stringify({ "announce.card.message": "{device} 收到 {player} 的卡", "announce.idle.reminder.shop_empty": "请注意：{minutes} 分钟后关机" })]);
+    await send({ type: "hello", announcements: "message" });
+    await hub.shopEvent(event("card"));
+    expect(JSON.parse(ws.sent.at(-1)!).data.message).toEqual([{ text: "舞萌 收到 未绑定的卡 的卡" }]);
+    await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [] }]);
+    expect(JSON.parse(ws.sent.at(-1)!).data.message).toEqual([{ text: "请注意：1 分钟后关机" }]);
+    sqlite.close();
+  });
+
   it("sends a bot that chooses for itself everything, as before", async () => {
     const { sqlite, hub, ws, send } = await fixture();
     botResource(sqlite, ["card"]);
@@ -346,6 +358,21 @@ describe("a bot's commands", () => {
   const text = (frame: { message: Array<{ text?: string; player?: { displayName: string } }> }) =>
     frame.message.map((segment) => segment.text ?? `<${segment.player?.displayName}>`).join("");
 
+  it("renders configured replies and refreshes them after a resource change", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, { replyTemplates: { "wallet.success": "余额：{balance} {currency}", "login.free": "本群无需入场" } });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("w1", "wallet")));
+    expect(text(says(ws).at(-1))).toBe("余额：0 余额");
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("l1", "入场")));
+    expect(text(says(ws).at(-1))).toBe("本群无需入场");
+    sqlite.run(`UPDATE device_capabilities SET config_json=? WHERE device_id='bot-res'`, [JSON.stringify({ tokenId: "t1", replyTemplates: {} })]);
+    await hub.botsChanged();
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("w2", "wallet")));
+    expect(text(says(ws).at(-1))).toContain("💰 --- 钱包余额 ---");
+    sqlite.close();
+  });
+
   it("runs a command once and says its answer, as a reply to it", async () => {
     const { sqlite, hub, ws } = await fixture();
     botResource(sqlite);
@@ -376,6 +403,37 @@ describe("a bot's commands", () => {
       "您当前没有未结算的账单，无需结账。",
       "不支持这个命令",
     ]);
+    sqlite.close();
+  });
+
+  it("uses each bot's announcement templates, refreshes them and also customizes idle warnings", async () => {
+    const { sqlite, hub, ws, sockets } = await fixture();
+    botResource(sqlite, { announceEvents: ["card", "idle.reminder"], announceChannelIds: ["onebot:42"], replyTemplates: {
+      "announce.card.message": "{device} 欢迎 {player}", "announce.idle.reminder.shop_empty": "无人，{minutes} 分钟后关机",
+    } });
+    sqlite.run(`INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','t2','second','integration','integ',?,'active','2026-01-01')`, [await sha256Hex("second")]);
+    sqlite.run(`INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot2','pub-bot2','第二个 Bot','')`);
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot2','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t2", announceEvents: ["card", "idle.reminder"], announceChannelIds: ["onebot:43"] })]);
+    const second = new FakeSocket();
+    second.tags = ["bot"];
+    second.attachment = { ...(ws.attachment as object), token: "second" };
+    sockets.push(second);
+    for (const socket of [ws, second]) await hub.webSocketMessage(socket as any, JSON.stringify({ type: "hello", commands: 1 }));
+    const event = { type: "card", resourceId: "m1", resourceName: "舞萌", player: { playerId: "p1", displayName: "小明", identities: [] }, message: [{ text: "原始刷卡消息" }] };
+    await hub.shopEvent(event);
+    expect(says(ws).at(-1).message).toEqual([{ text: "舞萌 欢迎 " }, { player: event.player }]);
+    expect(text(says(second).at(-1))).toBe("原始刷卡消息");
+    const count = says(ws).length;
+    await hub.shopEvent({ ...event, botId: "bot-res" });
+    await hub.shopEvent({ ...event, type: "power.on" });
+    expect(says(ws).length).toBe(count);
+    await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [] }]);
+    expect(text(says(ws).at(-1))).toBe("无人，1 分钟后关机");
+    expect(text(says(second).at(-1))).toBe("店里没人，1 分钟后全部关机");
+    sqlite.run(`UPDATE device_capabilities SET config_json=json_set(config_json,'$.replyTemplates',json('{}')) WHERE device_id='bot-res'`);
+    await hub.botsChanged();
+    await hub.shopEvent(event);
+    expect(text(says(ws).at(-1))).toBe("原始刷卡消息");
     sqlite.close();
   });
 

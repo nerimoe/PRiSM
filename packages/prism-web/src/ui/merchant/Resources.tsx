@@ -842,7 +842,8 @@ const actionLabels: Record<string, string> = {
   "card.consumed": "卡片已送入游戏",
   "led.set": "灯光",
   "cabinet.coin": "机台投币",
-  "cabinet.consumed": "开局扣币",
+  "cabinet.credit": "机内加币",
+  "cabinet.consumed": "机内扣币",
   "cabinet.reset": "投币计数清零",
   "reader.connected": "读卡器插入",
   "reader.disconnected": "读卡器拔出",
@@ -1300,16 +1301,31 @@ function OccupancyHistory({ device, playerHref }: { device: Resource; playerHref
 function ResourceHistory({ device }: { device: Resource }) {
   const { t } = useI18n();
   const [events, setEvents] = useState<DeviceEvent[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const load = useCallback(
-    () =>
-      api<{ events: DeviceEvent[] }>(
-        `/api/v1/merchant/machines/${device.id}/events`,
-      ).then((r) => setEvents(r.events)),
-    [device.id],
+    async (before?: string) => {
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api<{ events: DeviceEvent[]; nextCursor: string | null }>(
+          `/api/v1/merchant/machines/${device.id}/events${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+        );
+        setEvents((previous) => before ? [...(previous ?? []), ...r.events] : r.events);
+        setNextCursor(r.nextCursor);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : t("读取失败"));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [device.id, t],
   );
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    setEvents(null);
+    setNextCursor(null);
+    void load();
   }, [load]);
   return (
     <div className="grid gap-4">
@@ -1322,6 +1338,20 @@ function ResourceHistory({ device }: { device: Resource }) {
           {timeline(events).map(({ event: e, result }) => {
             const inbound = e.kind === "signal";
             const outcome = result ? String(result.payload.outcome) : null;
+            const detail: string[] = [];
+            if (e.kind === "signal" && e.name.startsWith("cabinet.")) {
+              const { coins, credits, credit, previousCredit, previousTotalCoin, totalCoin } = e.payload;
+              if (e.name === "cabinet.coin" && typeof coins === "number") detail.push(t("投入 {coins} 枚", { coins }));
+              if (e.name === "cabinet.credit" && typeof credits === "number") detail.push(t("增加 {credits} 币", { credits }));
+              if (e.name === "cabinet.consumed" && typeof credits === "number") detail.push(t("消耗 {credits} 币", { credits }));
+              if (typeof credit === "number") detail.push(typeof previousCredit === "number"
+                ? t("本次读数：{before} → {after} 币", { before: previousCredit, after: credit })
+                : t("机内剩余 {credit} 币", { credit }));
+              if (e.name === "cabinet.reset" && typeof previousTotalCoin === "number" && typeof totalCoin === "number") {
+                detail.push(t("累计投币：{before} → {after} 枚", { before: previousTotalCoin, after: totalCoin }));
+              }
+            }
+            if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
             return (
               <div
                 className="flex justify-between gap-3 py-3 text-sm"
@@ -1346,6 +1376,7 @@ function ResourceHistory({ device }: { device: Resource }) {
                         ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
                         : t(actionLabels[e.name] ?? e.name)}
                   </span>
+                  {detail.length > 0 && <p className="mt-1 text-xs text-ink/70">{detail.join(" · ")}</p>}
                   <p className="mt-1 text-xs text-ink/50">{date(e.at)}</p>
                 </div>
                 <span className="text-xs text-ink/55">
@@ -1364,6 +1395,17 @@ function ResourceHistory({ device }: { device: Resource }) {
           })}
         </div>
       )}
+      {events && error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      <div className="flex gap-2">
+        <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load()}>
+          {t("刷新记录")}
+        </button>
+        {nextCursor && (
+          <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load(nextCursor)}>
+            {t(busy ? "读取中…" : "加载更多")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

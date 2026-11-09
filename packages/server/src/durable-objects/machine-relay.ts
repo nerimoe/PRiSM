@@ -689,11 +689,18 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const { revision: _revision, readAtMs: _read, ...value } = snapshot;
       // The read itself is not news; only what changed between reads is.
       await bus.reportMany([{ device, capability: "hinata_io", key: "cabinet", value, quiet: true }]);
-      if (!changes.length) return;
+      if (!before || !isCabinetBooks(snapshot) || !changes.length) return;
       const place = { resourceId: channel.machineId, resourceName: await this.resourceName(channel) };
       for (const change of changes) {
-        await bus.signal({ device, capability: "hinata_io", name: change.type, payload: change.detail });
-        await announceShopEvent(this.env, channel.shopId, { type: change.type, ...place, player: null, detail: change.detail });
+        await bus.signal({ device, capability: "hinata_io", name: change.type, payload: {
+          ...change.detail,
+          previousCredit: before.players[0]!.credit,
+          previousTotalCoin: before.bookkeeping.totalCoin,
+          totalCoin: snapshot.bookkeeping.totalCoin,
+        } });
+        if (change.type !== "cabinet.credit") {
+          await announceShopEvent(this.env, channel.shopId, { type: change.type, ...place, player: null, detail: change.detail });
+        }
       }
     });
     if (changes.some((change) => hinataIo.signals[change.type]?.activity)) await this.touchHub();

@@ -1,5 +1,6 @@
 export * from "./assets";
 export * from "./bot-message";
+export * from "./bot-reply-template.js";
 export * from "./business-items";
 export * from "./device-command";
 export * from "./device-events";

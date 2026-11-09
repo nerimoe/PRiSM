@@ -14,12 +14,13 @@ import {
   type LucideIcon,
   Bot,
 } from "lucide-react";
-import { announcedTypes, shopAnnouncementCatalog, switchesFor } from "@prism/core";
+import { botReplyTemplateError, announcedTypes, shopAnnouncementCatalog, switchesFor } from "@prism/core";
 import { Api, api, type BotSettings, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
 import { resourceCapabilities, type CapabilityId } from "./resource-capabilities";
+import { BotReplyEditor } from "./BotReplyEditor";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
 import { idlePath, useIdleSettings } from "./IdlePowerSettings";
@@ -154,6 +155,7 @@ export function ResourceEditor({
     null,
   );
   const [live, setLive] = useState<Resource | null>(value ?? null);
+  const [botPane, setBotPane] = useState<"permissions" | "broadcasts" | "replies" | "messages" | "connection">("permissions");
   const [bot, setBot] = useState<BotSettings>(() => ({ ...defaultBotSettings, ...(value?.bot ?? {}) }));
   const changeBot = (patch: Partial<BotSettings>) => setBot((current) => ({ ...current, ...patch }));
   // Shown once, after the bot is created or its token replaced.
@@ -201,6 +203,12 @@ export function ResourceEditor({
     if (id === "hinata_io" && !embedded && !hinataUrl.trim())
       return t("请填写 HINATA IO 地址");
     if (id === "door" && !(Number(lockId) > 0)) return t("请填写门锁 ID");
+    if (id === "bot") {
+      for (const [key, text] of Object.entries(bot.replyTemplates ?? {})) {
+        const error = botReplyTemplateError(key, text);
+        if (error) return `${key}：${error}`;
+      }
+    }
     if (id === "mahjong" && billed && !mahjongPricing.length) return t("请选择一条麻将计费规则");
     return null;
   };
@@ -360,6 +368,10 @@ export function ResourceEditor({
           if (reason) {
             // Show the capability so the message lands next to its fields.
             setPane(id);
+            if (id === "bot") {
+              const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text));
+              if (invalid) setBotPane(invalid[0].startsWith("announce.") ? "messages" : "replies");
+            }
             throw new Error(reason);
           }
         }
@@ -797,8 +809,18 @@ export function ResourceEditor({
       )}
       {pane === "bot" && caps.bot && (
         <CapabilityPane title="店铺 Bot" problem={incomplete("bot")} remove={() => remove("bot")}>
-          <div className="grid gap-4">
-            <BotTokenPanel live={live} hasBotToken={!!live?.hasBotToken} />
+          <nav aria-label={t("Bot 设置")} className="flex flex-wrap gap-1 border-b border-ink/10 pb-3">
+            {([
+              ["permissions", "使用权限"], ["broadcasts", "播报设置"], ["replies", "命令回复"],
+              ["messages", "播报文案"], ["connection", "接入凭据"],
+            ] as const).map(([id, label]) => (
+              <button key={id} type="button" aria-pressed={botPane === id}
+                className={`focus-ring rounded-lg px-2.5 py-2 text-xs transition-colors ${botPane === id ? "bg-mint/10 font-semibold text-ink" : "text-ink/55 hover:bg-ink/5 hover:text-ink"}`}
+                onClick={() => setBotPane(id)}>{t(label)}</button>
+            ))}
+          </nav>
+          <div hidden={botPane !== "permissions"}>
+            <div className="grid gap-6">
             <fieldset className="grid gap-2">
               <legend className="mb-1 text-sm font-medium">{t("玩家命令")}</legend>
               {(["all", "readonly"] as const).map((mode) => (
@@ -824,19 +846,23 @@ export function ResourceEditor({
                 </Field>
               )}
             </fieldset>
-            <div className="grid gap-2">
-              {([
-                ["staffCommands", "店员代为操作"],
-                ["powerOffStaffOnly", "仅店员可关机"],
-                ["receiptsToStaff", "结账回执发给店员"],
-                ["doorPasswordOnEntry", "入场后自动获取门锁密码"],
-              ] as const).map(([key, label]) => (
+            <fieldset className="grid gap-3 border-t border-ink/10 pt-4">
+              <legend className="text-sm font-semibold">{t("店员权限")}</legend>
+              {([["staffCommands", "店员代为操作"], ["powerOffStaffOnly", "仅店员可关机"]] as const).map(([key, label]) => (
                 <label key={key} className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
                   {t(label)}
                 </label>
               ))}
-            </div>
+            </fieldset>
+            <fieldset className="grid gap-3 border-t border-ink/10 pt-4">
+              <legend className="text-sm font-semibold">{t("入场与结账")}</legend>
+              {([["doorPasswordOnEntry", "入场后自动获取门锁密码"], ["receiptsToStaff", "结账回执发给店员"]] as const).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
+                  {t(label)}
+                </label>
+              ))}
             <Field label="默认门锁">
               <select
                 className={input}
@@ -854,6 +880,10 @@ export function ResourceEditor({
                 {t("玩家用 login／入场 进来时，Bot 会顺带生成一个门锁临时密码并回复；不下场也会在 3 分钟后失效。没有门锁时不生效。")}
               </p>
             )}
+            </fieldset>
+            </div>
+          </div>
+          <div hidden={botPane !== "broadcasts"}>
             <fieldset className="grid gap-3">
               <legend className="mb-1 text-sm font-medium">{t("播报与提醒")}</legend>
               <div className="grid gap-1">
@@ -866,16 +896,6 @@ export function ResourceEditor({
                 </Field>
                 <p className="text-xs text-ink/55">{t("每行一个群号。闲置提醒和店内动态都发到这里。")}</p>
               </div>
-              <Field label="提醒提前量" unit="分钟">
-                <input
-                  className={input}
-                  type="number"
-                  min="0"
-                  max="120"
-                  value={bot.idleReminderMinutes}
-                  onChange={(e) => changeBot({ idleReminderMinutes: Number(e.target.value) || 0 })}
-                />
-              </Field>
               {(() => {
                 const chosen = new Set<string>(announcedTypes(bot));
                 const toggle = (type: string, on: boolean) => {
@@ -890,21 +910,45 @@ export function ResourceEditor({
                     ["notice", "提醒"],
                   ] as const
                 ).map(([family, heading]) => (
-                  <div key={family} className="grid gap-2">
-                    <span className="text-sm">{t(heading)}</span>
+                  <fieldset key={family} className="grid gap-2 border-t border-ink/10 pt-4">
+                    <legend className="text-sm font-semibold">{t(heading)}</legend>
+                    <div className="grid gap-2 sm:grid-cols-2">
                     {shopAnnouncementCatalog.filter((entry) => entry.family === family).map((entry) => (
                       <label key={entry.type} className="flex items-center gap-2 text-sm">
                         <input type="checkbox" checked={chosen.has(entry.type)} onChange={(e) => toggle(entry.type, e.target.checked)} />
                         {t(entry.label)}
                       </label>
                     ))}
-                  </div>
+                    </div>
+                  </fieldset>
                 ));
               })()}
-              <p className="text-xs text-ink/55">
+              <Field label="提醒提前量" unit="分钟">
+                <input
+                  className={input}
+                  type="number"
+                  min="0"
+                  max="120"
+                  value={bot.idleReminderMinutes}
+                  onChange={(e) => changeBot({ idleReminderMinutes: Number(e.target.value) || 0 })}
+                />
+              </Field>
+              <details className="border-t border-ink/10 pt-3 text-xs text-ink/55">
+                <summary className="cursor-pointer">{t("播报说明")}</summary>
+                <p className="mt-2 leading-relaxed">
                 {t("现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。提前量为 0 时不发闲置提醒。本 Bot 自己执行的命令不会再次播报。")}
-              </p>
+                </p>
+              </details>
             </fieldset>
+          </div>
+          <div hidden={botPane !== "replies"}>
+            <BotReplyEditor value={bot.replyTemplates ?? {}} onChange={replyTemplates => changeBot({ replyTemplates })} />
+          </div>
+          <div hidden={botPane !== "messages"}>
+            <BotReplyEditor announcements value={bot.replyTemplates ?? {}} onChange={replyTemplates => changeBot({ replyTemplates })} />
+          </div>
+          <div hidden={botPane !== "connection"}>
+            <BotTokenPanel live={live} hasBotToken={!!live?.hasBotToken} />
           </div>
         </CapabilityPane>
       )}

@@ -7,7 +7,7 @@
  * Times are shown at the shop's clock: the views carry UTC instants, which
  * the API boundary would otherwise convert only in the JSON, not in the words.
  */
-import { botMessage, formatOffsetTimestamp, type BotMessage, type BotMessagePlayer } from "@prism/core";
+import { botMessage, renderBotReplyTemplate, formatOffsetTimestamp, type BotMessage, type BotMessagePlayer } from "@prism/core";
 
 type R = Record<string, any>;
 
@@ -181,13 +181,13 @@ export function receiptMessage(view: R, options: { title: string; preview: boole
 /* ------------------------------ the player -------------------------------- */
 
 /** Paid and free money together, then each. */
-export function walletMessage(rows: R[], currency: string): BotMessage {
+export function walletMessage(rows: R[], currency: string, templates?: Record<string, string>): BotMessage {
   const sum = (test: (code: string) => boolean) =>
     rows.filter((row) => test(String(row.assetCode).toLowerCase())).reduce((total, row) => total + toNumber(row.quantity), 0);
   const paid = sum((code) => code.includes("paid"));
   const free = sum((code) => code.includes("free"));
   const total = paid + free + sum((code) => !code.includes("paid") && !code.includes("free"));
-  return botMessage(["💰 --- 钱包余额 ---", `可用: ${amount(total)} ${currency} (共 ${amount(total)})`, `  - 付费: ${amount(paid)}`, `  - 免费: ${amount(free)}`].join("\n"));
+  return renderBotReplyTemplate("wallet.success", templates, botMessage(["💰 --- 钱包余额 ---", `可用: ${amount(total)} ${currency} (共 ${amount(total)})`, `  - 付费: ${amount(paid)}`, `  - 免费: ${amount(free)}`].join("\n")), { balance: amount(total), currency, paid: amount(paid), free: amount(free) });
 }
 
 export function itemsMessage(holdings: R[], timeZone: string): BotMessage {
@@ -291,24 +291,31 @@ const FAILED: Record<string, string> = {
  * A device action the bot asked for: done, or why not. `onEntry` marks the
  * door code that rides along with an entry, whose failure is one soft line.
  */
-export function deviceActionMessage(action: R, request: { type: string; ref: string; count?: number; onEntry?: boolean }): BotMessage {
+export function deviceActionMessage(action: R, request: { type: string; ref: string; count?: number; onEntry?: boolean }, templates?: Record<string, string>): BotMessage {
   const failed = action.status === "expired" || action.status === "rejected" || action.status === "pending";
   const label = String(action.payload?.deviceLabel ?? "").trim() || request.ref;
+  const command = ({ "power.on": "on", "power.off": "off", "power.keep": "keep", "door.open": "lock", "aime.scan": "scan", coin: "coin" } as Record<string, string>)[request.type];
+  const reply = (text: string, failure = false) => {
+    const message = botMessage(text);
+    return renderBotReplyTemplate(`${command}.${failure ? "error" : "success"}`, templates, message, {
+      result: message, reason: message, device: label, count: String(request.count ?? 1),
+    });
+  };
   if (request.type === "door.open") {
-    if (failed) return botMessage(request.onEntry ? ENTRY_DOOR_FAILED : `${FAILED["door.open"]}${deviceReason(action)}`);
-    if (action.executorKind && action.executorKind !== "ttlock") return botMessage("🔑 门锁指令已发送");
+    if (failed) return reply(request.onEntry ? ENTRY_DOOR_FAILED : `${FAILED["door.open"]}${deviceReason(action)}`, true);
+    if (action.executorKind && action.executorKind !== "ttlock") return reply("🔑 门锁指令已发送");
     const password = String(action.payload?.temporaryPassword ?? "").trim();
-    if (!password) return botMessage(request.onEntry ? ENTRY_DOOR_FAILED : "🔑 临时门锁密码生成失败，请稍后再试");
-    return botMessage(`🔑 临时门锁密码：${password}\n有效期：3 分钟`);
+    if (!password) return reply(request.onEntry ? ENTRY_DOOR_FAILED : "🔑 临时门锁密码生成失败，请稍后再试", true);
+    return reply(`🔑 临时门锁密码：${password}\n有效期：3 分钟`);
   }
-  if (failed) return botMessage(`${FAILED[request.type] ?? "操作失败，"}${deviceReason(action)}`);
+  if (failed) return reply(`${FAILED[request.type] ?? "操作失败，"}${deviceReason(action)}`, true);
   switch (request.type) {
-    case "power.on": return botMessage(`✅ ${label} 启动成功`);
-    case "power.off": return botMessage(`🛑 ${label} 关闭成功`);
-    case "power.keep": return botMessage(`✅ ${label} 已延迟关机`);
-    case "coin": return botMessage(`🪙 ${label} 投币成功（${request.count ?? 1} 币）`);
-    case "aime.scan": return botMessage(`💳 ${label} 刷卡成功`);
-    default: return botMessage(`✅ ${label} 已完成`);
+    case "power.on": return reply(`✅ ${label} 启动成功`);
+    case "power.off": return reply(`🛑 ${label} 关闭成功`);
+    case "power.keep": return reply(`✅ ${label} 已延迟关机`);
+    case "coin": return reply(`🪙 ${label} 投币成功（${request.count ?? 1} 币）`);
+    case "aime.scan": return reply(`💳 ${label} 刷卡成功`);
+    default: return reply(`✅ ${label} 已完成`);
   }
 }
 

@@ -179,6 +179,7 @@ export type Resource = {
 
 /** What a shop bot offers players and staff; everything else it is told comes from the platform. */
 export type BotSettings = {
+  replyTemplates?: Record<string, string>;
   playerCommands: "all" | "readonly";
   readOnlyNotice: string;
   staffCommands: boolean;

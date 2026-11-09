@@ -103,6 +103,29 @@ describe("what a cabinet's books tell the platform", () => {
     expect(told.map(({ type }) => type)).toEqual(["cabinet.consumed"]);
   });
 
+  it("audits balance increases and clears with before/after readings without duplicate heartbeat entries", async () => {
+    const { told, report, sqlite } = await fixture();
+    await report("event.cabinetSnapshot", read(1, 4, 218, 59));
+    const service = read(2, 6, 218, 59);
+    service.bookkeeping.service_credit = 2;
+    service.bookkeeping.total_credit = 61;
+    await report("event.cabinetSnapshot", service);
+    await report("io.heartbeat", { ha: [], cabinet: service });
+    await report("event.cabinetSnapshot", { revision: 3, read_at_ms: 3, error: "unreadable" });
+    const decreased = { ...service, ...read(4, 5, 218, 59), bookkeeping: service.bookkeeping };
+    await report("event.cabinetSnapshot", decreased);
+    await report("event.cabinetSnapshot", read(5, 0, 0, 0));
+    const logged = sqlite.query<{ name: string; payload_json: string }, []>(
+      "SELECT name,payload_json FROM device_events WHERE kind='signal' ORDER BY rowid",
+    ).all().map((row) => ({ name: row.name, payload: JSON.parse(row.payload_json) }));
+    expect(logged).toEqual([
+      { name: "cabinet.credit", payload: { credits: 2, credit: 6, previousCredit: 4, previousTotalCoin: 218, totalCoin: 218 } },
+      { name: "cabinet.consumed", payload: { credits: 1, credit: 5, previousCredit: 6, previousTotalCoin: 218, totalCoin: 218 } },
+      { name: "cabinet.reset", payload: { credit: 0, previousCredit: 5, previousTotalCoin: 218, totalCoin: 0 } },
+    ]);
+    expect(told.map(({ type }) => type)).toEqual(["cabinet.consumed", "cabinet.reset"]);
+  });
+
   it("passes on an IO that cannot read its books", async () => {
     const { relay, sockets } = await fixture();
     const reading = relay.readCabinet();

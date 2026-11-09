@@ -95,6 +95,7 @@ async function openResource(page, expect = "接入凭据") {
   const nav = page.getByRole("navigation", { name: "资源设置" });
   await nav.waitFor();
   await nav.getByRole("button", { name: "店铺 Bot" }).click();
+  await page.getByRole("navigation", { name: "Bot 设置" }).getByRole("button", { name: "接入凭据", exact: true }).click();
   await page.getByText(expect, { exact: false }).first().waitFor();
 }
 
@@ -114,6 +115,46 @@ async function walkThreeSteps(page, openLabel, confirmLabel, acceptLabel) {
 const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里。";
 
 (async () => {
+  // Settings stay in their own group, and switching groups keeps the whole draft.
+  {
+    const { browser, page, patches, exceptions } = await openEditor();
+    try {
+      await openResource(page);
+      const nav = page.getByRole("navigation", { name: "Bot 设置" });
+      await nav.getByRole("button", { name: "使用权限", exact: true }).click();
+      assert.equal(await page.getByRole("button", { name: "轮换 Bot 凭据", exact: true }).isVisible(), false);
+      await page.getByRole("radio", { name: "只读", exact: true }).check();
+      await page.getByLabel("只读提示", { exact: true }).fill("请扫码操作");
+      await nav.getByRole("button", { name: "播报设置", exact: true }).click();
+      await page.getByLabel("播报群", { exact: true }).fill("onebot:42");
+      await page.getByRole("checkbox", { name: "刷卡", exact: true }).check();
+      await nav.getByRole("button", { name: "命令回复", exact: true }).click();
+      const replies = page.getByRole("region", { name: "命令回复", exact: true });
+      await replies.getByLabel("回复内容", { exact: true }).fill("绑定成功，欢迎光临");
+      await nav.getByRole("button", { name: "播报文案", exact: true }).click();
+      const news = page.getByRole("region", { name: "播报消息", exact: true });
+      await news.getByLabel("播报类型", { exact: true }).selectOption("announce.card");
+      await news.getByLabel("回复内容", { exact: true }).fill("{device} 收到刷卡");
+      await nav.getByRole("button", { name: "使用权限", exact: true }).click();
+      assert.equal(await page.getByLabel("只读提示", { exact: true }).inputValue(), "请扫码操作");
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await news.getByRole("alert").waitFor();
+      assert.equal(await nav.getByRole("button", { name: "播报文案", exact: true }).getAttribute("aria-pressed"), "true");
+      assert.equal(patches.length, 0, "invalid hidden templates prevent saving");
+      await news.getByLabel("回复内容", { exact: true }).fill("{player} 在 {device} 刷卡");
+      await nav.getByRole("button", { name: "命令回复", exact: true }).click();
+      assert.equal(await replies.getByLabel("回复内容", { exact: true }).inputValue(), "绑定成功，欢迎光临");
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await until(() => patches.length > 0, "saving settings across groups");
+      assert.equal(patches[0].body.bot.playerCommands, "readonly");
+      assert.equal(patches[0].body.bot.readOnlyNotice, "请扫码操作");
+      assert.deepEqual(patches[0].body.bot.announceChannelIds, ["onebot:42"]);
+      assert.ok(patches[0].body.bot.announceEvents.includes("card"));
+      assert.deepEqual(patches[0].body.bot.replyTemplates, { "bind.success": "绑定成功，欢迎光临", "announce.card.message": "{player} 在 {device} 刷卡" });
+      assert.deepEqual(exceptions, []);
+    } finally { await browser.close(); }
+  }
+
   // 1. The bot credential.
   {
     const { browser, page, patches, exceptions } = await openEditor();

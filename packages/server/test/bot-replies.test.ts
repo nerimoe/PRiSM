@@ -67,6 +67,15 @@ describe("what a bot says for the rest", () => {
     expect(text(deviceActionMessage({ status: "rejected", payload: {} }, { type: "door.open", ref: "d", onEntry: true }))).toBe("🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次");
   });
 
+  it("uses result-specific device templates without hiding failures or door expiry", () => {
+    const templates = { "coin.success": "{device} 已投 {count} 币", "coin.error": "请找店员：{reason}", "lock.success": "请勿转发\n{result}" };
+    expect(text(deviceActionMessage({ status: "acked", payload: { deviceLabel: "舞萌" } }, { type: "coin", ref: "m", count: 2 }, templates))).toBe("舞萌 已投 2 币");
+    expect(text(deviceActionMessage({ status: "pending", payload: {} }, { type: "coin", ref: "m" }, templates))).toContain("请找店员：投币失败");
+    const door = text(deviceActionMessage({ status: "acked", executorKind: "ttlock", payload: { temporaryPassword: "1234" } }, { type: "door.open", ref: "d" }, templates));
+    expect(door).toBe("请勿转发\n🔑 临时门锁密码：1234\n有效期：3 分钟");
+    expect(text(walletMessage([{ assetCode: "paid", quantity: 3.5 }, { assetCode: "free", quantity: 2 }], "猫粮", { "wallet.success": "可用 {balance} {currency}，付费 {paid}，赠送 {free}" }))).toBe("可用 5.5 猫粮，付费 3.5，赠送 2");
+  });
+
   it("says each device's power, or that nothing has the name asked for", () => {
     const states = [{ deviceId: "m1", label: "舞萌", state: "on" }, { deviceId: "m2", label: "中二", state: "off" }, { deviceId: "m3", label: "", state: "unknown" }];
     expect(text(deviceStatesMessage(states))).toBe("舞萌：🟢 开机\n中二：⚫ 关机\nm3：❔ 未知");

@@ -62,6 +62,39 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 - 电源事件（`power.on`／`power.off`）覆盖机台电源和空调，覆盖平台操作、HA 手动开关和自动化、闲置自动关机。平台命令成功只代表请求被接受，由 `request.power.*` 表示；必须由有完整快照的当前监听器报告明确的开／关变化才算电源事件：电源是 `on ↔ off`，空调是 `off ↔ 运行模式`，切换运行模式、调温、风速和室温变化不算。多个设备共用一个实体时合并成一条。旧插件读到的 `kind: "power"`（`by: "ha"`）只来自这些事件。
 
+### Bot 设置页分组
+
+「资源 → 对应 Bot → 店铺 Bot」按五组设置显示，默认打开「使用权限」：
+
+- **使用权限**：玩家命令全部／只读及只读提示、店员代操作和关机权限、入场门锁与结账回执。
+- **播报设置**：接收群、现场事件、平台操作、闲置提醒和提前量；详细播报说明默认折叠。
+- **命令回复**：命令与回复场景对应的模板、变量和预览。
+- **播报文案**：各类播报和两种闲置提醒的模板、变量和预览。
+- **接入凭据**：查看凭据状态、签发或按原有三步确认流程轮换。
+
+切换分组保留未保存的设置和文案，底部「保存」统一提交。模板校验失败时自动切到对应的文案分组。分组仅改变界面布局，命令回复和播报文案继续共用 `replyTemplates`、变量校验及模板渲染，不新增后端配置。
+
+### 命令回复模板
+
+在「资源 → 对应 Bot → 店铺 Bot → 命令回复」中，选择命令和回复场景，编辑纯文本模板并保存资源。每个 Bot 独立设置；留空或「恢复默认」会使用当前系统文案。「填入默认模板」可开始修改，「回复预览」只使用示例数据。`login`／`入场`、`bind`／`prism.bind`、`mahjong`／`上桌` 共用模板。
+
+模板保存在 Bot 能力的 `replyTemplates`（场景键到字符串的映射）中，复用资源创建／更新接口及 `config.changed` 刷新，无新增数据库表。省略该字段的更新保留已有模板，传 `{}` 恢复全部默认。每条最多 2000 字；未知场景、未知变量、不完整括号、消息标签以及缺少必要变量均拒绝保存。模板只进行一次变量替换，不执行表达式，变量中的花括号不会再次展开。
+
+- 钱包支持 `{balance}`、`{paid}`、`{free}`、`{currency}`，余额与货币名必须保留。普通设备操作支持 `{device}`，投币还支持 `{count}`。
+- 入场成功支持 `{stopped}`（必须保留，以便提示被结束的计费方案），重复入场支持 `{plan}`。代玩家操作保留包含玩家身份的 `{result}` 消息块，昵称仍由 Bot 按聊天平台解析。
+- 账单保留 `{receipt}`，开门保留 `{result}`（含临时密码与有效期），物品、历史、兑换、查人、桌位等复杂结果保留 `{result}`。可以调整这些消息块前后的文字；块内的明细和计费状态由系统生成。
+- 所有命令都有「参数／权限提示」和「操作失败」模板，必须保留 `{reason}`；权限检查、金额计算、门锁密码和实际操作结果不受文案影响。物品／历史为空、兑换无物品、入场无需计费有独立场景。
+
+只对通过 `command`／`say` 协议执行的命令生效；旧版插件自行格式化的 HTTP 回复、插件本地断网／超时提示不在此范围。未设置模板时保持原有回复。
+
+### 播报消息模板
+
+同一 Bot 编辑页的「播报消息」可以编辑所有播报类型：开关机、刷卡、上机、机台投币、开局扣币、计数清零、平台操作和闲置关机提醒。店内无人、单台设备闲置分别设置。模板存入同一个 `replyTemplates`，键为 `announce.<事件类型>.message`；闲置提醒为 `announce.idle.reminder.shop_empty` 和 `announce.idle.reminder.device_idle`。
+
+事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
+
+模板逐 Bot 渲染，不会改变播报开关、频道、真实事件和自身命令去重规则；昵称继续作为玩家片段交给聊天平台解析。支持 `command`／`say` 和声明 `announcements: "message"` 的插件；更早版本自行格式化事件，不支持此设置。模板不写入 WebSocket attachment，避免长文案超出休眠连接附件大小上限。未设置的消息保留原文案。
+
 ### Bot 是一种资源：设置由服务端下发
 
 每个机器人对应一个带 `bot` 能力的资源，在商户工作台「资源」页添加和编辑（见[资源与资源组](resources.md)）。添加时签发它的接入凭据（只显示一次），删除资源、关闭 Bot 能力或「重新签发」都会吊销旧凭据，旧连接随之断开。凭据与 Bot 资源一一对应：新建店铺时勾选「创建 Bot 接入凭据」会同时建好它的 Bot 资源（默认资源组）；迁移会把旧版遗留的接入凭据一并迁成 Bot 资源（`0043_legacy_bot_resources.sql`），正在运行的 Bot 不会因此断线。Bot 资源不能被玩家扫码。
@@ -202,7 +235,7 @@ await client.requestScanByIdentity(
 | --- | --- | --- | --- | --- | --- |
 | `power` | `connectionId`、`entityId`（`switch.*`/`input_boolean.*`） | —（旧绑定：`binding`，见下文「店铺 Home Assistant 连接」） | `power.on`、`power.off` | — | `power`，外部权威（事件驱动读存储，无状态现查） |
 | `climate` | `connectionId`、`entityId`（`climate.*`） | —（同上） | `climate.on`、`climate.off`、`climate.set_mode`、`climate.set_temperature`、`climate.set_fan_mode` | — | `climate`，外部权威（同上） |
-| `hinata_io` | `transport`（`external`/`embedded`）、`coinKey`、`coinAfterSwipe`、`coinCap`（直连，见「投币上限」）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`coin` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
+| `hinata_io` | `transport`（`external`/`embedded`）、`coinKey`、`coinAfterSwipe`、`coinCap`（直连，见「投币上限」）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`coin` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
 | `door` | `lockId` | — | `door.open` | — | — |
 | `mahjong` | `capacity`、`pricingConfigIds`（最多一个方案） | — | —（上下桌走麻将流程） | — | — |
 
@@ -324,7 +357,8 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 机台 IO 开启 `cabinetMonitor=1` 后（协议见 hinata-aimeio-rs 的 `docs/remote-protocol.md`「机台状态」），每当 amdaemon 的 `sysfile.dat` 变化就发 `event.cabinetSnapshot`，心跳 `io.heartbeat` 里的 `cabinet` 也带同一份。内容是解析好的计费设置、两个玩家槽的 `credit`/`remain`、累计计数器（`total_coin`、`coin_credit`、`service_credit`、`emoney_credit`、`total_credit` 等），读失败时只有 `error`。IO 只报事实，含义由平台判断：
 
 - `MachineRelay` 保存最近一份**读成功**的账本，下一份与它比较（`resources/capabilities/cabinet.ts`）：`total_coin` 增加是 `cabinet.coin`（平台不判断投的币有没有变成币，玩家在机台上看得到）；「原有的 + 新给的（投币、服务、电子支付）− 现有的」大于 0 是 `cabinet.consumed`；任一计数器变小是 `cabinet.reset`（清账），这一步不再推别的。计数器是累计的，漏收的快照由下一份补齐，心跳最多晚 60 秒。读失败的那份也存下来给看板看，但不参与比较。
-- 推出的事件记为 `hinata_io` 的 `signal`，并作为同名类型播报（没有 `player`：账本说不出是谁投的）。账本本身存为设备状态 `cabinet`，不记事件。
+- 服务币、电子支付币，以及没有伴随投币计数增加的加币，记为 `cabinet.credit`；即使同一采样间隔内加币后又扣币，也分别记录增加和消耗。没有累计计数变化但余额上升时，也记录增加量。首份成功账本只作为基线，重复快照和心跳不重复记账。
+- 推出的事件记为 `hinata_io` 的 `signal`，日志附带 `previousCredit` / `credit` 和 `previousTotalCoin` / `totalCoin`，表示两次采样的读数；同一间隔有多件事时共用这对读数，不代表逐笔瞬时余额。原有投币、扣币、清零事件继续同名播报（没有 `player`：账本说不出是谁投的）；新增 `cabinet.credit` 只用于操作记录，不单独算作游玩活动。账本本身存为设备状态 `cabinet`，不记事件。
 - 令牌直连的 IO（不是端到端加密）发 hello 后，平台接着发 `io.setLiveConfig cabinetMonitor=1`，不用改机器上的配置文件。IO 只记在内存里，每次连接平台都再发一次；旧版 IO 不认识这个方法，游戏没有 `sysfile.dat` 时 IO 不会开始读，这两种都只回一个错误，平台不处理。
 - 后台「操作」面板的 HINATA IO 一栏显示 `GET /api/v1/merchant/machines/:id/cabinet` 的账本；「刷新机台状态」调 `POST …/cabinet/refresh`，平台向 IO 发 JSON-RPC `cabinet.getSnapshot`（5 秒超时），回答按普通快照处理并返回。这是平台第一个发给 IO 的 RPC，`MachineRelay` 按请求 `id` 匹配回答。
 
@@ -441,7 +475,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 
 ### 设备日志
 
-`GET /api/v1/merchant/machines/:id/events?limit=50`（1–200）按时间倒序返回该设备的事件：
+`GET /api/v1/merchant/machines/:id/events?limit=50&before=<上一页 nextCursor>`（每页 1–200 条，默认 50）按时间、事件 ID 倒序返回该设备的事件。首屏不传 `before`；`nextCursor` 为 `null` 表示已经读完。游标是末条事件 ID，只在同一店铺、同一设备内有效，同一毫秒内的事件不会漏掉：
 
 ```json
 { "events": [
@@ -452,10 +486,12 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
     "operationId": "6f1c…", "parentOperationId": null, "at": "2026-10-17T10:00:00.400Z", "payload": { "outcome": "ok" } },
   { "id": "...", "capability": "hinata_io", "kind": "request", "name": "aime.scan", "origin": "platform",
     "operationId": "6f1c…", "parentOperationId": null, "at": "2026-10-17T10:00:00.000Z", "payload": { "cardId": "card-1" } }
-] }
+], "nextCursor": null }
 ```
 
-`origin` 为 `platform`（平台发起）、`device`（设备回报）或 `observer`（平台读外部状态时发现变化）。看板把同一操作的 `request` 与 `result` 合并成一行。
+`origin` 为 `platform`（平台发起）、`device`（设备回报）或 `observer`（平台读外部状态时发现变化）。看板把同一操作的 `request` 与 `result` 合并成一行，跨页加载后也会合并；提供刷新和加载更多。币数事件显示投入／增加／消耗数量及两次余额读数，清零显示累计投币计数变化；旧记录没有前值时只显示已保存的剩余币数，失败操作显示失败原因。
+
+机台必须支持并上报账本才能追踪币数变化。历史未采集的事件不能补造；离线期间只能从下次累计计数推断合计变化，无法还原每一笔的发生时间和操作者。
 
 **由事件触发操作目前只预留、未实现。** 投币要先抢冷却锁、刷卡要先确定玩家，在确定哪些动作能安全自动执行之前，事件只被记录和读取。
 

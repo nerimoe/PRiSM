@@ -10,7 +10,7 @@ import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
-import { capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
+import { botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
 import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
@@ -295,11 +295,15 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c,user,machine.shop_id);
   await shopTimes(c, machine.shop_id);
-  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
+  const limit = Math.floor(Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200));
+  const before = c.req.query("before");
+  if (before && before.length > 200) jsonError(400, "无效的记录游标", "INVALID_CURSOR");
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
-    .listEvents({ deviceId: c.req.param("id"), limit });
+    .listEvents({ deviceId: c.req.param("id"), limit: limit + 1, before });
+  const page = events.slice(0, limit);
   return c.json({
-    events: events.map((event) => ({
+    nextCursor: events.length > limit ? page.at(-1)!.id : null,
+    events: page.map((event) => ({
       id: event.id,
       capability: event.capability,
       kind: event.kind,
@@ -515,6 +519,7 @@ const machineInput=z.object({
   // A shop bot: its settings, or null to remove the bot (its token is revoked).
   // A bot is issued its token when it is created; `rotateBotToken` issues a new one.
   bot:z.object({
+    replyTemplates:botReplyTemplatesSchema.optional(),
     playerCommands:z.enum(["all","readonly"]).optional(),
     readOnlyNotice:z.string().max(200).optional(),
     staffCommands:z.boolean().optional(),

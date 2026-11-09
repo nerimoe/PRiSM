@@ -57,7 +57,18 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   const page = await context.newPage();
   if (clock) await page.clock.install();
   const exceptions = [], calls = [], sockets = [], received = [], puts = [], actions = [];
-  let seats = [];
+  let seats = [], failHistoryPage = false;
+  const historyEvent = (id, name, payload, extra = {}) => ({
+    id, name, payload, capability: "hinata_io", kind: "signal", origin: "device",
+    operationId: null, parentOperationId: null, at: "2026-11-10T10:00:00.000+08:00", ...extra,
+  });
+  const history = [
+    historyEvent("coin", "cabinet.coin", {coins:2,previousCredit:4,credit:6}),
+    historyEvent("credit", "cabinet.credit", {credits:3,previousCredit:6,credit:9}),
+    historyEvent("spent", "cabinet.consumed", {credits:1,previousCredit:9,credit:8}),
+    historyEvent("reset", "cabinet.reset", {previousCredit:8,credit:0,previousTotalCoin:220,totalCoin:0}),
+    historyEvent("failed", "coin", {outcome:"failed",message:"机台未在线"}, {kind:"result",origin:"platform",operationId:"failed-op"}),
+  ];
   page.on("pageerror", (error) => exceptions.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") exceptions.push(message.text()); });
   // Each device sits on its own Home Assistant connection here, so a device going
@@ -99,6 +110,9 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: answers[p] ?? {} }) });
     }
     calls.push(p + url.search);
+    if (p === "/api/v1/merchant/machines/cab/events" && url.searchParams.has("before") && failHistoryPage) {
+      return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"READ_FAILED",message:"记录读取暂时失败"}})});
+    }
     let data = {};
     if (p === "/api/v1/me") data = { user: { id: "owner", username: "owner", displayName: "owner", role, hasShops: true } };
     else if (p === "/api/v1/merchant/shops") data = { shops: [shop] };
@@ -106,6 +120,11 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     else if (p === "/api/v1/merchant/resource-groups") data = { resourceGroups: [{ id: "default", name: "默认资源组", enabled: true, isDefault: true, defaultPricingConfigId: null, resourceCount: 0 }] };
     else if (p === "/api/v1/merchant/machines/occupancy") data = { resources: [] };
     else if (p === "/api/v1/merchant/machines/states") data = { states: shopRead };
+    else if (p === "/api/v1/merchant/machines/cab/events") data = url.searchParams.has("before") ? {
+      events: [historyEvent("failed-request", "coin", {}, {kind:"request",origin:"platform",operationId:"failed-op"}),
+        historyEvent("legacy", "cabinet.coin", {coins:1,credit:4})], nextCursor:null,
+    } : { events:history, nextCursor:"failed" };
+    else if (/\/machines\/[^/]+\/occupancy$/.test(p)) data = {entries:[]};
     else if (p === "/api/v1/merchant/device-bindings") data = { bindings: [] };
     else if (p === "/api/v1/merchant/ha-connections") data = { connections: [] };
     else if (p === "/api/v1/merchant/idle-power") data = { settings: { devices: {}, shopEmpty: { enabled: false, minutes: 30 }, device: { enabled: false, minutes: 30, whileOccupied: "off" } } };
@@ -120,7 +139,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   });
   await page.goto(`${origin}/merchant/demo/devices`);
   await page.getByText("机台A", { exact: true }).waitFor();
-  return { page, context, calls, exceptions, sockets, received, puts, actions, setShopRead: (next) => { shopRead = next; }, setDeletionBlocked: (value) => { deletionBlocked = value; } };
+  return { page, context, calls, exceptions, sockets, received, puts, actions, setFailHistoryPage: (value) => { failHistoryPage = value; }, setShopRead: (next) => { shopRead = next; }, setDeletionBlocked: (value) => { deletionBlocked = value; } };
 }
 
 const card = (page, name) => page.locator("article", { has: page.getByRole("heading", { name, exact: true }) });
@@ -159,6 +178,34 @@ async function operate(page, name, button) {
   try {
     for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
       const label = viewport.width < 600 ? "mobile" : "desktop";
+
+      const records = await openBoard(browser, { watchedIo: false, viewport });
+      await card(records.page, "机台A").getByRole("button", {name:"更多 机台A",exact:true}).click();
+      await card(records.page, "机台A").getByRole("button", {name:"操作记录",exact:true}).click();
+      const historyPanel = records.page.getByRole("dialog");
+      await historyPanel.getByText("投入 2 枚 · 本次读数：4 → 6 币",{exact:true}).waitFor();
+      await historyPanel.getByText("增加 3 币 · 本次读数：6 → 9 币",{exact:true}).waitFor();
+      await historyPanel.getByText("消耗 1 币 · 本次读数：9 → 8 币",{exact:true}).waitFor();
+      await historyPanel.getByText("本次读数：8 → 0 币 · 累计投币：220 → 0 枚",{exact:true}).waitFor();
+      await historyPanel.getByText("机台未在线",{exact:true}).waitFor();
+      records.setFailHistoryPage(true);
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).click();
+      await historyPanel.getByRole("alert").filter({hasText:"记录读取暂时失败"}).waitFor();
+      assert.equal(await historyPanel.getByText("增加 3 币 · 本次读数：6 → 9 币",{exact:true}).count(),1,"A failed page preserves earlier entries");
+      records.setFailHistoryPage(false);
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).click();
+      await historyPanel.getByText("投入 1 枚 · 机内剩余 4 币",{exact:true}).waitFor();
+      assert.equal(await historyPanel.getByRole("button",{name:"加载更多",exact:true}).count(),0);
+      assert.equal(await historyPanel.getByText(/^→\s*投币$/).count(),1,"Request/result pair across pages becomes one row");
+      assert.equal(await historyPanel.getByText("机台未在线",{exact:true}).count(),1);
+      await records.page.screenshot({path:`${output}/device-history-${label}.png`,fullPage:true});
+      assert.equal(await records.page.evaluate(() => document.documentElement.scrollWidth > innerWidth),false);
+      await historyPanel.getByRole("button",{name:"刷新记录",exact:true}).click();
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).waitFor();
+      assert.equal(await historyPanel.getByText("投入 1 枚 · 机内剩余 4 币",{exact:true}).count(),0,"Refresh replaces the loaded pages");
+      assert.deepEqual(records.exceptions.filter((error) => !error.includes("503 (Service Unavailable)")),[]);
+      await records.context.close();
+      console.log(`PASS ${label} device history: coin details, old records, pagination retry, cross-page action pairing, refresh`);
 
       const deletion = await openBoard(browser, { watchedIo: false, viewport });
       await edit(deletion.page, "机台A");
