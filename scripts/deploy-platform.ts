@@ -6,6 +6,7 @@ import { randomToken, sha256 } from "../packages/server/src/crypto";
 import { deploymentHealth, deploymentRequest } from "./deployment-control-client";
 import { deploymentControlPath } from "../packages/server/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
+import { deployWorker, deploymentCommand as command } from "./deploy-worker";
 
 assertDeploymentBranch(process.env);
 
@@ -55,7 +56,12 @@ const steps: PlatformDeploymentSteps = {
   },
   async deploy(phase) {
     console.log(`Deploying ${phase} phase for ${base.name} (${revision.slice(0, 12)})`);
-    await command(deploymentArgs(phase));
+    await deployWorker(
+      (triggersOnly) => command(triggersOnly
+        ? ["wrangler", "triggers", "deploy", "--config", configs.get(phase)!]
+        : deploymentArgs(phase)),
+      controlOptions.sleep,
+    );
     console.log(`Waiting for authenticated ${phase} phase at ${origin.origin}`);
     await deploymentRequest(controlOptions, { action: "probe" }, phase);
     activePhase = phase;
@@ -86,11 +92,3 @@ const steps: PlatformDeploymentSteps = {
 };
 if (Bun.argv.includes("--dry-run")) await steps.preflight();
 else await deployPlatform(steps);
-
-async function command(args: string[], capture = false): Promise<string> {
-  const process = Bun.spawn(args, { cwd: root, stdout: capture ? "pipe" : "inherit", stderr: "inherit", stdin: "ignore" });
-  const output = capture ? await new Response(process.stdout).text() : "";
-  const status = await process.exited;
-  if (status !== 0) throw new Error(`${args.join(" ")} failed (exit ${status})`);
-  return output;
-}
