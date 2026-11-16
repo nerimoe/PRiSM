@@ -1,7 +1,7 @@
 /**
  * Device capability, event, operation and state tables.
  *
- * Mirrors migration 0037 except for the `machines` foreign keys: this schema is
+ * Mirrors migration 0037 (and 0050, which says where an event came from) except for the `machines` foreign keys: this schema is
  * also used without the platform `machines` table (adapter-sqlite, backup
  * format inference), so the reference is enforced by the D1 migration only.
  * Capability names, event kinds and action names are validated by the
@@ -33,6 +33,8 @@ export const deviceEventSchema = [
     staff_id TEXT,
     payload_json TEXT NOT NULL DEFAULT '{}',
     occurred_at TEXT NOT NULL,
+    via TEXT,
+    via_resource_id TEXT,
     PRIMARY KEY (shop_id, id)
   )`,
   `CREATE TABLE IF NOT EXISTS device_operations (
@@ -103,6 +105,7 @@ export const deviceEventSchema = [
   `CREATE UNIQUE INDEX IF NOT EXISTS device_capabilities_credential ON device_capabilities(credential_hash) WHERE credential_hash IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS device_events_device ON device_events(shop_id, device_id, occurred_at)`,
   `CREATE INDEX IF NOT EXISTS device_events_operation ON device_events(shop_id, operation_id)`,
+  `CREATE INDEX IF NOT EXISTS device_events_via ON device_events(shop_id, via_resource_id, occurred_at) WHERE via_resource_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS device_operations_player ON device_operations(shop_id, player_id, requested_at)`,
   `CREATE INDEX IF NOT EXISTS device_operations_device ON device_operations(shop_id, device_id, requested_at)`,
   `CREATE INDEX IF NOT EXISTS device_operations_action ON device_operations(shop_id, action, requested_at)`,

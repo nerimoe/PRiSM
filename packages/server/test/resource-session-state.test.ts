@@ -438,7 +438,7 @@ describe("telling bots what happened", () => {
       sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop-id','p1','Alice','active',?)", [new Date().toISOString()]);
       const device = (await loadResource(db, "shop-id", "cab"))!;
       const bus = createRuntimeBus({ db, env, shopId: "shop-id" });
-      await bus.perform({ device, action: "power.on", actor: { type: "player", playerId: "p1" }, payload: { viaBot: "bot-1" } });
+      await bus.perform({ device, action: "power.on", actor: { type: "player", playerId: "p1" }, via: { channel: "bot", resourceId: "bot-1" } });
       await bus.perform({ device, action: "power.off", actor: { type: "staff", staffId: "boss" } });
       await createRuntimeBus({ db, env, shopId: "shop-id", notifyHub: false })
         .perform({ device, action: "power.off", actor: { type: "system" } });

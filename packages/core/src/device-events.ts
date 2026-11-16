@@ -25,6 +25,20 @@ export type DeviceEventActor =
   | { type: "staff"; staffId: string }
   | { type: "system" };
 
+/**
+ * Where an event came into the platform: a scanned page, the merchant board, a
+ * bot, the HTTP API, a HINATA IO's own channel, a Home Assistant watcher, or a
+ * rule of the platform's own.
+ */
+export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
+
+/**
+ * The way an event took. `resourceId` names the resource it came through when
+ * that is one of the shop's own, such as the bot a command was said to; the
+ * event then belongs to that resource's history as well as its device's.
+ */
+export type DeviceEventVia = { channel: DeviceEventChannel; resourceId: string | null };
+
 export type DeviceEvent = {
   id: string;
   /** Null only for a request aimed at several devices at once ("all"). */
@@ -39,7 +53,34 @@ export type DeviceEvent = {
   staffId: string | null;
   payload: Record<string, unknown>;
   occurredAt: Date;
+  /** Null or absent for an event recorded before events said where they came from. */
+  via?: DeviceEventVia | null;
 };
+
+/**
+ * The one name an event is known by to whoever listens for it. A listener
+ * matches this and nothing else:
+ *
+ * - a request is `<action>.requested`
+ * - its result is `<action>.sent` when the hardware took it, `<action>.failed`
+ *   when it refused, `<action>.unanswered` when nobody can say
+ * - a signal is its own name (`card.consumed`)
+ * - a change is `<capability>.<key>.changed`, or `<key>.changed` when the
+ *   capability has one state of its own name (`power.changed`)
+ *
+ * `sent` and not `succeeded`: the result says the hardware accepted the call,
+ * never that the device did what was asked. What the device then did is a
+ * change or a signal of its own.
+ */
+export function deviceEventType(event: Pick<DeviceEvent, "kind" | "name" | "capability" | "payload">): string {
+  if (event.kind === "request") return `${event.name}.requested`;
+  if (event.kind === "result") {
+    const outcome = event.payload.outcome;
+    return `${event.name}.${outcome === "ok" ? "sent" : outcome === "failed" ? "failed" : "unanswered"}`;
+  }
+  if (event.kind === "signal") return event.name;
+  return event.capability === event.name ? `${event.name}.changed` : `${event.capability}.${event.name}.changed`;
+}
 
 /** The outcome of one requested action, derived from its request and result events. */
 export type DeviceOperation = {

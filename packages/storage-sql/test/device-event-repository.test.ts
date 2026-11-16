@@ -147,4 +147,33 @@ describe("device event repository", () => {
     await repo.record({ events: [], operation: operation({ id: "a", requestedAt: new Date("2026-02-01T00:00:00.000Z") }) });
     expect((await repo.listOperationsByPlayer("p1")).map((o) => o.id)).toEqual(["a", "b"]);
   });
+
+  it("keeps where an event came from, and says nothing for one that never said", async () => {
+    const { repo } = fixture();
+    await repo.record({ events: [
+      event({ id: "old" }),
+      event({ id: "said", kind: "request", name: "power.on", via: { channel: "bot", resourceId: "bot-1" } }),
+      event({ id: "page", kind: "request", name: "coin", via: { channel: "page", resourceId: null } }),
+    ] });
+    const via = new Map((await repo.listEvents({ deviceId: "m1", limit: 10 })).map((e) => [e.id, e.via]));
+    expect(via.get("old")).toBeNull();
+    expect(via.get("said")).toEqual({ channel: "bot", resourceId: "bot-1" });
+    expect(via.get("page")).toEqual({ channel: "page", resourceId: null });
+  });
+
+  it("returns the events it wrote, without a change whose state did not move", async () => {
+    const { repo } = fixture();
+    const first = event({ id: "c1", payload: { to: "on" } });
+    expect((await repo.record({ events: [], states: [{ write: powerState("on"), event: first }] })).map((e) => e.id))
+      .toEqual(["c1"]);
+    const signal = event({ id: "s1", kind: "signal", name: "card.consumed", capability: "hinata_io" });
+    const written = await repo.record({
+      events: [signal],
+      states: [
+        { write: powerState("on"), event: event({ id: "c2", payload: { to: "on" } }) },
+        { write: { ...powerState("cool"), capability: "climate", key: "climate" }, event: event({ id: "c3", capability: "climate", name: "climate" }) },
+      ],
+    });
+    expect(written.map((e) => e.id)).toEqual(["s1", "c3"]);
+  });
 });

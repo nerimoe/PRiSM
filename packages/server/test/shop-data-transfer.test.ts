@@ -98,7 +98,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       format:string;version:number;scope:string;tables:{players:Array<{id:string}>};
     };
     expect(backup.format).toBe("prism-shop-data");
-    expect(backup.version).toBe(5);
+    expect(backup.version).toBe(6);
     expect(backup.scope).toBe("business");
     expect(backup.tables.players.some(player=>player.id==="player-v2")).toBe(true);
 
@@ -135,7 +135,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(5);
+    expect(backup.version).toBe(6);
     const {tables,...header}=backup;
     const post=async(url:string,payload:unknown)=>{
       return app.fetch(new Request(url,{
@@ -240,6 +240,48 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.close();
   });
 
+  it("carries where an event came from, and restores a v5 backup that never said",async()=>{
+    const restore=async(asV5:boolean)=>{
+      const {sqlite,env,app,headers}=await transferFixture();
+      sqlite.run(
+        `INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,payload_json,occurred_at,via,via_resource_id)
+         VALUES ('source','bot-asked',NULL,'power','request','power.on','op-1','platform','{}','2026-01-01T00:00:00.000Z','bot','bot-1')`,
+      );
+      const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
+      const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
+      expect(backup.tables.device_events).toEqual([expect.objectContaining({id:"bot-asked",via:"bot",via_resource_id:"bot-1"})]);
+      if(asV5){
+        // What a v5 export of the same shop looked like: events without the two columns.
+        backup.version=5;
+        backup.tables.device_events=backup.tables.device_events!.map(({via:_via,via_resource_id:_resource,...row})=>row);
+      }
+      const {tables,...header}=backup;
+      const destination="https://prism.test/api/v1/shops/destination/data";
+      const post=(url:string,payload:unknown)=>app.fetch(new Request(url,{
+        method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload),
+      }),env);
+      const {jobId}=((await (await post(`${destination}/imports`,header)).json()) as {data:{jobId:string}}).data;
+      let part=0;
+      for(const [table,rows] of Object.entries(tables)){
+        if(!rows.length)continue;
+        expect((await post(`${destination}/imports/${jobId}/parts`,{table,part,rows})).status).toBe(200);
+        part++;
+      }
+      const counts=Object.fromEntries(Object.entries(tables).map(([table,rows])=>[table,rows.length]));
+      const preview=((await (await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part})).json()) as {
+        data:{canImport:boolean;errors:string[];fingerprint:string};
+      }).data;
+      expect(preview.errors).toEqual([]);
+      const applied=await post(`${destination}/imports/${jobId}/apply`,{fingerprint:preview.fingerprint,operationId:crypto.randomUUID()});
+      expect(applied.status).toBe(200);
+      const row=sqlite.query("SELECT via,via_resource_id FROM device_events WHERE shop_id='destination' AND id='bot-asked'").get();
+      sqlite.close();
+      return row;
+    };
+    expect(await restore(false)).toEqual({via:"bot",via_resource_id:"bot-1"});
+    expect(await restore(true)).toEqual({via:null,via_resource_id:null});
+  });
+
   it("round-trips a full configuration backup with the original settings and shop profile",async()=>{
     const {sqlite,env,app,headers}=await transferFixture();
     const source="https://prism.test/api/v1/shops/source/data";
@@ -255,7 +297,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(5);
+    expect(backup.version).toBe(6);
     expect(backup.scope).toBe("configuration");
     const {tables,...header}=backup;
     const created=await call(`${dest}/imports`,header);

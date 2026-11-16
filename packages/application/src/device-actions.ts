@@ -2,6 +2,7 @@ import type {
   DeviceCommand,
   DeviceCommandActor,
   DeviceCommandType,
+  DeviceEventVia,
   DeviceReferenceTarget,
 } from "@prism/core";
 
@@ -17,6 +18,8 @@ export type RequestDeviceActionInput = {
   target: DeviceReferenceTarget;
   type: DeviceCommandType;
   payload?: Record<string, unknown>;
+  /** Where the request came into the platform, such as the bot it was said to. */
+  via?: DeviceEventVia;
 };
 
 export type DeviceActionService = {

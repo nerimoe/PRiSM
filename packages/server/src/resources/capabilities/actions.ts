@@ -170,6 +170,8 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
         fetcher: deps.fetcher,
         now: deps.now,
         id: deps.id,
+        // A caller that does not say came through the HTTP API with a token.
+        via: input.via ?? { channel: "api", resourceId: null },
       });
 
       const all = targets.length > 1;

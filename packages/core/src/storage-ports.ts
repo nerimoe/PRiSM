@@ -275,7 +275,11 @@ export type DeviceRecord = {
 };
 
 export type DeviceEventRepository = {
-  record(input: DeviceRecord): Promise<void>;
+  /**
+   * Returns the events that were written, in the order given. A `change` whose
+   * state did not move is not among them: it never happened.
+   */
+  record(input: DeviceRecord): Promise<DeviceEvent[]>;
   listEvents(input: { deviceId: string; limit: number; before?: string }): Promise<DeviceEvent[]>;
   getOperation(id: string): Promise<DeviceOperation | null>;
   listOperationsByPlayer(playerId: string): Promise<DeviceOperation[]>;

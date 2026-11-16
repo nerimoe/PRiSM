@@ -1777,7 +1777,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
     }
     if (writes.length) {
-      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, notifyHub: false });
+      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, notifyHub: false, via: { channel: "ha", resourceId: null } });
       try {
         for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
       } catch (error) {

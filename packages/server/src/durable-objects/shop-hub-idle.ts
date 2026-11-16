@@ -176,7 +176,7 @@ export async function runIdleCheck(input: {
   });
 
   // The hub is told about an IO this switches off itself, so it does not call back into its own object.
-  const bus = createRuntimeBus({ db, env, shopId, notifyHub: false });
+  const bus = createRuntimeBus({ db, env, shopId, notifyHub: false, via: { channel: "system", resourceId: null } });
   const memory: IdleMemory = {
     emptySince: plan.emptySince,
     emptyHandled: plan.emptyHandled,

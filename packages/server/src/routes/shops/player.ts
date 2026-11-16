@@ -313,7 +313,7 @@ async function openDoor(
   playerId: string,
   operationId: string,
 ): Promise<{ temporaryPassword: string; expiresAt: string } | null> {
-  const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id });
+  const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id, via: { channel: "page", resourceId: null } });
   const done = await bus.perform({
     device,
     action: "door.open",

@@ -41,7 +41,7 @@ prism-neo 转换出的文件头带 `"partial": true`、不带 `shopProfile`：�
 ```json
 {
   "format": "prism-shop-data",
-  "version": 5,
+  "version": 6,
   "scope": "business",
   "exportedAt": "2026-10-06T00:00:00.000Z",
   "source": {
@@ -63,7 +63,7 @@ prism-neo 转换出的文件头带 `"partial": true`、不带 `shopProfile`：�
 
 上述是结构示意，不能直接导入。每行省略 `shop_id`，其余字段是数据库原始列和值；`device_capabilities.secret_json` 中的密钥以明文导出。
 
-当前导出 **v5**，与 v4 只差一处：`device_operations` 不再有 `confirmed_at`（请求不再记录被设备确认的时间，见迁移 0047）。导入 v3、v4 文件时这一列被丢弃，其余照常；导入只写入当前表结构里还有的列。设备身份在 `machines`（含所属资源组 `resource_group_id`、专属计费方案 `pricing_config_override_id`、容量 `capacity` 与占用时长 `occupancy_minutes`；早先的 v4 文件没有后两列时取默认值 0 与 15；麻将能力配置里还带人数 `capacity` 的旧文件，导入时把它搬到麻将桌的容量上），资源组在 `resource_groups`，能力在 `device_capabilities`，历史在 `device_operations`、`device_events`、`device_state`。设备引用了文件中不存在的资源组时导入检查拒绝。导入仍接受 v1–v4 文件；v3 文件没有资源组，其中的设备都属于默认资源组，见[资源与资源组](resources.md)。v2 文件的 `machines` 带连接列（`hinata_url`、`hinata_password`、`ha_binding_json`、`ttlock_lock_id`、`coin_key`、`coin_after_swipe`、`mahjong_config_json`），并带 `device_commands`、`device_states`、`machine_connections` 三张表；导入时按迁移 0037 的同一规则转换：连接列变成能力，命令变成操作及其请求／结果事件（未完成的保持未完成，计费结果不变），电源状态变成观测值，`machine_connections` 丢弃。`account_links` 表包含账号关联资料。玩家在店铺的卡片（`player_cards`，用平台密钥加密）和占用记录不导出，`aime` 类型的旧卡片身份也不再导出；恢复后玩家再次刷卡时卡片重新绑定，见 [卡片、占用与查人](occupancy.md)。导入归属当前经鉴权的目标店铺，不接受文件指定任意店铺、表或列。
+当前导出 **v6**，与 v5 只差一处：`device_events` 多了 `via` 与 `via_resource_id`，记录事件从哪里进入平台、经过店铺的哪个资源（如 Bot，见迁移 0050 和 [集成与设备](integrations-and-machines.md)）。导入 v3–v5 文件时这两列留空；导入 v6 文件时 `via_resource_id` 与 `device_id` 一样按导入后的设备编号改写。v5 与 v4 也只差一处：`device_operations` 不再有 `confirmed_at`（请求不再记录被设备确认的时间，见迁移 0047）。导入 v3、v4 文件时这一列被丢弃，其余照常；导入只写入当前表结构里还有的列。设备身份在 `machines`（含所属资源组 `resource_group_id`、专属计费方案 `pricing_config_override_id`、容量 `capacity` 与占用时长 `occupancy_minutes`；早先的 v4 文件没有后两列时取默认值 0 与 15；麻将能力配置里还带人数 `capacity` 的旧文件，导入时把它搬到麻将桌的容量上），资源组在 `resource_groups`，能力在 `device_capabilities`，历史在 `device_operations`、`device_events`、`device_state`。设备引用了文件中不存在的资源组时导入检查拒绝。导入仍接受 v1–v5 文件；v3 文件没有资源组，其中的设备都属于默认资源组，见[资源与资源组](resources.md)。v2 文件的 `machines` 带连接列（`hinata_url`、`hinata_password`、`ha_binding_json`、`ttlock_lock_id`、`coin_key`、`coin_after_swipe`、`mahjong_config_json`），并带 `device_commands`、`device_states`、`machine_connections` 三张表；导入时按迁移 0037 的同一规则转换：连接列变成能力，命令变成操作及其请求／结果事件（未完成的保持未完成，计费结果不变），电源状态变成观测值，`machine_connections` 丢弃。`account_links` 表包含账号关联资料。玩家在店铺的卡片（`player_cards`，用平台密钥加密）和占用记录不导出，`aime` 类型的旧卡片身份也不再导出；恢复后玩家再次刷卡时卡片重新绑定，见 [卡片、占用与查人](occupancy.md)。导入归属当前经鉴权的目标店铺，不接受文件指定任意店铺、表或列。
 
 事件时间、UTC 规则、JSON 时间轴和金额保持存储原值。货币使用整数分；数量和百分比保持原值。历史计费版本与发布时区不再次转换。下载附件及分页中的 `payload_json`／`headerJson` 不进行展示时区转换。
 

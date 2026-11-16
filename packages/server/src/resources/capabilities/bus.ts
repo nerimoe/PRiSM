@@ -12,11 +12,16 @@
  *   observe(...)     an external state read live, recorded only when it moved
  *
  * Callers never write device tables directly.
+ *
+ * Every event says where it came from (`via`), and every event that was
+ * written is handed to `published`: the one place whoever listens hears it.
  */
 import type {
   DeviceEvent,
+  DeviceRecord,
   DeviceEventActor,
   DeviceEventRepository,
+  DeviceEventVia,
   DeviceOperation,
   DeviceOperationStatus,
 } from "@prism/core";
@@ -64,6 +69,14 @@ export type DeviceBusDependencies = {
   id: () => string;
   runners: Partial<Record<ActionName, ActionRunner>>;
   readers: Partial<Record<string, StateReader>>;
+  /** Where this bus's events come from, unless an action says otherwise. */
+  via?: DeviceEventVia;
+  /**
+   * Told every event once it is written, in order. A change whose state did
+   * not move was not written and is not told. Must not throw: what happened
+   * has happened, whoever fails to hear it.
+   */
+  published?: (events: readonly DeviceEvent[]) => Promise<void>;
 };
 
 export type PerformInput = {
@@ -77,6 +90,8 @@ export type PerformInput = {
   transient?: Record<string, unknown>;
   /** The player a staff member acted for, when it was not the player themselves. */
   forPlayerId?: string;
+  /** Where this request came from, when it is not where the bus's events usually do. */
+  via?: DeviceEventVia;
   /** Wait for what the action's spec `awaits`, before returning. */
   wait?: boolean;
 };
@@ -97,16 +112,23 @@ export type DeviceBus = ReturnType<typeof createDeviceBus>;
 
 export function createDeviceBus(deps: DeviceBusDependencies) {
   const event = (
-    input: Omit<DeviceEvent, "id" | "occurredAt" | "parentOperationId" | "playerId" | "staffId"> &
-      Partial<Pick<DeviceEvent, "parentOperationId" | "playerId" | "staffId">>,
+    input: Omit<DeviceEvent, "id" | "occurredAt" | "parentOperationId" | "playerId" | "staffId" | "via"> &
+      Partial<Pick<DeviceEvent, "parentOperationId" | "playerId" | "staffId" | "via">>,
   ): DeviceEvent => ({
     id: deps.id(),
     occurredAt: deps.now(),
     parentOperationId: null,
     playerId: null,
     staffId: null,
+    via: deps.via ?? null,
     ...input,
   });
+
+  /** Write, then tell whoever listens what was written. */
+  const record = async (input: DeviceRecord): Promise<void> => {
+    const written = await deps.events.record(input);
+    if (deps.published && written.length) await deps.published(written);
+  };
 
   async function observe(
     device: Resource,
@@ -117,7 +139,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
     if (!reader) return null;
     const value = await reader(device);
     if (value === null || value === undefined) return null;
-    await deps.events.record({
+    await record({
       events: [],
       states: [
         {
@@ -178,7 +200,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         requestedAt,
         settledAt: null,
       };
-      await deps.events.record({
+      await record({
         events: [
           {
             ...event({
@@ -191,6 +213,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
               origin: "platform",
               payload,
               ...actorFields,
+              ...(input.via ? { via: input.via } : {}),
             }),
             occurredAt: requestedAt,
           },
@@ -217,7 +240,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
       const settledAt = deps.now();
       const persisted =
         outcome.outcome === "ok" && !action.sensitiveResult ? (outcome.result ?? {}) : {};
-      await deps.events.record({
+      await record({
         events: [
           event({
             deviceId: input.device.id,
@@ -234,6 +257,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
               ...persisted,
             },
             ...actorFields,
+            ...(input.via ? { via: input.via } : {}),
           }),
         ],
         // Unknown leaves the operation pending: the device may still have acted,
@@ -276,7 +300,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         payload: input.payload ?? {},
         playerId: input.playerId ?? null,
       });
-      await deps.events.record({ events: [occurred] });
+      await record({ events: [occurred] });
       return true;
     },
 
@@ -291,7 +315,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
       if (spec?.state[input.key]?.authority !== "owned") {
         throw new PrismDomainError("State is not owned by the platform.", "DEVICE_STATE_NOT_OWNED");
       }
-      await deps.events.record({
+      await record({
         events: [],
         states: [
           {
@@ -341,7 +365,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
       }>,
     ): Promise<void> {
       if (!items.length) return;
-      await deps.events.record({
+      await record({
         events: [],
         states: items.map((item) => {
           const write = {

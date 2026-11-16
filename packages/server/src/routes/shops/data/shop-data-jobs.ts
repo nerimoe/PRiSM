@@ -694,10 +694,12 @@ async function applyJob(
         : table === "device_capabilities" || table === "device_operations" || table === "device_events" || table === "device_state"
           ? "device_id"
           : null;
-    if (deviceCol)
-      expressions[cols.indexOf(deviceCol)] =
-        `COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id
-      AND d.source_id=json_extract(payload_json,'$.${deviceCol}')),json_extract(payload_json,'$.${deviceCol}'))`;
+    // The resource an event came through (a bot) is renumbered like the device it happened on.
+    for (const col of [deviceCol, ...(table === "device_events" ? ["via_resource_id"] : [])])
+      if (col && cols.includes(col))
+        expressions[cols.indexOf(col)] =
+          `COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id
+      AND d.source_id=json_extract(payload_json,'$.${col}')),json_extract(payload_json,'$.${col}'))`;
     if (table === "sessions")
       expressions[cols.indexOf("metadata_json")] =
         `CASE WHEN EXISTS(SELECT 1 FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId'))

@@ -186,7 +186,7 @@ export async function executeResourceAction(
         .bind(machine.id, shop.id, user.id, body.operationId)
         .run();
 
-      const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id });
+      const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id, via: { channel: staff ? "merchant" : "page", resourceId: null } });
       const done = await bus.perform({
         device,
         action,

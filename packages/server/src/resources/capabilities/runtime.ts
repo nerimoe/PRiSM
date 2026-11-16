@@ -8,6 +8,9 @@ import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { createD1Executor } from "@prism/adapter-d1";
 import { normalizeTTLockConnectionConfig } from "@prism/application";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import type { DeviceEventVia } from "@prism/core";
+import { createEventDispatcher } from "../../events/dispatcher.js";
+import { eventSubscribers } from "../../events/subscribers.js";
 import type { Env } from "../../bindings.js";
 import { callHomeAssistantPower, callHomeAssistantService } from "../../hardware/home-assistant.js";
 import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardware/hinata.js";
@@ -34,6 +37,10 @@ export type DeviceRuntime = {
    * waiting for that IO. The hub's own idle power-off sets this to false.
    */
   notifyHub?: boolean;
+  /** Where what this bus records came from: the page, board, bot or channel that made it. */
+  via?: DeviceEventVia;
+  /** A request's `waitUntil`: what only reacts to an event runs after the answer. */
+  defer?: (work: Promise<unknown>) => void;
 };
 
 /**
@@ -182,7 +189,9 @@ function doorRunner(runtime: DeviceRuntime): ActionRunner {
  * hardware accepted it. What then happened at the device is told by the device.
  */
 async function announceAction(runtime: DeviceRuntime, input: PerformInput, playerId: string | null, started: boolean) {
-  const viaBot = typeof input.payload?.viaBot === "string" ? input.payload.viaBot : null;
+  // A bot has answered its own command already and does not announce it again.
+  const via = input.via ?? runtime.via;
+  const viaBot = via?.channel === "bot" ? via.resourceId : null;
   const place = { resourceId: input.device.id, resourceName: input.device.name, ...(viaBot ? { botId: viaBot } : {}) };
   const who = await eventPlayer(runtime.db, runtime.shopId, playerId);
   const announce = (event: ShopEvent) => announceShopEvent(runtime.env, runtime.shopId, event);
@@ -223,6 +232,12 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     now: runtime.now ?? (() => new Date()),
     id: runtime.id ?? (() => crypto.randomUUID()),
     runners,
+    ...(runtime.via ? { via: runtime.via } : {}),
+    published: createEventDispatcher({
+      subscribers: eventSubscribers,
+      context: { db: runtime.db, env: runtime.env, shopId: runtime.shopId },
+      ...(runtime.defer ? { defer: runtime.defer } : {}),
+    }),
     readers: {
       "power.power": (device) => readPower(runtime, device),
       "climate.climate": async (device) => {

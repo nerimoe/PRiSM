@@ -166,9 +166,11 @@ async function deviceAction(
     ...identityInput(ctx),
     ...(options.staffOverride ? { staffOverride: true } : {}),
     target,
-    // The action remembers which bot asked, so that bot does not announce it
-    // again after answering the command itself (resources/shop-events.ts).
-    action: { type: type as never, payload: { ...payload, viaBot: ctx.bot.id } },
+    // The request says which bot it came through: it belongs to that bot's
+    // history, and that bot does not announce it again after answering the
+    // command itself (resources/shop-events.ts).
+    action: { type: type as never, payload },
+    via: { channel: "bot", resourceId: ctx.bot.id },
   });
   const view = toDeviceCommandView(action);
   billMoved(ctx, view.playerId as string | null | undefined);

@@ -187,7 +187,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const channel = await this.channel();
     if (!channel) return;
     try {
-      await write(createRuntimeBus({ db: this.env.DB, env: this.env, shopId: channel.shopId }), channel);
+      await write(createRuntimeBus({ db: this.env.DB, env: this.env, shopId: channel.shopId, via: { channel: "relay", resourceId: null } }), channel);
     } catch (error) {
       console.error(JSON.stringify({
         event: "machine_relay_record_failed",
@@ -667,7 +667,8 @@ export class MachineRelay extends BaseDurableObject<Env> {
     if (await coinGate(this.env.DB, channel.shopId, device, operationId) !== "ok") return;
     // The key press is this object's own; it is not sent out and back to reach it.
     const env = { ...this.env, MACHINE_RELAY: { getByName: () => this } } as unknown as Env;
-    await createRuntimeBus({ db: this.env.DB, env, shopId: channel.shopId }).perform({
+    // The platform's own rule asked for this coin, not the reader the card came through.
+    await createRuntimeBus({ db: this.env.DB, env, shopId: channel.shopId, via: { channel: "system", resourceId: null } }).perform({
       device, action: "coin", actor: { type: "player", playerId }, operationId,
       ...(cardOperation ? { parentOperationId: cardOperation } : {}),
     });

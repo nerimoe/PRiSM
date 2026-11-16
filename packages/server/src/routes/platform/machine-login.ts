@@ -158,7 +158,7 @@ async function handleLogin(c:C,routePublicId?:string) {
   await c.env.DB.prepare(
     "INSERT INTO player_operations (shop_id,user_id,id,kind,status,created_at,device_id) VALUES (?,?,?,'aime.scan','pending',?,?)",
   ).bind(shop.id,user.id,operationId,now,machine.id).run();
-  const bus=createRuntimeBus(runtime);
+  const bus=createRuntimeBus({...runtime,via:{channel:"page",resourceId:null}});
   const actor=playerId?{type:"player" as const,playerId}:{type:"staff" as const,staffId:`user:${user.id}`};
   // Swiping a card through a shop's page binds it to the player there, so the
   // shop's readers know whose card it is. A shop without billing knows the

@@ -1,5 +1,6 @@
 import type {
   DeviceEvent,
+  DeviceEventChannel,
   DeviceEventRepository,
   DeviceOperation,
   DeviceRecord,
@@ -21,7 +22,12 @@ type EventRow = {
   staff_id: string | null;
   payload_json: string;
   occurred_at: string;
+  via: string | null;
+  via_resource_id: string | null;
 };
+
+const eventColumns =
+  "id, device_id, capability, kind, name, operation_id, parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at, via, via_resource_id";
 
 type OperationRow = {
   id: string;
@@ -86,7 +92,27 @@ function toEvent(row: EventRow): DeviceEvent {
     staffId: row.staff_id,
     payload: parseObject(row.payload_json),
     occurredAt: new Date(row.occurred_at),
+    via: row.via ? { channel: row.via as DeviceEventChannel, resourceId: row.via_resource_id } : null,
   };
+}
+
+function eventParams(event: DeviceEvent) {
+  return [
+    event.id,
+    event.deviceId,
+    event.capability,
+    event.kind,
+    event.name,
+    event.operationId,
+    event.parentOperationId,
+    event.origin,
+    event.playerId,
+    event.staffId,
+    JSON.stringify(event.payload),
+    event.occurredAt.toISOString(),
+    event.via?.channel ?? null,
+    event.via?.resourceId ?? null,
+  ];
 }
 
 function toOperation(row: OperationRow): DeviceOperation {
@@ -122,23 +148,9 @@ function toState(row: StateRow): DeviceStateValue {
 
 function insertEvent(shop: string, event: DeviceEvent): SqlStatement {
   return {
-    sql: `INSERT INTO device_events (shop_id, id, device_id, capability, kind, name, operation_id,
-            parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at)
-          VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      event.id,
-      event.deviceId,
-      event.capability,
-      event.kind,
-      event.name,
-      event.operationId,
-      event.parentOperationId,
-      event.origin,
-      event.playerId,
-      event.staffId,
-      JSON.stringify(event.payload),
-      event.occurredAt.toISOString(),
-    ],
+    sql: `INSERT INTO device_events (shop_id, ${eventColumns})
+          VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: eventParams(event),
   };
 }
 
@@ -154,29 +166,11 @@ function insertChangeIfDifferent(
   write: { deviceId: string; capability: string; key: string; value: string },
 ): SqlStatement {
   return {
-    sql: `INSERT INTO device_events (shop_id, id, device_id, capability, kind, name, operation_id,
-            parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at)
-          SELECT ${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    sql: `INSERT INTO device_events (shop_id, ${eventColumns})
+          SELECT ${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE NOT EXISTS (SELECT 1 FROM device_state WHERE shop_id = ${shop}
             AND device_id = ? AND capability = ? AND key = ? AND value_json = ?)`,
-    params: [
-      event.id,
-      event.deviceId,
-      event.capability,
-      event.kind,
-      event.name,
-      event.operationId,
-      event.parentOperationId,
-      event.origin,
-      event.playerId,
-      event.staffId,
-      JSON.stringify(event.payload),
-      event.occurredAt.toISOString(),
-      write.deviceId,
-      write.capability,
-      write.key,
-      write.value,
-    ],
+    params: [...eventParams(event), write.deviceId, write.capability, write.key, write.value],
   };
 }
 
@@ -185,6 +179,8 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
   return {
     async record(input: DeviceRecord) {
       const statements: SqlStatement[] = input.events.map((event) => insertEvent(shop, event));
+      // Changes are written only when their state moved, which SQL decides.
+      const guarded: DeviceEvent[] = [];
 
       if (input.operation) {
         const op = input.operation;
@@ -229,7 +225,10 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
         const target = { ...write, value };
         // Order matters: the change guard must read the old value before the
         // upsert below replaces it.
-        if (event) statements.push(insertChangeIfDifferent(shop, event, target));
+        if (event) {
+          statements.push(insertChangeIfDifferent(shop, event, target));
+          guarded.push(event);
+        }
         statements.push({
           sql: `INSERT INTO device_state (shop_id, device_id, capability, key, value_json, authority, event_id, changed_at)
                 VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?)
@@ -252,12 +251,17 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
       }
 
       if (statements.length) await executor.batch(statements);
+      if (!guarded.length) return [...input.events];
+      const written = new Set((await executor.all<{ id: string }>(
+        `SELECT id FROM device_events WHERE shop_id = ${shop} AND id IN (SELECT value FROM json_each(?))`,
+        [JSON.stringify(guarded.map((event) => event.id))],
+      )).map((row) => row.id));
+      return [...input.events, ...guarded.filter((event) => written.has(event.id))];
     },
 
     async listEvents({ deviceId, limit, before }) {
       const rows = await executor.all<EventRow>(
-        `SELECT id, device_id, capability, kind, name, operation_id, parent_operation_id, origin,
-                player_id, staff_id, payload_json, occurred_at
+        `SELECT ${eventColumns}
          FROM device_events WHERE shop_id = ${shop} AND device_id = ?
          ${before ? `AND (occurred_at, id) < (
            SELECT occurred_at, id FROM device_events WHERE shop_id = ${shop} AND device_id = ? AND id = ?

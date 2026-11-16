@@ -156,4 +156,33 @@ describe("0037 device history migration", () => {
     db.exec(readFileSync(resolve(migrationDir, "0037_device_events.sql"), "utf8"));
     expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+
+  it("gives a bot's past requests and their results their bot, and guesses nothing else (0050)", () => {
+    const db = new Database(":memory:");
+    migrateUpTo(db, "0049_page_reports.sql");
+    db.exec(`
+      INSERT INTO users(id) VALUES ('owner');
+      INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by)
+        VALUES ('shop','shop-code','Shop',0,0,80,'owner');
+    `);
+    const insert = (id: string, kind: string, operation: string | null, payload: string) =>
+      db.run(
+        `INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,payload_json,occurred_at)
+         VALUES ('shop',?,NULL,'power',?,'power.on',?,'platform',?,'2026-02-01T10:00:00.000Z')`,
+        [id, kind, operation, payload],
+      );
+    insert("bot.request", "request", "op-bot", JSON.stringify({ deviceLabel: "A", viaBot: "bot-1" }));
+    insert("bot.result", "result", "op-bot", JSON.stringify({ outcome: "ok" }));
+    insert("page.request", "request", "op-page", JSON.stringify({ deviceLabel: "A" }));
+    insert("page.result", "result", "op-page", JSON.stringify({ outcome: "ok" }));
+    insert("change", "change", null, JSON.stringify({ to: "on" }));
+    db.exec(readFileSync(resolve(migrationDir, "0050_device_event_via.sql"), "utf8"));
+    expect(db.query("SELECT id, via, via_resource_id FROM device_events ORDER BY id").all()).toEqual([
+      { id: "bot.request", via: "bot", via_resource_id: "bot-1" },
+      { id: "bot.result", via: "bot", via_resource_id: "bot-1" },
+      { id: "change", via: null, via_resource_id: null },
+      { id: "page.request", via: null, via_resource_id: null },
+      { id: "page.result", via: null, via_resource_id: null },
+    ]);
+  });
 });

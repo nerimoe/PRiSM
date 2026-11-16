@@ -278,6 +278,10 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - 状态（`device_state`）只在值变化时写一条 `change` 事件。电源和空调是**外部权威**：真相在 Home Assistant。一个连接被监听者订阅时（事件驱动），每个事件写入 `device_state`，存储的值就是事实，读者只读存储；没有人监听时（无状态）设备没有已知状态，读者现查 HA 且不记录，存储里残留的旧值被忽略（见「店铺 Hub」）。直连链路 `link` 是**平台权威**，由中继在连接/断开时写入。
 - 以后要做「空闲/忙碌」这类派生状态时，应当监听**事件**（包括设备回报和观测到的变化），而不是只看平台发出的动作。
 
+- **来源**：每条事件记下它是从哪里进入平台的（`via`）：`page`（扫码页）、`merchant`（商户后台）、`bot`、`api`（带 Token 的 HTTP 接口）、`relay`（HINATA IO 自己的通道）、`ha`（Home Assistant 监听者）、`system`（平台自己的规则，如闲置关机、刷卡后投币）。来源是店铺自己的某个资源时再记下它的编号（`via_resource_id`），目前只有 Bot：经 Bot 发起的请求及其结果都带着那个 Bot 的资源编号，不再往 payload 里塞 `viaBot`。迁移 `0050` 加这两列，并把旧数据里带 `viaBot` 的请求及其结果补上；其余历史事件保持空值，不去猜。
+- **事件名**：监听者只认一个名字（`@prism/core` 的 `deviceEventType`）。请求是 `<动作>.requested`；结果是 `<动作>.sent`（硬件收下了）、`<动作>.failed`（硬件拒绝）、`<动作>.unanswered`（无法确定）；回报就是它自己的名字（`card.consumed`）；状态变化是 `<能力>.<键>.changed`，能力只有一个同名状态时简写（`power.changed`、`climate.changed`、`hinata_io.link.changed`）。叫 `sent` 而不叫成功：结果只说明硬件收下了调用，设备之后真的做了什么是另一条事件。
+- **分发**：事件写入后由总线交给分发器（`packages/server/src/events/dispatcher.ts`），按事件名逐条交给订阅者。订阅者是写在代码里的一张表（`events/subscribers.ts`），没有运行时注册：Worker 只活一次请求，分发就是写入之后的一次函数调用。订阅者分两档：`inline` 在回答调用方之前跑完，只给回答或计费依赖的东西用；`after` 在 `inline` 之后跑，有 `waitUntil` 时交给它，不拖慢回答。订阅者只对已经发生的事做出反应，不决定它是否发生，所以某个订阅者出错只记日志（`event_subscriber_failed`），不影响其他订阅者，也不撤销已写入的事件。状态没变的 `change` 没有写入，也就不会分发。**这张表目前是空的**：占用、Bot 播报、页面刷新、Live Activity、闲置规则仍在各自产生事件的地方手工调用，之后逐个迁入。
+
 所有写入都经过 `packages/server/src/resources/capabilities/bus.ts`：`perform`（动作）、`signal`（回报）、`setOwned`（平台权威状态）、`reportMany`（监听者上报的外部状态，一批写入，可只存储不记事件）。`observe`（现读后写入）仍在总线上但不再用于任何读取路径。动作不会在完成后读回外部状态。其他代码不直接写设备表。卡号只作为临时参数交给执行器，从不落库；门锁临时密码只在本次响应返回。
 
 ### 设备看板与编辑器（Web）

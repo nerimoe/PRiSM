@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { DeviceEvent, DeviceEventRepository, DeviceOperation, DeviceRecord, DeviceStateValue } from "@prism/core";
+import { deviceEventType } from "@prism/core";
+import type { DeviceEvent, DeviceEventRepository, DeviceEventVia, DeviceOperation, DeviceRecord, DeviceStateValue } from "@prism/core";
 import { createDeviceBus, type ActionRunner, type StateReader } from "../src/resources/capabilities/bus.js";
 import type { BoundCapability, Resource } from "../src/resources/resource.js";
 import type { CapabilityId } from "../src/resources/capabilities/catalog.js";
@@ -11,6 +12,7 @@ function memoryRepository() {
   const state = new Map<string, { value: unknown; changedAt: Date }>();
   const repo: DeviceEventRepository = {
     async record(input: DeviceRecord) {
+      const before = events.length;
       events.push(...input.events);
       if (input.operation) operations.set(input.operation.id, input.operation);
       if (input.settle) {
@@ -26,6 +28,7 @@ function memoryRepository() {
         if (event) events.push(event);
         state.set(key, { value: write.value, changedAt: event?.occurredAt ?? write.at ?? new Date(0) });
       }
+      return events.slice(before);
     },
     async listEvents() { return [...events].reverse(); },
     async getOperation(id) { return operations.get(id) ?? null; },
@@ -48,7 +51,12 @@ const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["ur
   device({ hinata_io: { config: { transport: "external", coinKey: 32, coinAfterSwipe: false, ...config }, secretNames: new Set(secrets) } });
 const powerDevice = () => device({ power: { secretNames: new Set(["binding"]) } });
 
-function busWith(input: { runners?: Record<string, ActionRunner>; readers?: Record<string, StateReader> } = {}) {
+function busWith(input: {
+  runners?: Record<string, ActionRunner>;
+  readers?: Record<string, StateReader>;
+  via?: DeviceEventVia;
+  published?: (events: readonly DeviceEvent[]) => Promise<void>;
+} = {}) {
   const memory = memoryRepository();
   let tick = 0;
   let next = 0;
@@ -58,6 +66,8 @@ function busWith(input: { runners?: Record<string, ActionRunner>; readers?: Reco
     id: () => `id${next++}`,
     runners: input.runners ?? {},
     readers: input.readers ?? {},
+    ...(input.via ? { via: input.via } : {}),
+    ...(input.published ? { published: input.published } : {}),
   });
   return { bus, ...memory };
 }
@@ -241,5 +251,56 @@ describe("device bus: signals and state", () => {
     const { bus, events } = busWith({ readers: { "power.power": async () => null } });
     expect(await bus.observe(powerDevice(), "power", "power")).toBeNull();
     expect(events).toEqual([]);
+  });
+});
+
+describe("device bus: where events come from and who hears them", () => {
+  it("stamps every event with the way the bus was given, and a request with its own", async () => {
+    const { bus, events } = busWith({
+      runners: { "power.on": async () => ({ outcome: "ok" }) },
+      via: { channel: "page", resourceId: null },
+    });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player, via: { channel: "bot", resourceId: "bot-1" } });
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    expect(events.map((e) => [e.kind, e.via?.channel, e.via?.resourceId ?? null])).toEqual([
+      ["request", "page", null], ["result", "page", null],
+      ["request", "bot", "bot-1"], ["result", "bot", "bot-1"],
+      ["change", "page", null],
+    ]);
+  });
+
+  it("says nothing about where an event came from when nobody told it", async () => {
+    const { bus, events } = busWith();
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed" });
+    expect(events[0]!.via).toBeNull();
+  });
+
+  it("publishes each event once it is written, by its one name, and not a change that did not happen", async () => {
+    const heard: string[] = [];
+    const { bus } = busWith({
+      runners: { "power.on": async () => ({ outcome: "ok" }), coin: async () => ({ outcome: "failed", message: "设备未连接" }) },
+      published: async (events) => { heard.push(...events.map(deviceEventType)); },
+    });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player });
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed" });
+    // A per-frame signal is not stored, so there is nothing to hear.
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "led.set" });
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    await bus.setOwned({ device: { id: "m1" }, capability: "hinata_io", key: "link", value: "online" });
+    expect(heard).toEqual([
+      "power.on.requested", "power.on.sent",
+      "coin.requested", "coin.failed",
+      "card.consumed",
+      "power.changed",
+      "hinata_io.link.changed",
+    ]);
+  });
+
+  it("names a request nobody answered", () => {
+    expect(deviceEventType({ kind: "result", name: "aime.scan", capability: "hinata_io", payload: { outcome: "unknown" } }))
+      .toBe("aime.scan.unanswered");
   });
 });

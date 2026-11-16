@@ -2,6 +2,7 @@ import type {
   DeviceCommand,
   Cents,
   DeviceCommandType,
+  DeviceEventVia,
   DeviceReferenceTarget,
   ExternalIdentity,
   Player,
@@ -55,6 +56,8 @@ export type IntegrationDeviceActionInput = IntegrationIdentityInput & {
     type: DeviceCommandType;
     payload?: Record<string, unknown>;
   };
+  /** Where the request came into the platform, such as the bot it was said to. */
+  via?: DeviceEventVia;
 };
 
 export type IntegrationAssetAdjustmentInput = IntegrationIdentityInput & {
@@ -280,6 +283,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
           target: input.target,
           type: input.action.type,
           payload: input.action.payload,
+          ...(input.via ? { via: input.via } : {}),
         });
       }
       const player = await resolveOrRegister(input);
@@ -291,6 +295,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
         target: input.target,
         type: input.action.type,
         payload: input.action.payload,
+        ...(input.via ? { via: input.via } : {}),
       });
     },
 

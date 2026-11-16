@@ -91,6 +91,22 @@ describe("device action service", () => {
     })).rejects.toMatchObject({ code: "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION" });
   });
 
+  it("records which bot a request came through, on the request and its result, and nothing in the payload", async () => {
+    const { service, machine, sqlite } = await fixture({ activeSession: true });
+    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
+    await machine("m2", "中二", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m2", password: "pw" } } });
+    const coin = { actor: { type: "staff" as const, staffId: "s1" }, type: "coin" as const };
+    await service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "舞萌" }, via: { channel: "bot", resourceId: "bot-1" } });
+    // A caller that does not say came through the API.
+    await service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "中二" } });
+    expect(sqlite.query("SELECT device_id, kind, via, via_resource_id, payload_json FROM device_events ORDER BY device_id, occurred_at, kind").all()).toEqual([
+      { device_id: "m1", kind: "request", via: "bot", via_resource_id: "bot-1", payload_json: JSON.stringify({ deviceLabel: "舞萌" }) },
+      { device_id: "m1", kind: "result", via: "bot", via_resource_id: "bot-1", payload_json: JSON.stringify({ outcome: "ok" }) },
+      { device_id: "m2", kind: "request", via: "api", via_resource_id: null, payload_json: JSON.stringify({ deviceLabel: "中二" }) },
+      { device_id: "m2", kind: "result", via: "api", via_resource_id: null, payload_json: JSON.stringify({ outcome: "ok" }) },
+    ]);
+  });
+
   it("applies the coin cooldown to a player's earlier coin", async () => {
     const { service, machine, io } = await fixture({ activeSession: true });
     await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
