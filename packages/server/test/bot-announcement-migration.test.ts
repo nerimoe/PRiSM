@@ -62,3 +62,51 @@ describe("migration 0046: a bot has one announcement channel list", () => {
     expect(JSON.parse(untouched.json)).toEqual({ idleChannelIds: ["not-a-channel-list"] });
   });
 });
+
+describe("migration 0051: a bot announces by one list of rules", () => {
+  it("turns each bot's groups and what it said there into its first rule, and drops what the rules replace", () => {
+    const sqlite = new Database(":memory:");
+    const now = new Date().toISOString();
+    sqlite.run(`
+      CREATE TABLE device_capabilities(
+        shop_id TEXT NOT NULL, device_id TEXT NOT NULL, capability TEXT NOT NULL,
+        config_json TEXT NOT NULL, secret_json TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (shop_id, device_id, capability))`);
+    const bots: Record<string, Record<string, unknown>> = {
+      // A list of what it announces, with the switches the server kept beside it.
+      listed: { tokenId: "t1", playerCommands: "readonly", idleReminderMinutes: 10, announceChannelIds: ["onebot:1", "onebot:2"],
+        announceEvents: ["card", "request.power.on", "idle.reminder"], announceIdle: true, announcePower: false, announceStarts: false, announceCards: true, announceCoins: false },
+      // Set before there was a list: only switches.
+      switched: { tokenId: "t2", announceChannelIds: ["onebot:3"], announceEvents: null, announceIdle: true, announcePower: true, announceStarts: false, announceCards: false, announceCoins: true },
+      // Somewhere to say it but nothing to say, and something to say but nowhere: neither said anything.
+      quiet: { tokenId: "t3", announceChannelIds: ["onebot:4"], announceEvents: [] },
+      homeless: { tokenId: "t4", announceChannelIds: [], announceEvents: ["card"] },
+      fresh: { tokenId: "t5" },
+    };
+    for (const [id, config] of Object.entries(bots))
+      sqlite.run("INSERT INTO device_capabilities VALUES ('shop', ?, 'bot', ?, '{}', ?, ?)", [id, JSON.stringify(config), now, now]);
+    // Other capabilities are left alone.
+    sqlite.run("INSERT INTO device_capabilities VALUES ('shop', 'm1', 'power', ?, '{}', ?, ?)", [JSON.stringify({ announceChannelIds: ["not-a-bot"] }), now, now]);
+
+    run(sqlite, "0051_bot_announcement_rules.sql");
+
+    const configs = Object.fromEntries(
+      sqlite.query("SELECT device_id AS id, config_json AS json FROM device_capabilities").all()
+        .map((row) => [(row as { id: string }).id, JSON.parse((row as { json: string }).json)]),
+    );
+    expect(configs.listed).toEqual({
+      tokenId: "t1", playerCommands: "readonly", idleReminderMinutes: 10,
+      announceRules: [{ events: ["card", "request.power.on", "idle.reminder"], sources: [], to: ["onebot:1", "onebot:2"], staff: false }],
+    });
+    expect(configs.switched).toEqual({
+      tokenId: "t2",
+      announceRules: [{ events: ["idle.reminder", "power.on", "power.off", "request.coin"], sources: [], to: ["onebot:3"], staff: false }],
+    });
+    expect(configs.quiet).toEqual({ tokenId: "t3", announceRules: [] });
+    expect(configs.homeless).toEqual({ tokenId: "t4", announceRules: [] });
+    expect(configs.fresh).toEqual({ tokenId: "t5", announceRules: [] });
+    expect(configs.m1).toEqual({ announceChannelIds: ["not-a-bot"] });
+    sqlite.close();
+  });
+});

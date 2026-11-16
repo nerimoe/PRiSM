@@ -103,26 +103,38 @@ describe("a bot is a resource", () => {
     expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual({});
   });
 
-  it("keeps the rules a bot listens by, and refuses a source nobody records", async () => {
+  it("announces by one list of rules, and refuses an event or a source nobody knows", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot();
+    // A bot with no rules announces nothing.
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual([]);
-    const rules = [{ events: ["checkout.settled"], sources: ["page"], channelIds: ["onebot:9"], staff: true }];
+    // A group and a person are the same kind of destination; the idle warning is an event like any other.
+    const rules = [
+      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], staff: true },
+      { events: ["card", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false },
+    ];
     expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules: rules } })).status).toBe(200);
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
     // Other settings leave the rules alone.
     await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { playerCommands: "readonly" } });
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
-    const bad = await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, {
-      bot: { announceRules: [{ events: ["card"], sources: ["phone"], channelIds: [], staff: false }] },
-    });
-    expect(bad.status).toBe(422);
+    for (const announceRules of [
+      [{ events: ["card"], sources: ["phone"], to: [], staff: false }],
+      [{ events: ["nope"], sources: [], to: ["onebot:1"], staff: false }],
+    ]) {
+      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules } })).status).toBe(422);
+    }
+    // What a bot had before rules is no setting any more.
+    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }]) {
+      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: old })).status).toBe(422);
+    }
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
+    expect((await bot(created.token).get("bot")).body.settings).not.toHaveProperty("announceChannelIds");
   });
 
   it("issues its token once and tells it its settings and what the shop knows", async () => {
     const { bot, createBot, call } = await fixture();
-    const created = await createBot({ playerCommands: "readonly", announceChannelIds: ["group-1"] });
+    const created = await createBot({ playerCommands: "readonly", idleReminderMinutes: 10 });
     expect(created.token).toMatch(/^prism_integration_/);
     expect(created.machine.bot).toMatchObject({ playerCommands: "readonly" });
     expect(created.machine.bot).not.toHaveProperty("tokenId");
@@ -133,32 +145,13 @@ describe("a bot is a resource", () => {
     expect(config.status).toBe(200);
     expect(config.body).toMatchObject({
       bot: { id: created.id, name: "店铺 Bot" },
-      settings: { playerCommands: "readonly", announceChannelIds: ["group-1"], staffCommands: true },
+      settings: { playerCommands: "readonly", idleReminderMinutes: 10, announceRules: [], staffCommands: true },
       currencyName: "猫粮",
       staff: [{ provider: "onebot", subject: "10001" }],
       // The only door, found without being chosen.
       door: { id: "door", name: "大门" },
       mahjongTables: [{ id: "table", name: "A 桌", aliases: ["a"], capacity: 2 }],
     });
-  });
-
-  it("tells by type what it announces, with the switches older bots read kept in step", async () => {
-    const { bot, createBot, call } = await fixture();
-    // A bot set before the catalog: its switches become its list.
-    const old = await createBot({ announcePower: true, announceCards: true });
-    expect((await bot(old.token).get("bot")).body.settings).toMatchObject({
-      announceEvents: ["power.on", "power.off", "card"],
-      announcePower: true, announceCards: true,
-    });
-    // A list decides; unknown types are dropped, and the switches follow it.
-    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceEvents: ["power.on", "card", "cabinet.consumed", "nope"] } });
-    expect((await bot(old.token).get("bot")).body.settings).toMatchObject({
-      announceEvents: ["power.on", "card", "cabinet.consumed"],
-      announcePower: false, announceCards: true, announceCoins: false,
-    });
-    // An editor that only knows switches is still heard: its switch replaces the list.
-    await call("PATCH", `/api/v1/merchant/machines/${old.id}`, OWNER, { bot: { announceCoins: true } });
-    expect((await bot(old.token).get("bot")).body.settings.announceEvents).toEqual(["card", "request.coin"]);
   });
 
   it("refreshes connected bots when a bound account becomes a shop owner or leaves", async () => {

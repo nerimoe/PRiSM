@@ -1,14 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import {
-  announcedTypes,
   announcementDestinations,
   isShopAnnouncementSource,
   isShopAnnouncementType,
-  shopAnnouncementSources,
-  legacyAnnounceSwitches,
   shopAnnouncementCatalog,
   shopAnnouncementLabel,
-  switchesFor,
+  shopAnnouncementSources,
+  staffDestination,
+  type ShopAnnouncementRule,
 } from "../src/shop-announcements";
 
 describe("shop announcement catalog", () => {
@@ -20,68 +19,58 @@ describe("shop announcement catalog", () => {
     expect(isShopAnnouncementType("card.login")).toBe(false);
   });
 
-  it("only maps the old switches to types the catalog has", () => {
-    for (const types of Object.values(legacyAnnounceSwitches))
-      for (const type of types) expect(isShopAnnouncementType(type)).toBe(true);
-  });
-
-  it("reads a bot set with switches as the types they meant", () => {
-    expect(announcedTypes({ announcePower: true, announceCards: true, announceCoins: false })).toEqual([
-      "power.on", "power.off", "card",
-    ]);
-    expect(announcedTypes({})).toEqual([]);
-  });
-
-  it("lets a list win over switches and drops what the catalog does not know", () => {
-    expect(announcedTypes({ announcePower: true, announceEvents: ["power.on", "nonsense", "power.on"] })).toEqual(["power.on"]);
-    expect(announcedTypes({ announcePower: true, announceEvents: [] })).toEqual([]);
-  });
-
-  it("turns a switch on only when its list covers everything the switch meant", () => {
-    expect(switchesFor(["card", "request.power.on"])).toEqual({
-      announceIdle: false, announcePower: false, announceStarts: false, announceCards: true, announceCoins: false,
-    });
-    expect(switchesFor(["power.on", "power.off", "idle.reminder"]))
-      .toMatchObject({ announcePower: true, announceIdle: true });
-    // A list read back from its own switches says the same thing.
-    const list = announcedTypes(switchesFor(["start", "request.coin"]));
-    expect(list).toEqual(["start", "request.coin"]);
-  });
-});
-
-describe("where a bot says an announcement", () => {
-  const staff = [{ provider: "onebot", subject: "10001" }, { provider: "kook", subject: "k9" }];
-
-  it("sends what it announces to its channel list, as before there were rules", () => {
-    const config = { announceEvents: ["card"], announceChannelIds: ["onebot:42", "onebot:43"] };
-    expect(announcementDestinations(config, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:43"]);
-    expect(announcementDestinations(config, { type: "start", via: "relay" }, staff)).toEqual([]);
-    // A bot still set by switches.
-    expect(announcementDestinations({ announceCards: true, announceChannelIds: ["onebot:42"] }, { type: "card" }, staff)).toEqual(["onebot:42"]);
-  });
-
-  it("sends what a rule listens for to that rule's groups and to staff privately", () => {
-    const config = {
-      announceEvents: ["card"], announceChannelIds: ["onebot:42"],
-      announceRules: [
-        { events: ["checkout.settled", "request.power.on"], sources: ["page"], channelIds: ["onebot:99"], staff: true },
-        { events: ["card"], sources: [], channelIds: ["onebot:42", "onebot:7"], staff: false },
-      ],
-    };
-    // Done on a scanned page: the rule's group, then each staff member's own chat.
-    expect(announcementDestinations(config, { type: "checkout.settled", via: "page" }, staff))
-      .toEqual(["onebot:99", "onebot:private:10001", "kook:private:k9"]);
-    // The same thing done through a bot, or with no source known, is not what the rule listens for.
-    expect(announcementDestinations(config, { type: "checkout.settled", via: "bot" }, staff)).toEqual([]);
-    expect(announcementDestinations(config, { type: "checkout.settled" }, staff)).toEqual([]);
-    // A rule with no source named hears it from anywhere; a place named twice is told once.
-    expect(announcementDestinations(config, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:7"]);
-  });
-
   it("names every source a device event can record", () => {
     expect(shopAnnouncementSources.map((source) => source.channel).sort())
       .toEqual(["api", "bot", "ha", "merchant", "page", "relay", "system"]);
     expect(isShopAnnouncementSource("page")).toBe(true);
     expect(isShopAnnouncementSource("phone")).toBe(false);
+  });
+});
+
+describe("where a bot says an announcement", () => {
+  const staff = [{ provider: "onebot", subject: "10001" }, { provider: "kook", subject: "k9" }];
+  const rule = (rule: Partial<ShopAnnouncementRule>): ShopAnnouncementRule => ({ events: [], sources: [], to: [], staff: false, ...rule });
+
+  it("says nothing without a rule that listens for it", () => {
+    expect(announcementDestinations([], { type: "card", via: "relay" }, staff)).toEqual([]);
+    expect(announcementDestinations([rule({ events: ["start"], to: ["onebot:42"] })], { type: "card", via: "relay" }, staff)).toEqual([]);
+  });
+
+  it("treats a group and a person as the same kind of destination", () => {
+    const rules = [rule({ events: ["card", "idle.reminder"], to: ["onebot:42", "onebot:private:10001"] })];
+    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
+    // The idle warning is an event like any other.
+    expect(announcementDestinations(rules, { type: "idle.reminder", via: "system" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
+  });
+
+  it("names staff as whoever they are when it happens", () => {
+    const rules = [rule({ events: ["checkout.settled"], to: ["onebot:99"], staff: true })];
+    expect(announcementDestinations(rules, { type: "checkout.settled" }, staff))
+      .toEqual(["onebot:99", "onebot:private:10001", "kook:private:k9"]);
+    expect(announcementDestinations(rules, { type: "checkout.settled" }, [])).toEqual(["onebot:99"]);
+    expect(staffDestination({ provider: "onebot", subject: "7" })).toBe("onebot:private:7");
+  });
+
+  it("hears a rule's events only from the sources it names, and from anywhere when it names none", () => {
+    const rules = [
+      rule({ events: ["checkout.settled", "request.power.on"], sources: ["page"], staff: true }),
+      rule({ events: ["card"], to: ["onebot:42"] }),
+    ];
+    expect(announcementDestinations(rules, { type: "checkout.settled", via: "page" }, staff))
+      .toEqual(["onebot:private:10001", "kook:private:k9"]);
+    // The same thing done through a bot, or with no source known, is not what the rule listens for.
+    expect(announcementDestinations(rules, { type: "checkout.settled", via: "bot" }, staff)).toEqual([]);
+    expect(announcementDestinations(rules, { type: "checkout.settled" }, staff)).toEqual([]);
+    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42"]);
+    expect(announcementDestinations(rules, { type: "card" }, staff)).toEqual(["onebot:42"]);
+  });
+
+  it("says it once at a place several rules name, in the order the rules name them", () => {
+    const rules = [
+      rule({ events: ["card"], to: ["onebot:42", "onebot:private:10001"] }),
+      rule({ events: ["card"], to: ["onebot:7", "onebot:42"], staff: true }),
+    ];
+    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff))
+      .toEqual(["onebot:42", "onebot:private:10001", "onebot:7", "kook:private:k9"]);
   });
 });

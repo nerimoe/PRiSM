@@ -76,11 +76,11 @@ describe("a bot credential names its shop", () => {
     // The announcement settings round-trip like the rest.
     const announcing = await call("PATCH", `/api/v1/merchant/machines/${id}`, {
       shopId: "shop", name: "店铺 Bot",
-      bot: { ...rotated.body.machine.bot, announceChannelIds: ["onebot:42"], announceStarts: true, doorPasswordOnEntry: true },
+      bot: { ...rotated.body.machine.bot, announceRules: [{ events: ["start"], sources: [], to: ["onebot:42"], staff: false }], doorPasswordOnEntry: true },
     });
     expect(announcing.status).toBe(200);
     expect(announcing.body.machine.bot).toMatchObject({
-      announceChannelIds: ["onebot:42"], announceStarts: true, announcePower: false, doorPasswordOnEntry: true,
+      announceRules: [{ events: ["start"], sources: [], to: ["onebot:42"], staff: false }], doorPasswordOnEntry: true,
     });
     // The bot is told to hand out a door code on entry, and only when the shop says so.
     expect((await readBot(rotated.body.botToken)).body.settings.doorPasswordOnEntry).toBe(true);

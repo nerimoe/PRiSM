@@ -52,15 +52,15 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - 请求：`{"type":"request","id":"<唯一 ID>","method":"GET|POST|PUT","path":"integration/players/by-identity/wallet","query":{},"body":{}}`；回复 `{"type":"response","id":…,"status":200,"body":{"data":…}}`，`body` 与 HTTP 响应完全相同（含 `{error:{code,message}}`）。Hub 带着 Bot 凭据在进程内调用同一套路由，所以鉴权、校验、灵动岛推送（`waitUntil`）都和 HTTP 一样；吊销凭据后下一个请求就会 403，Hub 随即以 4003 关闭连接。只能访问本店的 `integration/…` 和 `version`，其它路径（包括 `..`）返回 404。
 - 去重：写请求（POST/PUT）的回复按 `id` 保存 10 分钟；同一 `id` 再发一次直接返回保存的回复，不会重复执行；还在执行中的同一 `id` 不再执行。断线后插件不重发、不排队，命令直接失败（「暂时连不上服务器」），避免结账、加钱被重复执行或延后执行。
 - 心跳：发送文本 `ping`，回复 `pong`（Workers 上由运行时自动回复，不唤醒 Hub）。
-- `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台就替它判断、写话、按 Bot 设置播报。旧插件发 `{"type":"hello","reminderLeadSeconds":300,"announcements":"message"}`：插件告诉 Hub 闲置关机前多久提醒，以及它直接播报平台写好的话（见下）。之后 Hub 推送 `{"type":"event","event":"idle.reminder","data":{"reason":"shop_empty"|"device_idle","at":<关机时间 ms>,"devices":[{"id","name"}]}}`；Koishi 发到 Bot 设置的播报群。多个 Bot 连接时取最长的提前量。只有开了「设备闲置」播报、设置了播报群且提前量大于 0 时才声明。
-- `{"type":"event","event":"shop.event","data":…}`：店内动态，Hub 发给所有在线 Bot，每个 Bot 按自己的设置决定播不播。每条带 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台的勾选列表也从它生成。分三组，**请求和事件互不关联**：
+- `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台替它判断、写话，并按 Bot 的监听规则把店内动态和闲置提醒交给它说。没有声明 `commands` 的连接收不到任何店内动态，平台也不为它安排闲置提醒。
+- **店内动态**：发生在店里、Bot 可以播报的事。每条有 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`）、`via`（从哪里进入平台），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台规则里的事件列表也从它生成。分四组，**请求和事件互不关联**：
   - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。
   - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。
-  - **提醒**：`idle.reminder`，走下面的 `idle.reminder` 帧，不是 `shop.event`。
+  - **提醒**：`idle.reminder`（闲置关机预告）。它和其它动态一样由规则决定发到哪里，只是由 Hub 在预告时间发出。
   - **店铺动态**（没有设备参与的事，来自业务事实和被拒绝的请求）：`session.started`（入场）、`session.stopped`（停止计费）、`checkout.settled`（结账，`detail.amount` 是金额）、`wallet.adjusted`（调整余额，`detail.amount` 带正负号）、`gift.redeemed`（兑换礼物）、`request.refused`（设备请求被拒绝，`detail` 带 `action`、`reason`、`code`）。没有设备时 `resourceId`／`resourceName` 为空字符串。
-  每条店内动态还带 `via`：它是从哪里进入平台的（`page` 扫码页、`merchant` 商户后台、`bot`、`api`、`relay` 机台、`ha`、`system` 平台规则；目录在 `shopAnnouncementSources`）。Hub 自己发的 HA 电源变化与闲置关机不带 `via`。
-  **说什么由平台写**：每条还带 `message`，即要播报的话（`resources/shop-events.ts` 的 `announcementText`），格式见下文「Bot 消息」；没有玩家时平台直接写好（如「未绑定的卡」）。`idle.reminder` 帧同样带 `message`（分钟数按发出时计算）。Bot 在 `hello` 里声明 `"announcements":"message"` 后，Hub 读出它的 Bot 资源和类型列表，存在这条连接上，**只发它勾选的类型**，也不发它自己命令引起的那条；Bot 设置一改就会收到 `config.changed`、重发 `hello`，列表随之更新。这样的 Bot 收到就发，不再自己判断播不播、怎么措辞，平台新增类型或改措辞都不用更新插件。
-  兼容旧插件：只有旧插件一直收到的那几种带 `kind`（`power` 对应 `request.power.*`，`card` 对应 `card` 且带 `started`，`coin` 对应 `request.coin` 且带 `started`，`occupancy` 对应投币以外的上机），所以旧插件播报的内容不变；其余类型不带 `kind`，旧插件忽略。Bot 自己的命令引起的动态（事件的来源是这个 Bot）带 `botId`，这个 Bot 已经回复过命令，不再播报。下机（占用超时）是在读取时才结算的，不会实时播报。外部中继没有回报，所以经外部中继的刷卡只有 `request.card`，没有 `card`。
+  `via` 的取值：`page` 扫码页、`merchant` 商户后台、`bot`、`api`、`relay` 机台、`ha` Home Assistant、`system` 平台规则（目录在 `shopAnnouncementSources`）。HA 看到的电源变化是 `ha`，闲置关机及其预告是 `system`。
+  **说什么由平台写**：每条动态的话由平台写好（`resources/shop-events.ts` 的 `announcementText`），格式见下文「Bot 消息」；没有玩家时平台直接写好（如「未绑定的卡」）。Bot 收到就发，不自己判断播不播、怎么措辞，平台新增类型或改措辞都不用更新插件。Bot 设置一改就会收到 `config.changed`，Hub 下一条动态就按新规则发。
+  Bot 自己的命令引起的动态（事件的来源是这个 Bot）带 `botId`，这个 Bot 已经回复过命令，不再播报。下机（占用超时）是在读取时才结算的，不会实时播报。外部中继没有回报，所以经外部中继的刷卡只有 `request.card`，没有 `card`。
 
 - 电源事件（`power.on`／`power.off`）覆盖机台电源和空调，覆盖平台操作、HA 手动开关和自动化、闲置自动关机。平台命令成功只代表请求被接受，由 `request.power.*` 表示；必须由有完整快照的当前监听器报告明确的开／关变化才算电源事件：电源是 `on ↔ off`，空调是 `off ↔ 运行模式`，切换运行模式、调温、风速和室温变化不算。多个设备共用一个实体时合并成一条。旧插件读到的 `kind: "power"`（`by: "ha"`）只来自这些事件。
 
@@ -95,7 +95,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
 
-模板逐 Bot 渲染，不会改变播报开关、频道、真实事件和自身命令去重规则；昵称继续作为玩家片段交给聊天平台解析。支持 `command`／`say` 和声明 `announcements: "message"` 的插件；更早版本自行格式化事件，不支持此设置。模板不写入 WebSocket attachment，避免长文案超出休眠连接附件大小上限。未设置的消息保留原文案。
+模板逐 Bot 渲染，不会改变监听规则、真实事件和自身命令去重规则；昵称继续作为玩家片段交给聊天平台解析。模板不写入 WebSocket attachment，避免长文案超出休眠连接附件大小上限。未设置的消息保留原文案。
 
 ### Bot 是一种资源：设置由服务端下发
 
@@ -108,7 +108,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 | 字段 | 来源 |
 | --- | --- |
 | `bot` | 资源 ID 与名称（名称也用于 Home Assistant 监听名单） |
-| `settings` | 在 Bot 资源上设置：玩家命令全部/只读及提示、店员命令、关机仅限店员、结账回执发给店员、入场后自动获取门锁密码（`doorPasswordOnEntry`，默认关；开着且有门锁时 `login`／`入场` 成功后顺带回复 3 分钟临时密码，门锁失败不影响入场）、播报与提醒（`announceChannelIds` 一处频道，`idleReminderMinutes` 提前分钟数，`announceEvents` 要播报的类型列表；以及给旧插件的 `announceIdle`、`announcePower`、`announceStarts`、`announceCards`、`announceCoins` 五个开关，由列表推出：一个开关代表的类型全都勾选时才算开）。在新列表之前设置的 Bot 存的是开关，下发时把开关换算成列表；保存列表时开关跟着更新；只提交开关的旧编辑器保存时，以开关为准、清掉列表 |
+| `settings` | 在 Bot 资源上设置：玩家命令全部/只读及提示、店员命令、关机仅限店员、结账回执发给店员、入场后自动获取门锁密码（`doorPasswordOnEntry`，默认关；开着且有门锁时 `login`／`入场` 成功后顺带回复 3 分钟临时密码，门锁失败不影响入场）、监听规则（`announceRules`，见「命令协议」）和闲置提醒的提前分钟数（`idleReminderMinutes`） |
 | `staff` | 自动推导：店铺负责人和在职员工的账号绑定的平台身份 `{provider, subject}` |
 | `currencyName` | 自动推导：店铺余额资产的名称 |
 | `door` | 资源上选择的门锁；没选时若店里只有一个门锁就用它 |
@@ -128,11 +128,11 @@ Bot 和其他资源一样属于一个资源组，也可以设置专属方案（�
 - **Bot 消息**（`@prism/core` 的 `bot-message.ts`）：平台写给 Bot 说的话是片段数组，`{"text":"..."}` 是原样文字，`{"player":{"playerId","displayName","identities"}}` 是一位玩家，由 Bot 换成它所在聊天平台上的称呼（群昵称只有 Bot 拿得到）。Bot 只做片段到聊天消息的映射，不认识的片段有 `text` 就说 `text`，否则略过，以后加片段类型（如图片）旧插件也不会出错。
 - **命令协议**（`commands: 1`）：和 HINATA IO 的 MachineRelay 一样，协议在 `durable-objects/shop-hub-bot.ts`，ShopHub 的 `webSocketMessage` 只负责分发，命令在 `resources/bot-commands.ts` 里直接调用店铺的服务，不经过 HTTP 路由，说什么由 `resources/bot-replies.ts` 写。
   - Bot → 平台：`{"type":"command","id","name","args":[…],"from":{provider,subject,name},"target"?:{…},"channel"}`。`name` 是插件注册的命令名，`args` 是玩家打的参数（都是字符串），`target` 是 @ 的那个人，`channel` 是命令发在哪（`onebot:群号`，私聊是 `private:用户`）。
-  - 平台 → Bot：`{"type":"say","replyTo"?,"to"?,"message":[…],"done"?}`。带 `replyTo` 的是对那条命令的回答，`to` 缺省就是原处，私发店员写 `private:用户`，`done` 标最后一句；不带 `replyTo` 的是店内动态和闲置提醒，`to` 是 Bot 设置里的播报群，只发它勾选的类型，不发它自己命令引起的那条。这样的 Bot 不再收 `shop.event`／`idle.reminder` 事件，闲置提醒的提前量也由平台按 Bot 设置算。
-  - **监听规则**：命令协议下，一条店内动态发到哪里由 Bot 资源的设置决定（`@prism/core` 的 `announcementDestinations`）。播报群（`announceChannelIds`）加勾选的类型（`announceEvents`）是第一条规则，不限来源。`announceRules` 是在它旁边的更多规则，每条是 `{events, sources, channelIds, staff}`：`events` 里任一类型发生，且来源在 `sources` 里（留空表示任何来源；写了来源时，没有 `via` 的动态不算），就发到 `channelIds` 的群，`staff` 为真时再私聊每个店员（`to` 写成 `平台:private:用户`，店员是在本店绑定了聊天平台身份的员工）。多条规则指向同一个地方只说一次；这个 Bot 自己的命令引起的动态任何规则都不发。闲置提醒只走第一条规则。例：`{"events":["checkout.settled","session.started","request.power.on"],"sources":["page"],"channelIds":[],"staff":true}` 表示有人在扫码页入场、结账或开机时私聊告诉店员。后台在 Bot 的「播报设置」里编辑；最多 20 条，未知来源保存时拒绝。走 `shop.event` 帧的旧插件不看规则，仍按它勾选的类型收。
+  - 平台 → Bot：`{"type":"say","replyTo"?,"to"?,"message":[…],"done"?}`。带 `replyTo` 的是对那条命令的回答，`to` 缺省就是原处，`done` 标最后一句；不带 `replyTo` 的是店内动态和闲置提醒，`to` 是监听规则给出的目的地，一处一帧。
+  - **监听规则**：Bot 播报什么、发到哪里，只由它的 `announceRules` 决定（`@prism/core` 的 `announcementDestinations`），没有规则就什么都不播。每条规则是 `{events, sources, to, staff}`：`events` 里任一类型发生，且来源在 `sources` 里（留空表示任何来源；写了来源时，没有 `via` 的动态不算），就发到 `to` 里的每个目的地。**目的地不分群和人**，都按 Bot 的写法：群是 `平台:群号`，个人是 `平台:private:用户号`。`staff` 为真时再加上每个店员的私聊；店员是在本店绑定了聊天平台身份的员工，名单在动态发生时取，人员变动不用改规则。多条规则指向同一个目的地只说一次；这个 Bot 自己的命令引起的动态任何规则都不发。闲置提醒（`idle.reminder`）是规则里可选的一种事件：有规则听它且有目的地、`idleReminderMinutes` 大于 0 时才安排预告，多个 Bot 取最长的提前量。例：`{"events":["checkout.settled","session.started","request.power.on"],"sources":["page"],"to":[],"staff":true}` 表示有人在扫码页入场、结账或开机时私聊告诉店员。后台在 Bot 的「播报设置」里编辑；最多 20 条，未知的事件或来源保存时拒绝。迁移 `0051` 把原来的播报群和勾选类型（以及更早的五个开关）转成第一条规则，并删掉这些旧字段。
   - 谁能做什么由平台判断：只读模式下改变状态的命令只有店员能用，带 `target` 只有开了员工命令的店员能用（且必须是同一个聊天平台），`add`／`del`／`overwrite` 必须带 `target`，Bot 不计费时入场直接回「这里不计费」，`off` 可设为只有店员能用。被拒绝时按命令说（如「投币失败，机台里的币已经够了，先玩完再投」），到店校验回网页链接，平台内部错误只说「操作失败，请稍后再试」。
   - 同一个 `id` 再来一次（丢了回答后重发）只执行一次，平台把第一次说的话原样再说一遍（保留 10 分钟）。令牌只在连接时验一次；撤销令牌、删除或停用 Bot 时平台通知 Hub，这样的连接以 4003 断开。
-  - 没有声明 `commands` 的旧 Bot 照旧用 `request` 帧走 HTTP 路由、收 `shop.event`。新插件也还用 `request` 帧问 `version` 和测速。
+  - 插件仍用 `request` 帧问 `version` 和测速，经平台的集成路由执行。
 - `POST integration/players/by-identity/presence` 回答一位玩家是否在店、计费哪些方案、占用哪些资源。`GET integration/sessions/active` 的每条 session 带 `pricingConfigId` 与 `planName`。
 
 ### 常用玩家动作
@@ -288,7 +288,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - `after`：`inline` 全部跑完后，把这一次分发里它要的事件按发生顺序**一起**听到；有 `waitUntil` 时交给它，不拖慢回答。
 - **现有订阅者**（按表里的顺序）：
   - `occupancy`（`inline`，全部事件）：硬件收下的动作（`<动作>.sent`）和设备回报交给占用判定，含义仍由各能力自己决定（见 [卡片、占用与查人](occupancy.md)）。资源对其计费的玩家被看到时发出 `occupancy.seen`，此前不在这个资源上则再发出 `occupancy.started`。员工替玩家操作时，结果事件的 payload 也带 `forPlayerId`，订阅者不用回头查请求。
-  - `bot-announcements`（`after`）：把 `power.on.sent`／`power.off.sent`／`aime.scan.sent`／`coin.sent` 播报成 `request.*`，`card.consumed` 播报成 `card`，`occupancy.started` 播报成 `start`，`cabinet.coin`／`cabinet.consumed`／`cabinet.reset` 原样播报。旧插件的 `started` 标记看同一次分发里有没有由这张卡或这枚币引出的 `occupancy.started`。来源是 Bot 的事件带上 `botId`，那个 Bot 已经回答过自己的命令，不再播报。
+  - `bot-announcements`（`after`）：把 `power.on.sent`／`power.off.sent`／`aime.scan.sent`／`coin.sent` 播报成 `request.*`，`card.consumed` 播报成 `card`，`occupancy.started` 播报成 `start`，`cabinet.coin`／`cabinet.consumed`／`cabinet.reset` 原样播报，业务事实按自己的名字播报，`<动作>.refused` 播报成 `request.refused`。每条带上事件的来源（`via`）；来源是 Bot 的带上 `botId`，那个 Bot 已经回答过自己的命令，不再播报。
   - `hub-power-off`（`after`）：`power.off.sent` 之后让店铺 Hub 开始观察这台机器的 IO。
   - `hub-idle-recheck`（`after`）：目录里标为 `activity` 的设备回报之后让 Hub 重算在场与闲置期限。
   - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
@@ -479,7 +479,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 - **店里没人**：没有任何进行中的场次满 N 分钟（默认 15），关掉所有开着的电源和所有在运行的空调。先等待各设备占用结束，再执行关机；一段「没人」执行成功后不重复，失败按重试窗口再试。没人的起点取 Hub 记下的时间，没有就取最后一次结账时间。
 - **单台设备闲置**：无人占用就是闲置，面板的 `0/n` 即为依据，不另存状态。打开 `device.enabled` 后，闲置满「闲置后关机等待时长」（`device.minutes`，默认 10 分钟，全店一个值）才自动关机。等待起点取「最近平台使用操作／开机时刻」与「占用结束时刻」中较晚的一个，不再额外叠加占用时长，见 [卡片、占用与查人](occupancy.md#闲置自动关机)。空调采用下文的整店条件。可以把设备设为「从不自动关机」（`PUT /idle-power/devices/:deviceId?shopId=`，`{ exclude }`）。店里没人且「店里没人」规则关着时到点关机；店里有人时可选择保持开机（兼容存储值 `whileOccupied: "mark"`）或闲置超时后关机（`"off"`）。旧的 `"remind"` 按 `"off"` 处理，继续预告并到时关机。
 
-**预告与关机共用一个截止时间**：由 `planIdle` 一次计算预告时间、实际关机时间和下一次唤醒，Hub 到预告时间分发 `idle.reminder`，并保留到关机时间的 alarm；到点重新检查占用和活动后，以系统身份执行关机。例如设备无人占用后等待 N 分钟关机，Bot 配置提前 L 分钟，则闲置 N−L 分钟预告、N 分钟关机；L 完全取自 Bot 配置，没有固定 5 分钟。电源和空调都走同一套流程。Bot 设置决定是否预告、提前多久；Bot 离线、关闭预告或发送失败都不阻止平台关机。设备闲置关机在店里无人时同样预告；保持开机的设备不发送关机预告。期间刷卡、投币或延迟关机导致截止时间后移时，预告和关机一起重算，新截止时间可以重新预告；同一截止时间只预告一次。完成关机后的播报仍等待 HA 上报实际电源或空调开关变化。
+**预告与关机共用一个截止时间**：由 `planIdle` 一次计算预告时间、实际关机时间和下一次唤醒，Hub 到预告时间按各 Bot 的监听规则发出 `idle.reminder`，并保留到关机时间的 alarm；到点重新检查占用和活动后，以系统身份执行关机。例如设备无人占用后等待 N 分钟关机，Bot 配置提前 L 分钟，则闲置 N−L 分钟预告、N 分钟关机；L 完全取自 Bot 配置，没有固定 5 分钟。电源和空调都走同一套流程。Bot 设置决定是否预告、提前多久；Bot 离线、关闭预告或发送失败都不阻止平台关机。设备闲置关机在店里无人时同样预告；保持开机的设备不发送关机预告。期间刷卡、投币或延迟关机导致截止时间后移时，预告和关机一起重算，新截止时间可以重新预告；同一截止时间只预告一次。完成关机后的播报仍等待 HA 上报实际电源或空调开关变化。
 
 有人占用的设备不会被关；占用怎么判断见 [卡片、占用与查人](occupancy.md#2-占用)。刷卡建立或刷新占用前，必须识别卡主，并查到该玩家正在按资源实际绑定的方案计费；资源覆盖方案优先于资源组方案。未绑定卡、无对应方案计费、只有其他方案计费或计费已结束都不会通过。平台投币沿用入口的计费校验和冷却。开机和延迟关机只重置关机等待，不产生占用，既不虚构玩家也不再额外保护一段占用时长。开机时刻来自事件驱动连接的 HA `last_changed`。占用到期和座位结束后仍保留结束时刻，不会跳过关机等待。旧设置中大于 0 的默认闲置时长继续作为关机等待时长读取。
 

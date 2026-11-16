@@ -1,7 +1,6 @@
 import { Hono, type Context } from "hono";
 import { createD1Executor, type D1BoundStatementLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
-import { announcedTypes, legacyAnnounceSwitches, switchesFor } from "@prism/core";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
@@ -550,15 +549,7 @@ const machineInput=z.object({
     doorResourceId:z.string().min(1).nullable().optional(),
     receiptsToStaff:z.boolean().optional(),
     doorPasswordOnEntry:z.boolean().optional(),
-    announceChannelIds:z.array(z.string().trim().min(1).max(80)).max(20).optional(),
     idleReminderMinutes:z.number().int().min(0).max(120).optional(),
-    announceIdle:z.boolean().optional(),
-    announcePower:z.boolean().optional(),
-    announceStarts:z.boolean().optional(),
-    announceCards:z.boolean().optional(),
-    announceCoins:z.boolean().optional(),
-    // Announcement types from the catalog; unknown ones are dropped on save.
-    announceEvents:z.array(z.string().min(1).max(40)).max(40).nullable().optional(),
     announceRules:z.array(announceRuleSchema).max(20).optional(),
   }).strict().nullable().optional(),
   rotateBotToken:z.boolean().optional(),
@@ -756,15 +747,7 @@ async function nextBot(
       "INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES (?,?,?,'integration','prism_integration',?,'active',?)",
     ).bind(shopId,tokenId,name,await sha256Hex(token),now));
   }
-  const parsed=capabilities.bot.config.parse({...before,...body.bot,tokenId});
-  // A list decides what is told, and the switches older bots read follow it. An
-  // editor that only knows switches sets them, and the list gives way to them.
-  const touchesSwitches=Object.keys(legacyAnnounceSwitches).some(key=>body.bot&&key in body.bot);
-  const list=body.bot?.announceEvents!==undefined?body.bot.announceEvents
-    :touchesSwitches?null:parsed.announceEvents;
-  const config=list
-    ?{...parsed,announceEvents:announcedTypes({announceEvents:list}),...switchesFor(list)}
-    :{...parsed,announceEvents:null};
+  const config=capabilities.bot.config.parse({...before,...body.bot,tokenId});
   next.set("bot",{config,secrets:{},credentialHash:null});
   return {statements,token};
 }

@@ -117,9 +117,6 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       .bind(context.shopId, JSON.stringify(ids)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
     const tell = (event: ShopEvent) => announceShopEvent(context.env, context.shopId, event);
     const player = (playerId: string | null) => eventPlayer(context.db, context.shopId, playerId);
-    // Older bots hear a start as part of the card or coin that began it.
-    const started = (one: Heard) =>
-      heard.some((other) => other.type === "occupancy.started" && other.event.payload.cause === one.event.id);
 
     for (const one of heard) {
       const { event, type } = one;
@@ -147,20 +144,15 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       }
       if (!event.deviceId) continue;
       const request = REQUESTS[type];
-      if (request === "request.coin") {
-        await announce({ type: request, kind: "coin", ...place, player: await player(forPlayer(one)), started: started(one) });
-      } else if (request) {
+      if (request) {
         await announce({ type: request, ...place, player: await player(forPlayer(one)) });
       } else if (type === "card.consumed") {
         // The game took a card: whether it came from the reader or the platform,
         // this is when it happened, so this is where it is told.
-        await announce({ type: "card", kind: "card", ...place, player: await player(event.playerId), started: started(one) });
+        await announce({ type: "card", ...place, player: await player(event.playerId) });
       } else if (type === "occupancy.started") {
         const who = await player(event.playerId);
-        if (!who) continue;
-        // A coin and a card each said their own news; anything else that starts a stay says only this.
-        const own = event.payload.causeType === "coin.sent" || event.payload.causeType === "card.consumed";
-        await announce(own ? { type: "start", ...place, player: who } : { type: "start", kind: "occupancy", ...place, player: who });
+        if (who) await announce({ type: "start", ...place, player: who });
       } else if ((CABINET as readonly string[]).includes(type)) {
         const { previousCredit: _credit, previousTotalCoin: _previous, totalCoin: _total, ...detail } = event.payload;
         await announce({ type: type as (typeof CABINET)[number], ...place, player: null, detail });

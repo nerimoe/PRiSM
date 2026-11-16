@@ -22,13 +22,6 @@ export type EventPlayer = {
 /** `botId`: the bot whose command this was, which has answered it already. */
 type Place = { resourceId: string; resourceName: string; botId?: string };
 
-/** What older bots understand, set only on the announcements they always got. */
-type LegacyKind =
-  | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system" | "ha" }
-  | { kind: "card"; started: boolean }
-  | { kind: "coin"; started: boolean }
-  | { kind: "occupancy" };
-
 export type ShopEvent = Place & {
   type: ShopAnnouncementType;
   player: EventPlayer | null;
@@ -36,7 +29,7 @@ export type ShopEvent = Place & {
   detail?: Record<string, unknown>;
   /** Where what it tells came into the platform (`DeviceEventChannel`); a bot's rules may ask. */
   via?: string;
-} & (LegacyKind | { kind?: undefined });
+};
 
 /** Who a player is, as a bot names them: display name and platform identities. */
 export async function eventPlayer(db: D1DatabaseLike, shopId: string, playerId: string | null): Promise<EventPlayer | null> {

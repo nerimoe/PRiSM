@@ -1,7 +1,7 @@
 /**
- * What a shop's bots may announce, and which of it a bot is set to say.
+ * What a shop's bots may announce, and the rules by which a bot says it.
  *
- * Three families:
+ * Four families:
  *
  * - **events**: something happened at the shop, as its own hardware told it
  *   (Home Assistant saw a machine come on, a game took a card, a cabinet's coin
@@ -51,43 +51,6 @@ export function isShopAnnouncementType(value: string): value is ShopAnnouncement
 }
 
 /**
- * The five switches bots had before the catalog, as the types they meant. A bot
- * set with switches keeps announcing what it did; one set with a list is also
- * told the switches it amounts to, for bots that only know switches.
- */
-export const legacyAnnounceSwitches = {
-  announceIdle: ["idle.reminder"],
-  announcePower: ["power.on", "power.off"],
-  announceStarts: ["start"],
-  announceCards: ["card"],
-  announceCoins: ["request.coin"],
-} as const satisfies Record<string, readonly ShopAnnouncementType[]>;
-
-export type LegacyAnnounceSwitch = keyof typeof legacyAnnounceSwitches;
-export type LegacyAnnounceSwitches = Record<LegacyAnnounceSwitch, boolean>;
-
-/** What a bot announces: its list when it has one, otherwise what its switches meant. */
-export function announcedTypes(
-  config: Partial<LegacyAnnounceSwitches> & { announceEvents?: readonly string[] | null },
-): ShopAnnouncementType[] {
-  if (config.announceEvents) return [...new Set(config.announceEvents.filter(isShopAnnouncementType))];
-  return (Object.keys(legacyAnnounceSwitches) as LegacyAnnounceSwitch[])
-    .filter((key) => config[key] === true)
-    .flatMap((key) => legacyAnnounceSwitches[key]);
-}
-
-/** The switches a list amounts to: a switch is on when every type it stood for is announced. */
-export function switchesFor(types: readonly string[]): LegacyAnnounceSwitches {
-  const chosen = new Set(types);
-  return Object.fromEntries(
-    (Object.keys(legacyAnnounceSwitches) as LegacyAnnounceSwitch[]).map((key) => [
-      key,
-      legacyAnnounceSwitches[key].every((type) => chosen.has(type)),
-    ]),
-  ) as LegacyAnnounceSwitches;
-}
-
-/**
  * Where what an announcement tells came into the platform, as a shop names it.
  * The same channels a device event records (`DeviceEventChannel`).
  */
@@ -111,43 +74,44 @@ export function isShopAnnouncementSource(value: string): value is ShopAnnounceme
 
 /**
  * One thing a bot listens for and what it does about it: when any of `events`
- * happens, having come from one of `sources` (any, when none is named), it is
- * said in `channelIds` and, with `staff`, privately to each staff member.
+ * happens, having come from one of `sources` (anywhere, when none is named), it
+ * is said at every destination in `to`, and with `staff` to each staff member.
  *
- * A bot's channel list and announcement list are its first rule, with no
- * source named; these are the ones beside it.
+ * A destination is wherever the bot can say something, written as the bot
+ * addresses it: a group (`onebot:42`) and a person (`onebot:private:10001`)
+ * are the same kind of thing. `staff` stands for the private chats of whoever
+ * is staff when the event happens, so the rule need not be edited as they
+ * come and go.
+ *
+ * This list is all a bot announces by: there is no place it says things in
+ * besides what its rules name.
  */
 export type ShopAnnouncementRule = {
   events: readonly string[];
   sources: readonly string[];
-  channelIds: readonly string[];
+  to: readonly string[];
   staff: boolean;
 };
 
 /** A staff member's private chat, as a bot is told where to say something. */
-export const staffPrivateChannel = (identity: { provider: string; subject: string }) =>
+export const staffDestination = (identity: { provider: string; subject: string }) =>
   `${identity.provider}:private:${identity.subject}`;
 
 /**
- * Where a bot says an announcement: every place its rules send it, each once,
- * in the order the rules name them. Empty when the bot does not listen for it.
+ * Where a bot says an announcement: every destination its rules send it to,
+ * each once, in the order the rules name them. Empty when no rule listens for it.
  */
 export function announcementDestinations(
-  config: Partial<LegacyAnnounceSwitches> & {
-    announceEvents?: readonly string[] | null;
-    announceChannelIds?: readonly string[];
-    announceRules?: readonly ShopAnnouncementRule[];
-  },
+  rules: readonly ShopAnnouncementRule[],
   event: { type: string; via?: string | null },
   staff: readonly { provider: string; subject: string }[],
 ): string[] {
   const to: string[] = [];
-  if ((announcedTypes(config) as string[]).includes(event.type)) to.push(...(config.announceChannelIds ?? []));
-  for (const rule of config.announceRules ?? []) {
+  for (const rule of rules) {
     if (!rule.events.includes(event.type)) continue;
     if (rule.sources.length && !(event.via && rule.sources.includes(event.via))) continue;
-    to.push(...rule.channelIds);
-    if (rule.staff) to.push(...staff.map(staffPrivateChannel));
+    to.push(...rule.to);
+    if (rule.staff) to.push(...staff.map(staffDestination));
   }
   return [...new Set(to)];
 }

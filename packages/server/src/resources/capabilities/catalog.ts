@@ -15,7 +15,7 @@
  *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
-import { botReplyTemplateError, isShopAnnouncementSource } from "@prism/core";
+import { botReplyTemplateError, isShopAnnouncementSource, isShopAnnouncementType } from "@prism/core";
 
 export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
   for (const [key, text] of Object.entries(templates)) {
@@ -245,10 +245,13 @@ export const mahjong: CapabilitySpec<MahjongConfig> = {
  * connect. Everything the platform already knows (staff, currency, tables,
  * doors) is derived, never configured here.
  */
+/** One thing a bot listens for and where it says it (`ShopAnnouncementRule`). */
 export const announceRuleSchema = z.object({
-  events: z.array(z.string().min(1).max(40)).max(40),
+  events: z.array(z.string().refine(isShopAnnouncementType, "未知的事件")).max(40),
   sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
-  channelIds: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+  /** Wherever the bot can say something: a group or a person, as the bot addresses it. */
+  to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
+  /** Also each staff member's private chat, whoever is staff when it happens. */
   staff: z.boolean().default(false),
 });
 
@@ -274,34 +277,13 @@ const botConfig = z.object({
    */
   doorPasswordOnEntry: z.boolean().default(false),
   /**
-   * Where everything the shop's bot has to say goes: the idle warning and what
-   * happens at the shop share one list. Which is said is decided per kind
-   * below, not by channel.
-   */
-  announceChannelIds: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
-  /** How many minutes before an idle power-off the channels are warned; 0 for never. */
-  idleReminderMinutes: z.number().int().min(0).max(120).default(5),
-  /**
-   * Which announcements are told, by type from `shopAnnouncementCatalog`. Null
-   * for a bot set before the catalog: its five switches below say what it tells.
-   */
-  announceEvents: z.array(z.string().min(1).max(40)).max(40).nullable().default(null),
-  /**
-   * What else the bot listens for and where it says it (`ShopAnnouncementRule`):
-   * the channel list and announcement list above are its first rule; each of
-   * these names its own events, where they must have come from (any, when
-   * empty) and where to say them, staff's private chats included.
+   * Everything the bot announces, and where: each rule names the events it
+   * listens for, where they must have come from (anywhere, when empty) and the
+   * destinations it says them at. A bot with no rules announces nothing.
    */
   announceRules: z.array(announceRuleSchema).max(20).default([]),
-  /**
-   * The switches older bots read. Kept equal to what `announceEvents` amounts
-   * to (`switchesFor`) whenever the list is set. All off by default.
-   */
-  announceIdle: z.boolean().default(false),
-  announcePower: z.boolean().default(false),
-  announceStarts: z.boolean().default(false),
-  announceCards: z.boolean().default(false),
-  announceCoins: z.boolean().default(false),
+  /** How many minutes before an idle power-off its warning is said; 0 for never. */
+  idleReminderMinutes: z.number().int().min(0).max(120).default(5),
   /** Whether the bot may be given Home Assistant connections to watch. */
 });
 export type BotConfig = z.infer<typeof botConfig>;

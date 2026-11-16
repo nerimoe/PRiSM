@@ -9,7 +9,7 @@ import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/c
 import { loadResource } from "../resources/resource.js";
 import { announcementMessage, idleReminderMessage, shopEventFrame } from "../resources/shop-events.js";
 import { findBotByToken } from "../resources/bot.js";
-import { announcedTypes, announcementDestinations, botMessage, type BotMessage } from "@prism/core";
+import { announcementDestinations, botMessage, type BotMessage } from "@prism/core";
 import type { ShopEvent } from "../resources/shop-events.js";
 import { climatePower } from "../resources/capabilities/idle-power.js";
 import {
@@ -50,17 +50,11 @@ import { app } from "../app.js";
 type BotAttachment = {
   kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string;
   /**
-   * For a bot that says what the platform writes: which bot resource it is and
-   * what it is set to announce, read at its hello (it says hello again whenever
-   * its settings change). Absent for a bot that chooses for itself.
+   * The bot sends its players' commands (`commands: 1`): the platform runs
+   * them and tells it what to say in `say` frames, the shop's news included.
+   * A bot that does not is told nothing of the shop's news.
    */
-  announces?: { botId: string; types: string[] };
-  /**
-   * A bot that sends its players' commands (`commands: 1`): the platform runs
-   * them and tells it what to say, the shop's news included, in `say` frames
-   * to `channels`, the places it announces in.
-   */
-  commands?: { channels: string[] };
+  commands?: true;
 };
 /** A player's device page, listening for that device's state and for changes to its own page. */
 /** `v: 2` is a page drawn from `/session/page`. It only ever hears that it changed. */
@@ -686,55 +680,32 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Something happened at the shop that bots may announce (a device switched on
-   * or off, a card, someone starting on a resource). Each bot decides from its
-   * own settings whether and where to say it.
+   * Something happened at the shop that bots may announce (a device switched
+   * on, a card, a bill settled). Each bot says it wherever its rules send it
+   * (`announcementDestinations`), in its own words when it has any, and not
+   * at all when it came of the bot's own command: it answered that already.
    */
   async shopEvent(event: Record<string, unknown>): Promise<void> {
+    const shopId = (await this.shopId()) ?? "";
     for (const ws of this.bots()) {
-      // A bot that says the platform's text only hears what it is set to tell,
-      // and not what its own command did: it answered that already.
       const attachment = ws.deserializeAttachment() as BotAttachment | null;
-      if (attachment?.commands) {
-        // A commands bot says it wherever its rules send it: its channel list for
-        // what it announces, and each further rule's channels and staff.
-        try {
-          const found = await this.botOf((await this.shopId()) ?? "", attachment.token);
-          if (!found || event.botId === found.bot.id) continue;
-          const to = announcementDestinations(
-            found.bot.config,
-            { type: String(event.type), via: typeof event.via === "string" ? event.via : null },
-            found.view.staff,
-          );
-          if (!to.length) continue;
-          const message = Array.isArray(event.message)
-            ? announcementMessage(event as ShopEvent, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
-          this.sayTo(ws, to, message);
-        } catch {
-          // A bot that left misses it.
-        }
-        continue;
-      }
-      const announces = attachment?.announces;
-      if (announces && (!announces.types.includes(String(event.type)) || event.botId === announces.botId)) continue;
+      if (!attachment?.commands) continue;
       try {
-        const templates = attachment?.announces
-          ? (await this.botOf((await this.shopId()) ?? "", attachment.token))?.bot.config.replyTemplates : undefined;
+        const found = await this.botOf(shopId, attachment.token);
+        if (!found || event.botId === found.bot.id) continue;
+        const to = announcementDestinations(
+          found.bot.config.announceRules,
+          { type: String(event.type), via: typeof event.via === "string" ? event.via : null },
+          found.view.staff,
+        );
+        if (!to.length) continue;
         const message = Array.isArray(event.message)
-          ? announcementMessage(event as ShopEvent, templates, event.message as BotMessage) : event.message as BotMessage;
-        ws.send(JSON.stringify({ type: "event", event: "shop.event", data: { ...event, message } }));
+          ? announcementMessage(event as ShopEvent, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
+        this.sayTo(ws, to, message);
       } catch {
         // A bot that left misses it.
       }
     }
-  }
-
-  /** The bot resource a bot's token belongs to and what it is set to announce. */
-  private async botAnnounces(shopId: string, token: string): Promise<{ botId: string; types: string[] } | null> {
-    const row = await this.env.DB.prepare("SELECT id FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active'")
-      .bind(shopId, await sha256Hex(token)).first<{ id: string }>();
-    const bot = row ? await findBotByToken(this.env.DB, shopId, row.id) : null;
-    return bot ? { botId: bot.id, types: announcedTypes(bot.config) } : null;
   }
 
   async notifyUser(userId: string, frame: Record<string, unknown>): Promise<void> {
@@ -809,15 +780,11 @@ export class ShopHub extends BaseDurableObject<Env> {
       const id = attachment.id ?? crypto.randomUUID();
       const shopId = (await this.shopId()) ?? "";
       const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
-      const announces = commands
-        ? { botId: commands.bot.id, types: announcedTypes(commands.bot.config) }
-        : frame.announcements === "message" ? await this.botAnnounces(shopId, attachment.token) : null;
-      // Without anywhere to say it, or with idle news switched off, no reminder is planned.
-      const lead = commands
-        ? (announces!.types.includes("idle.reminder") && commands.bot.config.announceChannelIds.length && commands.bot.config.idleReminderMinutes > 0
-          ? commands.bot.config.idleReminderMinutes * 60 : undefined)
-        : frame.reminderLeadSeconds;
-      const { announces: _previous, commands: _was, ...rest } = attachment;
+      // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
+      const reminded = commands && commands.bot.config.idleReminderMinutes > 0
+        && announcementDestinations(commands.bot.config.announceRules, { type: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
+      const lead = reminded ? commands.bot.config.idleReminderMinutes * 60 : undefined;
+      const { commands: _was, ...rest } = attachment;
       ws.serializeAttachment({
         ...rest,
         id,
@@ -825,8 +792,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         // A disabled commands bot answers that it is disabled and watches nothing.
         ha: frame.ha === true && (!commands || commands.bot.enabled),
         ...(frame.name ? { name: frame.name } : commands ? { name: commands.bot.name } : {}),
-        ...(announces ? { announces } : {}),
-        ...(commands ? { commands: { channels: commands.bot.config.announceChannelIds } } : {}),
+        ...(commands ? { commands: true as const } : {}),
       } satisfies BotAttachment);
       if (frame.ha && (!commands || commands.bot.enabled)) await this.botOnline(shopId, id, frame.name ?? commands?.bot.name);
       // Reminders may now be due earlier than the next planned check.
@@ -1476,7 +1442,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
           .bind(shopId, id).first<{ name: string }>();
         await this.shopEvent(shopEventFrame({
-          type: "request.power.idle_off", resourceId: id, resourceName: resource?.name ?? id, player: null,
+          type: "request.power.idle_off", resourceId: id, resourceName: resource?.name ?? id, player: null, via: "system",
         }));
       }
     } catch (error) {
@@ -1498,18 +1464,18 @@ export class ShopHub extends BaseDurableObject<Env> {
     return leads.length ? Math.max(...leads) : null;
   }
 
+  /** An idle power-off ahead: an announcement like any other, said where each bot's rules send `idle.reminder`. */
   private async notify(notices: IdleNotice[]): Promise<void> {
+    const shopId = (await this.shopId()) ?? "";
     for (const notice of notices) {
       for (const ws of this.bots()) {
         const attachment = ws.deserializeAttachment() as BotAttachment | null;
-        const announces = attachment?.announces;
-        if (announces && !announces.types.includes("idle.reminder")) continue;
+        if (!attachment?.commands) continue;
         try {
-          const templates = attachment?.announces
-            ? (await this.botOf((await this.shopId()) ?? "", attachment.token))?.bot.config.replyTemplates : undefined;
-          const message = idleReminderMessage(notice, templates);
-          if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, message);
-          else ws.send(JSON.stringify({ type: "event", event: "idle.reminder", data: { ...notice, message } }));
+          const found = await this.botOf(shopId, attachment.token);
+          if (!found) continue;
+          const to = announcementDestinations(found.bot.config.announceRules, { type: "idle.reminder", via: "system" }, found.view.staff);
+          if (to.length) this.sayTo(ws, to, idleReminderMessage(notice, found.bot.config.replyTemplates));
         } catch {
           // A bot that left misses it; the power-off happens regardless.
         }
@@ -1839,9 +1805,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         const names = new Map(rows.results.map((row) => [row.id, row.name]));
         const event: ShopEvent = {
           type: change.state === "on" ? "power.on" : "power.off",
-          kind: "power", resourceId: change.deviceIds[0]!,
+          resourceId: change.deviceIds[0]!,
           resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
-          state: change.state, by: "ha", player: null,
+          player: null, via: "ha",
         };
         await this.shopEvent({ ...shopEventFrame(event), at: change.at });
       } catch (error) {

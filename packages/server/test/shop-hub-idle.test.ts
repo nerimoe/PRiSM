@@ -95,12 +95,44 @@ const haCalls = () => spyOn(globalThis, "fetch").mockImplementation((async (url:
   return new Response("", { status: 404 });
 }) as typeof fetch);
 
+/**
+ * A bot whose rules say the idle warning in one group, connected to the hub.
+ * `notices` is what the hub decided to warn about; `said` is what the bot was
+ * told to say, and where.
+ */
+function listening(hub: unknown, sockets: unknown[], lead: number, fails = false) {
+  const notices: Array<{ data: any }> = [];
+  const said: any[] = [];
+  const target = hub as { notify(list: unknown[]): Promise<void>; botOf(): Promise<unknown> };
+  const notify = target.notify.bind(target);
+  target.notify = async (list) => {
+    notices.push(...list.map((data) => ({ data })));
+    return notify(list);
+  };
+  target.botOf = async () => ({
+    bot: {
+      id: "bot", name: "Bot", enabled: true,
+      config: { announceRules: [{ events: ["idle.reminder"], sources: [], to: ["onebot:1"], staff: false }], replyTemplates: {}, idleReminderMinutes: lead },
+    },
+    view: { staff: [] },
+  });
+  sockets.push({
+    tags: ["bot"],
+    deserializeAttachment: () => ({ kind: "bot", token: "t", shopCode: "shop-code", commands: true, reminderLeadMs: lead * MIN }),
+    send(data: string) {
+      said.push(JSON.parse(data));
+      if (fails) throw new Error("Bot disconnected");
+    },
+  });
+  return { notices, said };
+}
+
 describe("idle check in the shop hub", () => {
   it("counts down from occupancy expiry, extends it for an eligible card, and rejects an unbilled renewal", async () => {
     const start = Date.now();
     let now = start;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
-    const { db, sqlite, run, fireAlarm, offs, state, sockets, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } });
+    const { hub, db, sqlite, run, fireAlarm, offs, state, sockets, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } });
     const watchers = state.get("watchers") as any;
     watchers.a.leaseUntil = start + 60 * MIN;
     state.set("watchers", watchers);
@@ -109,8 +141,7 @@ describe("idle check in the shop hub", () => {
       VALUES ('shop','m1','hinata_io','{}','{}','2026-01-01','2026-01-01')`);
     sqlite.run(`INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json)
       VALUES ('shop','s1','p','2026-01-01','active','["arcade"]'),('shop','s2','other','2026-01-01','active','["other"]')`);
-    const notices: any[] = [];
-    sockets.push({ tags: ["bot"], deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }), send: (data) => notices.push(JSON.parse(data)) });
+    const { notices } = listening(hub, sockets, 5);
     const occupancy = createOccupancy({ db, shopId: "shop", now: () => new Date(now) });
     const scan = () => occupancy.observe({ resourceId: "m1", event: { kind: "signal", name: "card.consumed", payload: {}, playerId: "p" } });
     const spy = haCalls();
@@ -126,7 +157,7 @@ describe("idle check in the shop hub", () => {
       expect(offs()).toEqual([]);
       now = start + 7 * MIN;
       await fireAlarm();
-      expect(notices.at(-1).data.at).toBe(start + 12 * MIN);
+      expect(notices.at(-1)!.data.at).toBe(start + 12 * MIN);
       now = start + 8 * MIN;
       await scan();
       await run();
@@ -162,19 +193,11 @@ describe("idle check in the shop hub", () => {
     const start = Date.now();
     let now = start;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
-    const { sqlite, run, fireAlarm, offs, sockets, state, alarm } = await fixture({
+    const { hub, sqlite, run, fireAlarm, offs, sockets, state, alarm } = await fixture({
       device: { enabled: true, minutes: 10, whileOccupied: scenario.policy },
     }, { climate: scenario.climate });
     const lead = scenario.lead ?? 5;
-    const notices: any[] = [];
-    sockets.push({
-      tags: ["bot"],
-      deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: lead * MIN }),
-      send(data: string) {
-        notices.push(JSON.parse(data));
-        if (scenario.sendFails) throw new Error("Bot disconnected");
-      },
-    });
+    const { notices, said } = listening(hub, sockets, lead, scenario.sendFails);
     // Isolate the idle alarm from watcher lease renewals.
     const watchers = state.get("watchers") as Record<string, { leaseUntil: number }>;
     watchers.a!.leaseUntil = start + 60 * MIN;
@@ -203,8 +226,12 @@ describe("idle check in the shop hub", () => {
       if (scenario.climate) sqlite.run("UPDATE device_state SET changed_at=?, value_json=? WHERE key='view'", [new Date(now).toISOString(), JSON.stringify({ mode: "cool", temperature: 24, currentTemperature: 28 })]);
       await fireAlarm();
       expect(notices).toMatchObject([{
-        type: "event", event: "idle.reminder",
         data: { reason: "device_idle", at: start + 10 * MIN, devices: [{ id: "m1", name: "舞萌" }, ...(scenario.shared ? [{ id: "m2", name: "中二" }] : [])] },
+      }]);
+      // Said where the bot's rules send the idle warning, in words.
+      expect(said).toEqual([{
+        type: "say", to: "onebot:1",
+        message: [{ text: `${scenario.shared ? "舞萌、中二" : "舞萌"} 闲置中，${lead} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟` }],
       }]);
       expect(offs()).toEqual([]);
       expect(alarm()).toBe(start + 10 * MIN);
@@ -274,9 +301,8 @@ describe("idle check in the shop hub", () => {
     const start = Date.now();
     let now = start;
     const clock = spyOn(Date, "now").mockImplementation(() => now);
-    const { db, sqlite, run, fireAlarm, offs, state, sockets, connectionId, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { climate: true });
-    const notices: any[] = [];
-    sockets.push({ tags: ["bot"], deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: 5 * MIN }), send: (data) => notices.push(JSON.parse(data)) });
+    const { hub, db, sqlite, run, fireAlarm, offs, state, sockets, connectionId, alarm } = await fixture({ device: { enabled: true, minutes: 10, whileOccupied: "off" } }, { climate: true });
+    const { notices } = listening(hub, sockets, 5);
     const watchers = state.get("watchers") as any;
     watchers.a.leaseUntil = start + 60 * MIN;
     state.set("watchers", watchers);

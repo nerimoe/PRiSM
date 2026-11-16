@@ -26,8 +26,7 @@ const base = {
   bot: {
     playerCommands: "all", readOnlyNotice: "请扫码", staffCommands: true, powerOffStaffOnly: false,
     doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
-    announceChannelIds: [], idleReminderMinutes: 5, announceIdle: false, announcePower: false,
-    announceStarts: false, announceCards: false, announceCoins: false,
+    announceRules: [], idleReminderMinutes: 5,
   },
 };
 const machines = [
@@ -126,8 +125,12 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
       await page.getByRole("radio", { name: "只读", exact: true }).check();
       await page.getByLabel("只读提示", { exact: true }).fill("请扫码操作");
       await nav.getByRole("button", { name: "播报设置", exact: true }).click();
-      await page.getByLabel("播报群", { exact: true }).fill("onebot:42");
-      await page.getByRole("checkbox", { name: "刷卡", exact: true }).check();
+      // A bot announces by rules only: what it listens for, and where it says it.
+      await page.getByRole("button", { name: "添加监听规则", exact: true }).click();
+      const rule = page.getByRole("region", { name: "监听规则 1", exact: true });
+      await rule.getByRole("checkbox", { name: "刷卡", exact: true }).check();
+      await rule.getByLabel("发到", { exact: true }).fill("onebot:42\nonebot:private:10001");
+      await rule.getByRole("checkbox", { name: "同时私聊每位店员", exact: true }).check();
       await nav.getByRole("button", { name: "命令回复", exact: true }).click();
       const replies = page.getByRole("region", { name: "命令回复", exact: true });
       await replies.getByLabel("回复内容", { exact: true }).fill("绑定成功，欢迎光临");
@@ -148,8 +151,9 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
       await until(() => patches.length > 0, "saving settings across groups");
       assert.equal(patches[0].body.bot.playerCommands, "readonly");
       assert.equal(patches[0].body.bot.readOnlyNotice, "请扫码操作");
-      assert.deepEqual(patches[0].body.bot.announceChannelIds, ["onebot:42"]);
-      assert.ok(patches[0].body.bot.announceEvents.includes("card"));
+      assert.deepEqual(patches[0].body.bot.announceRules, [
+        { events: ["card"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: true },
+      ]);
       assert.deepEqual(patches[0].body.bot.replyTemplates, { "bind.success": "绑定成功，欢迎光临", "announce.card.message": "{player} 在 {device} 刷卡" });
       assert.deepEqual(exceptions, []);
     } finally { await browser.close(); }

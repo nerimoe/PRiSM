@@ -17,11 +17,8 @@ export type BotFrame =
    * `ha` says the bot can watch Home Assistant for the shop; `name` is how the board calls it.
    * Neither is sent by a bot that predates watching, which is then never asked to.
    */
-  /**
-   * `announcements: "message"`: the bot says the message the platform writes and is
-   * sent only what it is set to announce. Older bots choose and word it themselves.
-   */
-  | { type: "hello"; reminderLeadSeconds?: number; ha?: true; name?: string; announcements?: "message"; commands?: 1 }
+  /** `commands: 1`: the bot sends its players' commands and says what the platform tells it to. */
+  | { type: "hello"; ha?: true; name?: string; commands?: 1 }
   | BotCommandFrame
   | { type: "request"; id: string; method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }
   /** What a watching bot reports, in the shape an IO reports it: `ha.status` and `ha.states`. */
@@ -78,14 +75,11 @@ export function parseBotFrame(raw: string): BotFrame | null {
   }
   if (!value || typeof value !== "object") return null;
   if (value.type === "hello") {
-    const lead = value.reminderLeadSeconds;
     const name = typeof value.name === "string" ? value.name.trim().slice(0, 40) : "";
     return {
       type: "hello",
-      ...(typeof lead === "number" && lead >= 0 && lead <= 24 * 3600 ? { reminderLeadSeconds: lead } : {}),
       ...(value.ha === true ? { ha: true as const } : {}),
       ...(name ? { name } : {}),
-      ...(value.announcements === "message" ? { announcements: "message" as const } : {}),
       ...(value.commands === 1 ? { commands: 1 as const } : {}),
     };
   }

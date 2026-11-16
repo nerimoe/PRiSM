@@ -7,7 +7,6 @@
  * read from the platform when the bot asks, never configured twice.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
-import { announcedTypes } from "@prism/core";
 import { randomToken } from "../crypto.js";
 import { resourceBilledSql } from "./billed-sql.js";
 import { capabilities, type BotConfig } from "./capabilities/catalog.js";
@@ -97,9 +96,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     ).bind(shopId, bot.id).first<{ billed: number }>(),
   ]);
   const { tokenId: _token, doorResourceId, ...stored } = bot.config;
-  // What it announces as a list, also for a bot set before there was one; the
-  // switches stay as stored, which is what older bots already read.
-  const settings = { ...stored, announceEvents: announcedTypes(stored) };
+  const settings = stored;
   // The chosen door, or the only door the shop has.
   const door = doors.results.find((row) => row.id === doorResourceId) ?? (doors.results.length === 1 ? doors.results[0] : null);
   return {

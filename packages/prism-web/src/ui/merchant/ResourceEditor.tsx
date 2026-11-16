@@ -14,7 +14,7 @@ import {
   type LucideIcon,
   Bot,
 } from "lucide-react";
-import { botReplyTemplateError, announcedTypes, shopAnnouncementCatalog, switchesFor } from "@prism/core";
+import { botReplyTemplateError } from "@prism/core";
 import { Api, api, type BotSettings, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
@@ -887,44 +887,6 @@ export function ResourceEditor({
           <div hidden={botPane !== "broadcasts"}>
             <fieldset className="grid gap-3">
               <legend className="mb-1 text-sm font-medium">{t("播报与提醒")}</legend>
-              <div className="grid gap-1">
-                <Field label="播报群">
-                  <textarea
-                    className={`${input} min-h-20`}
-                    value={bot.announceChannelIds.join("\n")}
-                    onChange={(e) => changeBot({ announceChannelIds: e.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })}
-                  />
-                </Field>
-                <p className="text-xs text-ink/55">{t("每行一个群号。闲置提醒和店内动态都发到这里。")}</p>
-              </div>
-              {(() => {
-                const chosen = new Set<string>(announcedTypes(bot));
-                const toggle = (type: string, on: boolean) => {
-                  const list = shopAnnouncementCatalog.map((entry) => entry.type)
-                    .filter((candidate) => (candidate === type ? on : chosen.has(candidate)));
-                  changeBot({ announceEvents: list, ...switchesFor(list) });
-                };
-                return (
-                  [
-                    ["event", "现场事件"],
-                    ["request", "平台操作"],
-                    ["shop", "店铺动态"],
-                    ["notice", "提醒"],
-                  ] as const
-                ).map(([family, heading]) => (
-                  <fieldset key={family} className="grid gap-2 border-t border-ink/10 pt-4">
-                    <legend className="text-sm font-semibold">{t(heading)}</legend>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                    {shopAnnouncementCatalog.filter((entry) => entry.family === family).map((entry) => (
-                      <label key={entry.type} className="flex items-center gap-2 text-sm">
-                        <input type="checkbox" checked={chosen.has(entry.type)} onChange={(e) => toggle(entry.type, e.target.checked)} />
-                        {t(entry.label)}
-                      </label>
-                    ))}
-                    </div>
-                  </fieldset>
-                ));
-              })()}
               <BotAnnouncementRules value={bot.announceRules ?? []} onChange={(announceRules) => changeBot({ announceRules })} />
               <Field label="提醒提前量" unit="分钟">
                 <input
@@ -939,7 +901,7 @@ export function ResourceEditor({
               <details className="border-t border-ink/10 pt-3 text-xs text-ink/55">
                 <summary className="cursor-pointer">{t("播报说明")}</summary>
                 <p className="mt-2 leading-relaxed">
-                {t("现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。提前量为 0 时不发闲置提醒。本 Bot 自己执行的命令不会再次播报。")}
+                {t("现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。闲置提醒也是一种事件，勾选它的规则发到哪里就提醒到哪里；提前量为 0 时不提醒。同一条动态被多条规则发到同一个地方只说一次。本 Bot 自己执行的命令不会再次播报。")}
                 </p>
               </details>
             </fieldset>
@@ -991,15 +953,8 @@ const defaultBotSettings: BotSettings = {
   doorResourceId: null,
   receiptsToStaff: false,
   doorPasswordOnEntry: false,
-  announceChannelIds: [],
-  idleReminderMinutes: 5,
-  announceEvents: [],
   announceRules: [],
-  announceIdle: false,
-  announcePower: false,
-  announceStarts: false,
-  announceCards: false,
-  announceCoins: false,
+  idleReminderMinutes: 5,
 };
 
 const capabilityList = ["power", "climate", "hinata_io", "door", "mahjong", "bot"] as const satisfies readonly CapabilityId[];

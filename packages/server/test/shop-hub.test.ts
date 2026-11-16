@@ -123,24 +123,25 @@ const status = (term: number, connection: string, connected: boolean) => ({
 });
 
 describe("HA-confirmed power announcements", () => {
-  const connectBot = (sockets: any[], receive: (event: any) => void) => sockets.push({
-    tags: ["bot"],
-    deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: null }),
-    send(data: string) {
-      const frame = JSON.parse(data);
-      if (frame.event === "shop.event") receive(frame.data);
-    },
-  });
+  /** What the hub tells the shop's bots, before each bot's rules decide where it is said. */
+  const announced = (hub: ShopHub, receive: (event: any) => void) => {
+    const tell = hub.shopEvent.bind(hub);
+    hub.shopEvent = async (event) => {
+      receive(event);
+      return tell(event);
+    };
+  };
+  const stateOf = (event: { type: string }) => event.type.slice("power.".length);
 
   for (const shared of [false, true]) it(`announces confirmed on/off changes once to every Bot, with shared power=${shared}`, async () => {
     const { hub, sockets, sqlite, connectionId, power } = await fixture();
     const events: any[] = [];
     const other: any[] = [];
-    connectBot(sockets, (event) => {
-      expect(power().filter((row) => JSON.parse(row.value_json) === event.state)).toHaveLength(shared ? 2 : 1);
+    announced(hub, (event) => {
+      expect(power().filter((row) => JSON.parse(row.value_json) === stateOf(event))).toHaveLength(shared ? 2 : 1);
       events.push(event);
     });
-    connectBot(sockets, (event) => other.push(event));
+    announced(hub, (event) => other.push(event));
     try {
       if (shared) sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='m2' AND capability='power'",
         [JSON.stringify({ connectionId, entityId: "switch.a" })]);
@@ -161,7 +162,7 @@ describe("HA-confirmed power announcements", () => {
         [[on[0], on[1], on[2], "2026-10-21T09:02:00.000Z", { friendly_name: "Power" }]], false));
       await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
       expect(events).toMatchObject(["on", "off"].map((state, index) => ({
-        kind: "power", resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", state, by: "ha", player: null,
+        type: `power.${state}`, resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 3 : 1}:00.000Z`,
       })));
       expect(other).toEqual(events);
@@ -171,7 +172,7 @@ describe("HA-confirmed power announcements", () => {
   it("announces shared air conditioners only when switching between off and running modes", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture({ climate: true });
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     try {
       sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,aliases_json) VALUES (?,'m4','pub-m4','m4','[]')", [SHOP]);
       sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) SELECT shop_id,'m4',capability,config_json,secret_json,created_at,updated_at FROM device_capabilities WHERE device_id='m3'");
@@ -193,7 +194,7 @@ describe("HA-confirmed power announcements", () => {
       await report("unknown", 7);
       await report("heat", 8);
       expect(events).toMatchObject(["on", "off"].map((state, index) => ({
-        kind: "power", resourceId: "m3", resourceName: "m3、m4", state, by: "ha", player: null,
+        type: `power.${state}`, resourceId: "m3", resourceName: "m3、m4", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 4 : 1}:00.000Z`,
       })));
     } finally { sqlite.close(); }
@@ -202,7 +203,7 @@ describe("HA-confirmed power announcements", () => {
   it("does not announce snapshots, unready or stale watchers, unknown states or changes during a disconnect", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture();
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     try {
       await hub.relayOnline(SHOP, "a", "chan-a");
       const report = (state: string, minute: number, full = false, term = 1, watcher = "a") => hub.haReport(SHOP, watcher,
@@ -221,14 +222,14 @@ describe("HA-confirmed power announcements", () => {
       await report("on", 7);
       expect(events).toEqual([]);
       await report("off", 8);
-      expect(events).toEqual([expect.objectContaining({ kind: "power", state: "off", by: "ha" })]);
+      expect(events).toEqual([expect.objectContaining({ type: "power.off", via: "ha" })]);
     } finally { sqlite.close(); }
   });
 
   it("does not announce a power change that failed to persist", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture();
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     const quiet = spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await hub.relayOnline(SHOP, "a", "chan-a");
@@ -946,8 +947,8 @@ describe("ShopHub device pages", () => {
       { type: "power.off", label: "关机", resourceId: "m1", player: null },
       { type: "power.on", label: "开机", resourceId: "m2", player: null },
     ]);
-    // Older bots announce power from the platform's own requests; this is not one.
-    expect(told.every((event) => event.kind === "power" && event.by === "ha")).toBe(true);
+    // What Home Assistant saw, not a request someone made through the platform.
+    expect(told.every((event) => event.via === "ha")).toBe(true);
   });
 
   it("does not announce a machine coming back from unavailable", async () => {

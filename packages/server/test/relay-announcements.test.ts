@@ -151,9 +151,9 @@ describe("what a cabinet's card reports tell the shop's bots", () => {
     const { told, report } = await fixture();
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: OP } });
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: "HINATA(1)" } });
-    expect(told.map(({ type, label, kind, resourceName }) => ({ type, label, kind, resourceName }))).toEqual([
-      { type: "card", label: "刷卡", kind: "card", resourceName: "舞萌左机" },
-      { type: "card", label: "刷卡", kind: "card", resourceName: "舞萌左机" },
+    expect(told.map(({ type, label, via, resourceName }) => ({ type, label, via, resourceName }))).toEqual([
+      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机" },
+      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机" },
     ]);
   });
 

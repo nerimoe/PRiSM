@@ -89,10 +89,11 @@ export type Shop = {
  */
 /**
  * One thing a bot listens for: when any of `events` happens, having come from
- * one of `sources` (anywhere, when empty), it is said in `channelIds` and, with
- * `staff`, privately to each staff member.
+ * one of `sources` (anywhere, when empty), it is said at every destination in
+ * `to` (a group or a person, as the bot addresses it) and, with `staff`, to
+ * each staff member privately.
  */
-export type BotAnnouncementRule = { events: string[]; sources: string[]; channelIds: string[]; staff: boolean };
+export type BotAnnouncementRule = { events: string[]; sources: string[]; to: string[]; staff: boolean };
 
 export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
 
@@ -207,19 +208,10 @@ export type BotSettings = {
   receiptsToStaff: boolean;
   /** `login`/`入场` also hands out the door code. */
   doorPasswordOnEntry: boolean;
-  /** Channels the bot says everything in: idle warnings and what happens at the shop. */
-  announceChannelIds: string[];
+  /** Everything the bot announces and where; with no rules it announces nothing. */
+  announceRules: BotAnnouncementRule[];
+  /** Minutes before an idle power-off its warning is said; 0 for never. */
   idleReminderMinutes: number;
-  /** What is told, by type from `shopAnnouncementCatalog`; null for a bot still set by the switches below. */
-  announceEvents: string[] | null;
-  /** What else the bot listens for and where it says it; the two lists above are its first rule. */
-  announceRules?: BotAnnouncementRule[];
-  /** The switches older bots read; the server keeps them in step with `announceEvents`. */
-  announceIdle: boolean;
-  announcePower: boolean;
-  announceStarts: boolean;
-  announceCards: boolean;
-  announceCoins: boolean;
 };
 
 /** A set of resources that bill the same default plan. The default group is the shop's own. */
