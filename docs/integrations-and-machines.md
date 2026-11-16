@@ -280,7 +280,17 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 
 - **来源**：每条事件记下它是从哪里进入平台的（`via`）：`page`（扫码页）、`merchant`（商户后台）、`bot`、`api`（带 Token 的 HTTP 接口）、`relay`（HINATA IO 自己的通道）、`ha`（Home Assistant 监听者）、`system`（平台自己的规则，如闲置关机、刷卡后投币）。来源是店铺自己的某个资源时再记下它的编号（`via_resource_id`），目前只有 Bot：经 Bot 发起的请求及其结果都带着那个 Bot 的资源编号，不再往 payload 里塞 `viaBot`。迁移 `0050` 加这两列，并把旧数据里带 `viaBot` 的请求及其结果补上；其余历史事件保持空值，不去猜。
 - **事件名**：监听者只认一个名字（`@prism/core` 的 `deviceEventType`）。请求是 `<动作>.requested`；结果是 `<动作>.sent`（硬件收下了）、`<动作>.failed`（硬件拒绝）、`<动作>.unanswered`（无法确定）；回报就是它自己的名字（`card.consumed`）；状态变化是 `<能力>.<键>.changed`，能力只有一个同名状态时简写（`power.changed`、`climate.changed`、`hinata_io.link.changed`）。叫 `sent` 而不叫成功：结果只说明硬件收下了调用，设备之后真的做了什么是另一条事件。
-- **分发**：事件写入后由总线交给分发器（`packages/server/src/events/dispatcher.ts`），按事件名逐条交给订阅者。订阅者是写在代码里的一张表（`events/subscribers.ts`），没有运行时注册：Worker 只活一次请求，分发就是写入之后的一次函数调用。订阅者分两档：`inline` 在回答调用方之前跑完，只给回答或计费依赖的东西用；`after` 在 `inline` 之后跑，有 `waitUntil` 时交给它，不拖慢回答。订阅者只对已经发生的事做出反应，不决定它是否发生，所以某个订阅者出错只记日志（`event_subscriber_failed`），不影响其他订阅者，也不撤销已写入的事件。状态没变的 `change` 没有写入，也就不会分发。**这张表目前是空的**：占用、Bot 播报、页面刷新、Live Activity、闲置规则仍在各自产生事件的地方手工调用，之后逐个迁入。
+- **分发**：事件写入后由总线交给分发器（`packages/server/src/events/dispatcher.ts`），按事件名交给订阅者。订阅者是写在代码里的一张表（`events/subscribers.ts`），没有运行时注册：Worker 只活一次请求，分发就是写入之后的一次函数调用。订阅者只对已经发生的事做出反应，不决定它是否发生，所以某个订阅者出错只记日志（`event_subscriber_failed`），不影响其他订阅者，也不撤销已写入的事件。状态没变的 `change` 没有写入，也就不会分发。订阅者分两档：
+  - `inline`：逐条听，在回答调用方之前跑完，只给回答或计费依赖的东西用。它得出的结论本身也是一件发生了的事，用 `emit` 说出来；这条**派生事件**紧接着被所有订阅者听到，排在原本还在等的事件之前。派生事件不写入 `device_events`，由得出结论的模块自己留记录（占用是 `resource_occupancies` 的一行）；它带着起因事件的编号和事件名（`payload.cause`、`payload.causeType`）。一次分发里派生事件超过 32 条视为自己喂自己，停止并记日志。
+  - `after`：`inline` 全部跑完后，把这一次分发里它要的事件按发生顺序**一起**听到；有 `waitUntil` 时交给它，不拖慢回答。
+- **现有订阅者**（按表里的顺序）：
+  - `occupancy`（`inline`，全部事件）：硬件收下的动作（`<动作>.sent`）和设备回报交给占用判定，含义仍由各能力自己决定（见 [卡片、占用与查人](occupancy.md)）。资源对其计费的玩家被看到时发出 `occupancy.seen`，此前不在这个资源上则再发出 `occupancy.started`。员工替玩家操作时，结果事件的 payload 也带 `forPlayerId`，订阅者不用回头查请求。
+  - `bot-announcements`（`after`）：把 `power.on.sent`／`power.off.sent`／`aime.scan.sent`／`coin.sent` 播报成 `request.*`，`card.consumed` 播报成 `card`，`occupancy.started` 播报成 `start`，`cabinet.coin`／`cabinet.consumed`／`cabinet.reset` 原样播报。旧插件的 `started` 标记看同一次分发里有没有由这张卡或这枚币引出的 `occupancy.started`。来源是 Bot 的事件带上 `botId`，那个 Bot 已经回答过自己的命令，不再播报。
+  - `hub-power-off`（`after`）：`power.off.sent` 之后让店铺 Hub 开始观察这台机器的 IO。
+  - `hub-idle-recheck`（`after`）：目录里标为 `activity` 的设备回报之后让 Hub 重算在场与闲置期限。
+  - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
+- **Hub 自己的总线**（闲置规则、监听者上报，`notifyHub: false`）上，后三类只是去通知 Hub 的订阅者保持沉默：Hub 自己告诉它的 Bot 和页面，也不能从内部回调自己。占用判定照常进行。
+- **还没有进订阅表的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆）；账单变动后的页面刷新与 Live Activity（入场、结账还不是事件，仍由路由后的中间件和 Bot 命令各自处理）。
 
 所有写入都经过 `packages/server/src/resources/capabilities/bus.ts`：`perform`（动作）、`signal`（回报）、`setOwned`（平台权威状态）、`reportMany`（监听者上报的外部状态，一批写入，可只存储不记事件）。`observe`（现读后写入）仍在总线上但不再用于任何读取路径。动作不会在完成后读回外部状态。其他代码不直接写设备表。卡号只作为临时参数交给执行器，从不落库；门锁临时密码只在本次响应返回。
 

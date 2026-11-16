@@ -1,4 +1,5 @@
-import { announceShopEvent, eventPlayer } from "../resources/shop-events.js";
+import type { AfterSubscriber } from "../events/dispatcher.js";
+import type { EventContext } from "../events/subscribers.js";
 import type { DurableObject } from "cloudflare:workers";
 import type { Env } from "../bindings.js";
 import { hinataIo } from "../resources/capabilities/catalog.js";
@@ -9,7 +10,6 @@ import { can, hinataConfigOf, loadResource } from "../resources/resource.js";
 import { cardRead, pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
-import { createOccupancy } from "../resources/occupancy/service.js";
 import {
   capabilitiesForAttachment,
   capabilitiesFromRequest,
@@ -187,7 +187,11 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const channel = await this.channel();
     if (!channel) return;
     try {
-      await write(createRuntimeBus({ db: this.env.DB, env: this.env, shopId: channel.shopId, via: { channel: "relay", resourceId: null } }), channel);
+      await write(createRuntimeBus({
+        db: this.env.DB, env: this.env, shopId: channel.shopId,
+        via: { channel: "relay", resourceId: null },
+        subscribers: [this.coinAfterCardSubscriber(channel)],
+      }), channel);
     } catch (error) {
       console.error(JSON.stringify({
         event: "machine_relay_record_failed",
@@ -618,14 +622,14 @@ export class MachineRelay extends BaseDurableObject<Env> {
     this.answer(name, source, payload);
     if (!hinataIo.signals[name]?.store) return;
     await this.record(name, (bus, channel) => this.signal(bus, channel, name, source, payload, card?.accessCode ?? null));
-    // Recheck occupancy and its deadline; an ineligible card does not extend either.
-    if (hinataIo.signals[name]?.activity) await this.touchHub();
   }
 
   /**
-   * Record a signal about whoever it concerns, and tell occupancy. A card names
-   * its owner at this shop; otherwise the operation the signal belongs to names
-   * the player it was for. A card nobody owns here concerns nobody.
+   * Record a signal about whoever it concerns. A card names its owner at this
+   * shop; otherwise the operation the signal belongs to names the player it
+   * was for. A card nobody owns here concerns nobody. Who then occupies the
+   * cabinet, what the bots say and the hub's recheck all follow from the event
+   * (`events/subscribers.ts`).
    */
   private async signal(
     bus: ReturnType<typeof createRuntimeBus>,
@@ -639,20 +643,25 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const playerId = (accessCode ? await cards.playerOf(accessCode) : null)
       ?? (source ? await this.operationPlayer(channel.shopId, source) : null);
     await bus.signal({ device: { id: channel.machineId }, capability: "hinata_io", name, operationId: source, payload, playerId });
-    const observed = await createOccupancy({ db: this.env.DB, shopId: channel.shopId })
-      .observe({ resourceId: channel.machineId, event: { kind: "signal", name, payload, playerId } });
-    // The game took a card: whether it came from the reader or the platform,
-    // this is when it happened, so this is where it is told.
-    if (name === "card.consumed") {
-      const place = { resourceId: channel.machineId, resourceName: await this.resourceName(channel) };
-      const player = await eventPlayer(this.env.DB, channel.shopId, playerId);
-      const started = !!observed.started;
-      await announceShopEvent(this.env, channel.shopId, { type: "card", kind: "card", ...place, player, started });
-      // Older bots heard the start as part of the card; newer ones as its own.
-      if (started && player) await announceShopEvent(this.env, channel.shopId, { type: "start", ...place, player });
-      // The same test that keeps the cabinet from idling: a known player billing for it.
-      if (observed.counted && playerId) await this.coinAfterCard(channel, playerId, source);
-    }
+  }
+
+  /**
+   * Hears the cabinet's player seen at it by a card the game took, the same
+   * test that keeps the cabinet from idling: a known player billing for it.
+   * This object's own listener, because the coin is a key press only it can make.
+   */
+  private coinAfterCardSubscriber(channel: Channel): AfterSubscriber<EventContext> {
+    return {
+      name: "coin-after-card",
+      when: "after",
+      wants: ["occupancy.seen"],
+      run: async (_context, heard) => {
+        for (const { event } of heard) {
+          if (event.payload.causeType !== "card.consumed" || !event.playerId) continue;
+          await this.coinAfterCard(channel, event.playerId, event.operationId);
+        }
+      },
+    };
   }
 
   /**
@@ -691,7 +700,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
       // The read itself is not news; only what changed between reads is.
       await bus.reportMany([{ device, capability: "hinata_io", key: "cabinet", value, quiet: true }]);
       if (!before || !isCabinetBooks(snapshot) || !changes.length) return;
-      const place = { resourceId: channel.machineId, resourceName: await this.resourceName(channel) };
       for (const change of changes) {
         await bus.signal({ device, capability: "hinata_io", name: change.type, payload: {
           ...change.detail,
@@ -699,12 +707,8 @@ export class MachineRelay extends BaseDurableObject<Env> {
           previousTotalCoin: before.bookkeeping.totalCoin,
           totalCoin: snapshot.bookkeeping.totalCoin,
         } });
-        if (change.type !== "cabinet.credit") {
-          await announceShopEvent(this.env, channel.shopId, { type: change.type, ...place, player: null, detail: change.detail });
-        }
       }
     });
-    if (changes.some((change) => hinataIo.signals[change.type]?.activity)) await this.touchHub();
     const judged = isCabinetBooks(snapshot) ? snapshot.players[0]?.credit ?? null : "unreadable";
     if ((await this.ctx.storage.get(CABINET_JUDGED_KEY)) !== judged) {
       await this.ctx.storage.put(CABINET_JUDGED_KEY, judged);
@@ -725,12 +729,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
     await this.ctx.storage.put(READERS_KEY, encoded);
     await this.record("readers", (bus, channel) =>
       bus.reportMany([{ device: { id: channel.machineId }, capability: "hinata_io", key: "readers", value: readers, quiet: true }]));
-  }
-
-  private async resourceName(channel: Channel): Promise<string> {
-    const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
-      .bind(channel.shopId, channel.machineId).first<{ name: string }>();
-    return resource?.name ?? channel.machineId;
   }
 
   /** The player a platform operation was requested by or for. */
@@ -793,12 +791,6 @@ export class MachineRelay extends BaseDurableObject<Env> {
   private async dropExpiredCapture() {
     const capture = await this.ctx.storage.get<CardCapture>(CAPTURE_KEY);
     if (capture && capture.expiresAt <= Date.now()) await this.ctx.storage.delete(CAPTURE_KEY);
-  }
-
-  private async touchHub() {
-    const channel = await this.channel();
-    if (!channel) return;
-    await shopHub(this.env, channel.shopId)?.touch(channel.shopId).catch((error) => console.error("Shop hub touch failed", error));
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {

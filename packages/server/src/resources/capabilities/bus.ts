@@ -255,6 +255,8 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
               ...(failure ? { message: failure } : {}),
               ...(httpStatus ? { httpStatus } : {}),
               ...persisted,
+              // Whom staff acted for, as the request said: a listener hears the result alone.
+              ...(input.forPlayerId ? { forPlayerId: input.forPlayerId } : {}),
             },
             ...actorFields,
             ...(input.via ? { via: input.via } : {}),

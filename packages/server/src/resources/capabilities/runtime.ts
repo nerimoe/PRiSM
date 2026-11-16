@@ -3,14 +3,14 @@
  * wires them to the readers in `device-state.ts`. Runners only talk to
  * hardware; recording what happened is the bus's job.
  */
-import { createOccupancy } from "../occupancy/service.js";
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { createD1Executor } from "@prism/adapter-d1";
 import { normalizeTTLockConnectionConfig } from "@prism/application";
 import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { DeviceEventVia } from "@prism/core";
 import { createEventDispatcher } from "../../events/dispatcher.js";
-import { eventSubscribers } from "../../events/subscribers.js";
+import { eventSubscribers, type EventContext } from "../../events/subscribers.js";
+import type { EventSubscriber } from "../../events/dispatcher.js";
 import type { Env } from "../../bindings.js";
 import { callHomeAssistantPower, callHomeAssistantService } from "../../hardware/home-assistant.js";
 import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardware/hinata.js";
@@ -18,8 +18,7 @@ import { TTLockClient } from "../../hardware/ttlock.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
 import { doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
-import { deviceRead, machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
-import { announceShopEvent, eventPlayer, type ShopEvent } from "../shop-events.js";
+import { deviceRead } from "../../durable-objects/shop-hub-client.js";
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
 const KEY_PRESS_TTL_MS = 30_000;
@@ -33,10 +32,13 @@ export type DeviceRuntime = {
   now?: () => Date;
   id?: () => string;
   /**
-   * Tell the shop hub when an action switches a HINATA IO off, so it stops
-   * waiting for that IO. The hub's own idle power-off sets this to false.
+   * False for a bus the shop hub makes for itself (its idle rule, its watchers'
+   * reports): the hub tells its own bots and pages what it did, and nothing
+   * may call it back from inside itself (`EventContext.insideHub`).
    */
   notifyHub?: boolean;
+  /** Listeners of the caller's own, heard after the platform's (`events/subscribers.ts`). */
+  subscribers?: readonly EventSubscriber<EventContext>[];
   /** Where what this bus records came from: the page, board, bot or channel that made it. */
   via?: DeviceEventVia;
   /** A request's `waitUntil`: what only reacts to an event runs after the answer. */
@@ -184,32 +186,6 @@ function doorRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
-/**
- * What a platform request tells the shop's bots: that it was asked for and the
- * hardware accepted it. What then happened at the device is told by the device.
- */
-async function announceAction(runtime: DeviceRuntime, input: PerformInput, playerId: string | null, started: boolean) {
-  // A bot has answered its own command already and does not announce it again.
-  const via = input.via ?? runtime.via;
-  const viaBot = via?.channel === "bot" ? via.resourceId : null;
-  const place = { resourceId: input.device.id, resourceName: input.device.name, ...(viaBot ? { botId: viaBot } : {}) };
-  const who = await eventPlayer(runtime.db, runtime.shopId, playerId);
-  const announce = (event: ShopEvent) => announceShopEvent(runtime.env, runtime.shopId, event);
-  if (input.action === "power.on" || input.action === "power.off") {
-    const state = input.action === "power.on" ? "on" : "off";
-    await announce({ type: `request.power.${state}`, ...place, player: who });
-  } else if (input.action === "aime.scan") {
-    await announce({ type: "request.card", ...place, player: who });
-  } else if (input.action === "coin") {
-    await announce({ type: "request.coin", kind: "coin", ...place, player: who, started });
-  }
-  // A coin is the only request that puts someone on a resource; older bots
-  // heard that as part of the coin, newer ones as a start of its own.
-  if (started && who) {
-    await announce(input.action === "coin" ? { type: "start", ...place, player: who } : { type: "start", kind: "occupancy", ...place, player: who });
-  }
-}
-
 export function createRuntimeBus(runtime: DeviceRuntime) {
   const runners: Record<string, ActionRunner> = {
     "power.on": powerRunner(runtime, "turn_on"),
@@ -233,9 +209,17 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     id: runtime.id ?? (() => crypto.randomUUID()),
     runners,
     ...(runtime.via ? { via: runtime.via } : {}),
+    // Who occupies the resource now, what the bots announce and what the hub
+    // is told all follow from the events, in `events/subscribers.ts`.
     published: createEventDispatcher({
-      subscribers: eventSubscribers,
-      context: { db: runtime.db, env: runtime.env, shopId: runtime.shopId },
+      subscribers: [...eventSubscribers, ...(runtime.subscribers ?? [])],
+      context: {
+        db: runtime.db,
+        env: runtime.env,
+        shopId: runtime.shopId,
+        ...(runtime.now ? { now: runtime.now } : {}),
+        insideHub: runtime.notifyHub === false,
+      },
       ...(runtime.defer ? { defer: runtime.defer } : {}),
     }),
     readers: {
@@ -246,28 +230,10 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       },
     },
   });
-  const occupancy = createOccupancy({ db: runtime.db, shopId: runtime.shopId, ...(runtime.now ? { now: runtime.now } : {}) });
   return {
     ...bus,
     async perform(input: PerformInput): Promise<PerformResult & { device?: DeviceView }> {
       const result = await bus.perform(input);
-      if (result.operation.status === "succeeded") {
-        // Who a swipe or a coin was for may now occupy the resource. Losing
-        // that must not fail the action the player already got.
-        const playerId = input.actor.type === "player" ? input.actor.playerId : input.forPlayerId ?? null;
-        const observed = await occupancy.observe({ resourceId: input.device.id, event: { kind: "action", action: input.action, playerId } })
-          .catch((error) => {
-            console.error("Occupancy update failed", { shopId: runtime.shopId, deviceId: input.device.id, error });
-            return { started: null };
-          });
-        if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
-      }
-      // The command was accepted, which is all this can know: Home Assistant
-      // answers the same whether or not the machine actually went dark. The hub
-      // starts an observation and waits for the state to confirm it.
-      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded") {
-        await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
-      }
       // What a power or climate action left the device in, read back the same
       // way as any read, so the caller can show it. A device that is not live has
       // nobody else to tell its pages and the boards, so the hub is handed it.
