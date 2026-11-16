@@ -68,6 +68,15 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     historyEvent("spent", "cabinet.consumed", {credits:1,previousCredit:9,credit:8}),
     historyEvent("reset", "cabinet.reset", {previousCredit:8,credit:0,previousTotalCoin:220,totalCoin:0}),
     historyEvent("failed", "coin", {outcome:"failed",message:"机台未在线"}, {kind:"result",origin:"platform",operationId:"failed-op"}),
+    // A request says where it came from, naming the bot it came through.
+    historyEvent("via-bot", "power.on", {}, {kind:"request",origin:"platform",operationId:"bot-op",capability:"power",
+      via:{channel:"bot",resource:{id:"bot",name:"前台 Bot"}}}),
+    // What came through this resource: a command said to it, and what it asked of another resource.
+    historyEvent("said", "bot.command", {command:"coin",args:["机台B"],from:{provider:"onebot",subject:"10001",name:"一号"},
+      target:{provider:"onebot",subject:"10002"},channel:"onebot:42",outcome:"refused",code:"BOT_READ_ONLY"},
+      {capability:"bot",via:{channel:"bot",resource:null}}),
+    historyEvent("through", "power.off", {}, {kind:"request",origin:"platform",operationId:"other-op",capability:"power",
+      device:{id:"other",name:"机台B"},via:{channel:"page",resource:null}}),
   ];
   page.on("pageerror", (error) => exceptions.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") exceptions.push(message.text()); });
@@ -188,6 +197,11 @@ async function operate(page, name, button) {
       await historyPanel.getByText("消耗 1 币 · 本次读数：9 → 8 币",{exact:true}).waitFor();
       await historyPanel.getByText("本次读数：8 → 0 币 · 累计投币：220 → 0 枚",{exact:true}).waitFor();
       await historyPanel.getByText("机台未在线",{exact:true}).waitFor();
+      await historyPanel.getByText("来自：Bot 前台 Bot",{exact:true}).waitFor();
+      await historyPanel.getByText("/coin 机台B",{exact:true}).waitFor();
+      await historyPanel.getByText("一号 代 10002",{exact:true}).waitFor();
+      await historyPanel.getByText("已拒绝",{exact:true}).waitFor();
+      await historyPanel.getByText("设备：机台B · 来自：扫码页",{exact:true}).waitFor();
       records.setFailHistoryPage(true);
       await historyPanel.getByRole("button",{name:"加载更多",exact:true}).click();
       await historyPanel.getByRole("alert").filter({hasText:"记录读取暂时失败"}).waitFor();
@@ -205,7 +219,7 @@ async function operate(page, name, button) {
       assert.equal(await historyPanel.getByText("投入 1 枚 · 机内剩余 4 币",{exact:true}).count(),0,"Refresh replaces the loaded pages");
       assert.deepEqual(records.exceptions.filter((error) => !error.includes("503 (Service Unavailable)")),[]);
       await records.context.close();
-      console.log(`PASS ${label} device history: coin details, old records, pagination retry, cross-page action pairing, refresh`);
+      console.log(`PASS ${label} device history: coin details, where a request came from, bot commands, old records, pagination retry, cross-page action pairing, refresh`);
 
       const deletion = await openBoard(browser, { watchedIo: false, viewport });
       await edit(deletion.page, "机台A");

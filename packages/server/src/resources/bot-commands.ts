@@ -460,40 +460,79 @@ async function refusalOf(error: unknown): Promise<Refusal | null> {
  * refusal is said like any answer; anything else is logged and said as a
  * generic failure, so internal wording never reaches a chat.
  */
-export async function runBotCommand(
-  input: Omit<BotCommandContext, "who" | "onBehalf"> & { name: string; args: string[]; target?: ChatIdentity },
-): Promise<Say[]> {
+export async function runBotCommand(input: BotCommandInput): Promise<Say[]> {
+  return (await judgeBotCommand(input)).says;
+}
+
+export type BotCommandInput = Omit<BotCommandContext, "who" | "onBehalf"> & { name: string; args: string[]; target?: ChatIdentity };
+
+/**
+ * How a command ended, for the bot's history: it ran and was answered, it was
+ * refused (by the bot's settings, or by the platform with `code`), or it broke.
+ */
+export type BotCommandOutcome = { status: "answered" | "refused" | "failed"; code?: string };
+
+/** `runBotCommand`, also saying how the command ended. */
+export async function judgeBotCommand(input: BotCommandInput): Promise<{ says: Say[]; outcome: BotCommandOutcome }> {
   const ctx: BotCommandContext = { ...input, who: input.from, onBehalf: false };
+  const refused = (says: Say[], code: string) => ({ says, outcome: { status: "refused" as const, code } });
   const command = botCommands[input.name];
-  if (!command) return notice(ctx, "不支持这个命令");
+  if (!command) return refused(notice(ctx, "不支持这个命令"), "BOT_COMMAND_UNKNOWN");
   const { view, from } = input;
   const staff = isStaff(view, from);
   if (command.effect && view.settings.playerCommands === "readonly" && !staff) {
-    return notice(ctx, view.settings.readOnlyNotice || DEFAULT_READ_ONLY_NOTICE);
+    return refused(notice(ctx, view.settings.readOnlyNotice || DEFAULT_READ_ONLY_NOTICE), "BOT_READ_ONLY");
   }
-  if (command.entry && !view.billingEnabled) return answer(ctx, "free", botMessage(RESOURCE_NOT_BILLED_NOTICE));
+  if (command.entry && !view.billingEnabled) return refused(answer(ctx, "free", botMessage(RESOURCE_NOT_BILLED_NOTICE)), "RESOURCE_NOT_BILLED");
   let who = from;
   if (input.target) {
-    if (!command.target) return notice(ctx, "这个命令不能代他人操作");
+    if (!command.target) return refused(notice(ctx, "这个命令不能代他人操作"), "BOT_TARGET_NOT_ALLOWED");
     // Acting for another player is for staff, and only when the bot's settings allow it.
-    if (input.target.provider !== from.provider) return notice(ctx, "请在目标平台使用该命令");
-    if (!view.settings.staffCommands) return notice(ctx, "员工命令未启用");
-    if (!staff) return notice(ctx, "权限不足");
+    if (input.target.provider !== from.provider) return refused(notice(ctx, "请在目标平台使用该命令"), "BOT_TARGET_OTHER_PLATFORM");
+    if (!view.settings.staffCommands) return refused(notice(ctx, "员工命令未启用"), "BOT_STAFF_COMMANDS_OFF");
+    if (!staff) return refused(notice(ctx, "权限不足"), "FORBIDDEN");
     who = input.target;
   } else if (command.target === "required") {
-    return notice(ctx, "请指定玩家");
+    return refused(notice(ctx, "请指定玩家"), "BOT_TARGET_REQUIRED");
   }
   ctx.who = who;
   ctx.onBehalf = who !== from;
   try {
-    return await command.run(ctx, input.args);
+    return { says: await command.run(ctx, input.args), outcome: { status: "answered" } };
   } catch (error) {
     const refusal = await refusalOf(error);
     if (!refusal || refusal.status >= 500) {
       console.error(JSON.stringify({ event: "bot_command_failed", command: input.name, message: error instanceof Error ? error.message : String(error) }));
-      if (!refusal) return answer(ctx, "error", botMessage(GENERIC_FAILURE));
+      if (!refusal) return { says: answer(ctx, "error", botMessage(GENERIC_FAILURE)), outcome: { status: "failed" } };
     }
     const checkInUrl = `${(input.env.APP_ORIGIN ?? "").replace(/\/+$/, "")}/t/${encodeURIComponent(input.shop.public_id)}`;
-    return answer(ctx, "error", errorReply(input.name, input.args, refusal, checkInUrl));
+    return {
+      says: answer(ctx, "error", errorReply(input.name, input.args, refusal, checkInUrl)),
+      outcome: refusal.status >= 500 ? { status: "failed", code: refusal.code } : { status: "refused", code: refusal.code },
+    };
   }
+}
+
+/** Commands whose argument is a secret someone could use again: never kept. */
+const SECRET_ARGUMENTS = new Set(["bind", "prism.bind", "redeem"]);
+
+/**
+ * What the bot's history keeps of a command: what was said, by whom, for whom,
+ * where, and how it ended. A binding or gift code is not kept.
+ */
+export function botCommandRecord(
+  frame: { name: string; args: readonly string[]; from: ChatIdentity; target?: ChatIdentity; channel: string },
+  outcome: BotCommandOutcome,
+): Record<string, unknown> {
+  const identity = (who: ChatIdentity) => ({ provider: who.provider, subject: who.subject, ...(who.name ? { name: who.name } : {}) });
+  const args = frame.args.filter((arg) => arg.trim());
+  return {
+    command: frame.name,
+    args: SECRET_ARGUMENTS.has(frame.name) ? args.map(() => "***") : args,
+    from: identity(frame.from),
+    ...(frame.target ? { target: identity(frame.target) } : {}),
+    channel: frame.channel,
+    outcome: outcome.status,
+    ...(outcome.code ? { code: outcome.code } : {}),
+  };
 }

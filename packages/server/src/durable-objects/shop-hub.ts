@@ -35,7 +35,7 @@ import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
 import type { HaWatch } from "./machine-relay.js";
 import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
 import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
-import { runBotCommand, type BotView } from "../resources/bot-commands.js";
+import { botCommandRecord, judgeBotCommand, type BotCommandOutcome, type BotView } from "../resources/bot-commands.js";
 import { botConfigView, type BotResource } from "../resources/bot.js";
 import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
 import type { PageScope } from "./shop-hub-client.js";
@@ -882,6 +882,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     if (this.running.has(frame.id)) return;
     this.running.add(frame.id);
     let frames: SayFrame[];
+    // What the bot's history keeps of this command, once it is known whose bot it is.
+    let record: { shopId: string; botId: string; outcome: BotCommandOutcome } | null = null;
     try {
       const shopId = (await this.shopId()) ?? "";
       const found = await this.botOf(shopId, attachment.token);
@@ -894,8 +896,8 @@ export class ShopHub extends BaseDurableObject<Env> {
         return;
       }
       const shop = tenantShop(shopRow);
-      const says = found.bot.enabled
-        ? await runBotCommand({
+      const { says, outcome } = found.bot.enabled
+        ? await judgeBotCommand({
           env: this.env,
           waitUntil: (promise) => this.ctx.waitUntil(promise),
           shop,
@@ -908,16 +910,29 @@ export class ShopHub extends BaseDurableObject<Env> {
           args: frame.args,
           ...(frame.target ? { target: frame.target } : {}),
         })
-        : [{ message: botMessage("Bot 已被店铺停用") }];
+        : { says: [{ message: botMessage("Bot 已被店铺停用") }], outcome: { status: "refused" as const, code: "BOT_DISABLED" } };
+      record = { shopId, botId: found.bot.id, outcome };
       frames = says.map((said, index) => sayFrame(said.message, { replyTo: frame.id, to: said.to, done: index === says.length - 1 }));
     } catch (error) {
       console.error(JSON.stringify({ event: "bot_command_failed", command: frame.name, message: error instanceof Error ? error.message : String(error) }));
       frames = [sayFrame(botMessage("操作失败，请稍后再试。"), { replyTo: frame.id, done: true })];
+      if (record) record.outcome = { status: "failed" };
     } finally {
       this.running.delete(frame.id);
     }
     await this.remember(replayKey, { frames } as never);
     send(frames);
+    // The command is an event of the bot's own, written after it is answered:
+    // losing the row must not cost the player their answer.
+    if (record) {
+      await createRuntimeBus({
+        db: this.env.DB, env: this.env, shopId: record.shopId, notifyHub: false,
+        via: { channel: "bot", resourceId: record.botId },
+      }).signal({ device: { id: record.botId }, capability: "bot", name: "bot.command", payload: botCommandRecord(frame, record.outcome) })
+        .catch((error) => console.error(JSON.stringify({
+          event: "bot_command_record_failed", command: frame.name, message: error instanceof Error ? error.message : String(error),
+        })));
+    }
     // Entries, checkouts and device commands can start or end an idle countdown.
     const shopId = await this.shopId();
     if (shopId) await this.touch(shopId);

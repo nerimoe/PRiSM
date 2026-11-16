@@ -291,6 +291,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
 - **Hub 自己的总线**（闲置规则、监听者上报，`notifyHub: false`）上，后三类只是去通知 Hub 的订阅者保持沉默：Hub 自己告诉它的 Bot 和页面，也不能从内部回调自己。占用判定照常进行。
 - **还没有进订阅表的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆）；账单变动后的页面刷新与 Live Activity（入场、结账还不是事件，仍由路由后的中间件和 Bot 命令各自处理）。
+- **Bot 命令也是事件**：对 Bot 说的每条命令在回答之后记为这个 Bot 资源自己的一条回报（能力 `bot`，名字 `bot.command`，来源是这个 Bot）。payload 是 `command`、`args`、`from`／`target`（聊天平台身份）、`channel` 和 `outcome`：`answered`（执行并回答了）、`refused`（被 Bot 设置或平台拒绝，带 `code`）、`failed`（出错）。`bind` 和 `redeem` 的参数是可以再用的码，只记 `***`。因丢失回答而重发的同一条命令只记一次；记录写入失败只记日志，不影响回答。旧插件走 `request` 帧的请求不是命令，没有这条记录，但它发起的设备请求同样带着 Bot 来源。
 
 所有写入都经过 `packages/server/src/resources/capabilities/bus.ts`：`perform`（动作）、`signal`（回报）、`setOwned`（平台权威状态）、`reportMany`（监听者上报的外部状态，一批写入，可只存储不记事件）。`observe`（现读后写入）仍在总线上但不再用于任何读取路径。动作不会在完成后读回外部状态。其他代码不直接写设备表。卡号只作为临时参数交给执行器，从不落库；门锁临时密码只在本次响应返回。
 
@@ -489,7 +490,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 
 ### 设备日志
 
-`GET /api/v1/merchant/machines/:id/events?limit=50&before=<上一页 nextCursor>`（每页 1–200 条，默认 50）按时间、事件 ID 倒序返回该设备的事件。首屏不传 `before`；`nextCursor` 为 `null` 表示已经读完。游标是末条事件 ID，只在同一店铺、同一设备内有效，同一毫秒内的事件不会漏掉：
+`GET /api/v1/merchant/machines/:id/events?limit=50&before=<上一页 nextCursor>`（每页 1–200 条，默认 50）按时间、事件 ID 倒序返回该资源的记录。**一个资源的记录是它出现过的全部事件**：发生在它身上的（`device_id` 是它），和经由它发起的（`via_resource_id` 是它），两者都是的只列一次。不按资源类型或事件类型挑选，所以新增一种资源或事件不用为记录另写代码。Bot 的记录因此包含对它说过的每条命令，以及它让别的资源做的事；机台的记录里能看出每条请求来自哪里。首屏不传 `before`；`nextCursor` 为 `null` 表示已经读完。游标是末条事件 ID，只在同一店铺、同一资源的记录内有效，同一毫秒内的事件不会漏掉。每条事件另带两个字段：`device`（事件发生在别的资源上时是 `{id,name}`，发生在本资源上为 `null`）和 `via`（`{channel, resource}`；`resource` 是它经过的另一个资源，如 Bot，经过的就是本资源或没有时为 `null`；记录来源之前的旧事件整个为 `null`）：
 
 ```json
 { "events": [

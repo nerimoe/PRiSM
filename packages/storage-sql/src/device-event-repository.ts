@@ -260,14 +260,22 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
     },
 
     async listEvents({ deviceId, limit, before }) {
+      // A resource's history is every event it appears in: what happened to it,
+      // and what came through it. Each half reads its own index; an event that
+      // is both (a command said to a bot) is listed once.
+      // The cursor must be an event of this same history; any other lists nothing.
+      const older = before
+        ? `AND (occurred_at, id) < (SELECT occurred_at, id FROM device_events
+             WHERE shop_id = ${shop} AND id = ? AND (device_id = ? OR via_resource_id = ?))`
+        : "";
+      const half = (column: string) =>
+        `SELECT * FROM (SELECT ${eventColumns} FROM device_events
+           WHERE shop_id = ${shop} AND ${column} = ? ${older}
+           ORDER BY occurred_at DESC, id DESC LIMIT ?)`;
+      const params = [deviceId, ...(before ? [before, deviceId, deviceId] : []), limit];
       const rows = await executor.all<EventRow>(
-        `SELECT ${eventColumns}
-         FROM device_events WHERE shop_id = ${shop} AND device_id = ?
-         ${before ? `AND (occurred_at, id) < (
-           SELECT occurred_at, id FROM device_events WHERE shop_id = ${shop} AND device_id = ? AND id = ?
-         )` : ""}
-         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
-        [deviceId, ...(before ? [deviceId, before] : []), limit],
+        `${half("device_id")} UNION ${half("via_resource_id")} ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+        [...params, ...params, limit],
       );
       return rows.map(toEvent);
     },

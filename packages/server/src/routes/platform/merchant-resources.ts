@@ -301,10 +301,24 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
     .listEvents({ deviceId: c.req.param("id"), limit: limit + 1, before });
   const page = events.slice(0, limit);
+  // The other resources these events name: the device something done through
+  // this one happened to, and the resource (a bot) something came through.
+  const others = [...new Set(page.flatMap((event) => [event.deviceId, event.via?.resourceId ?? null])
+    .filter((id): id is string => !!id && id !== c.req.param("id")))];
+  const names = new Map(others.length
+    ? (await c.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+        .bind(machine.shop_id, JSON.stringify(others)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name])
+    : []);
+  const named = (id: string | null | undefined) =>
+    id && id !== c.req.param("id") ? { id, name: names.get(id) ?? null } : null;
   return c.json({
     nextCursor: events.length > limit ? page.at(-1)!.id : null,
     events: page.map((event) => ({
       id: event.id,
+      // Null when the event happened to this resource itself.
+      device: named(event.deviceId),
+      // Where it came into the platform; `resource` when through another of the shop's resources.
+      via: event.via ? { channel: event.via.channel, resource: named(event.via.resourceId) } : null,
       capability: event.capability,
       kind: event.kind,
       name: event.name,

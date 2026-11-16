@@ -87,8 +87,18 @@ export type Shop = {
  * asked for and its outcome (paired by `operationId`), `signal` is something
  * the machine reported, `change` is a state that moved.
  */
+export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
+
 export type DeviceEvent = {
   id: string;
+  /** The resource it happened to, when that is not the one whose history this is. */
+  device?: { id: string; name: string | null } | null;
+  /**
+   * Where it came into the platform; `resource` names the shop's own resource
+   * it came through (a bot), when that is not the one whose history this is.
+   * Null for an event recorded before events said so.
+   */
+  via?: { channel: DeviceEventChannel; resource: { id: string; name: string | null } | null } | null;
   capability: string;
   kind: "request" | "result" | "signal" | "change";
   /** Action, signal or state name, e.g. `power.on`, `card.consumed`, `link`. */

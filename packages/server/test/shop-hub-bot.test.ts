@@ -388,6 +388,34 @@ describe("a bot's commands", () => {
     sqlite.close();
   });
 
+  it("keeps each command in the bot's own history: what was said, by whom, and how it ended", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, { playerCommands: "readonly", readOnlyNotice: "请扫码" });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c1", "wallet")));
+    // Sent again after a lost answer: answered from memory, and not a second command.
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c1", "wallet")));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c2", "coin", ["mai"])));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c3", "billing")));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c4", "redeem", ["GIFT-1234"])));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("c5", "wallet", [], { target: { provider: "onebot", subject: "10002" } })));
+    const rows = sqlite.query(
+      "SELECT device_id, capability, kind, name, via, via_resource_id, payload_json FROM device_events WHERE name='bot.command' ORDER BY rowid",
+    ).all() as Array<Record<string, string>>;
+    expect(rows.map(({ payload_json: _payload, ...row }) => row)).toEqual(Array(5).fill(
+      { device_id: "bot-res", capability: "bot", kind: "signal", name: "bot.command", via: "bot", via_resource_id: "bot-res" },
+    ));
+    expect(rows.map((row) => JSON.parse(row.payload_json!))).toEqual([
+      { command: "wallet", args: [], from, channel: "onebot:42", outcome: "answered" },
+      { command: "coin", args: ["mai"], from, channel: "onebot:42", outcome: "refused", code: "BOT_READ_ONLY" },
+      { command: "billing", args: [], from, channel: "onebot:42", outcome: "refused", code: "PLAYER_HAS_NO_UNSETTLED_SESSIONS" },
+      // A gift code could be used again by whoever reads the history.
+      expect.objectContaining({ command: "redeem", args: ["***"] }),
+      { command: "wallet", args: [], from, target: { provider: "onebot", subject: "10002" }, channel: "onebot:42", outcome: "refused", code: "FORBIDDEN" },
+    ]);
+    sqlite.close();
+  });
+
   it("decides who may do what: read-only mode, staff acting for others, and refusals in words", async () => {
     const { sqlite, hub, ws } = await fixture();
     botResource(sqlite, { playerCommands: "readonly", readOnlyNotice: "请扫码" });

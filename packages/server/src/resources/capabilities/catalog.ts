@@ -300,7 +300,8 @@ export const bot: CapabilitySpec<BotConfig> = {
   secrets: [],
   // A bot is a party that asks for actions, not a device that performs them.
   actions: {},
-  signals: {},
+  // A command someone said to it, and how it was answered (`bot-commands.ts`).
+  signals: { "bot.command": { activity: false, store: true } },
   state: {},
   available: () => false,
 };

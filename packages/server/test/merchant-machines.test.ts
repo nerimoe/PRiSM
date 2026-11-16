@@ -91,6 +91,45 @@ describe("pre-fork merchant machine lifecycle",()=>{
     sqlite.close();
   });
 
+  it("lists a resource's history as what happened to it and what came through it, naming the other resource", async () => {
+    const { app, env, sqlite } = fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet'),('shop-1','bot','bot','前台 Bot')");
+    const insert = (id: string, device: string, kind: string, name: string, via: string | null, viaResource: string | null, at: string) =>
+      sqlite.run(
+        `INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,payload_json,occurred_at,via,via_resource_id)
+         VALUES ('shop-1',?,?,'hinata_io',?,?,?,'platform','{}',?,?,?)`,
+        [id, device, kind, name, kind === "signal" ? null : "op-1", at, via, viaResource],
+      );
+    insert("said", "bot", "signal", "bot.command", "bot", "bot", "2026-10-29T16:00:01.000Z");
+    insert("asked", "cab", "request", "coin", "bot", "bot", "2026-10-29T16:00:02.000Z");
+    insert("page", "cab", "request", "coin", "page", null, "2026-10-29T16:00:03.000Z");
+    insert("old", "cab", "request", "coin", null, null, "2026-10-29T16:00:04.000Z");
+    type Listed = { id: string; device: { id: string; name: string } | null; via: { channel: string; resource: { id: string; name: string } | null } | null };
+    const events = async (id: string, query = "") => ((await (await app.fetch(new Request(
+      `https://prism.test/api/v1/merchant/machines/${id}/events${query}`,
+    ), env)).json()) as { events: Listed[]; nextCursor: string | null });
+
+    // The bot: the command said to it once, and the coin it asked another resource for.
+    const bot = await events("bot");
+    expect(bot.events.map((e) => [e.id, e.device, e.via])).toEqual([
+      ["asked", { id: "cab", name: "Cabinet" }, { channel: "bot", resource: null }],
+      ["said", null, { channel: "bot", resource: null }],
+    ]);
+    // The cabinet: everything that happened to it, saying which came through the bot.
+    const cab = await events("cab");
+    expect(cab.events.map((e) => [e.id, e.device, e.via])).toEqual([
+      ["old", null, null],
+      ["page", null, { channel: "page", resource: null }],
+      ["asked", null, { channel: "bot", resource: { id: "bot", name: "前台 Bot" } }],
+    ]);
+    // Paging runs across both halves.
+    const first = await events("bot", "?limit=1");
+    expect([first.events.map((e) => e.id), first.nextCursor]).toEqual([["asked"], "asked"]);
+    const rest = await events("bot", `?limit=1&before=${first.nextCursor}`);
+    expect([rest.events.map((e) => e.id), rest.nextCursor]).toEqual([["said"], null]);
+    sqlite.close();
+  });
+
   it("returns operation history in the resource's shop zone, including midnight and daylight saving", async () => {
     const { app, env, sqlite } = fixture();
     const api = new Hono<AppBindings>();

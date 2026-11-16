@@ -826,6 +826,26 @@ function changeLabel(event: DeviceEvent, t: (message: string, values?: Record<st
   return event.name;
 }
 
+/**
+ * Where a request came from, for the channels a person or a rule stands behind.
+ * A machine's own reports (`relay`, `ha`) already say so by their direction.
+ */
+const viaLabels: Partial<Record<NonNullable<DeviceEvent["via"]>["channel"], string>> = {
+  page: "扫码页",
+  merchant: "商户后台",
+  bot: "Bot",
+  api: "接口",
+  system: "平台规则",
+};
+
+const commandOutcomes: Record<string, string> = { answered: "已回复", refused: "已拒绝", failed: "出错" };
+
+/** Who said a command to a bot, as the chat named them. */
+function chatName(value: unknown): string {
+  const who = (value ?? {}) as { name?: unknown; subject?: unknown };
+  return typeof who.name === "string" && who.name ? who.name : typeof who.subject === "string" ? who.subject : "";
+}
+
 const actionLabels: Record<string, string> = {
   "power.on": "开机",
   "power.off": "关机",
@@ -1352,6 +1372,17 @@ function ResourceHistory({ device }: { device: Resource }) {
               }
             }
             if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
+            const command = e.name === "bot.command" ? e.payload : null;
+            if (command) {
+              const from = chatName(command.from);
+              const target = chatName(command.target);
+              if (from) detail.push(target ? t("{from} 代 {target}", { from, target }) : from);
+            } else {
+              // Something done through this resource happened to another one.
+              if (e.device) detail.push(t("设备：{name}", { name: e.device.name ?? e.device.id }));
+              const source = e.via && e.kind !== "change" ? viaLabels[e.via.channel] : undefined;
+              if (source) detail.push(t("来自：{source}", { source: e.via!.resource?.name ? `${t(source)} ${e.via!.resource.name}` : t(source) }));
+            }
             return (
               <div
                 className="flex justify-between gap-3 py-3 text-sm"
@@ -1362,7 +1393,7 @@ function ResourceHistory({ device }: { device: Resource }) {
                     {/* Direction is the difference between "we asked" and
                         "the machine reported", which is what makes a card event
                         worth logging at all. */}
-                    {e.kind !== "change" && (
+                    {e.kind !== "change" && !command && (
                       <span
                         className={inbound ? "text-mint" : "text-ink/45"}
                         title={inbound ? t("机台回报") : t("平台下发")}
@@ -1370,7 +1401,9 @@ function ResourceHistory({ device }: { device: Resource }) {
                         {inbound ? "←" : "→"}
                       </span>
                     )}
-                    {e.kind === "change"
+                    {command
+                      ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
+                      : e.kind === "change"
                       ? changeLabel(e, t)
                       : e.name === "card.login"
                         ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
@@ -1380,7 +1413,9 @@ function ResourceHistory({ device }: { device: Resource }) {
                   <p className="mt-1 text-xs text-ink/50">{date(e.at)}</p>
                 </div>
                 <span className="text-xs text-ink/55">
-                  {e.kind === "signal"
+                  {command
+                    ? t(commandOutcomes[String(command.outcome)] ?? "已回复")
+                    : e.kind === "signal"
                     ? t("机台回报")
                     : e.kind === "change"
                       ? t(e.origin === "observer" ? "检测到" : "机台回报")

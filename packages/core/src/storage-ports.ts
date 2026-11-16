@@ -280,6 +280,10 @@ export type DeviceEventRepository = {
    * state did not move is not among them: it never happened.
    */
   record(input: DeviceRecord): Promise<DeviceEvent[]>;
+  /**
+   * A resource's history, newest first: the events that happened to it and the
+   * events that came through it (`via.resourceId`), each listed once.
+   */
   listEvents(input: { deviceId: string; limit: number; before?: string }): Promise<DeviceEvent[]>;
   getOperation(id: string): Promise<DeviceOperation | null>;
   listOperationsByPlayer(playerId: string): Promise<DeviceOperation[]>;
