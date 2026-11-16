@@ -356,8 +356,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
 
       const r1 = await testApp.request("https://prism.test/version", {}, env);
       expect(r1.status).toBe(200);
-      const b1 = (await r1.json()) as { service: string; revision: string };
-      expect(b1.service).toBe("prism-api");
+      const b1 = (await r1.json()) as { worker: string; revision: string };
+      expect(b1.worker).toBe("local");
       expect(b1.revision).toBe("rev-2026-10-08-test");
 
       const r2 = await testApp.request(
@@ -366,8 +366,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         env,
       );
       expect(r2.status).toBe(200);
-      const b2 = (await r2.json()) as { data: { service: string } };
-      expect(b2.data.service).toBe("prism-api");
+      const b2 = (await r2.json()) as { data: { revision: string } };
+      expect(b2.data.revision).toBe("rev-2026-10-08-test");
     });
 
     it("dispatches platform auth and shop routes correctly", async () => {

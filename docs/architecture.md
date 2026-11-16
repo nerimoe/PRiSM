@@ -195,5 +195,5 @@ iOS/App Clip 的 OAuth 回调使用 `hinata-prism-auth://callback?code=...&setup
 - **平台级认证路由 (`/api/v1/auth`)**：提供用户会话管理（登录、注册、注销）、WebAuthn Passkey 挑战生成与校验（`/passkey/options`, `/passkey/register`）。
 - **用户与账号路由 (`/api/v1/user`, `/api/v1/account`)**：暴露用户信息、店铺管理员归属判断、多认证身份（MuNET 等）及 Passkey 凭据的重命名与撤销管理。
 - **商户店铺路由 (`/api/v1/shops`, `/api/v1/merchant/shops`)**：支持店铺全生命周期（创建、查询、更新、删除）、基于经纬度的展示时区推导、初始账务设置与 Bot 令牌配置，并支持封面图的二进制分发与 `ETag` 304 缓存。
-- **系统运行路由 (`/health`, `/version`)**：提供无状态健康探针与版本号、Git 修订号查询。
+- **系统运行路由 (`/health`, `/version`)**：提供无状态健康探针，以及 Worker 名称与 Git 提交号查询（没有发布版本号）。
 - **静态前端资源 (`web-assets.ts`)**：通过 `serveWebAssets` 挂载 Cloudflare `ASSETS`，并在维护期拦截和对 HTML 导航实施 SPA 回退。

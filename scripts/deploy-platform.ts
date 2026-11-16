@@ -18,8 +18,6 @@ if (base.main !== "packages/server/src/worker.ts" || !base.vars?.APP_ORIGIN)
 const origin = new URL(base.vars.APP_ORIGIN);
 if (origin.protocol !== "https:" || origin.origin !== base.vars.APP_ORIGIN)
   throw new Error("A production HTTPS APP_ORIGIN is required");
-const packageJson = await Bun.file(resolve(root, "package.json")).json();
-if (!/^\d+\.\d+\.\d+$/.test(packageJson.version)) throw new Error("Invalid release version");
 const revision = (await command(["git", "rev-parse", "HEAD"], true)).trim();
 if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Cannot determine release revision");
 const token = randomToken(48), tokenHash = await sha256(token);
@@ -35,15 +33,13 @@ for (const phase of ["maintenance", "verify", "live"] as const) {
     main: resolve(root, phase === "maintenance" ? "packages/server/src/maintenance-worker.ts" : "packages/server/src/worker.ts"),
     assets: { ...base.assets, binding: "ASSETS", directory: resolve(root, base.assets.directory), run_worker_first: phase === "live" ? [...base.assets.run_worker_first, deploymentControlPath] : true },
     d1_databases: base.d1_databases.map((db: Record<string, unknown>) => ({ ...db, migrations_dir: resolve(root, "migrations") })),
-    vars: { ...base.vars, PRISM_DEPLOY_GUARD: "1", PRISM_DEPLOY_PHASE: phase, PRISM_DEPLOY_TOKEN_HASH: tokenHash, PRISM_DEPLOY_REVISION: revision },
+    vars: { ...base.vars, PRISM_DEPLOY_GUARD: "1", PRISM_DEPLOY_PHASE: phase, PRISM_DEPLOY_TOKEN_HASH: tokenHash, PRISM_DEPLOY_REVISION: revision, PRISM_WORKER_NAME: base.name },
   };
   const path = resolve(folder, `${phase}.json`);
   await Bun.write(path, JSON.stringify(config, null, 2));
   configs.set(phase, path);
 }
-const deploymentArgs = (phase: string) => ["wrangler", "deploy", "--config", configs.get(phase)!,
-  "--define", `PRISM_BACKEND_VERSION:${JSON.stringify(packageJson.version)}`,
-  "--define", `PRISM_BACKEND_REVISION:${JSON.stringify(revision.slice(0, 12))}`];
+const deploymentArgs = (phase: string) => ["wrangler", "deploy", "--config", configs.get(phase)!];
 
 const controlOptions = { origin, token, revision, sleep: (milliseconds: number) => Bun.sleep(milliseconds) };
 let activePhase: string | undefined;

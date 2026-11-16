@@ -72,7 +72,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查。 |
-| `GET` | `/version` | 查询后端发布版本与构建 Git 提交号；无需认证。 |
+| `GET` | `/version` | 查询正在应答的是哪次部署：`{ worker, revision }`，即 Worker 名称和构建所用的完整 Git 提交号，都由部署脚本写入；没有发布版本号。未经部署脚本启动的进程（如本地运行）返回 `local` 和 `dev`。无需认证。 |
 | `GET` | `/admin` | 独立 API 的管理部署提示页；店铺管理 UI 由 `packages/prism-web` 构建，统一平台入口为 `/merchant`。 |
 | `GET` | `/rpc/setup/status` | 查询系统是否已完成初始化开箱配置。 |
 | `POST` | `/rpc/setup/install` | 初始化首个 owner 员工、店铺设置、本位余额资产和 API 密钥。 |

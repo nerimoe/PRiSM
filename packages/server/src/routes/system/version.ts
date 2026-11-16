@@ -3,13 +3,13 @@ import type { AppBindings } from "../../bindings.js";
 
 export const versionRouter = new Hono<AppBindings>();
 
-versionRouter.get("/", (c) => {
-  const versionInfo = c.get("deps")?.versionInfo ?? {
-    version: "1.0.0",
+/**
+ * Which deployment is answering: the Worker's name and the commit it was built
+ * from, both set by the deploy script. There is no release number. A process
+ * nobody deployed, such as the local runtime, says `local` and `dev`.
+ */
+versionRouter.get("/", (c) =>
+  c.json({
+    worker: c.env.PRISM_WORKER_NAME ?? "local",
     revision: c.env.PRISM_DEPLOY_REVISION ?? "dev",
-  };
-  return c.json({
-    service: "prism-api",
-    ...versionInfo,
-  });
-});
+  }));

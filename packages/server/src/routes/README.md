@@ -24,7 +24,7 @@ routes/
 │   └── views.ts            # 统一响应视图对象映射器 (View DTOs)
 ├── system/                 # 系统级路由
 │   ├── health.ts           # 健康检查接口 (/health, /api/v1/health)
-│   └── version.ts          # 版本与修订号接口 (/version, /api/v1/version)
+│   └── version.ts          # Worker 名称与提交号接口 (/version, /api/v1/version)
 └── web-assets.ts           # SPA 静态前端资源分发与回退路由
 ```
 
@@ -151,7 +151,7 @@ routes/
 ### 5. 系统运行状态路由
 
 - `/health` / `/api/v1/health`: 返回系统健康状态 (`ok: true`, `service: "prism-api"`), 部署阶段包含 `x-prism-revision` 标头。
-- `/version` / `/api/v1/version`: 返回服务版本号、部署修订号及运行时依赖版本信息。
+- `/version` / `/api/v1/version`: 返回 `{ worker, revision }`：Worker 名称与构建所用的 Git 提交号，由部署脚本写入 `PRISM_WORKER_NAME` 和 `PRISM_DEPLOY_REVISION`。
 
 ### 6. 静态资源路由 (`web-assets.ts`)
 
