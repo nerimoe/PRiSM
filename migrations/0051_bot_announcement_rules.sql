@@ -9,6 +9,9 @@
 -- bot's first rule: the same events, from anywhere, said in the same groups.
 -- A bot with no groups, or that announced nothing, gets no rule: it said
 -- nothing before and says nothing now.
+--
+-- The switches are read from a list rather than one SELECT per switch joined by
+-- UNION ALL: D1 allows five terms in a compound SELECT, and there are six.
 UPDATE device_capabilities
 SET config_json = json_remove(
   json_set(
@@ -21,14 +24,9 @@ SET config_json = json_remove(
           CASE
             WHEN json_type(config_json, '$.announceEvents') = 'array' THEN json_extract(config_json, '$.announceEvents')
             ELSE (
-              SELECT json_group_array(type) FROM (
-                SELECT 'idle.reminder' AS type WHERE json_extract(device_capabilities.config_json, '$.announceIdle')
-                UNION ALL SELECT 'power.on' WHERE json_extract(device_capabilities.config_json, '$.announcePower')
-                UNION ALL SELECT 'power.off' WHERE json_extract(device_capabilities.config_json, '$.announcePower')
-                UNION ALL SELECT 'start' WHERE json_extract(device_capabilities.config_json, '$.announceStarts')
-                UNION ALL SELECT 'card' WHERE json_extract(device_capabilities.config_json, '$.announceCards')
-                UNION ALL SELECT 'request.coin' WHERE json_extract(device_capabilities.config_json, '$.announceCoins')
-              )
+              SELECT json_group_array(json_extract(old.value, '$[0]'))
+              FROM json_each('[["idle.reminder","$.announceIdle"],["power.on","$.announcePower"],["power.off","$.announcePower"],["start","$.announceStarts"],["card","$.announceCards"],["request.coin","$.announceCoins"]]') AS old
+              WHERE json_extract(device_capabilities.config_json, json_extract(old.value, '$[1]'))
             )
           END
         ) > 0
@@ -37,14 +35,9 @@ SET config_json = json_remove(
           CASE
             WHEN json_type(config_json, '$.announceEvents') = 'array' THEN json_extract(config_json, '$.announceEvents')
             ELSE (
-              SELECT json_group_array(type) FROM (
-                SELECT 'idle.reminder' AS type WHERE json_extract(device_capabilities.config_json, '$.announceIdle')
-                UNION ALL SELECT 'power.on' WHERE json_extract(device_capabilities.config_json, '$.announcePower')
-                UNION ALL SELECT 'power.off' WHERE json_extract(device_capabilities.config_json, '$.announcePower')
-                UNION ALL SELECT 'start' WHERE json_extract(device_capabilities.config_json, '$.announceStarts')
-                UNION ALL SELECT 'card' WHERE json_extract(device_capabilities.config_json, '$.announceCards')
-                UNION ALL SELECT 'request.coin' WHERE json_extract(device_capabilities.config_json, '$.announceCoins')
-              )
+              SELECT json_group_array(json_extract(old.value, '$[0]'))
+              FROM json_each('[["idle.reminder","$.announceIdle"],["power.on","$.announcePower"],["power.off","$.announcePower"],["start","$.announceStarts"],["card","$.announceCards"],["request.coin","$.announceCoins"]]') AS old
+              WHERE json_extract(device_capabilities.config_json, json_extract(old.value, '$[1]'))
             )
           END
         ),

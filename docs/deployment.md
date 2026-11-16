@@ -161,6 +161,8 @@ Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及
 
 Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成统一配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。日常亦可使用统一指令 `bun run deploy:worker` 构建前端并发布统一 Worker。
 
+推送到 `main` 就会触发这次部署，其中包括迁移。新迁移在推送前先用本地 D1 跑一遍（`bun run db:migrate:local`）：仓库里的测试用的是 Bun 自带的 SQLite，它比 D1 宽松，测试和 GitHub CI 通过不代表迁移能在 D1 上执行。已知的差别：D1 的复合 SELECT 最多 5 段，第 6 个 `UNION`／`UNION ALL` 会报 `too many terms in compound SELECT`，迁移失败后站点停在维护状态（`0051` 曾因此失败，改为用 `json_each` 读一张列表）。
+
 ### 登录与配置
 
 打开部署域名的 `/merchant`，通过平台登录后创建或选择店铺，在 React 设置页面维护位置、成员、设备及「接入凭证」。时区根据店铺位置自动设置；计费区间的编辑与展示使用该时区，业务执行统一 UTC。创建店铺时可选计费模式并初始化余额资产和入场方案；旧店铺也可通过设置中的转换向导启用计费。
