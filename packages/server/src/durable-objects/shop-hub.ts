@@ -886,7 +886,6 @@ export class ShopHub extends BaseDurableObject<Env> {
       const origin: FactOrigin = {
         via: { channel: "bot", resourceId: found.bot.id },
         defer: (work) => this.ctx.waitUntil(work),
-        told: new Set(),
       };
       const { says, outcome } = found.bot.enabled
         ? await judgeBotCommand({
@@ -898,7 +897,6 @@ export class ShopHub extends BaseDurableObject<Env> {
             { db: this.env.DB, env: this.env, shopId },
             origin,
           ),
-          told: origin.told,
           bot: found.bot,
           view: found.view,
           from: frame.from,

@@ -288,15 +288,16 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - `after`：`inline` 全部跑完后，把这一次分发里它要的事件按发生顺序**一起**听到；有 `waitUntil` 时交给它，不拖慢回答。
 - **现有订阅者**（按表里的顺序）：
   - `occupancy`（`inline`，全部事件）：硬件收下的动作（`<动作>.sent`）和设备回报交给占用判定，含义仍由各能力自己决定（见 [卡片、占用与查人](occupancy.md)）。资源对其计费的玩家被看到时发出 `occupancy.seen`，此前不在这个资源上则再发出 `occupancy.started`。员工替玩家操作时，结果事件的 payload 也带 `forPlayerId`，订阅者不用回头查请求。
+  - `billing-pages`（`after`）：玩家的账单或余额动了（入场、停止计费、结账、调余额、调资产、兑换、订单变化、玩家资格变化），或硬件收下了为他发的请求，就让他打开的页面重读，并推 Live Activity——入场推开始，结账与停止计费推结束，其余刷新进行中的账单。
+  - `shop-pages`（`after`）：店铺自己的规则变了（`shop.changed`：方案、价格、资产定义、设置），所有打开的页面重读，正在手机上计费的玩家账单刷新。
   - `bot-announcements`（`after`）：把 `power.on.sent`／`power.off.sent`／`aime.scan.sent`／`coin.sent` 播报成 `request.*`，`card.consumed` 播报成 `card`，`occupancy.started` 播报成 `start`，`cabinet.coin`／`cabinet.consumed`／`cabinet.reset` 原样播报，业务事实按自己的名字播报，`<动作>.refused` 播报成 `request.refused`。每条带上事件的来源（`via`）；来源是 Bot 的带上 `botId`，那个 Bot 已经回答过自己的命令，不再播报。
   - `hub-power-off`（`after`）：`power.off.sent` 之后让店铺 Hub 开始观察这台机器的 IO。
-  - `hub-idle-recheck`（`after`）：目录里标为 `activity` 的设备回报之后让 Hub 重算在场与闲置期限。
+  - `hub-idle-recheck`（`after`）：有人在用的迹象（目录里标为 `activity` 的设备回报、硬件收下的请求）或一次到店开始、结束之后，让 Hub 重算在场与闲置期限。
   - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
 - **Hub 自己的总线**（闲置规则、监听者上报，`notifyHub: false`）上，后三类只是去通知 Hub 的订阅者保持沉默：Hub 自己告诉它的 Bot 和页面，也不能从内部回调自己。占用判定照常进行。
-- **还没有进订阅表的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆）；没有发布业务事实的改动之后的页面刷新与 Live Activity（见下一条）。
-- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单或余额的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
-  - 订阅者 `billing-pages`（`after`）：让该玩家打开的页面重读，并推 Live Activity——入场推开始，结账与停止计费推结束，其余刷新进行中的账单。
-  - 路由后的事件桥（`routes/shops/index.ts`）和 Bot 命令里的 `billMoved` **保留作兜底**：本次请求里已经发布过事实的玩家（`FactOrigin.told`）它们跳过，其余改动（改价、改资产定义、商品订单、旧的按身份入场接口、扫码页的平台级路由等）仍按原来的方式通知。新增一种业务事实时在 `withOrigin` 里加一处，兜底自然让位。
+- **不在订阅表里的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆，但同样按 Bot 的监听规则发出）；麻将桌的上下桌（座位变化由 `routes/platform/mahjong.ts` 自己通知这张桌的页面）。
+- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
+  **玩家的页面和手机只由这些事实通知**：没有别的地方从 URL 或响应体里反推发生了什么。新增一种会改变账单的操作时，在 `withOrigin` 里给它的服务方法加一条事实；不加，页面和 Live Activity 就不会知道。
 - **被拒绝的请求也是事件**：设备请求在发给硬件之前被挡下（未入场、投币冷却、机台币满、设备不支持、没有这个设备）时，记一条 `<动作>.refused`，带 `code`（平台的原因码）和可读的 `message`（有的话），说明谁试了、从哪来。没有 `device_operations` 行，也不算作使用。Bot、员工和接口的请求在 `capabilities/actions.ts` 记；扫码页和商户后台的在 `routes/platform/resource-actions.ts` 记，其中询问玩家确认（`CHECKIN_CONSENT_REQUIRED`）、防重复提交、限流和硬件未响应不算拒绝。请求没有指明存在的设备时 `device_id` 为空，仍按来源出现在 Bot 的记录里。
 - **Bot 命令也是事件**：对 Bot 说的每条命令在回答之后记为这个 Bot 资源自己的一条回报（能力 `bot`，名字 `bot.command`，来源是这个 Bot）。payload 是 `command`、`args`、`from`／`target`（聊天平台身份）、`channel` 和 `outcome`：`answered`（执行并回答了）、`refused`（被 Bot 设置或平台拒绝，带 `code`）、`failed`（出错）。`bind` 和 `redeem` 的参数是可以再用的码，只记 `***`。因丢失回答而重发的同一条命令只记一次；记录写入失败只记日志，不影响回答。旧插件走 `request` 帧的请求不是命令，没有这条记录，但它发起的设备请求同样带着 Bot 来源。
 

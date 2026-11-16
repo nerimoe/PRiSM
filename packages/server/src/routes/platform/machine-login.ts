@@ -5,7 +5,6 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { Session } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
-import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
 import { can, loadResource } from "../../resources/resource.js";
@@ -191,11 +190,6 @@ async function handleLogin(c:C,routePublicId?:string) {
   await c.env.DB.prepare(
     "UPDATE player_operations SET status=?,result_json=? WHERE shop_id=? AND user_id=? AND id=?",
   ).bind(status,JSON.stringify(response),shop.id,user.id,operationId).run();
-  if(sent&&playerId) {
-    const sync=refreshActivityBill(c.env,shop.id,playerId,false,true)
-      .catch(error=>console.error("Machine login live bill sync failed",error));
-    try{c.executionCtx.waitUntil(sync);}catch{void sync;}
-  }
   if(!sent)jsonError(502,
     status==="unknown"?"设备离线或连接地址不正确，请联系店员":"设备连接失败，请联系店员检查配置",
     "DEVICE_UNAVAILABLE",response);

@@ -10,9 +10,8 @@
  *   after a power or climate action): that is part of doing the action;
  * - what the shop hub tells from its own memory (Home Assistant power changes
  *   merged per switch, the idle rule's power-offs and warnings);
- * - what follows a bill moving for a caller that publishes no fact yet: the
- *   routes' bridge (`routes/shops/index.ts`) and a bot command still tell those
- *   players' pages and phones themselves.
+ * - a mahjong table's seats: joining and leaving tell the table's pages
+ *   themselves (`routes/platform/mahjong.ts`).
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { Env } from "../bindings.js";
@@ -42,6 +41,12 @@ export type EventContext = {
   /** The client that asked for what happened: it shows it already and is not pushed its own news. */
   initiatorClientId?: string | null;
 };
+
+/** Every request a device can be asked for (`ActionName`). */
+const ACTIONS = Object.values(capabilities).flatMap((spec) => Object.keys(spec.actions));
+
+/** A request the hardware took: what a player is billed for using may have just begun. */
+const SENT = ACTIONS.map((action) => `${action}.sent`);
 
 const actionOf = (heard: Heard) => (heard.event.kind === "result" && heard.type.endsWith(".sent") ? heard.event.name : null);
 
@@ -94,7 +99,7 @@ const CABINET = ["cabinet.coin", "cabinet.consumed", "cabinet.reset"] as const;
 const FACTS = ["session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "gift.redeemed"] as const;
 
 /** Every request that can be turned away, as the event that says it was. */
-const REFUSALS = Object.values(capabilities).flatMap((spec) => Object.keys(spec.actions)).map((action) => `${action}.refused`);
+const REFUSALS = ACTIONS.map((action) => `${action}.refused`);
 
 /** A signed amount as a shop reads it: `+5`, `-2.5`. */
 const signed = (amount: unknown) => (typeof amount === "number" ? `${amount > 0 ? "+" : ""}${amount}` : "");
@@ -178,9 +183,13 @@ export const powerOffSubscriber: AfterSubscriber<EventContext> = {
   },
 };
 
+/** What starts or ends a visit: whether anyone is in the shop is what the idle rule goes by. */
+const VISITS = new Set(["session.started", "session.stopped", "checkout.settled"]);
+
 /**
- * Something a device reported shows a person at it: the hub rechecks who is
- * there and when the idle rule is next due.
+ * Something shows a person at a device or in the shop (a device's own report,
+ * a request the hardware took), or a visit began or ended: the hub rechecks who
+ * is there and when the idle rule is next due.
  */
 export const idleRecheckSubscriber: AfterSubscriber<EventContext> = {
   name: "hub-idle-recheck",
@@ -188,26 +197,55 @@ export const idleRecheckSubscriber: AfterSubscriber<EventContext> = {
   wants: "*",
   async run(context, heard) {
     if (context.insideHub) return;
-    const active = heard.some(({ event }) =>
-      event.kind === "signal" && event.origin === "device" && capabilitySpec(event.capability)?.signals[event.name]?.activity);
+    const active = heard.some(({ event, type }) =>
+      VISITS.has(type) || (event.kind === "result" && type.endsWith(".sent"))
+      || (event.kind === "signal" && event.origin === "device" && capabilitySpec(event.capability)?.signals[event.name]?.activity));
     if (active) await shopHub(context.env, context.shopId)?.touch(context.shopId);
   },
 };
 
 /**
- * A player's bill or balance moved (`shop-facts.ts`): their open pages read
- * themselves again and their phones' Live Activities follow. A visit starting
- * or ending is pushed as that; anything else refreshes the running bill.
+ * The shop's plans, prices, assets or settings changed: every open page shows
+ * them, and every bill running on a phone is priced by them.
+ */
+export const shopChangedSubscriber: AfterSubscriber<EventContext> = {
+  name: "shop-pages",
+  when: "after",
+  wants: ["shop.changed"],
+  async run(context) {
+    const { db, env, shopId } = context;
+    await pagesChanged(env, shopId, { shop: true }, "shop");
+    const live = await db.prepare(
+      `SELECT DISTINCT a.player_id AS playerId FROM live_activity_tokens t
+       JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+       WHERE t.shop_id=? AND t.session_id IS NOT NULL`,
+    ).bind(shopId).all<{ playerId: string }>();
+    for (const { playerId } of live.results) {
+      await pagesChanged(env, shopId, { player: playerId }, "billing");
+      await refreshActivityBill(env, shopId, playerId, false, true);
+    }
+  },
+};
+
+/**
+ * A player's bill or balance moved (`shop-facts.ts`), or the hardware took a
+ * request made for them: their open pages read themselves again and their
+ * phones' Live Activities follow. A visit starting or ending is pushed as
+ * that; anything else refreshes the running bill.
  */
 export const billingSubscriber: AfterSubscriber<EventContext> = {
   name: "billing-pages",
   when: "after",
-  wants: ["session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "assets.adjusted", "gift.redeemed"],
+  wants: [
+    "session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "assets.adjusted", "gift.redeemed",
+    "order.changed", "player.changed", ...SENT,
+  ],
   async run(context, heard) {
     const { env, shopId } = context;
     const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
-    for (const { event, type } of heard) {
-      const playerId = event.playerId;
+    for (const one of heard) {
+      const { event, type } = one;
+      const playerId = event.kind === "result" ? forPlayer(one) : event.playerId;
       if (!playerId) continue;
       await pagesChanged(env, shopId, { player: playerId }, "billing");
       const sessionIds = type === "checkout.settled" ? ids(event.payload.sessionIds)
@@ -227,6 +265,7 @@ export const billingSubscriber: AfterSubscriber<EventContext> = {
 export const eventSubscribers: readonly EventSubscriber<EventContext>[] = [
   occupancySubscriber,
   billingSubscriber,
+  shopChangedSubscriber,
   announcementSubscriber,
   powerOffSubscriber,
   idleRecheckSubscriber,

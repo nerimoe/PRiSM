@@ -14,91 +14,19 @@ import { activityBill, refreshActivityBill } from "../../durable-objects/live-ac
 type C = Context<AppBindings>;
 
 /**
- * Bridges store session events to the phones that are showing them.
+ * Tells the phones that are showing a visit that it started or ended.
  *
- * Sessions started or settled by players, staff, cashiers or shop bots all pass
- * through the tenant event bridge. Hooking here
- * means the core billing domain stays unaware that Live Activities exist, and a new
- * channel cannot silently miss notifications.
+ * Whoever starts or settles a session (a player, staff, the cashier, a bot)
+ * does it through the shop's services, which publish it as a fact; the
+ * billing subscriber (`events/subscribers.ts`) calls this. The core billing
+ * domain stays unaware that Live Activities exist.
  */
-
-/** Exact paths that open a visit, relative to the `/player/` or `/integration/` mount. */
-const SESSION_START_PATHS = new Set([
-  "session/start",
-  "remote-entry",
-  "players/by-identity/session/start",
-]);
-
-/** Paths that close a visit, including the per-session stop and the bulk active checkout. */
-function isSessionEndPath(path: string): boolean {
-  return (
-    path === "checkout/confirm" ||
-    path === "checkout/override" ||
-    path === "checkout/recharge" ||
-    path === "sessions/active/checkout" ||
-    path === "players/by-identity/checkout/confirm" ||
-    path === "players/by-identity/checkout/override" ||
-    /^(players|profiles)\/[^/]+\/checkout\/(confirm|override|recharge)$/.test(path) ||
-    /^sessions\/[^/]+\/stop$/.test(path) ||
-    /^players\/[^/]+\/sessions\/[^/]+\/stop$/.test(path) ||
-    /^players\/by-identity\/sessions\/[^/]+\/stop$/.test(path)
-  );
-}
-
-export function sessionEventForPath(path: string): "start" | "end" | null {
-  // The admin console addresses a player explicitly, so its start path carries an id.
-  if (SESSION_START_PATHS.has(path) || /^players\/[^/]+\/session\/start$/.test(path) || /^profiles\/[^/]+\/entry$/.test(path)) {
-    return "start";
-  }
-  return isSessionEndPath(path) ? "end" : null;
-}
 
 type SessionRow = {
   id: string;
   startedAt: string;
   endedAt: string | null;
 };
-
-/**
- * Resolves the store session a response refers to, so the push can carry its start time.
- * The shapes differ per channel: a start returns `session`, a checkout returns a
- * settlement plus per-session details.
- */
-export function extractSessionIds(
-  payload: Record<string, unknown>,
-  event: "start" | "end",
-): string[] {
-  const ids: string[] = [];
-  const session = payload.session as { id?: unknown } | undefined;
-  if (session && typeof session.id === "string") ids.push(session.id);
-  for (const key of ["sessions", "sessionDetails"] as const) {
-    const list = payload[key];
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const record = item as { sessionId?: unknown; session?: { sessionId?: unknown } };
-      const id = record?.session?.sessionId ?? record?.sessionId;
-      if (typeof id === "string") ids.push(id);
-    }
-  }
-  // A checkout answers with settlement records that nest the session id.
-  const settlements = payload.settlements;
-  if (Array.isArray(settlements)) {
-    for (const item of settlements) {
-      const record = item as { settlement?: { sessionId?: unknown }; sessionId?: unknown };
-      const id = record?.settlement?.sessionId ?? record?.sessionId;
-      if (typeof id === "string") ids.push(id);
-      if (item && typeof item === "object") {
-        ids.push(...extractSessionIds(item as Record<string, unknown>, event));
-      }
-    }
-  }
-  if (event === "end" && ids.length === 0) {
-    // A stop endpoint answers with the session itself.
-    const stopped = payload.session as { id?: unknown } | undefined;
-    if (stopped && typeof stopped.id === "string") ids.push(stopped.id);
-  }
-  return Array.from(new Set(ids));
-}
 
 /**
  * Looks up the sessions a response touched, keyed by id, to recover their start/end times.
@@ -341,91 +269,3 @@ export async function pushSessionEvent(
   }
 }
 
-/**
- * Wraps a `forward()` call so that a successful session start or settlement fans out to
- * the player's phones.
- *
- * The response body is read through `clone()` because the caller still has to return the
- * original response; consuming it here would hand the client an empty body.
- */
-export async function forwardWithLiveActivity(
-  c: C,
-  input: { shopId: string; event: "start" | "end" },
-  execute: () => Promise<Response>,
-): Promise<Response> {
-  const response = await execute();
-  if (!response.ok || !liveActivityConfig(c.env)) return response;
-
-  let task: Promise<void> | null = null;
-  try {
-    const payload = (await response.clone().json()) as Record<string, unknown>;
-    const sessionIds = extractSessionIds(payload, input.event);
-    const playerId = playerIdFromPayload(payload);
-    const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
-    if (playerId && sessionIds.length > 0) {
-      task = pushSessionEvent(c, {
-        shopId: input.shopId,
-        playerId,
-        sessionIds,
-        event: input.event,
-        initiatorClientId,
-      });
-    }
-  } catch (error) {
-    console.error("Live Activity dispatch planning failed", error);
-    return response;
-  }
-  if (!task) return response;
-
-  try {
-    c.executionCtx.waitUntil(task);
-  } catch {
-    void task.catch((error) => console.error("Live Activity push failed", error));
-  }
-  return response;
-}
-
-/**
- * Reads the player from whatever shape the channel returned. Start answers carry
- * `session.playerId`; checkouts carry `playerSettlement.playerId` or per-session details.
- * Resolving from the response is what lets the bot channel — which identifies players by
- * platform identity or card, never by account id — participate without special casing.
- */
-export function playerIdFromPayload(payload: Record<string, unknown>): string | null {
-  const direct = payload.playerId;
-  if (typeof direct === "string" && direct) return direct;
-  const session = payload.session as { playerId?: unknown } | undefined;
-  if (typeof session?.playerId === "string" && session.playerId) return session.playerId;
-  const settlement = payload.playerSettlement as { playerId?: unknown } | undefined;
-  if (typeof settlement?.playerId === "string" && settlement.playerId) return settlement.playerId;
-  for (const key of ["sessions", "sessionDetails"] as const) {
-    const list = payload[key];
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const record = item as { playerId?: unknown };
-      if (typeof record?.playerId === "string" && record.playerId) return record.playerId;
-    }
-  }
-  return null;
-}
-
-export function playerIdsFromPayload(payload: Record<string, unknown>): string[] {
-  const ids = new Set<string>();
-  const visit = (item: Record<string, unknown>) => {
-    const id = playerIdFromPayload(item);
-    if (id) ids.add(id);
-    for (const key of ["settlements", "sessions", "sessionDetails", "holdings", "grantedAssets", "assetLedgerEntries"] as const) {
-      if (Array.isArray(item[key])) for (const child of item[key]) {
-        if (child && typeof child === "object") visit(child as Record<string, unknown>);
-      }
-    }
-    for (const key of ["order", "businessItemOrder", "redeemRecord"] as const) {
-      const child = item[key];
-      if (child && typeof child === "object") visit(child as Record<string, unknown>);
-    }
-    const preview = item.settlementPreview as { playerId?: unknown } | undefined;
-    if (typeof preview?.playerId === "string") ids.add(preview.playerId);
-  };
-  visit(payload);
-  return [...ids];
-}

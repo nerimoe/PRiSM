@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import type { Env, PrismAppDependencies } from "../src/bindings.js";
 import { publishShopFacts, withOrigin, type FactOrigin } from "../src/events/shop-facts.js";
-import { announcementSubscriber } from "../src/events/subscribers.js";
+import { announcementSubscriber, billingSubscriber, idleRecheckSubscriber, shopChangedSubscriber } from "../src/events/subscribers.js";
 import type { Heard } from "../src/events/dispatcher.js";
 import type { DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
@@ -21,7 +21,7 @@ function fixture() {
   const runtime = { db, env: { DB: db } as unknown as Env, shopId: "shop" };
   const origin = (via: FactOrigin["via"]): FactOrigin & { deferred: Promise<unknown>[] } => {
     const deferred: Promise<unknown>[] = [];
-    return { via, told: new Set(), deferred, defer: (work) => { deferred.push(work); } };
+    return { via, deferred, defer: (work) => { deferred.push(work); } };
   };
   const facts = () => sqlite.query(
     "SELECT device_id, capability, kind, name, origin, player_id, staff_id, via, via_resource_id, payload_json FROM device_events ORDER BY rowid",
@@ -61,6 +61,32 @@ function services(calls: string[]) {
       async grantAssets() { return {}; },
     },
     playerRedeemCommands: { async redeemCode() { return { grantedAssets: [{ assetName: "券", quantity: 2, assetCode: "t", assetType: "ticket" }] }; } },
+    businessItemOrderCommands: {
+      async purchaseBusinessItem(input: { playerId: string }) { return { order: { id: "o1", playerId: input.playerId }, assetLedgerEntries: [] }; },
+      async fulfillBusinessItemOrder(input: { orderId: string }) { return { id: input.orderId, playerId: "p3" }; },
+      async cancelBusinessItemOrder(input: { orderId: string }) { return { id: input.orderId, playerId: "p3" }; },
+      async listBusinessItemOrders() { calls.push("orders"); return []; },
+    },
+    staffPlayerCommands: {
+      async createPlayer() { return { id: "p-new", status: "active" }; },
+      async updatePlayerStatus(input: { playerId: string; status: string }) { return { id: input.playerId, status: input.status }; },
+      async bindPlayerIdentity() { return {}; },
+      async deletePlayerIdentity() {},
+      async resolvePlayerIdentity() { return null; },
+    },
+    staffAssetDefinitionCommands: {
+      async saveAssetDefinition() { return {}; }, async archiveAssetDefinition() { return {}; },
+      async restoreAssetDefinition() { return {}; }, async listAssetDefinitions() { calls.push("definitions"); return []; },
+    },
+    staffPricingEffectCommands: {
+      async savePricingEffect() { return {}; }, async archivePricingEffect() { return {}; },
+      async restorePricingEffect() { return {}; }, async listPricingEffects() { return []; },
+    },
+    staffPricingCommands: {
+      async createPricingConfig() { return {}; }, async updatePricingConfig() { return {}; },
+      async archivePricingConfig() { return {}; }, async restorePricingConfig() { return {}; },
+      async listPricingConfigs() { calls.push("plans"); return []; },
+    },
     integrationCommands: {
       async resolvePlayerByIdentity() { return { id: "p-chat" }; },
       async confirmCheckoutByIdentity() { return settlement("p-chat"); },
@@ -102,8 +128,6 @@ describe("shop facts", () => {
       [{ device_id: null, capability: "shop", kind: "signal", name: "gift.redeemed", origin: "platform", player_id: "p-chat", staff_id: null, via: "bot", via_resource_id: "bot-1" },
         { granted: [] }],
     ]);
-    // Whoever else would tell these players' pages and phones knows it was done.
-    expect([...bot.told].sort()).toEqual(["p-chat", "p1", "p2"]);
     // Telling them is left for after the answer.
     expect(bot.deferred).toHaveLength(4);
     await Promise.all(bot.deferred);
@@ -117,7 +141,6 @@ describe("shop facts", () => {
     // The plan was already running: no visit started.
     await deps.resourceBilling.activate({ resourceId: "door", playerId: "already-in" } as never);
     expect(facts()).toEqual([]);
-    expect(page.told.size).toBe(0);
     await deps.staffOperations.checkoutAllActivePlayers();
     expect(facts().map((row) => [row.name, row.player_id, row.via])).toEqual([
       ["checkout.settled", "p1", "page"], ["checkout.settled", "p2", "page"],
@@ -126,7 +149,35 @@ describe("shop facts", () => {
     sqlite.close();
   });
 
-  it("never fails what was done when the fact cannot be written, and leaves the player to be told the old way", async () => {
+  it("says an order, a player's standing and the shop's own rules changed, and nothing for a read", async () => {
+    const { sqlite, runtime, origin, facts } = fixture();
+    const calls: string[] = [];
+    const merchant = origin({ channel: "merchant", resourceId: null });
+    const deps = withOrigin(services(calls), runtime, merchant);
+    await deps.businessItemOrderCommands.purchaseBusinessItem({ playerId: "p1", businessItemId: "b1" } as never);
+    await deps.businessItemOrderCommands.cancelBusinessItemOrder({ orderId: "o2" });
+    await deps.staffPlayerCommands.updatePlayerStatus({ playerId: "p4", status: "disabled" } as never);
+    await deps.staffPlayerCommands.deletePlayerIdentity({ playerId: "p4", provider: "onebot", subject: "1" } as never);
+    await deps.staffPricingCommands.archivePricingConfig({ pricingConfigId: "plan" });
+    await deps.staffAssetDefinitionCommands.saveAssetDefinition({} as never);
+    await deps.businessItemOrderCommands.listBusinessItemOrders();
+    await deps.staffPricingCommands.listPricingConfigs();
+    await deps.staffAssetDefinitionCommands.listAssetDefinitions();
+    expect(calls).toEqual(["orders", "plans", "definitions"]);
+    expect(facts().map((row) => [row.name, row.player_id, row.via, JSON.parse(row.payload_json!)])).toEqual([
+      ["order.changed", "p1", "merchant", { orderId: "o1" }],
+      ["order.changed", "p3", "merchant", { orderId: "o2" }],
+      ["player.changed", "p4", "merchant", { status: "disabled" }],
+      ["player.changed", "p4", "merchant", {}],
+      // The shop's rules are nobody's in particular.
+      ["shop.changed", null, "merchant", { what: "pricing" }],
+      ["shop.changed", null, "merchant", { what: "assets" }],
+    ]);
+    await Promise.all(merchant.deferred);
+    sqlite.close();
+  });
+
+  it("never fails what was done when the fact cannot be written", async () => {
     const { sqlite, runtime, origin } = fixture();
     sqlite.run("DROP TABLE device_events");
     const merchant = origin({ channel: "merchant", resourceId: null });
@@ -141,7 +192,6 @@ describe("shop facts", () => {
       console.error = original;
     }
     expect(errors).toHaveLength(2);
-    expect(merchant.told.size).toBe(0);
     sqlite.close();
   });
 
@@ -178,6 +228,45 @@ describe("shop facts", () => {
       // A reason the platform has no word for is told in the refusal's own.
       ["request.refused", "page", "舞萌", null, "⛔ 店员 开机被拒绝：请先开机"],
     ]);
+    sqlite.close();
+  });
+
+  it("tells a player's pages and the idle rule from what happened, with nobody reading a response for it", async () => {
+    const { sqlite, runtime } = fixture();
+    const hub = { pages: [] as Array<[unknown, string]>, touched: 0 };
+    const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({
+      async pagesChanged(scope: unknown, reason: string) { hub.pages.push([scope, reason]); },
+      async touch() { hub.touched += 1; },
+    }) } } as unknown as Env;
+    const context = { db: runtime.db, env, shopId: "shop" };
+    let seq = 0;
+    const heard = (name: string, extra: Partial<DeviceEvent> = {}): Heard => {
+      const event: DeviceEvent = {
+        id: `e${++seq}`, deviceId: null, capability: "shop", kind: "signal", name, operationId: null, parentOperationId: null,
+        origin: "platform", playerId: "p1", staffId: null, payload: {}, occurredAt: new Date(), via: { channel: "page", resourceId: null }, ...extra,
+      };
+      return { event, type: event.kind === "result" ? `${name}.sent` : name };
+    };
+    const coin = heard("coin", { kind: "result", capability: "hinata_io", deviceId: "m1", playerId: null, payload: { outcome: "ok", forPlayerId: "p2" } });
+
+    // A bill or balance moved, an order changed, and a request made for a player was taken by the hardware.
+    await billingSubscriber.run(context, [heard("checkout.settled", { payload: { sessionIds: ["s1"] } }), heard("order.changed", { playerId: "p3" }), coin]);
+    expect(hub.pages).toEqual([[{ player: "p1" }, "billing"], [{ player: "p3" }, "billing"], [{ player: "p2" }, "billing"]]);
+
+    // The shop's rules changed: every page shows them.
+    hub.pages.length = 0;
+    await shopChangedSubscriber.run(context, [heard("shop.changed", { playerId: null })]);
+    expect(hub.pages).toEqual([[{ shop: true }, "shop"]]);
+
+    // A visit ending, or a request the hardware took, may start or stop an idle countdown; a balance does not.
+    await idleRecheckSubscriber.run(context, [heard("wallet.adjusted")]);
+    expect(hub.touched).toBe(0);
+    await idleRecheckSubscriber.run(context, [heard("checkout.settled")]);
+    await idleRecheckSubscriber.run(context, [coin]);
+    expect(hub.touched).toBe(2);
+    // What the hub did itself is not told back to it.
+    await idleRecheckSubscriber.run({ ...context, insideHub: true }, [coin]);
+    expect(hub.touched).toBe(2);
     sqlite.close();
   });
 });

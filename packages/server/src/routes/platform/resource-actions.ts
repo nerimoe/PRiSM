@@ -5,8 +5,7 @@ import { jsonError, clientIp } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { checkShopLocation } from "../../middleware/geo.js";
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
-import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
-import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { requestOrigin, shopServices } from "../../middleware/tenant.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer, requireResourcePlan } from "./machine-login.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
@@ -16,7 +15,6 @@ import { vkFromKeyText } from "../../resources/capabilities/key-text.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readClimate, readPower, type ClimateState } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
 import { claimCoin } from "../../resources/capabilities/cabinet.js";
 import type { ActionName } from "../../resources/capabilities/catalog.js";
@@ -169,7 +167,8 @@ async function performResourceAction(
       jsonError(409, "请先开机", "DEVICE_POWER_OFF");
   }
   if (player) seen.playerId = player.id;
-  const deps = getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env);
+  // Opening a door may start its plan: that is an entry made here, on this page or board.
+  const deps = shopServices(c, shop, requestOrigin(c, staff ? "merchant" : "page"));
   // A card scan sends a card to the machine. Staff either type the 20-digit
   // card number or name a player whose bound card is used. The number is
   // handed to the runner only; it is never stored.
@@ -262,14 +261,9 @@ async function performResourceAction(
           502,
         );
       }
-      if (player) {
-        const sync = refreshActivityBill(c.env, shop.id, player.id, false, true).catch(error => console.error("Device live bill sync failed", error));
-        try { c.executionCtx.waitUntil(sync); } catch { void sync; }
-      }
       // A power or climate action answers with what the device shows now, read back by the bus;
-      // the page shows it without knowing where it came from.
-      // A player or staff action may start or end an idle countdown.
-      touchShopHubAfter(c, shop.id);
+      // the page shows it without knowing where it came from. The player's bill on their phone
+      // and the idle rule follow from the request's own events (`events/subscribers.ts`).
       // A coin leaves no state to show, so the player is told it went in.
       const notices = action === "coin" ? [notice("COIN_SENT", requestLocale(c.req.header("accept-language")))] : undefined;
       return c.json({ operationId: body.operationId, ...done.result, ...(done.device ? { device: done.device } : {}), ...(notices ? { notices } : {}) });

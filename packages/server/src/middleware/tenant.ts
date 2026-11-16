@@ -700,21 +700,30 @@ export async function setTenantFromShop(
   c.set("responseTimeZone", shop.time_zone);
   // The same services for every caller, each publishing what it did from where
   // this request stands (`events/shop-facts.ts`).
-  const origin: FactOrigin = {
-    via: { channel: originChannel(c.req.path), resourceId: null },
+  const origin = requestOrigin(c, originChannel(c.req.path));
+  c.set("factOrigin", origin);
+  c.set("deps", shopServices(c, shop, origin));
+}
+
+/** Where a request stands for the facts its services publish: its door, its client, its `waitUntil`. */
+export function requestOrigin(c: Context<AppBindings>, channel: FactOrigin["via"]["channel"]): FactOrigin {
+  return {
+    via: { channel, resourceId: null },
     defer: (work) => {
       try { c.executionCtx.waitUntil(work); }
       catch { void work; }
     },
     clientId: c.req.header("x-prism-client-id") ?? null,
-    told: new Set(),
   };
-  c.set("factOrigin", origin);
-  c.set("deps", withOrigin(
+}
+
+/** The shop's services as a request standing at `origin` reaches them. */
+export function shopServices(c: Context<AppBindings>, shop: TenantShop, origin: FactOrigin): PrismAppDependencies {
+  return withOrigin(
     getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env),
     { db: c.env.DB, env: c.env, shopId: shop.id },
     origin,
-  ));
+  );
 }
 
 /**

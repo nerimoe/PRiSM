@@ -52,9 +52,7 @@ import {
 import { loadResources, matchesRef } from "./resource.js";
 import { rosterMessage } from "./roster.js";
 import { eventPlayer } from "./shop-events.js";
-import { refreshActivityBill } from "../durable-objects/live-activity-billing.js";
-import { notifyBotsChanged, pagesChanged } from "../durable-objects/shop-hub-client.js";
-import { extractSessionIds, pushSessionEvent } from "../routes/shops/live-activity-events.js";
+import { notifyBotsChanged } from "../durable-objects/shop-hub-client.js";
 
 /** What the bot is told, as `GET integration/bot` reads it; the hub keeps it until the bot's settings change. */
 export type BotView = Awaited<ReturnType<typeof botConfigView>>;
@@ -73,8 +71,6 @@ export type BotCommandContext = {
   /** Someone else was named: only staff come this far. */
   onBehalf: boolean;
   channel: string;
-  /** Players a fact was published for by this command's services: told already (`events/shop-facts.ts`). */
-  told?: ReadonlySet<string>;
 };
 
 /** Something to say: where (by default where the command was said) and what. */
@@ -125,22 +121,6 @@ const isStaff = (view: BotView, identity: ChatIdentity) =>
 
 const runtime = (ctx: BotCommandContext) => ({ env: ctx.env, executionCtx: { waitUntil: ctx.waitUntil } });
 
-/**
- * A command moved a player's bill. Commands do not pass the routes' event bridge
- * (`routes/shops/index.ts`), so the phone's Live Activity and the player's open
- * pages are told from here, unless the command's services published a fact for
- * that player and its subscribers told them. Never delays or fails the answer.
- */
-function billMoved(ctx: BotCommandContext, playerId: string | null | undefined, session?: { event: "start" | "end"; ids: string[] }) {
-  if (!playerId || ctx.told?.has(playerId)) return;
-  const { env, shop } = ctx;
-  ctx.waitUntil((async () => {
-    await pagesChanged(env, shop.id, { player: playerId }, "billing");
-    if (!session?.ids.length) return refreshActivityBill(env, shop.id, playerId, false, true);
-    await pushSessionEvent({ env }, { shopId: shop.id, playerId, sessionIds: session.ids, event: session.event, initiatorClientId: null });
-  })().catch((error) => console.error("Bot command event dispatch failed", error)));
-}
-
 /* ------------------------------ commands --------------------------------- */
 
 /** A bill sent where the command was said, and privately to staff on the same platform when the bot is set to. */
@@ -153,7 +133,6 @@ function receipt(ctx: BotCommandContext, message: BotMessage): Say[] {
 
 async function settled(ctx: BotCommandContext, result: Parameters<typeof toPlayerCheckoutResultView>[0], title: string): Promise<Say[]> {
   const view = toPlayerCheckoutResultView(result) as Record<string, any>;
-  billMoved(ctx, view.playerSettlement?.playerId, { event: "end", ids: extractSessionIds(view, "end") });
   const who = await addressee(ctx, view.playerSettlement?.playerId ?? null);
   return receipt(ctx, messageFor(ctx, "success", receiptMessage(settledAsPreview(view), { title, preview: false, who, currency: ctx.view.currencyName, timeZone: ctx.shop.time_zone || "UTC" })));
 }
@@ -176,7 +155,6 @@ async function deviceAction(
     via: { channel: "bot", resourceId: ctx.bot.id },
   });
   const view = toDeviceCommandView(action);
-  billMoved(ctx, view.playerId as string | null | undefined);
   if (view.status === "expired" || view.status === "rejected" || view.status === "pending") {
     console.warn(JSON.stringify({ event: "bot_device_command_failed", type, failure: (view.payload as Record<string, unknown> | null)?.executorFailure ?? null }));
   }
@@ -219,7 +197,6 @@ function adjust(direction: 1 | -1): BotCommand {
       });
       void result;
       const player = await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx));
-      billMoved(ctx, player.id);
       return answer(ctx, "success", walletAdjustedMessage(await addressee(ctx, player.id), amount * direction, ctx.view.currencyName));
     },
   };
@@ -273,7 +250,6 @@ const entry = async (ctx: BotCommandContext): Promise<Say[]> => {
     : null;
   const billing = toBillingChangeView(result);
   const created = result.created !== false;
-  billMoved(ctx, player.id, { event: "start", ids: [result.session.id] });
   const stopped = billing.stopped as string[];
   const says = answer(ctx, ctx.onBehalf ? (created ? "behalf" : "behalfAlready") : (created ? "success" : "already"),
     entryMessage({ created, planName, stopped }, await addressee(ctx, player.id), ctx.onBehalf),
@@ -338,7 +314,6 @@ export const botCommands: Record<string, BotCommand> = {
     async run(ctx, [code]) {
       if (!code?.trim()) return notice(ctx, "请输入兑换码");
       const result = await ctx.deps.integrationCommands.redeemByIdentity({ ...identityInput(ctx), code: code.trim() });
-      billMoved(ctx, (await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx))).id);
       const granted = toRedeemGiftView(result).grantedAssets as Record<string, any>[];
       return answer(ctx, granted.length ? "success" : "empty", redeemMessage(granted));
     },
