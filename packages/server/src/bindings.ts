@@ -143,6 +143,8 @@ export type Variables = {
   sessionId: string | null;
   shop?: TenantShop;
   deps?: PrismAppDependencies;
+  /** Where this request stands for the facts its services publish, and whom they told. */
+  factOrigin?: import("./events/shop-facts.js").FactOrigin;
   responseTimeZone?: string;
 };
 

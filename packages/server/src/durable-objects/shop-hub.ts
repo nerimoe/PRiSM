@@ -36,6 +36,7 @@ import type { HaWatch } from "./machine-relay.js";
 import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
 import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
 import { botCommandRecord, judgeBotCommand, type BotCommandOutcome, type BotView } from "../resources/bot-commands.js";
+import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
 import { botConfigView, type BotResource } from "../resources/bot.js";
 import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
 import type { PageScope } from "./shop-hub-client.js";
@@ -896,12 +897,23 @@ export class ShopHub extends BaseDurableObject<Env> {
         return;
       }
       const shop = tenantShop(shopRow);
+      // What the command's services do is published as coming through this bot.
+      const origin: FactOrigin = {
+        via: { channel: "bot", resourceId: found.bot.id },
+        defer: (work) => this.ctx.waitUntil(work),
+        told: new Set(),
+      };
       const { says, outcome } = found.bot.enabled
         ? await judgeBotCommand({
           env: this.env,
           waitUntil: (promise) => this.ctx.waitUntil(promise),
           shop,
-          deps: getOrCreateShopDependencies(this.env.DB, shop, this.env.URL_ENCRYPTION_KEY, this.env),
+          deps: withOrigin(
+            getOrCreateShopDependencies(this.env.DB, shop, this.env.URL_ENCRYPTION_KEY, this.env),
+            { db: this.env.DB, env: this.env, shopId },
+            origin,
+          ),
+          told: origin.told,
           bot: found.bot,
           view: found.view,
           from: frame.from,

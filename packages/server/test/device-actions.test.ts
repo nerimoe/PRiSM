@@ -91,6 +91,22 @@ describe("device action service", () => {
     })).rejects.toMatchObject({ code: "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION" });
   });
 
+  it("records a request that was turned away as an event of the device, and of none when it named none", async () => {
+    const { service, machine, sqlite, operations } = await fixture();
+    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
+    const coin = { actor: { type: "player" as const, playerId: "p1" }, type: "coin" as const, via: { channel: "bot" as const, resourceId: "bot-1" } };
+    await expect(service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "舞萌" } })).rejects.toThrow();
+    await expect(service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "没有这台" } })).rejects.toThrow();
+    expect(sqlite.query("SELECT device_id, capability, kind, name, origin, player_id, via, via_resource_id, payload_json FROM device_events ORDER BY rowid").all()).toEqual([
+      { device_id: "m1", capability: "hinata_io", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
+        payload_json: JSON.stringify({ code: "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION" }) },
+      { device_id: null, capability: "hinata_io", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
+        payload_json: JSON.stringify({ code: "DEVICE_NOT_FOUND" }) },
+    ]);
+    // Nothing was asked of the hardware.
+    expect(operations()).toEqual([]);
+  });
+
   it("records which bot a request came through, on the request and its result, and nothing in the payload", async () => {
     const { service, machine, sqlite } = await fixture({ activeSession: true });
     await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });

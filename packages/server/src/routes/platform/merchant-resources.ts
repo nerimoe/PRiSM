@@ -311,12 +311,21 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
     : []);
   const named = (id: string | null | undefined) =>
     id && id !== c.req.param("id") ? { id, name: names.get(id) ?? null } : null;
+  // Whom each event was about: the player who asked, or the one staff acted for.
+  const playerOf = (event: (typeof page)[number]) =>
+    event.playerId ?? (typeof event.payload.forPlayerId === "string" ? event.payload.forPlayerId : null);
+  const playerIds = [...new Set(page.map(playerOf).filter((id): id is string => !!id))];
+  const players = new Map(playerIds.length
+    ? (await c.env.DB.prepare("SELECT id, display_name FROM players WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+        .bind(machine.shop_id, JSON.stringify(playerIds)).all<{ id: string; display_name: string | null }>()).results.map((row) => [row.id, row.display_name])
+    : []);
   return c.json({
     nextCursor: events.length > limit ? page.at(-1)!.id : null,
     events: page.map((event) => ({
       id: event.id,
       // Null when the event happened to this resource itself.
       device: named(event.deviceId),
+      player: playerOf(event) ? { id: playerOf(event)!, name: players.get(playerOf(event)!) ?? null } : null,
       // Where it came into the platform; `resource` when through another of the shop's resources.
       via: event.via ? { channel: event.via.channel, resource: named(event.via.resourceId) } : null,
       capability: event.capability,

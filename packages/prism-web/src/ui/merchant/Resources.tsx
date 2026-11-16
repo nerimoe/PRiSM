@@ -867,6 +867,27 @@ const actionLabels: Record<string, string> = {
   "cabinet.reset": "投币计数清零",
   "reader.connected": "读卡器插入",
   "reader.disconnected": "读卡器拔出",
+  // What happened at the shop without a device doing anything (capability `shop`).
+  "session.started": "入场",
+  "session.stopped": "停止计费",
+  "checkout.settled": "结账",
+  "wallet.adjusted": "调整余额",
+  "assets.adjusted": "调整资产",
+  "gift.redeemed": "兑换礼物",
+};
+
+/** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */
+const refusalReasons: Record<string, string> = {
+  DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION: "玩家未入场",
+  COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中",
+  COIN_COOLDOWN: "投币冷却中",
+  COIN_CABINET_FULL: "达到机台投币上限",
+  COIN_VIA_SWIPE: "请通过刷卡投币",
+  DEVICE_POWER_OFF: "设备未开机",
+  DEVICE_NOT_FOUND: "没有这个设备",
+  DEVICE_DISABLED: "资源已停用",
+  DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
+  SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
 };
 
 type Books = {
@@ -1373,6 +1394,15 @@ function ResourceHistory({ device }: { device: Resource }) {
             }
             if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
             const command = e.name === "bot.command" ? e.payload : null;
+            // A request turned away before it reached the device, and what happened at the shop itself.
+            const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;
+            const ours = e.kind === "signal" && e.origin === "platform";
+            if (e.player && !command) detail.unshift(t("玩家：{name}", { name: e.player.name ?? e.player.id }));
+            if (refusedAction) {
+              const code = String(e.payload.code ?? "");
+              const message = typeof e.payload.message === "string" ? e.payload.message : "";
+              detail.push(refusalReasons[code] ? t(refusalReasons[code]) : message || code);
+            }
             if (command) {
               const from = chatName(command.from);
               const target = chatName(command.target);
@@ -1393,7 +1423,7 @@ function ResourceHistory({ device }: { device: Resource }) {
                     {/* Direction is the difference between "we asked" and
                         "the machine reported", which is what makes a card event
                         worth logging at all. */}
-                    {e.kind !== "change" && !command && (
+                    {e.kind !== "change" && !command && !ours && (
                       <span
                         className={inbound ? "text-mint" : "text-ink/45"}
                         title={inbound ? t("机台回报") : t("平台下发")}
@@ -1403,6 +1433,8 @@ function ResourceHistory({ device }: { device: Resource }) {
                     )}
                     {command
                       ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
+                      : refusedAction
+                      ? t("{action}被拒绝", { action: t(actionLabels[refusedAction] ?? refusedAction) })
                       : e.kind === "change"
                       ? changeLabel(e, t)
                       : e.name === "card.login"
@@ -1415,6 +1447,10 @@ function ResourceHistory({ device }: { device: Resource }) {
                 <span className="text-xs text-ink/55">
                   {command
                     ? t(commandOutcomes[String(command.outcome)] ?? "已回复")
+                    : refusedAction
+                    ? t("已拒绝")
+                    : ours
+                    ? t("已完成")
                     : e.kind === "signal"
                     ? t("机台回报")
                     : e.kind === "change"

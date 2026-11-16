@@ -112,57 +112,6 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
       const actor = actorOf(input);
       const playerId = actor.type === "player" ? actor.playerId : null;
 
-      const devices = await loadResources(deps.db, deps.shopId, deps.env.URL_ENCRYPTION_KEY);
-      const targets = resolveTargets(devices, input, action);
-
-      if (playerId && spec.requiresBilling) {
-        const running = deps.resourceAdmits
-          ? (await Promise.all(targets.map((target) => deps.resourceAdmits!({ resourceId: target.device.id, playerId })))).every(Boolean)
-          : (await deps.sessions.findActiveByPlayerId(playerId)).some((session) => session.status === "active");
-        if (!running) {
-          throw new PrismDomainError(
-            "Player device command requires the device's pricing plan to be running.",
-            "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION",
-          );
-        }
-      }
-
-      // A cabinet that reports its books, with a coin limit, is judged by them;
-      // otherwise a player's coins keep the shop's cooldown.
-      let judged = false;
-      if (playerId && action === "coin") {
-        for (const target of targets) {
-          const gate = await coinGate(deps.db, deps.shopId, target.device, deps.id(), deps.now());
-          if (gate === "full") throw new PrismDomainError("The cabinet already holds its coin limit.", "COIN_CABINET_FULL");
-          if (gate === "settling") throw new PrismDomainError("Coin command cooldown is active.", "COIN_COMMAND_COOLDOWN_ACTIVE");
-          judged ||= gate === "ok";
-        }
-      }
-      if (playerId && action === "coin" && !judged) {
-        const cooldown = await deps.coinCooldownMs();
-        const now = deps.now();
-        const recent = (await deps.deviceEvents.listOperationsByPlayer(playerId)).filter(
-          (operation) => operation.action === "coin",
-        );
-        if (cooldown > 0 && operatedWithin(
-          recent.map((operation) => ({ ...operation, countsAsPlay: true })),
-          playerId,
-          new Date(now.getTime() - cooldown),
-          now,
-        )) {
-          throw new PrismDomainError("Coin command cooldown is active.", "COIN_COMMAND_COOLDOWN_ACTIVE");
-        }
-      }
-
-      // The player's card is decrypted at the last moment and handed to the
-      // runner only; it is never stored.
-      const accessCode = action === "aime.scan" && playerId
-        ? await scanAccessCode(deps, playerId, input.payload)
-        : action === "aime.scan" && typeof input.payload?.subject === "string"
-          ? input.payload.subject
-          : null;
-      const { subject: _subject, provider: _provider, ...payload } = input.payload ?? {};
-
       const bus = createRuntimeBus({
         db: deps.db,
         env: deps.env,
@@ -173,57 +122,122 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
         // A caller that does not say came through the HTTP API with a token.
         via: input.via ?? { channel: "api", resourceId: null },
       });
-
-      const all = targets.length > 1;
-      const parentId = all ? deps.id() : undefined;
-      const outcomes = [];
-      const switched = new Set<string>();
-      for (const { device, action: targetAction } of targets) {
-        // Keep authorization above for every resource, but switch each shared actuator once.
-        if (["power.on", "power.off", "climate.on", "climate.off"].includes(targetAction)) {
-          const config = device.capabilities.get(targetAction.startsWith("power.") ? "power" : "climate")?.config;
-          if (typeof config?.connectionId === "string" && typeof config.entityId === "string") {
-            const key = JSON.stringify([targetAction, config.connectionId, config.entityId]);
-            if (switched.has(key)) continue;
-            switched.add(key);
-          }
+      // The one device the request named, once it is known: a refusal is its event.
+      let named: Resource | null = null;
+      try {
+        return await request();
+      } catch (error) {
+        if (error instanceof PrismDomainError) {
+          await bus.refuse({ device: named, action, actor, code: error.code })
+            .catch((failure) => console.error("Device refusal was not recorded", failure));
         }
-        outcomes.push(
-          await bus.perform({
-            device,
-            action: targetAction,
-            actor,
-            parentOperationId: parentId,
-            payload: { ...payload, deviceLabel: device.name },
-            transient: accessCode ? { accessCode } : undefined,
-          }),
-        );
+        throw error;
       }
 
-      const first = outcomes[0]!;
-      const failures = outcomes.filter((outcome) => outcome.operation.status === "failed");
-      const command = operationToLegacyCommand({
-        ...first.operation,
-        ...(all
-          ? {
-              id: parentId!,
-              action,
-              deviceId: null,
-              status: failures.length ? "failed" : outcomes.some((o) => o.operation.status === "pending") ? "pending" : "succeeded",
-              failure: failures.length
-                ? `操作失败：${failures.map((outcome) => String(outcome.operation.payload.deviceLabel)).join("、")}`
-                : null,
-              payload: { deviceLabel: "所有设备" },
+      async function request(): Promise<DeviceCommand> {
+        const devices = await loadResources(deps.db, deps.shopId, deps.env.URL_ENCRYPTION_KEY);
+        const targets = resolveTargets(devices, input, action);
+        if (targets.length === 1) named = targets[0]!.device;
+
+        if (playerId && spec.requiresBilling) {
+          const running = deps.resourceAdmits
+            ? (await Promise.all(targets.map((target) => deps.resourceAdmits!({ resourceId: target.device.id, playerId })))).every(Boolean)
+            : (await deps.sessions.findActiveByPlayerId(playerId)).some((session) => session.status === "active");
+          if (!running) {
+            throw new PrismDomainError(
+              "Player device command requires the device's pricing plan to be running.",
+              "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION",
+            );
+          }
+        }
+
+        // A cabinet that reports its books, with a coin limit, is judged by them;
+        // otherwise a player's coins keep the shop's cooldown.
+        let judged = false;
+        if (playerId && action === "coin") {
+          for (const target of targets) {
+            const gate = await coinGate(deps.db, deps.shopId, target.device, deps.id(), deps.now());
+            if (gate === "full") throw new PrismDomainError("The cabinet already holds its coin limit.", "COIN_CABINET_FULL");
+            if (gate === "settling") throw new PrismDomainError("Coin command cooldown is active.", "COIN_COMMAND_COOLDOWN_ACTIVE");
+            judged ||= gate === "ok";
+          }
+        }
+        if (playerId && action === "coin" && !judged) {
+          const cooldown = await deps.coinCooldownMs();
+          const now = deps.now();
+          const recent = (await deps.deviceEvents.listOperationsByPlayer(playerId)).filter(
+            (operation) => operation.action === "coin",
+          );
+          if (cooldown > 0 && operatedWithin(
+            recent.map((operation) => ({ ...operation, countsAsPlay: true })),
+            playerId,
+            new Date(now.getTime() - cooldown),
+            now,
+          )) {
+            throw new PrismDomainError("Coin command cooldown is active.", "COIN_COMMAND_COOLDOWN_ACTIVE");
+          }
+        }
+
+        // The player's card is decrypted at the last moment and handed to the
+        // runner only; it is never stored.
+        const accessCode = action === "aime.scan" && playerId
+          ? await scanAccessCode(deps, playerId, input.payload)
+          : action === "aime.scan" && typeof input.payload?.subject === "string"
+            ? input.payload.subject
+            : null;
+        const { subject: _subject, provider: _provider, ...payload } = input.payload ?? {};
+
+        const all = targets.length > 1;
+        const parentId = all ? deps.id() : undefined;
+        const outcomes = [];
+        const switched = new Set<string>();
+        for (const { device, action: targetAction } of targets) {
+          // Keep authorization above for every resource, but switch each shared actuator once.
+          if (["power.on", "power.off", "climate.on", "climate.off"].includes(targetAction)) {
+            const config = device.capabilities.get(targetAction.startsWith("power.") ? "power" : "climate")?.config;
+            if (typeof config?.connectionId === "string" && typeof config.entityId === "string") {
+              const key = JSON.stringify([targetAction, config.connectionId, config.entityId]);
+              if (switched.has(key)) continue;
+              switched.add(key);
             }
-          : {}),
-      });
-      const capability = capabilityForAction(action)!;
-      return {
-        ...command,
-        executorKind: capability.legacyExecutor,
-        targetKind: capability.legacyTargetKind,
-        payload: { ...(command.payload ?? {}), ...(all ? {} : first.result) },
-      };
+          }
+          outcomes.push(
+            await bus.perform({
+              device,
+              action: targetAction,
+              actor,
+              parentOperationId: parentId,
+              payload: { ...payload, deviceLabel: device.name },
+              transient: accessCode ? { accessCode } : undefined,
+            }),
+          );
+        }
+
+        const first = outcomes[0]!;
+        const failures = outcomes.filter((outcome) => outcome.operation.status === "failed");
+        const command = operationToLegacyCommand({
+          ...first.operation,
+          ...(all
+            ? {
+                id: parentId!,
+                action,
+                deviceId: null,
+                status: failures.length ? "failed" : outcomes.some((o) => o.operation.status === "pending") ? "pending" : "succeeded",
+                failure: failures.length
+                  ? `操作失败：${failures.map((outcome) => String(outcome.operation.payload.deviceLabel)).join("、")}`
+                  : null,
+                payload: { deviceLabel: "所有设备" },
+              }
+            : {}),
+        });
+        const capability = capabilityForAction(action)!;
+        return {
+          ...command,
+          executorKind: capability.legacyExecutor,
+          targetKind: capability.legacyTargetKind,
+          payload: { ...(command.payload ?? {}), ...(all ? {} : first.result) },
+        };
+      }
     },
   };
 }

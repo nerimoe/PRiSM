@@ -10,12 +10,15 @@
  *   after a power or climate action): that is part of doing the action;
  * - what the shop hub tells from its own memory (Home Assistant power changes
  *   merged per switch, the idle rule's power-offs and warnings);
- * - what follows a bill moving (open pages, Live Activities): entering and
- *   checking out are not events yet.
+ * - what follows a bill moving for a caller that publishes no fact yet: the
+ *   routes' bridge (`routes/shops/index.ts`) and a bot command still tell those
+ *   players' pages and phones themselves.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { Env } from "../bindings.js";
-import { machinePoweredOff, shopHub } from "../durable-objects/shop-hub-client.js";
+import { refreshActivityBill } from "../durable-objects/live-activity-billing.js";
+import { machinePoweredOff, pagesChanged, shopHub } from "../durable-objects/shop-hub-client.js";
+import { pushSessionEvent } from "../routes/shops/live-activity-events.js";
 import { capabilitySpec } from "../resources/capabilities/catalog.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
 import { announceShopEvent, eventPlayer, type ShopEvent } from "../resources/shop-events.js";
@@ -34,6 +37,8 @@ export type EventContext = {
    * stays quiet.
    */
   insideHub?: boolean;
+  /** The client that asked for what happened: it shows it already and is not pushed its own news. */
+  initiatorClientId?: string | null;
 };
 
 const actionOf = (heard: Heard) => (heard.event.kind === "result" && heard.type.endsWith(".sent") ? heard.event.name : null);
@@ -55,7 +60,8 @@ export const occupancySubscriber: InlineSubscriber<EventContext> = {
   wants: "*",
   async run(context, heard, emit) {
     const { event } = heard;
-    if (!event.deviceId || event.capability === "occupancy") return;
+    // Only what a device's own capability did or reported says who is at it.
+    if (!event.deviceId || !capabilitySpec(event.capability)) return;
     const action = actionOf(heard);
     const observed = action
       ? { kind: "action" as const, action: action as never, playerId: forPlayer(heard) }
@@ -164,8 +170,39 @@ export const idleRecheckSubscriber: AfterSubscriber<EventContext> = {
   },
 };
 
+/**
+ * A player's bill or balance moved (`shop-facts.ts`): their open pages read
+ * themselves again and their phones' Live Activities follow. A visit starting
+ * or ending is pushed as that; anything else refreshes the running bill.
+ */
+export const billingSubscriber: AfterSubscriber<EventContext> = {
+  name: "billing-pages",
+  when: "after",
+  wants: ["session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "assets.adjusted", "gift.redeemed"],
+  async run(context, heard) {
+    const { env, shopId } = context;
+    const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
+    for (const { event, type } of heard) {
+      const playerId = event.playerId;
+      if (!playerId) continue;
+      await pagesChanged(env, shopId, { player: playerId }, "billing");
+      const sessionIds = type === "checkout.settled" ? ids(event.payload.sessionIds)
+        : type === "session.started" || type === "session.stopped" ? ids([event.payload.sessionId]) : [];
+      if (sessionIds.length) {
+        await pushSessionEvent({ env }, {
+          shopId, playerId, sessionIds, event: type === "session.started" ? "start" : "end",
+          initiatorClientId: context.initiatorClientId ?? null,
+        });
+      } else {
+        await refreshActivityBill(env, shopId, playerId, false, true);
+      }
+    }
+  },
+};
+
 export const eventSubscribers: readonly EventSubscriber<EventContext>[] = [
   occupancySubscriber,
+  billingSubscriber,
   announcementSubscriber,
   powerOffSubscriber,
   idleRecheckSubscriber,

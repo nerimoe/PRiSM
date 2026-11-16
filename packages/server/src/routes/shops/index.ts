@@ -94,9 +94,11 @@ export const shopRouter = new Hono<AppBindings>();
 // Tenant resolution & dependency container injection
 shopRouter.use("*", tenantMiddleware);
 
-// Restore the pre-consolidation event bridge at the tenant boundary. All player,
-// staff, cashier and integration mutations pass here, so new commands cannot silently
-// forget to wake the Live Activity. Send APNs after the response is committed.
+// The event bridge at the tenant boundary. All player, staff, cashier and
+// integration mutations pass here, so a new command cannot silently forget to
+// wake the Live Activity. What a service publishes as a fact (an entry, a
+// checkout, a balance change) is told by its subscribers instead; this remains
+// for every mutation that publishes none. Send APNs after the response is committed.
 // Entries, checkouts and device commands can start or end an idle countdown.
 shopRouter.use("*", async (c, next) => {
   await next();
@@ -147,6 +149,8 @@ shopRouter.use("*", async (c, next) => {
         if (membership) playerIds.add(membership.playerId);
       }
     }
+    // A player a fact was published for has been told already (`events/shop-facts.ts`).
+    for (const told of c.get("factOrigin")?.told ?? []) playerIds.delete(told);
     if (!playerIds.size) return;
     const sessionIds = event ? extractSessionIds(payload, event) : [];
     const initiatorClientId = c.req.header("x-prism-client-id") ?? null;

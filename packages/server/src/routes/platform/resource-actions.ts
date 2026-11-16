@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { jsonError, clientIp } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
@@ -84,12 +85,56 @@ function climatePayload(body: z.infer<typeof actionSchema>): Record<string, unkn
   return {};
 }
 
+/** Refusals that are a question to the player or a guard against repeats, not someone being turned away. */
+const NOT_A_REFUSAL = new Set(["CHECKIN_CONSENT_REQUIRED", "OPERATION_CONFLICT", "OPERATION_PENDING", "RATE_LIMITED", "DEVICE_UNAVAILABLE"]);
+
+/**
+ * A device action from a scanned page or the merchant board. A request that is
+ * turned away (not entered, the cabinet full, switched off) is recorded as an
+ * event of the resource, saying who tried and why; what the caller is answered
+ * is unchanged.
+ */
 export async function executeResourceAction(
   c: C,
   machine: ScannedResource,
   body: z.infer<typeof actionSchema>,
   staff = false,
 ) {
+  const user = requireUser(c);
+  const seen: { playerId?: string } = {};
+  const refused = async (status: number, read: () => Promise<unknown>) => {
+    if (status !== 403 && status !== 409 && status !== 429) return;
+    const error = ((await read().catch(() => null)) as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+    const code = typeof error?.code === "string" ? error.code : null;
+    if (!code || NOT_A_REFUSAL.has(code)) return;
+    await createRuntimeBus({
+      db: c.env.DB, env: c.env, shopId: machine.shop_id,
+      via: { channel: staff ? "merchant" : "page", resourceId: null },
+    }).refuse({
+      device: { id: machine.id },
+      action: body.action as ActionName,
+      actor: staff ? { type: "staff", staffId: `user:${user.id}` } : seen.playerId ? { type: "player", playerId: seen.playerId } : { type: "system" },
+      code,
+      ...(typeof error?.message === "string" && error.message ? { message: error.message } : {}),
+    }).catch((failure) => console.error("Device refusal was not recorded", failure));
+  };
+  try {
+    const response = await performResourceAction(c, machine, body, staff, seen);
+    if (!response.ok) await refused(response.status, () => response.clone().json());
+    return response;
+  } catch (error) {
+    if (error instanceof HTTPException) await refused(error.status, () => error.getResponse().clone().json());
+    throw error;
+  }
+}
+
+async function performResourceAction(
+  c: C,
+  machine: ScannedResource,
+  body: z.infer<typeof actionSchema>,
+  staff: boolean,
+  seen: { playerId?: string },
+): Promise<Response> {
   const user = requireUser(c);
   const shop = await getBillingShop(c, machine.shop_public_id);
   await assertNotBanned(c, [
@@ -123,6 +168,7 @@ export async function executeResourceAction(
     if (device.capabilities.has("power") && (await readPower({ db: c.env.DB, env: c.env, shopId: shop.id }, device)) === "off")
       jsonError(409, "请先开机", "DEVICE_POWER_OFF");
   }
+  if (player) seen.playerId = player.id;
   const deps = getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env);
   // A card scan sends a card to the machine. Staff either type the 20-digit
   // card number or name a player whose bound card is used. The number is

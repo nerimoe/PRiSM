@@ -276,6 +276,45 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
     },
 
     /**
+     * A request that was turned away before it was made: the player had not
+     * entered, the cabinet was full, the device does not do this. Nothing was
+     * asked of the hardware and no operation exists; that someone tried is an
+     * event of its own (`<action>.refused`). `device` is null when the request
+     * named none that exists.
+     */
+    async refuse(input: {
+      device: Pick<Resource, "id"> | null;
+      action: ActionName;
+      actor: DeviceEventActor;
+      /** Why, as the platform names it. */
+      code: string;
+      /** Why, in words a shop can read, when there are any. */
+      message?: string;
+      forPlayerId?: string;
+      via?: DeviceEventVia;
+    }): Promise<void> {
+      const spec = capabilityForAction(input.action);
+      if (!spec) return;
+      await record({
+        events: [event({
+          deviceId: input.device?.id ?? null,
+          capability: spec.id,
+          kind: "signal",
+          name: `${input.action}.refused`,
+          operationId: null,
+          origin: "platform",
+          payload: {
+            code: input.code,
+            ...(input.message ? { message: input.message } : {}),
+            ...(input.forPlayerId ? { forPlayerId: input.forPlayerId } : {}),
+          },
+          ...deviceActorFields(input.actor),
+          ...(input.via ? { via: input.via } : {}),
+        })],
+      });
+    },
+
+    /**
      * Record something the device reported. It is a fact of its own: naming an
      * operation (`operationId`) says which request it answered, and changes
      * nothing about that request.

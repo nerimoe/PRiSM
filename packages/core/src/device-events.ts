@@ -64,6 +64,7 @@ export type DeviceEvent = {
  * - a request is `<action>.requested`
  * - its result is `<action>.sent` when the hardware took it, `<action>.failed`
  *   when it refused, `<action>.unanswered` when nobody can say
+ * - a request turned away before it was made is `<action>.refused`
  * - a signal is its own name (`card.consumed`)
  * - a change is `<capability>.<key>.changed`, or `<key>.changed` when the
  *   capability has one state of its own name (`power.changed`)

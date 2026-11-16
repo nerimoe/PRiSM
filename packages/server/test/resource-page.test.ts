@@ -234,6 +234,12 @@ describe("reading and acting on the page", () => {
     expect(refused.data.ok).toBe(false);
     expect(refused.data.notices[0]).toMatchObject({ code: "COIN_CABINET_FULL" });
     expect(coinOf(refused.data.page).enabled).toBe(false);
+    // That someone tried is an event of the resource: who, from where, and why not.
+    const tried = sqlite.query(
+      "SELECT kind, capability, origin, via, player_id IS NOT NULL AS by_player, json_extract(payload_json,'$.code') AS code FROM device_events WHERE name='coin.refused'",
+    ).all();
+    expect(tried).toEqual([{ kind: "signal", capability: "hinata_io", origin: "platform", via: "page", by_player: 1, code: "COIN_CABINET_FULL" }]);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_operations WHERE action='coin'").get()).toEqual({ n: 0 });
     sqlite.close();
   });
 

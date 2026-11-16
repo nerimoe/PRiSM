@@ -73,6 +73,8 @@ export type BotCommandContext = {
   /** Someone else was named: only staff come this far. */
   onBehalf: boolean;
   channel: string;
+  /** Players a fact was published for by this command's services: told already (`events/shop-facts.ts`). */
+  told?: ReadonlySet<string>;
 };
 
 /** Something to say: where (by default where the command was said) and what. */
@@ -126,10 +128,11 @@ const runtime = (ctx: BotCommandContext) => ({ env: ctx.env, executionCtx: { wai
 /**
  * A command moved a player's bill. Commands do not pass the routes' event bridge
  * (`routes/shops/index.ts`), so the phone's Live Activity and the player's open
- * pages are told from here. Never delays or fails the answer.
+ * pages are told from here, unless the command's services published a fact for
+ * that player and its subscribers told them. Never delays or fails the answer.
  */
 function billMoved(ctx: BotCommandContext, playerId: string | null | undefined, session?: { event: "start" | "end"; ids: string[] }) {
-  if (!playerId) return;
+  if (!playerId || ctx.told?.has(playerId)) return;
   const { env, shop } = ctx;
   ctx.waitUntil((async () => {
     await pagesChanged(env, shop.id, { player: playerId }, "billing");

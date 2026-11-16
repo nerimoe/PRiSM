@@ -37,6 +37,7 @@ import {
   type StartPlayerSessionCommand,
 } from "@prism/application";
 import { createResourceBilling } from "../resources/activation.js";
+import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
 import { createRoster } from "../resources/roster.js";
 import { resourcePlanUsers } from "../resources/repository.js";
@@ -697,7 +698,34 @@ export async function setTenantFromShop(
   const shop = tenantShop(shopRow);
   c.set("shop", shop);
   c.set("responseTimeZone", shop.time_zone);
-  c.set("deps", getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env));
+  // The same services for every caller, each publishing what it did from where
+  // this request stands (`events/shop-facts.ts`).
+  const origin: FactOrigin = {
+    via: { channel: originChannel(c.req.path), resourceId: null },
+    defer: (work) => {
+      try { c.executionCtx.waitUntil(work); }
+      catch { void work; }
+    },
+    clientId: c.req.header("x-prism-client-id") ?? null,
+    told: new Set(),
+  };
+  c.set("factOrigin", origin);
+  c.set("deps", withOrigin(
+    getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env),
+    { db: c.env.DB, env: c.env, shopId: shop.id },
+    origin,
+  ));
+}
+
+/**
+ * Which door a shop request came in by: the scanned page and the player's own
+ * pages, the merchant board and the cashier, or a token on the HTTP API.
+ */
+function originChannel(path: string): FactOrigin["via"]["channel"] {
+  const channel = path.match(/^\/api\/v1\/shops\/[^/]+\/([^/]+)/)?.[1];
+  if (channel === "player") return "page";
+  if (channel === "integration") return "api";
+  return "merchant";
 }
 
 /** A shop row as tenant requests see it: one location check switch for all three. */
