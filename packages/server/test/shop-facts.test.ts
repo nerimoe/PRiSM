@@ -5,6 +5,9 @@ import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import type { Env, PrismAppDependencies } from "../src/bindings.js";
 import { publishShopFacts, withOrigin, type FactOrigin } from "../src/events/shop-facts.js";
+import { announcementSubscriber } from "../src/events/subscribers.js";
+import type { Heard } from "../src/events/dispatcher.js";
+import type { DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
@@ -139,6 +142,42 @@ describe("shop facts", () => {
     }
     expect(errors).toHaveLength(2);
     expect(merchant.told.size).toBe(0);
+    sqlite.close();
+  });
+
+  it("is told to the shop's bots under its own name, saying where it came from and what it was about", async () => {
+    const { sqlite, runtime } = fixture();
+    sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('shop','shop-code','A',0,0,80,'u')");
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','m1','pub-m1','舞萌','')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','小明','active','2026-01-01')");
+    const told: Array<Record<string, any>> = [];
+    const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({ async shopEvent(event: Record<string, any>) { told.push(event); } }) } } as unknown as Env;
+    let seq = 0;
+    const heard = (name: string, extra: Partial<DeviceEvent>): Heard => ({
+      type: name,
+      event: {
+        id: `e${++seq}`, deviceId: null, capability: "shop", kind: "signal", name, operationId: null, parentOperationId: null,
+        origin: "platform", playerId: "p1", staffId: null, payload: {}, occurredAt: new Date(), via: { channel: "page", resourceId: null }, ...extra,
+      },
+    });
+    await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [
+      heard("session.started", { deviceId: "m1", payload: { sessionId: "s1" } }),
+      heard("checkout.settled", { payload: { sessionIds: ["s1"], subtotal: 3000, total: 2500 } }),
+      heard("wallet.adjusted", { payload: { amount: -5 }, via: { channel: "bot", resourceId: "bot-1" } }),
+      heard("coin.refused", { deviceId: "m1", capability: "hinata_io", payload: { code: "COIN_CABINET_FULL", message: "达到机台投币上限" } }),
+      heard("power.on.refused", { deviceId: "m1", capability: "power", playerId: null, payload: { code: "SOMETHING_NEW", message: "请先开机" } }),
+    ]);
+    const words = (event: Record<string, any>) =>
+      (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
+    expect(told.map((event) => [event.type, event.via, event.resourceName, event.botId ?? null, words(event)])).toEqual([
+      ["session.started", "page", "舞萌", null, "🚪 <小明> 入场"],
+      ["checkout.settled", "page", "", null, "🧾 <小明> 结账 25"],
+      // Through a bot: that bot answered it already and is not told again.
+      ["wallet.adjusted", "bot", "", "bot-1", "💰 <小明> 余额调整 -5"],
+      ["request.refused", "page", "舞萌", null, "⛔ <小明> 投币被拒绝：达到机台投币上限"],
+      // A reason the platform has no word for is told in the refusal's own.
+      ["request.refused", "page", "舞萌", null, "⛔ 店员 开机被拒绝：请先开机"],
+    ]);
     sqlite.close();
   });
 });

@@ -87,6 +87,13 @@ export type Shop = {
  * asked for and its outcome (paired by `operationId`), `signal` is something
  * the machine reported, `change` is a state that moved.
  */
+/**
+ * One thing a bot listens for: when any of `events` happens, having come from
+ * one of `sources` (anywhere, when empty), it is said in `channelIds` and, with
+ * `staff`, privately to each staff member.
+ */
+export type BotAnnouncementRule = { events: string[]; sources: string[]; channelIds: string[]; staff: boolean };
+
 export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
 
 export type DeviceEvent = {
@@ -205,6 +212,8 @@ export type BotSettings = {
   idleReminderMinutes: number;
   /** What is told, by type from `shopAnnouncementCatalog`; null for a bot still set by the switches below. */
   announceEvents: string[] | null;
+  /** What else the bot listens for and where it says it; the two lists above are its first rule. */
+  announceRules?: BotAnnouncementRule[];
   /** The switches older bots read; the server keeps them in step with `announceEvents`. */
   announceIdle: boolean;
   announcePower: boolean;

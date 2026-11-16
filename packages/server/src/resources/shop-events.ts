@@ -34,6 +34,8 @@ export type ShopEvent = Place & {
   player: EventPlayer | null;
   /** Facts the announcement is about, such as how many coins went in. */
   detail?: Record<string, unknown>;
+  /** Where what it tells came into the platform (`DeviceEventChannel`); a bot's rules may ask. */
+  via?: string;
 } & (LegacyKind | { kind?: undefined });
 
 /** Who a player is, as a bot names them: display name and platform identities. */
@@ -48,6 +50,35 @@ export async function eventPlayer(db: D1DatabaseLike, shopId: string, playerId: 
   return { playerId, displayName: player?.display_name ?? null, identities: identities.results };
 }
 
+/** What a request asks for, as a shop calls it. */
+const ACTION_WORDS: Record<string, string> = {
+  "power.on": "开机", "power.off": "关机", "power.keep": "延迟关机",
+  "climate.on": "开空调", "climate.off": "关空调", "climate.set_mode": "切换空调模式",
+  "climate.set_temperature": "设定温度", "climate.set_fan_mode": "调整风速",
+  coin: "投币", "aime.scan": "刷卡", "door.open": "开门",
+};
+
+/** Why a request was turned away, for the reasons a shop meets; otherwise the platform's own words or code. */
+const REFUSAL_WORDS: Record<string, string> = {
+  DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION: "玩家未入场",
+  COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中",
+  COIN_COOLDOWN: "投币冷却中",
+  COIN_CABINET_FULL: "达到机台投币上限",
+  COIN_VIA_SWIPE: "需要通过刷卡投币",
+  DEVICE_POWER_OFF: "设备未开机",
+  DEVICE_NOT_FOUND: "没有这个设备",
+  DEVICE_DISABLED: "资源已停用",
+  DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
+  SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
+};
+
+/** A refused request as an announcement tells it: what was asked and why not. */
+export function refusalDetail(action: string, payload: Record<string, unknown>): { action: string; reason: string; code: string } {
+  const code = String(payload.code ?? "");
+  const message = typeof payload.message === "string" ? payload.message : "";
+  return { action: ACTION_WORDS[action] ?? action, reason: REFUSAL_WORDS[code] ?? (message || code), code };
+}
+
 /** Where the player goes in `announcementText`; only used when there is one. */
 const PLAYER_PLACEHOLDER = "{player}";
 
@@ -59,6 +90,9 @@ export function announcementText(event: ShopEvent): string {
   const place = event.resourceName || event.resourceId;
   const who = event.player ? PLAYER_PLACEHOLDER : "未绑定的卡";
   const n = (key: string) => (typeof event.detail?.[key] === "number" ? (event.detail[key] as number) : 0);
+  const text = (key: string) => String(event.detail?.[key] ?? "");
+  // Who did it, for what is done by a person: the player, otherwise staff.
+  const actor = event.player ? PLAYER_PLACEHOLDER : "店员";
   switch (event.type) {
     case "power.on": return `✅ ${place} 已开机`;
     case "power.off": return `🛑 ${place} 已关机`;
@@ -73,6 +107,12 @@ export function announcementText(event: ShopEvent): string {
     case "cabinet.consumed": return `🎮 ${place} 开局消耗 ${n("credits")} 币，剩余 ${n("credit")} 币`;
     case "cabinet.reset": return `🧾 ${place} 投币计数已清零`;
     case "idle.reminder": return `${shopAnnouncementLabel(event.type)}：${place}`;
+    case "session.started": return `🚪 ${actor} 入场`;
+    case "session.stopped": return `⏹ ${actor} 停止了一项计费`;
+    case "checkout.settled": return `🧾 ${actor} 结账 ${text("amount")}`;
+    case "wallet.adjusted": return `💰 ${actor} 余额调整 ${text("amount")}`;
+    case "gift.redeemed": return `🎁 ${actor} 兑换了礼物`;
+    case "request.refused": return `⛔ ${actor} ${text("action")}被拒绝：${text("reason")}`;
   }
 }
 
@@ -83,8 +123,9 @@ export function announcementMessage(event: ShopEvent, templates?: Record<string,
   const n = (key: string) => String(typeof event.detail?.[key] === "number" ? event.detail[key] : 0);
   return renderBotReplyTemplate(`announce.${event.type}.message`, templates, message, {
     device: event.resourceName || event.resourceId,
-    player: event.player ?? (event.type === "request.power.on" || event.type === "request.power.off" ? "店员" : "未绑定的卡"),
+    player: event.player ?? (event.type === "card" || event.type === "start" || event.type === "request.card" || event.type === "request.coin" ? "未绑定的卡" : "店员"),
     coins: n("coins"), credits: n("credits"), credit: n("credit"),
+    amount: String(event.detail?.amount ?? ""), action: String(event.detail?.action ?? ""), reason: String(event.detail?.reason ?? ""),
   });
 }
 

@@ -479,6 +479,39 @@ describe("a bot's commands", () => {
     sqlite.close();
   });
 
+  it("says an announcement wherever the bot's rules send it: its groups, a rule's groups, and staff privately", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, {
+      announceEvents: ["card"], announceChannelIds: ["onebot:42"],
+      announceRules: [
+        // What is done on a scanned page is told to the staff, and in the staff group.
+        { events: ["checkout.settled", "request.power.on"], sources: ["page"], channelIds: ["onebot:staff"], staff: true },
+      ],
+    });
+    // A staff member: someone who works at the shop and bound a chat identity there.
+    sqlite.run("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('member-1','shop','u-staff','owner')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','staff-player','店主','active','2026-01-01')");
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','u-staff','staff-player','2026-01-01')");
+    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','staff-player','onebot','20001','2026-01-01')");
+    sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','u-staff','onebot','20001','2026-01-01')");
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    const told = (type: string, via?: string, extra: Record<string, unknown> = {}) =>
+      hub.shopEvent({ type, message: [{ text: type }], resourceId: "m1", resourceName: "舞萌", player: null, ...(via ? { via } : {}), ...extra });
+
+    await told("checkout.settled", "page");
+    await told("checkout.settled", "merchant");
+    await told("request.power.on", "page");
+    await told("card", "relay");
+    // What this bot's own command did is not told back to it, whatever its rules say.
+    await told("checkout.settled", "page", { botId: "bot-res" });
+    expect(says(ws).map((frame) => [frame.to, text(frame)])).toEqual([
+      ["onebot:staff", "checkout.settled"], ["onebot:private:20001", "checkout.settled"],
+      ["onebot:staff", "request.power.on"], ["onebot:private:20001", "request.power.on"],
+      ["onebot:42", "card"],
+    ]);
+    sqlite.close();
+  });
+
   it("ends a commands bot's connection once its token is revoked", async () => {
     const { sqlite, hub, ws } = await fixture();
     botResource(sqlite);

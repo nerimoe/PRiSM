@@ -21,6 +21,7 @@ import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, us
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
 import { resourceCapabilities, type CapabilityId } from "./resource-capabilities";
 import { BotReplyEditor } from "./BotReplyEditor";
+import { BotAnnouncementRules } from "./BotAnnouncementRules";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
 import { idlePath, useIdleSettings } from "./IdlePowerSettings";
@@ -907,6 +908,7 @@ export function ResourceEditor({
                   [
                     ["event", "现场事件"],
                     ["request", "平台操作"],
+                    ["shop", "店铺动态"],
                     ["notice", "提醒"],
                   ] as const
                 ).map(([family, heading]) => (
@@ -923,6 +925,7 @@ export function ResourceEditor({
                   </fieldset>
                 ));
               })()}
+              <BotAnnouncementRules value={bot.announceRules ?? []} onChange={(announceRules) => changeBot({ announceRules })} />
               <Field label="提醒提前量" unit="分钟">
                 <input
                   className={input}
@@ -991,6 +994,7 @@ const defaultBotSettings: BotSettings = {
   announceChannelIds: [],
   idleReminderMinutes: 5,
   announceEvents: [],
+  announceRules: [],
   announceIdle: false,
   announcePower: false,
   announceStarts: false,

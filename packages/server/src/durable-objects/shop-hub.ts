@@ -9,7 +9,7 @@ import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/c
 import { loadResource } from "../resources/resource.js";
 import { announcementMessage, idleReminderMessage, shopEventFrame } from "../resources/shop-events.js";
 import { findBotByToken } from "../resources/bot.js";
-import { announcedTypes, botMessage, type BotMessage } from "@prism/core";
+import { announcedTypes, announcementDestinations, botMessage, type BotMessage } from "@prism/core";
 import type { ShopEvent } from "../resources/shop-events.js";
 import { climatePower } from "../resources/capabilities/idle-power.js";
 import {
@@ -695,6 +695,26 @@ export class ShopHub extends BaseDurableObject<Env> {
       // A bot that says the platform's text only hears what it is set to tell,
       // and not what its own command did: it answered that already.
       const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      if (attachment?.commands) {
+        // A commands bot says it wherever its rules send it: its channel list for
+        // what it announces, and each further rule's channels and staff.
+        try {
+          const found = await this.botOf((await this.shopId()) ?? "", attachment.token);
+          if (!found || event.botId === found.bot.id) continue;
+          const to = announcementDestinations(
+            found.bot.config,
+            { type: String(event.type), via: typeof event.via === "string" ? event.via : null },
+            found.view.staff,
+          );
+          if (!to.length) continue;
+          const message = Array.isArray(event.message)
+            ? announcementMessage(event as ShopEvent, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
+          this.sayTo(ws, to, message);
+        } catch {
+          // A bot that left misses it.
+        }
+        continue;
+      }
       const announces = attachment?.announces;
       if (announces && (!announces.types.includes(String(event.type)) || event.botId === announces.botId)) continue;
       try {
@@ -702,8 +722,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           ? (await this.botOf((await this.shopId()) ?? "", attachment.token))?.bot.config.replyTemplates : undefined;
         const message = Array.isArray(event.message)
           ? announcementMessage(event as ShopEvent, templates, event.message as BotMessage) : event.message as BotMessage;
-        if (attachment?.commands) this.sayTo(ws, attachment.commands.channels, message);
-        else ws.send(JSON.stringify({ type: "event", event: "shop.event", data: { ...event, message } }));
+        ws.send(JSON.stringify({ type: "event", event: "shop.event", data: { ...event, message } }));
       } catch {
         // A bot that left misses it.
       }

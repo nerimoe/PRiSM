@@ -21,7 +21,9 @@ import { machinePoweredOff, pagesChanged, shopHub } from "../durable-objects/sho
 import { pushSessionEvent } from "../routes/shops/live-activity-events.js";
 import { capabilitySpec } from "../resources/capabilities/catalog.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
-import { announceShopEvent, eventPlayer, type ShopEvent } from "../resources/shop-events.js";
+import { yuanOf, type Cents } from "@prism/core";
+import { announceShopEvent, eventPlayer, refusalDetail, type ShopEvent } from "../resources/shop-events.js";
+import { capabilities } from "../resources/capabilities/catalog.js";
 import { cameOf, type AfterSubscriber, type EventSubscriber, type Heard, type InlineSubscriber } from "./dispatcher.js";
 
 /** What a subscriber is handed besides the events: the shop they happened at. */
@@ -88,21 +90,32 @@ const REQUESTS: Record<string, "request.power.on" | "request.power.off" | "reque
 /** What a cabinet's books said changed, told as it is. A credit that is not a coin is recorded only. */
 const CABINET = ["cabinet.coin", "cabinet.consumed", "cabinet.reset"] as const;
 
+/** What happened at the shop without a device (`shop-facts.ts`), told under its own name. */
+const FACTS = ["session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "gift.redeemed"] as const;
+
+/** Every request that can be turned away, as the event that says it was. */
+const REFUSALS = Object.values(capabilities).flatMap((spec) => Object.keys(spec.actions)).map((action) => `${action}.refused`);
+
+/** A signed amount as a shop reads it: `+5`, `-2.5`. */
+const signed = (amount: unknown) => (typeof amount === "number" ? `${amount > 0 ? "+" : ""}${amount}` : "");
+
 /**
  * What the shop's bots may announce (`resources/shop-events.ts`): that a
- * request was taken by the hardware, that a game took a card, that someone
- * started on a resource, what a cabinet's books say.
+ * request was taken by the hardware or turned away, that a game took a card,
+ * that someone started on a resource, what a cabinet's books say, and what
+ * happened to a player's visit, bill or balance. Each says where it came from,
+ * which a bot's rules may ask (`ShopAnnouncementRule`).
  */
 export const announcementSubscriber: AfterSubscriber<EventContext> = {
   name: "bot-announcements",
   when: "after",
-  wants: [...Object.keys(REQUESTS), "card.consumed", "occupancy.started", ...CABINET],
+  wants: [...Object.keys(REQUESTS), "card.consumed", "occupancy.started", ...CABINET, ...FACTS, ...REFUSALS],
   async run(context, heard) {
     if (context.insideHub) return;
     const ids = [...new Set(heard.map((one) => one.event.deviceId).filter((id): id is string => !!id))];
     const names = new Map((await context.db.prepare("SELECT id, name FROM machines WHERE shop_id = ? AND id IN (SELECT value FROM json_each(?))")
       .bind(context.shopId, JSON.stringify(ids)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
-    const announce = (event: ShopEvent) => announceShopEvent(context.env, context.shopId, event);
+    const tell = (event: ShopEvent) => announceShopEvent(context.env, context.shopId, event);
     const player = (playerId: string | null) => eventPlayer(context.db, context.shopId, playerId);
     // Older bots hear a start as part of the card or coin that began it.
     const started = (one: Heard) =>
@@ -110,10 +123,29 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
 
     for (const one of heard) {
       const { event, type } = one;
-      if (!event.deviceId) continue;
       // A bot has answered its own command already and does not announce it again.
       const botId = event.via?.channel === "bot" ? event.via.resourceId : null;
-      const place = { resourceId: event.deviceId, resourceName: names.get(event.deviceId) ?? event.deviceId, ...(botId ? { botId } : {}) };
+      const place = {
+        resourceId: event.deviceId ?? "",
+        resourceName: event.deviceId ? names.get(event.deviceId) ?? event.deviceId : "",
+        ...(botId ? { botId } : {}),
+      };
+      const announce = (told: ShopEvent) => tell(event.via ? { ...told, via: event.via.channel } : told);
+      if ((FACTS as readonly string[]).includes(type)) {
+        const { payload } = event;
+        const detail = type === "checkout.settled" ? { amount: String(yuanOf(payload.total as Cents)) }
+          : type === "wallet.adjusted" ? { amount: signed(payload.amount) } : undefined;
+        await announce({ type: type as (typeof FACTS)[number], ...place, player: await player(event.playerId), ...(detail ? { detail } : {}) });
+        continue;
+      }
+      if (type.endsWith(".refused")) {
+        await announce({
+          type: "request.refused", ...place, player: await player(forPlayer(one)),
+          detail: refusalDetail(type.slice(0, -".refused".length), event.payload),
+        });
+        continue;
+      }
+      if (!event.deviceId) continue;
       const request = REQUESTS[type];
       if (request === "request.coin") {
         await announce({ type: request, kind: "coin", ...place, player: await player(forPlayer(one)), started: started(one) });

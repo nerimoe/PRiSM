@@ -61,8 +61,16 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     ["cabinet.coin", "🪙 {device} 投币 {coins} 个，当前 {credit} 币"],
     ["cabinet.consumed", "🎮 {device} 开局消耗 {credits} 币，剩余 {credit} 币"],
     ["cabinet.reset", "🧾 {device} 投币计数已清零"],
+    ["session.started", "🚪 {player} 入场"],
+    ["session.stopped", "⏹ {player} 停止了一项计费"],
+    ["checkout.settled", "🧾 {player} 结账 {amount}"],
+    ["wallet.adjusted", "💰 {player} 余额调整 {amount}"],
+    ["gift.redeemed", "🎁 {player} 兑换了礼物"],
+    ["request.refused", "⛔ {player} {action}被拒绝：{reason}"],
   ].map(([type, text]) => {
-    const samples: Record<string, string> = { device: "舞萌", player: "小明", coins: "2", credits: "1", credit: "3" };
+    const samples: Record<string, string> = {
+      device: "舞萌", player: "小明", coins: "2", credits: "1", credit: "3", amount: "20", action: "投币", reason: "玩家未入场",
+    };
     const variables = [...text!.matchAll(/\{([^{}]+)\}/g)].map(match => match[1]!);
     return reply(`announce.${type}.message`, shopAnnouncementCatalog.find(item => item.type === type)!.label,
       text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables);

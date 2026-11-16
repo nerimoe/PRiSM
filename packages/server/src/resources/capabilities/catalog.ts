@@ -15,7 +15,7 @@
  *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
-import { botReplyTemplateError } from "@prism/core";
+import { botReplyTemplateError, isShopAnnouncementSource } from "@prism/core";
 
 export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
   for (const [key, text] of Object.entries(templates)) {
@@ -245,6 +245,13 @@ export const mahjong: CapabilitySpec<MahjongConfig> = {
  * connect. Everything the platform already knows (staff, currency, tables,
  * doors) is derived, never configured here.
  */
+export const announceRuleSchema = z.object({
+  events: z.array(z.string().min(1).max(40)).max(40),
+  sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
+  channelIds: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
+  staff: z.boolean().default(false),
+});
+
 const botConfig = z.object({
   replyTemplates: botReplyTemplatesSchema.default({}),
   /** The integration token the bot connects with. */
@@ -279,6 +286,13 @@ const botConfig = z.object({
    * for a bot set before the catalog: its five switches below say what it tells.
    */
   announceEvents: z.array(z.string().min(1).max(40)).max(40).nullable().default(null),
+  /**
+   * What else the bot listens for and where it says it (`ShopAnnouncementRule`):
+   * the channel list and announcement list above are its first rule; each of
+   * these names its own events, where they must have come from (any, when
+   * empty) and where to say them, staff's private chats included.
+   */
+  announceRules: z.array(announceRuleSchema).max(20).default([]),
   /**
    * The switches older bots read. Kept equal to what `announceEvents` amounts
    * to (`switchesFor`) whenever the list is set. All off by default.

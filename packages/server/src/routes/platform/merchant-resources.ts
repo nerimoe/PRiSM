@@ -10,7 +10,7 @@ import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
-import { botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
+import { announceRuleSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
 import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
@@ -559,6 +559,7 @@ const machineInput=z.object({
     announceCoins:z.boolean().optional(),
     // Announcement types from the catalog; unknown ones are dropped on save.
     announceEvents:z.array(z.string().min(1).max(40)).max(40).nullable().optional(),
+    announceRules:z.array(announceRuleSchema).max(20).optional(),
   }).strict().nullable().optional(),
   rotateBotToken:z.boolean().optional(),
   // Billing: the group whose default plan the resource bills (null or

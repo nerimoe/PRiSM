@@ -103,6 +103,23 @@ describe("a bot is a resource", () => {
     expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual({});
   });
 
+  it("keeps the rules a bot listens by, and refuses a source nobody records", async () => {
+    const { bot, createBot, call } = await fixture();
+    const created = await createBot();
+    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual([]);
+    const rules = [{ events: ["checkout.settled"], sources: ["page"], channelIds: ["onebot:9"], staff: true }];
+    expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules: rules } })).status).toBe(200);
+    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
+    // Other settings leave the rules alone.
+    await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { playerCommands: "readonly" } });
+    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
+    const bad = await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, {
+      bot: { announceRules: [{ events: ["card"], sources: ["phone"], channelIds: [], staff: false }] },
+    });
+    expect(bad.status).toBe(422);
+    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
+  });
+
   it("issues its token once and tells it its settings and what the shop knows", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot({ playerCommands: "readonly", announceChannelIds: ["group-1"] });
