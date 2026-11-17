@@ -218,7 +218,8 @@ describe("bot connection", () => {
     // A rule that listens for the warning, with somewhere to say it.
     configure({ idleReminderMinutes: 5, announceRules: [{ events: ["idle.reminder"], sources: [], to: ["onebot:42"], staff: false }] });
     expect(await lead()).toBe(300_000);
-    expect(state.has("touchAt")).toBe(true);
+    // Its hello sets the alarm for the timers as they stand, now that a lead is known.
+    expect(state.has("idle")).toBe(true);
     // No rule listens for it, a rule with nowhere to say it, and a lead of 0: none is planned.
     configure({ idleReminderMinutes: 5, announceRules: [{ events: ["card"], sources: [], to: ["onebot:42"], staff: false }] });
     expect(await lead()).toBeNull();

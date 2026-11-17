@@ -11,7 +11,11 @@ import { announcementMessage, idleReminderMessage, shopEventFrame } from "../res
 import { findBotByToken } from "../resources/bot.js";
 import { announcementDestinations, botMessage, type BotMessage } from "@prism/core";
 import type { ShopEvent } from "../resources/shop-events.js";
-import { climatePower } from "../resources/capabilities/idle-power.js";
+import {
+  applyIdleEvent, climatePower, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake,
+  parseIdleSettings, setIdleEmpty, settleIdleOff,
+  type IdleSettings, type IdleSignal, type IdleTimers,
+} from "../resources/capabilities/idle-power.js";
 import {
   climateState,
   deviceView,
@@ -33,7 +37,9 @@ import type { Resource } from "../resources/resource.js";
 import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
 import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
 import type { HaWatch } from "./machine-relay.js";
-import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
+import {
+  climatesToSwitchOff, devicesSeenOn, heldResources, idleGroups, loadIdleSettings, shopIsEmpty, switchOff, type IdleNotice,
+} from "./shop-hub-idle.js";
 import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
 import { botCommandRecord, judgeBotCommand, type BotCommandOutcome, type BotView } from "../resources/bot-commands.js";
 import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
@@ -85,8 +91,6 @@ try {
 export const LEASE_MS = 150_000;
 /** A watcher that failed is not chosen again for this long, while others exist. */
 const BENCH_MS = 5 * 60_000;
-/** Bursts of activity are folded into one idle check this long after the first. */
-const TOUCH_DELAY_MS = 2000;
 /**
  * The default number of clients watching at once. The second keeps the state flowing while the first
  * is replaced, so losing one never leaves a gap. A shop's own number is the platform administrator's
@@ -928,7 +932,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           event: "bot_command_record_failed", command: frame.name, message: error instanceof Error ? error.message : String(error),
         })));
     }
-    // Entries, checkouts and device commands can start or end an idle countdown.
+    // The command's own events have moved the timers; the alarm is set for them as they now stand.
     const shopId = await this.shopId();
     if (shopId) await this.touch(shopId);
   }
@@ -1375,14 +1379,138 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Something that may change idle state happened: activity, an entry or a
-   * checkout, a settings change. The check runs shortly after, once per burst.
+   * What moves the idle timers (`idle-power.ts`): a device switched on or off,
+   * a coin or an authorised card, a bill opening or closing, a seat, the rules.
+   * Each is applied as it arrives and the alarm is set for whatever is next.
    */
-  async touch(shopId: string): Promise<void> {
+  async idleEvents(shopId: string, signals: readonly IdleSignal[]): Promise<void> {
     await this.rememberShop(shopId);
-    const at = Date.now() + TOUCH_DELAY_MS;
-    const pending = await this.ctx.storage.get<number>("touchAt");
-    if (pending === undefined || pending > at) await this.ctx.storage.put("touchAt", at);
+    await this.idleWork(async () => {
+      const now = Date.now();
+      let { timers, settings } = await this.idleState(shopId);
+      if (signals.some((signal) => signal.kind === "settings")) ({ timers, settings } = await this.idleStartOver(shopId, timers));
+      const devices = signals.some((signal) => "deviceId" in signal) ? await idleGroups(this.env.DB, shopId) : null;
+      let seats = false;
+      for (const signal of signals) {
+        if (signal.kind === "settings") continue;
+        if (signal.kind === "sessions") {
+          setIdleEmpty(timers, await shopIsEmpty(this.env.DB, shopId), now);
+          // A bill closing also empties the seats it paid for.
+          seats = true;
+        } else if (signal.kind === "seats") seats = true;
+        else {
+          const group = devices!.groups.get(signal.deviceId);
+          if (!group) continue;
+          if (signal.kind === "off") applyIdleEvent(timers, { kind: "off", key: group.key }, now);
+          else {
+            // A stay keeps its device on to its end: the timer starts there.
+            const at = signal.kind === "activity" && signal.stay ? now + (devices!.stays.get(signal.deviceId) ?? 0) : signal.at;
+            applyIdleEvent(timers, { kind: signal.kind, ...group, ...(at === undefined ? {} : { at }) }, now);
+          }
+        }
+      }
+      if (seats) await this.idleSeats(shopId, timers, now);
+      await this.idleSettle(shopId, timers, settings, now);
+    });
+  }
+
+  /** The bots' warning lead may have changed (one said hello): set the alarm for the timers as they stand. */
+  async touch(shopId: string): Promise<void> {
+    await this.idleEvents(shopId, []);
+  }
+
+  /** One idle change at a time: a power-off waits on Home Assistant, and a signal arriving meanwhile must not be lost. */
+  private idleQueue: Promise<unknown> = Promise.resolve();
+  private idleWork(work: () => Promise<void>): Promise<void> {
+    const run = this.idleQueue.then(work, work).catch((error) => console.error("Idle timers failed", error));
+    this.idleQueue = run;
+    return run;
+  }
+
+  /** The timers and the rules they run by, as the hub keeps them. */
+  private async idleState(shopId: string): Promise<{ timers: IdleTimers; settings: IdleSettings }> {
+    const timers = await this.ctx.storage.get<IdleTimers>("idle");
+    const settings = await this.ctx.storage.get<IdleSettings>("idleSettings");
+    // Memory from before the timers, or none at all: start from what the shop shows now.
+    if (!timers || !timers.entries || !settings) return this.idleStartOver(shopId, timers?.entries ? timers : emptyIdleTimers());
+    return { timers, settings: parseIdleSettings(settings) };
+  }
+
+  /**
+   * Read the rules again and bring the timers in line with the shop as it is:
+   * whether a bill is open, which seats are taken, and what Home Assistant
+   * reports switched on that has no timer yet. Only when the rules are edited
+   * or the hub has no timers; otherwise the events say all of it.
+   */
+  private async idleStartOver(shopId: string, timers: IdleTimers): Promise<{ timers: IdleTimers; settings: IdleSettings }> {
+    const now = Date.now();
+    const settings = await loadIdleSettings(this.env.DB, shopId);
+    await this.ctx.storage.put("idleSettings", settings);
+    idleSettingsChanged(timers);
+    setIdleEmpty(timers, await shopIsEmpty(this.env.DB, shopId), now);
+    await this.idleSeats(shopId, timers, now);
+    const { groups } = await idleGroups(this.env.DB, shopId);
+    const live = new Set(await this.load<string[]>("eventConnections", []));
+    for (const device of await devicesSeenOn(this.env.DB, shopId, live)) {
+      const group = groups.get(device.id);
+      if (group) applyIdleEvent(timers, { kind: "seen", ...group, ...(device.at === null ? {} : { at: device.at }) }, now);
+    }
+    return { timers, settings };
+  }
+
+  /** Taken seats hold a table's timer; the last one leaving starts it. */
+  private async idleSeats(shopId: string, timers: IdleTimers, now: number): Promise<void> {
+    const held = await heldResources(this.env.DB, shopId);
+    const { groups } = await idleGroups(this.env.DB, shopId);
+    for (const id of held) {
+      const group = groups.get(id);
+      if (group) applyIdleEvent(timers, { kind: "held", ...group, held: true }, now);
+    }
+    for (const [key, entry] of Object.entries(timers.entries)) {
+      if (entry.held && !entry.ids.some((id) => held.has(id))) applyIdleEvent(timers, { kind: "held", key, ids: entry.ids, power: entry.power, held: false }, now);
+    }
+  }
+
+  /**
+   * Carry out whatever has run out: say the warnings, switch off what is past
+   * its warning, the air conditioners after the last device, and set the alarm
+   * for the next step.
+   */
+  private async idleSettle(shopId: string, timers: IdleTimers, settings: IdleSettings, now: number): Promise<void> {
+    const lead = await this.reminderLead();
+    const due = dueIdle(timers, settings, now, lead);
+    timers.wakeAt = nextIdleWake(timers, settings, now, lead);
+    // Kept before anything is said or switched: a second run must not warn again.
+    await this.ctx.storage.put("idle", timers);
+    if (due.warn.length || due.off.length) {
+      const { names } = await idleGroups(this.env.DB, shopId);
+      const named = (ids: string[]) => ids.map((id) => ({ id, name: names.get(id) ?? id }));
+      const notices: IdleNotice[] = due.warn.map((warning) => ({
+        reason: warning.reason,
+        at: warning.at,
+        devices: named([...new Set(warning.keys.flatMap((key) => timers.entries[key]?.ids ?? []))]),
+      }));
+      if (notices.length) await this.notify(notices).catch((error) => console.error("Idle warning failed", { shopId, error }));
+      for (const { key } of due.off) {
+        const ids = timers.entries[key]?.ids ?? [];
+        if (!ids.length) continue;
+        // Shared bindings get one command.
+        const ok = await switchOff(this.env, shopId, ids[0]!, "power.off");
+        settleIdleOff(timers, key, ok, Date.now());
+        if (!ok) continue;
+        // Released the same way as any other power-off, and told as the idle rule's own.
+        for (const id of ids) await this.poweredOff(shopId, id).catch((error) => console.error("Idle release failed", { shopId, id, error }));
+        await this.shopEvent(shopEventFrame({
+          type: "request.power.idle_off", resourceId: ids[0]!, resourceName: named(ids).map((one) => one.name).join("、"), player: null, via: "system",
+        })).catch((error) => console.error("Idle announcement failed", { shopId, error }));
+      }
+    }
+    if (due.shopOff || (timers.climateDue && !idleBusy(timers, settings))) {
+      delete timers.climateDue;
+      for (const id of await climatesToSwitchOff(this.env.DB, shopId, settings)) await switchOff(this.env, shopId, id, "climate.off");
+    }
+    timers.wakeAt = nextIdleWake(timers, settings, Date.now(), lead);
+    await this.ctx.storage.put("idle", timers);
     await this.schedule();
   }
 
@@ -1391,10 +1519,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     // What is due is settled before anything calls `schedule()`. It would otherwise find the work still
     // pending and set an alarm in the past, which fires again at once, and a runtime may drop an alarm
     // set to the time of the one that is running, leaving nothing to wake for the next lease.
-    const touchAt = await this.ctx.storage.get<number>("touchAt");
-    const idle = await this.load<IdleMemory>("idle", emptyIdleMemory());
-    const idleDue = (touchAt !== undefined && touchAt <= now) || (idle.wakeAt !== null && idle.wakeAt <= now);
-    if (idleDue) await this.ctx.storage.delete("touchAt");
+    const idle = await this.ctx.storage.get<IdleTimers>("idle");
+    const idleDue = typeof idle?.wakeAt === "number" && idle.wakeAt <= now;
     const watchers = await this.load<Watchers>("watchers", {});
     let lost = false;
     for (const watcher of Object.values(watchers)) {
@@ -1405,7 +1531,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     if (lost) await this.ctx.storage.put("watchers", watchers);
     if (await this.settleObservations()) await this.fill();
-    if (idleDue) await this.checkIdle(idle);
+    if (idleDue) {
+      const shopId = await this.shopId();
+      // Settling sets the alarm for the timers; `schedule()` below sets it again for everything.
+      if (shopId) await this.idleEvents(shopId, []);
+    }
     // Also retries a slot that was open because every IO had just failed.
     await this.fill();
     await this.schedule();
@@ -1413,39 +1543,10 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /** When the idle rules will switch devices off, by device, for the board. Times already past are left out. */
   async idleSchedule(): Promise<Record<string, number>> {
-    const now = Date.now();
-    const { powerOffAt = {} } = await this.load<IdleMemory>("idle", emptyIdleMemory());
-    return Object.fromEntries(Object.entries(powerOffAt).filter(([, at]) => at > now));
-  }
-
-  private async checkIdle(memory: IdleMemory) {
-    const shopId = await this.shopId();
-    if (!shopId) return;
-    try {
-      const result = await runIdleCheck({
-        env: this.env,
-        shopId,
-        now: Date.now(),
-        memory,
-        eventConnections: new Set(await this.load<string[]>("eventConnections", [])),
-        reminderLeadMs: await this.reminderLead(),
-      });
-      await this.ctx.storage.put("idle", result.memory);
-      // A machine the idle rule switched off is released the same way as any
-      // other power-off: same reason, same effect on its watch and its standing.
-      for (const id of result.poweredOff) await this.poweredOff(shopId, id);
-      if (result.notices.length) await this.notify(result.notices);
-      // The idle rule's own power-offs: the device bus left them to the hub to tell.
-      for (const id of result.poweredOff) {
-        const resource = await this.env.DB.prepare("SELECT name FROM machines WHERE shop_id = ? AND id = ?")
-          .bind(shopId, id).first<{ name: string }>();
-        await this.shopEvent(shopEventFrame({
-          type: "request.power.idle_off", resourceId: id, resourceName: resource?.name ?? id, player: null, via: "system",
-        }));
-      }
-    } catch (error) {
-      console.error("Idle check failed", error);
-    }
+    const timers = await this.ctx.storage.get<IdleTimers>("idle");
+    const settings = await this.ctx.storage.get<IdleSettings>("idleSettings");
+    if (!timers?.entries || !settings) return {};
+    return idleScheduleOf(timers, parseIdleSettings(settings), Date.now());
   }
 
   /** How long before a power-off the shop's bots want to hear about it; null without one. */
@@ -1735,7 +1836,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
     const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
-    let powerMoved = false;
+    /** What the report says of each device's power, for the idle timers. */
+    const idleSignals: IdleSignal[] = [];
     /** Machines this report says lost power: their watch is released, as on any power-off. */
     const lostPower: string[] = [];
     for (const item of reported) {
@@ -1766,7 +1868,13 @@ export class ShopHub extends BaseDurableObject<Env> {
           const power = next.state === "on" || next.state === "off" ? next.state : null;
           writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
           pushes.push([target.deviceId, { type: "state", power }]);
-          if (previous) powerMoved = true;
+          // Off to on restarts the timer; anything else that reads `on` (a first
+          // report, back from `unavailable`) only says the device is on.
+          if (power === "on") {
+            const when = at ? { at: at.getTime() } : {};
+            if (previous?.state === "off") idleSignals.push({ kind: "on", deviceId: target.deviceId, ...when });
+            idleSignals.push({ kind: "seen", deviceId: target.deviceId, ...when });
+          } else if (power === "off") idleSignals.push({ kind: "off", deviceId: target.deviceId });
           // Only a real on-to-off move: `unavailable` reads as null, and a Home
           // Assistant hiccup must not release a working watch.
           if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
@@ -1780,7 +1888,6 @@ export class ShopHub extends BaseDurableObject<Env> {
             // HA leaves last_changed alone when only temperature or fan settings change.
             const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
             writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
-            if (previous) powerMoved = true;
           }
           pushes.push([target.deviceId, { type: "state", climate: view }]);
         }
@@ -1825,8 +1932,8 @@ export class ShopHub extends BaseDurableObject<Env> {
       this.toPages(deviceId, frame);
       this.toBoards({ ...frame, deviceId });
     }
-    // Switched on starts an idle countdown; switched off may end one.
-    if (powerMoved) await this.touch(shopId);
+    // Switched on starts a device's idle timer; switched off ends it.
+    if (idleSignals.length) await this.idleEvents(shopId, idleSignals);
     // Home Assistant confirming the machine is off: the same observation the
     // platform's own power-off opened, now with the machine's state as evidence
     // rather than only the command having been accepted.
@@ -1876,8 +1983,7 @@ export class ShopHub extends BaseDurableObject<Env> {
   private async schedule() {
     const now = Date.now();
     const watchers = await this.load<Watchers>("watchers", {});
-    const touchAt = await this.ctx.storage.get<number>("touchAt");
-    const idle = await this.ctx.storage.get<IdleMemory>("idle");
+    const idle = await this.ctx.storage.get<IdleTimers>("idle");
     const candidates = await this.load<Candidates>("candidates", {});
     // An open slot is retried when a benched candidate becomes eligible again.
     const retry = Object.values(watchers).filter((watcher) => watcher.held === undefined).length < (await this.limit())
@@ -1891,7 +1997,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const closing = Object.values(observations)
       .filter((entry) => entry.result === undefined)
       .map((entry) => entry.startedAt + OBSERVE_MS);
-    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry, ...closing]
+    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), idle?.wakeAt ?? undefined, ...retry, ...closing]
       .filter((at): at is number => typeof at === "number")
       .reduce<number | null>((earliest, at) => (earliest === null || at < earliest ? at : earliest), null);
     const getAlarm = this.ctx.storage.getAlarm?.bind(this.ctx.storage);

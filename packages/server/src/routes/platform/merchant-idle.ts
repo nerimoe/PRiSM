@@ -8,7 +8,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { IDLE_SETTINGS_KEY, idleSettingsSchema, parseIdleSettings, type IdleSettings } from "../../resources/capabilities/idle-power.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
+import { idleSignalAfter } from "../../durable-objects/shop-hub-client.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { assertResourceShop, canConfigureResource } from "./merchant-resources.js";
@@ -40,8 +40,8 @@ async function write(c: C, shopId: string, settings: IdleSettings) {
     `INSERT INTO app_settings(shop_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(shop_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
   ).bind(shopId, IDLE_SETTINGS_KEY, JSON.stringify(settings), new Date().toISOString()).run();
-  // New rules apply right away rather than at the next activity.
-  touchShopHubAfter(c, shopId);
+  // The hub keeps the rules its timers run by: it reads them again and starts over from the shop as it is.
+  idleSignalAfter(c, shopId, { kind: "settings" });
 }
 
 merchantIdleRouter.get("/idle-power", async (c) => {

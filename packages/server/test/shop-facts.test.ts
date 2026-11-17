@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 import type { Env, PrismAppDependencies } from "../src/bindings.js";
 import { publishShopFacts, withOrigin, type FactOrigin } from "../src/events/shop-facts.js";
-import { announcementSubscriber, billingSubscriber, idleRecheckSubscriber, shopChangedSubscriber } from "../src/events/subscribers.js";
+import { announcementSubscriber, billingSubscriber, idleTimerSubscriber, shopChangedSubscriber } from "../src/events/subscribers.js";
 import type { Heard } from "../src/events/dispatcher.js";
 import type { DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
@@ -231,12 +231,12 @@ describe("shop facts", () => {
     sqlite.close();
   });
 
-  it("tells a player's pages and the idle rule from what happened, with nobody reading a response for it", async () => {
+  it("tells a player's pages and the idle timers from what happened, with nobody reading a response for it", async () => {
     const { sqlite, runtime } = fixture();
-    const hub = { pages: [] as Array<[unknown, string]>, touched: 0 };
+    const hub = { pages: [] as Array<[unknown, string]>, idle: [] as unknown[] };
     const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({
       async pagesChanged(scope: unknown, reason: string) { hub.pages.push([scope, reason]); },
-      async touch() { hub.touched += 1; },
+      async idleEvents(_shopId: string, signals: unknown[]) { hub.idle.push(...signals); },
     }) } } as unknown as Env;
     const context = { db: runtime.db, env, shopId: "shop" };
     let seq = 0;
@@ -258,15 +258,27 @@ describe("shop facts", () => {
     await shopChangedSubscriber.run(context, [heard("shop.changed", { playerId: null })]);
     expect(hub.pages).toEqual([[{ shop: true }, "shop"]]);
 
-    // A visit ending, or a request the hardware took, may start or stop an idle countdown; a balance does not.
-    await idleRecheckSubscriber.run(context, [heard("wallet.adjusted")]);
-    expect(hub.touched).toBe(0);
-    await idleRecheckSubscriber.run(context, [heard("checkout.settled")]);
-    await idleRecheckSubscriber.run(context, [coin]);
-    expect(hub.touched).toBe(2);
+    // The idle timers hear only what moves them. A balance does not.
+    await idleTimerSubscriber.run(context, [heard("wallet.adjusted")]);
+    expect(hub.idle).toEqual([]);
+    // A bill closing, once however many closed; a coin the hardware took; a device switched on and off.
+    const result = (name: string) => heard(name, { kind: "result", capability: "power", deviceId: "m1", playerId: null, payload: { outcome: "ok" } });
+    await idleTimerSubscriber.run(context, [heard("checkout.settled"), heard("session.stopped"), coin, result("power.on"), result("power.off"), result("power.keep")]);
+    expect(hub.idle).toEqual([
+      { kind: "sessions" },
+      { kind: "activity", deviceId: "m1" },
+      { kind: "on", deviceId: "m1" },
+      { kind: "off", deviceId: "m1" },
+    ]);
+    // An authorised card is the stay it begins; a cabinet's own count of a coin is a coin; a card nobody is billed for is nothing.
+    hub.idle.length = 0;
+    const reported = (name: string, capability = "hinata_io") => heard(name, { capability, deviceId: "m2", origin: "device", playerId: null });
+    await idleTimerSubscriber.run(context, [reported("occupancy.seen", "occupancy"), reported("cabinet.coin"), reported("card.consumed")]);
+    expect(hub.idle).toEqual([{ kind: "activity", deviceId: "m2", stay: true }, { kind: "activity", deviceId: "m2" }]);
     // What the hub did itself is not told back to it.
-    await idleRecheckSubscriber.run({ ...context, insideHub: true }, [coin]);
-    expect(hub.touched).toBe(2);
+    hub.idle.length = 0;
+    await idleTimerSubscriber.run({ ...context, insideHub: true }, [coin]);
+    expect(hub.idle).toEqual([]);
     sqlite.close();
   });
 });

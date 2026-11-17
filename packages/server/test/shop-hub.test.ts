@@ -14,12 +14,15 @@ const SHOP = "shop-1";
 
 async function fixture(options: { climate?: boolean; legacy?: boolean } = {}) {
   const sqlite = new Database(":memory:");
-  sqlite.run(`CREATE TABLE players(shop_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(shop_id, id))`);
+  sqlite.run(`CREATE TABLE players(shop_id TEXT NOT NULL, id TEXT NOT NULL, status TEXT DEFAULT 'active', PRIMARY KEY(shop_id, id))`);
   sqlite.run(
     `CREATE TABLE machines(shop_id TEXT NOT NULL, id TEXT NOT NULL, public_id TEXT, name TEXT, aliases_json TEXT,
        kind TEXT DEFAULT 'machine', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT DEFAULT '2026-01-01', capacity INTEGER NOT NULL DEFAULT 0, occupancy_minutes INTEGER NOT NULL DEFAULT 15, PRIMARY KEY(shop_id, id))`,
   );
   sqlite.run(`CREATE TABLE app_settings(shop_id TEXT, key TEXT, value_json TEXT, updated_at TEXT, PRIMARY KEY(shop_id, key))`);
+  // What the idle timers read when the hub takes stock: open bills and taken seats.
+  sqlite.run(`CREATE TABLE sessions(shop_id TEXT, id TEXT, player_id TEXT, status TEXT)`);
+  sqlite.run(`CREATE TABLE mahjong_seats(shop_id TEXT, player_id TEXT, machine_id TEXT, session_id TEXT, entry_session_id TEXT, joined_at TEXT)`);
   for (const statement of deviceEventSchema) sqlite.run(statement);
   const db = createD1DatabaseFromSqlite(sqlite);
   const made = {
@@ -451,17 +454,32 @@ describe("ShopHub watchers", () => {
     const { hub, state, alarmHistory, clearAlarm, connectionId } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
-    // An idle check that has come due. Scheduling while it is still pending would set an alarm in
+    // An idle timer that has come due. Scheduling while it is still pending would set an alarm in
     // the past, which fires again at once; on a runtime that drops an alarm set to the time of the
     // one running, nothing would then wake for the watcher's lease.
-    state.set("touchAt", Date.now() - 1);
+    state.set("idle", { ...(state.get("idle") as object), wakeAt: Date.now() - 1 });
     clearAlarm();
     alarmHistory.length = 0;
     await hub.alarm();
     const now = Date.now();
     expect(alarmHistory.length).toBeGreaterThan(0);
     expect(alarmHistory.every((at) => at > now)).toBe(true);
-    expect(state.get("touchAt")).toBeUndefined();
+    const wakeAt = (state.get("idle") as { wakeAt: number | null }).wakeAt;
+    expect(wakeAt === null || wakeAt > now).toBe(true);
+  });
+
+  it("starts a device's idle timer when Home Assistant reports it switched on, and ends it when it reports it off", async () => {
+    const { hub, state, connectionId } = await fixture();
+    const timers = () => Object.values((state.get("idle") as { entries: Record<string, unknown> } | undefined)?.entries ?? {});
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", NOON], ["switch.b", "on", NOON]]));
+    // A first report that reads on: the device is on, since when Home Assistant says.
+    expect(timers()).toEqual([{ ids: ["m2"], power: true, at: Date.parse(NOON), seen: true }]);
+    const on = "2026-10-21T09:01:00.000Z";
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", on]], false));
+    expect(timers()).toContainEqual({ ids: ["m1"], power: true, at: Date.parse(on), seen: true });
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
+    expect(timers()).toEqual([{ ids: ["m2"], power: true, at: Date.parse(NOON), seen: true }]);
   });
 
   it("replaces a quiet watcher with one that can be told", async () => {
@@ -807,12 +825,10 @@ describe("ShopHub watchers", () => {
     expect((await facts("m3")).climate).toMatchObject({ currentTemperature: 28 });
     expect(changes("climate")).toHaveLength(1);
     expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe(NOON);
-    state.delete("touchAt");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["climate.c", "cool", NOON, "2026-10-21T09:02:00.000Z", attributes(28, 22)]], false));
     expect((await facts("m3")).climate).toMatchObject({ temperature: 22 });
     expect(changes("climate")).toHaveLength(2);
     expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe("2026-10-21T09:02:00.000Z");
-    expect(state.has("touchAt")).toBe(true);
   });
 
   it("rewrites every fact after the devices an entity drives changed, without un-announcing the connection", async () => {

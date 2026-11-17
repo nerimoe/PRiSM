@@ -20,6 +20,9 @@ try {
  * maintenance and verify phases, so each class named in wrangler config must be
  * exported here or those deploys fail with "class not found".
  */
+/** How soon the shop hub's alarm is tried again while the platform is fenced. */
+const MAINTENANCE_ALARM_RETRY_MS = 60_000;
+
 export class MachineRelay extends BaseDurableObject<Env> {
   async fetch(): Promise<Response> {
     // Devices reconnect after the deployment; nothing is served while fenced.
@@ -29,11 +32,15 @@ export class MachineRelay extends BaseDurableObject<Env> {
 
 /**
  * The shop hub only reacts to relays and reads; while fenced, relays are down
- * and nothing calls it. An alarm that fires now is simply dropped: the next
- * relay connection after the deployment elects a watcher again.
+ * and nothing calls it. An alarm that fires now is put off, not dropped: the
+ * real hub hears it once the deployment is over.
  */
 export class ShopHub extends BaseDurableObject<Env> {
-  async alarm(): Promise<void> {}
+  async alarm(): Promise<void> {
+    // Whatever was due (an idle power-off, a watcher's lease) is still due when
+    // the deployment is over: ask again shortly, until the real hub answers.
+    await this.ctx.storage.setAlarm(Date.now() + MAINTENANCE_ALARM_RETRY_MS);
+  }
 }
 
 /** Keeps the existing Durable Object class and storage; no business schema is touched. */

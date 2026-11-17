@@ -23,6 +23,7 @@ import { createOccupancy } from "../resources/occupancy/service.js";
 import { yuanOf, type Cents } from "@prism/core";
 import { announceShopEvent, eventPlayer, refusalDetail, type ShopEvent } from "../resources/shop-events.js";
 import { capabilities } from "../resources/capabilities/catalog.js";
+import type { IdleSignal } from "../resources/capabilities/idle-power.js";
 import { cameOf, type AfterSubscriber, type EventSubscriber, type Heard, type InlineSubscriber } from "./dispatcher.js";
 
 /** What a subscriber is handed besides the events: the shop they happened at. */
@@ -183,24 +184,51 @@ export const powerOffSubscriber: AfterSubscriber<EventContext> = {
   },
 };
 
-/** What starts or ends a visit: whether anyone is in the shop is what the idle rule goes by. */
+/** A bill opening or closing: whether any is open is what the shop-empty timer goes by. */
 const VISITS = new Set(["session.started", "session.stopped", "checkout.settled"]);
 
+/** Paying at a cabinet, as its own books report it. */
+const PAID = new Set(["cabinet.coin", "cabinet.consumed"]);
+
+/** Requests that show someone using a device once the hardware takes them: a coin, a card sent, `keep`. */
+const USES = new Set(Object.values(capabilities).flatMap((spec) =>
+  Object.entries(spec.actions).filter(([name, action]) => action?.countsAsPlay && name !== "power.on" && name !== "power.off").map(([name]) => `${name}.sent`)));
+
+/** What an event means to the idle timers (`resources/capabilities/idle-power.ts`), if anything. */
+function idleSignalOf({ event, type }: Heard): IdleSignal | null {
+  if (VISITS.has(type)) return { kind: "sessions" };
+  if (!event.deviceId) return null;
+  if (type === "power.on.sent") return { kind: "on", deviceId: event.deviceId };
+  if (type === "power.off.sent") return { kind: "off", deviceId: event.deviceId };
+  // An authorised card is one the resource bills its player for: `occupancy.seen`, their stay on it.
+  if (type === "occupancy.seen") return { kind: "activity", deviceId: event.deviceId, stay: true };
+  if (USES.has(type) || (event.kind === "signal" && event.origin === "device" && PAID.has(event.name)))
+    return { kind: "activity", deviceId: event.deviceId };
+  return null;
+}
+
 /**
- * Something shows a person at a device or in the shop (a device's own report,
- * a request the hardware took), or a visit began or ended: the hub rechecks who
- * is there and when the idle rule is next due.
+ * The hub's idle timers hear what moves them and nothing else: a device
+ * switched on starts its timer, switched off ends it, a coin, an authorised
+ * card or `keep` starts it again, and a bill opening or closing says whether
+ * the shop is empty.
  */
-export const idleRecheckSubscriber: AfterSubscriber<EventContext> = {
-  name: "hub-idle-recheck",
+export const idleTimerSubscriber: AfterSubscriber<EventContext> = {
+  name: "hub-idle-timers",
   when: "after",
   wants: "*",
   async run(context, heard) {
     if (context.insideHub) return;
-    const active = heard.some(({ event, type }) =>
-      VISITS.has(type) || (event.kind === "result" && type.endsWith(".sent"))
-      || (event.kind === "signal" && event.origin === "device" && capabilitySpec(event.capability)?.signals[event.name]?.activity));
-    if (active) await shopHub(context.env, context.shopId)?.touch(context.shopId);
+    const signals: IdleSignal[] = [];
+    const told = new Set<string>();
+    for (const one of heard) {
+      const signal = idleSignalOf(one);
+      const key = JSON.stringify(signal);
+      if (!signal || told.has(key)) continue;
+      told.add(key);
+      signals.push(signal);
+    }
+    if (signals.length) await shopHub(context.env, context.shopId)?.idleEvents(context.shopId, signals);
   },
 };
 
@@ -268,5 +296,5 @@ export const eventSubscribers: readonly EventSubscriber<EventContext>[] = [
   shopChangedSubscriber,
   announcementSubscriber,
   powerOffSubscriber,
-  idleRecheckSubscriber,
+  idleTimerSubscriber,
 ];

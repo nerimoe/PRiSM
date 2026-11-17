@@ -1,20 +1,26 @@
 /**
- * Idle power-off: when a shop or a device has been idle long enough, and what
- * to do about it. This module decides; the shop hub reads the inputs, acts on
- * the plan and wakes for the next deadline.
+ * Idle power-off: timers the shop hub keeps, moved by what happens and by
+ * nothing else. This module is the timers; the hub hears the events, keeps the
+ * one alarm and switches off (`durable-objects/shop-hub-idle.ts`).
  *
- * Two rules, both off until the shop turns them on:
- * - **Shop empty**: no active entry for N minutes, then every free powered device
- *   and air conditioner is switched off, respecting occupancy and holds.
- * - **Device idle**: a device is idle whenever nobody occupies it, and may be
- *   switched off after the configured idle time. Climate
- *   follows the whole shop's devices, never the time since an AC setting. While
- *   the shop has players the owner chooses what happens: only
- *   leave it on or switch it off, with an optional advance warning by the bot.
+ * A switch that is on has a timer:
+ * - switched on starts it;
+ * - switched off ends it;
+ * - a coin, an authorised card or `keep` starts it again (a card that begins a
+ *   stay starts it from the end of that stay);
+ * - a table whose seats are taken has none until the last one leaves.
  *
- * Occupancy (see `occupancy/`) alone says whether it is idle; no separate flag
- * is stored. Switching on or keeping a device on resets its shutdown wait without
- * inventing an occupant. A device is never switched off while occupied.
+ * Two rules read the timers, both off until the shop turns them on:
+ * - **Device idle**: a timer that runs out switches its device off. While the
+ *   shop has players the owner chooses: switch it off, or only leave it marked.
+ * - **Shop empty**: the last bill closing starts one timer for the whole shop;
+ *   when it runs out everything still on is switched off. Whatever is switched
+ *   on in the empty shop afterwards runs on its own timer.
+ *
+ * Running out has two steps when a bot wants to be told: first the warning,
+ * said `lead` ahead, then the power-off. Air conditioners go off with the last
+ * device. Nothing here reads the shop's state: a timer only knows when it was
+ * last moved.
  */
 import { z } from "zod";
 
@@ -67,216 +73,278 @@ export function parseIdleSettings(value: unknown): IdleSettings {
   return parsed.success ? parsed.data : idleSettingsSchema.parse({});
 }
 
-/** An automatic power-off that failed is not retried sooner than this. */
+/** A power-off that failed, or that nothing has confirmed, is sent again after this. */
 export const RETRY_OFF_MS = 10 * 60_000;
-
-export type IdleDevice = {
-  id: string;
-  name: string;
-  hasPower: boolean;
-  hasClimate: boolean;
-  /** Can be used without a power binding, for example an IO cabinet or held seats. */
-  hasUsage: boolean;
-  /** The physical HA binding; unshared when a legacy binding has no connection id. */
-  powerTarget: string | null;
-  climateTarget: string | null;
-  /** Current power; null when nothing watches the device, or its source reports it unavailable. */
-  power: "on" | "off" | null;
-  /** Climate mode; anything other than "off" is running. Null when unknown. */
-  climate: string | null;
-  /** Latest sign of someone at it (an occupant seen, a hold), in ms. */
-  lastActivity: number | null;
-  /**
-   * Until when its occupants keep it busy, in ms: the latest expiry among them,
-   * or Infinity while one has no expiry (a seat). Null when nobody occupies it.
-   */
-  busyUntil: number | null;
-  /** When it was last seen switching on, in ms. */
-  poweredOnAt: number | null;
-  lastAutoOff: number | null;
-  lastClimateAutoOff: number | null;
-};
+/** How often a power-off is sent to a device that still reports itself on. */
+const MAX_UNCONFIRMED = 3;
+/** The alarm is never set closer than this, so nothing left due can spin it. */
+const MIN_WAKE_MS = 1000;
 
 /** Unknown HA modes must not look like an air conditioner switching on. */
 export function climatePower(state: string | null): "on" | "off" | null {
   return !state || state === "unknown" || state === "unavailable" ? null : state === "off" ? "off" : "on";
 }
 
-/** One physical actuator, with every resource that would be affected by switching it off. */
-export function idleGroups(devices: IdleDevice[]) {
-  const groups = new Map<string, { capability: "power" | "climate"; devices: IdleDevice[] }>();
-  for (const device of devices) for (const capability of ["power", "climate"] as const) {
-    if (!(capability === "power" ? device.hasPower : device.hasClimate)) continue;
-    const target = capability === "power" ? device.powerTarget : device.climateTarget;
-    const key = JSON.stringify([capability, target ?? device.id]);
-    const group = groups.get(key) ?? { capability, devices: [] };
-    group.devices.push(device);
-    groups.set(key, group);
+/**
+ * What the hub is told, by resource: the subscriber of the device events says
+ * these (`events/subscribers.ts`), as do the routes that change seats or the
+ * idle settings. The hub finds which switch a resource is on.
+ */
+export type IdleSignal =
+  | { kind: "on" | "off"; deviceId: string; at?: number }
+  /**
+   * A coin, an authorised card, `keep`. `stay`: it began or renewed a player's
+   * stay on the resource, so the timer starts where that stay ends: a device is
+   * not switched off under someone the resource still counts as playing.
+   */
+  | { kind: "activity"; deviceId: string; at?: number; stay?: boolean }
+  /** Home Assistant reports the device switched on, without that being a change. */
+  | { kind: "seen"; deviceId: string; at?: number }
+  /** A bill started or closed: the shop may have become empty, or stopped being so. */
+  | { kind: "sessions" }
+  /** A seat was taken or left. */
+  | { kind: "seats" }
+  /** The idle rules were edited. */
+  | { kind: "settings" };
+
+/** One switch that is on, or one resource in use that has none. */
+export type IdleEntry = {
+  /** Every resource switching it off would affect. */
+  ids: string[];
+  /** Whether there is a switch to turn off. Without one the timer only counts towards the last device. */
+  power: boolean;
+  /** When it was last switched on, paid at, or kept, in ms. */
+  at: number;
+  /** Seats are taken: no timer until they are left. */
+  held?: true;
+  /** Home Assistant reports its power, so a power-off that took will be heard. */
+  seen?: true;
+  /** The warning was said; this is when the power-off follows. Also when a failed power-off is sent again. */
+  warned?: { offAt: number };
+  /** It ran out while players were in and the owner only marks. */
+  marked?: true;
+  /** Power-offs sent that nothing has confirmed yet. */
+  sent?: number;
+};
+
+export type IdleTimers = {
+  entries: Record<string, IdleEntry>;
+  /** Since when no bill is open, in ms; null while one is. */
+  emptySince: number | null;
+  /** The shop-empty timer of this empty stretch. */
+  shop: { warned?: { offAt: number }; done?: true };
+  /** An idle power-off happened: the air conditioners follow once nothing is left on. */
+  climateDue?: true;
+  /** When the hub's alarm is next needed for these. */
+  wakeAt: number | null;
+};
+
+export const emptyIdleTimers = (): IdleTimers => ({ entries: {}, emptySince: null, shop: {}, wakeAt: null });
+
+/** A signal about a resource, once the hub knows its switch. */
+export type IdleEvent =
+  | { kind: "on" | "activity"; key: string; ids: string[]; power: boolean; at?: number; seen?: boolean }
+  /** It is on and Home Assistant says so; when it was switched on is not news. */
+  | { kind: "seen"; key: string; ids: string[]; power: boolean; at?: number }
+  | { kind: "off"; key: string }
+  | { kind: "held"; key: string; ids: string[]; power: boolean; held: boolean };
+
+const restart = (entry: IdleEntry) => {
+  delete entry.warned;
+  delete entry.marked;
+  delete entry.sent;
+};
+
+export function applyIdleEvent(timers: IdleTimers, event: IdleEvent, now: number): void {
+  if (event.kind === "off") {
+    delete timers.entries[event.key];
+    return;
   }
-  return [...groups.values()];
+  const known = timers.entries[event.key];
+  if (event.kind === "held" && !event.held && !known?.held) return;
+  const entry = known ?? { ids: event.ids, power: event.power, at: ("at" in event ? event.at : undefined) ?? now };
+  entry.ids = event.ids;
+  entry.power = event.power;
+  timers.entries[event.key] = entry;
+  if (event.kind === "seen") {
+    entry.seen = true;
+    return;
+  }
+  if (event.kind === "held") {
+    if (event.held) entry.held = true;
+    else {
+      delete entry.held;
+      entry.at = now;
+    }
+    restart(entry);
+    return;
+  }
+  if (event.seen) entry.seen = true;
+  entry.at = Math.max(known ? entry.at : 0, event.at ?? now);
+  restart(entry);
 }
 
-export type IdleInputs = {
-  now: number;
-  settings: IdleSettings;
-  activeEntries: number;
-  /** When the shop became empty, as remembered, or the last entry's end. */
-  emptySince: number | null;
-  /** The empty period whose power-off already ran. */
-  emptyHandled: number | null;
-  devices: IdleDevice[];
-  /** How long before a power-off the bot should be told; null without a bot. */
-  reminderLeadMs: number | null;
-  /** Deadlines already reminded about, by key. */
-  reminded: Record<string, number>;
+/** The shop became empty or stopped being so. A marked device is judged again under the other rule. */
+export function setIdleEmpty(timers: IdleTimers, empty: boolean, now: number): void {
+  if (empty === (timers.emptySince !== null)) return;
+  timers.emptySince = empty ? now : null;
+  timers.shop = {};
+  for (const entry of Object.values(timers.entries)) delete entry.marked;
+}
+
+/** The rules were edited: what was decided under the old ones is decided again. */
+export function idleSettingsChanged(timers: IdleTimers): void {
+  delete timers.shop.warned;
+  for (const entry of Object.values(timers.entries)) delete entry.marked;
+}
+
+const excluded = (entry: IdleEntry, settings: IdleSettings) => entry.ids.some((id) => settings.devices[id]?.exclude);
+
+/** When an entry runs out and what then happens to it; null while no rule times it. */
+function ruleOf(entry: IdleEntry, timers: IdleTimers, settings: IdleSettings): { at: number; action: "off" | "mark" } | null {
+  if (entry.held || entry.marked || excluded(entry, settings)) return null;
+  if (timers.emptySince !== null && settings.shopEmpty.enabled) {
+    // The shop's own timer switches everything off; after it has, each device is on its own.
+    if (!timers.shop.done) return null;
+    const minutes = settings.device.enabled ? settings.device.minutes : settings.shopEmpty.minutes;
+    return { at: entry.at + minutes * 60_000, action: "off" };
+  }
+  if (!settings.device.enabled) return null;
+  return {
+    at: entry.at + settings.device.minutes * 60_000,
+    action: timers.emptySince === null && settings.device.whileOccupied === "mark" ? "mark" : "off",
+  };
+}
+
+const shopAt = (timers: IdleTimers, settings: IdleSettings) =>
+  settings.shopEmpty.enabled && timers.emptySince !== null && !timers.shop.done
+    ? timers.emptySince + settings.shopEmpty.minutes * 60_000 : null;
+
+/** What the shop-empty timer switches off: every switch that is on, free and not excluded. */
+const switchable = (timers: IdleTimers, settings: IdleSettings) =>
+  Object.entries(timers.entries).filter(([, entry]) => entry.power && !entry.held && !excluded(entry, settings)).map(([key]) => key);
+
+export type IdleReason = "shop_empty" | "device_idle";
+
+export type IdleDue = {
+  /** Warnings to say now: these switches go off at `at`. */
+  warn: Array<{ reason: IdleReason; keys: string[]; at: number }>;
+  /** Switches to turn off now; tell `settleIdleOff` how each went. */
+  off: Array<{ reason: IdleReason; key: string }>;
+  /** The shop-empty timer ran out: the air conditioners go off with it. */
+  shopOff: boolean;
 };
 
-export type Reminder = { key: string; reason: "shop_empty" | "device_idle"; deviceIds: string[]; at: number };
-
-export type IdlePlan = {
-  powerOff: string[];
-  climateOff: string[];
-  remind: Reminder[];
-  emptySince: number | null;
-  emptyHandled: number | null;
-  nextWake: number | null;
-  /**
-   * When each device is due to be switched off, in ms, once its countdown has
-   * started: the shop is empty, or the device is free and the rule switches it
-   * off. A device kept on by policy has none.
-   */
-  powerOffAt: Record<string, number>;
-};
-
-export function planIdle(input: IdleInputs): IdlePlan {
-  const { now, settings } = input;
-  const plan: IdlePlan = {
-    powerOff: [],
-    climateOff: [],
-    remind: [],
-    emptySince: null,
-    emptyHandled: null,
-    nextWake: null,
-    powerOffAt: {},
-  };
-  const wake = (at: number) => {
-    if (Number.isFinite(at) && at > now && (plan.nextWake === null || at < plan.nextWake)) plan.nextWake = at;
-  };
-  const remindBefore = (key: string, reason: Reminder["reason"], deviceIds: string[], deadline: number) => {
-    if (input.reminderLeadMs === null || !deviceIds.length) return;
-    const at = deadline - input.reminderLeadMs;
-    if (now >= at && now < deadline && input.reminded[key] !== deadline) plan.remind.push({ key, reason, deviceIds, at: deadline });
-    else if (now < at) wake(at);
-  };
-  const freeAt = (device: IdleDevice, changedAt = 0, on = false) => Math.max(
-    Math.max(device.lastActivity ?? 0, changedAt) || (on ? now : 0),
-    device.busyUntil ?? 0,
-  );
-  const idleMs = settings.device.minutes * 60_000;
-  const groups = idleGroups(input.devices).map((group) => {
-    const power = group.devices.map((d) => group.capability === "power" ? d.power : climatePower(d.climate));
-    const changedAt = Math.max(...group.devices.map((d) => group.capability === "power" ? d.poweredOnAt ?? 0 : 0));
-    const activity = Math.max(...group.devices.map((d) => d.lastActivity ?? 0));
-    const attempted = Math.max(...group.devices.map((d) => (group.capability === "power" ? d.lastAutoOff : d.lastClimateAutoOff) ?? 0));
-    const state = power.includes("on") ? "on" : power.every((state) => state === "off") ? "off" : null;
-    return {
-      ...group,
-      ids: group.devices.map((d) => d.id),
-      state,
-      excluded: group.devices.some((d) => settings.devices[d.id]?.exclude),
-      free: Math.max(...group.devices.map((d) => freeAt(d, changedAt, group.capability === "power" && state === "on"))),
-      activity, attempted,
-      canRetry: !attempted || now - attempted >= RETRY_OFF_MS,
-    };
-  });
-  // Climate serves the shop; only other devices' usage decides when it is idle.
-  // Unknown power without any activity cannot prove that a cabinet is idle.
-  const powerGroups = groups.filter((group) => group.capability === "power");
-  const usageOnly = input.devices.filter((device) => device.hasUsage && !device.hasPower);
-  const allDevicesFreeAt = Math.max(0,
-    ...powerGroups.map((group) => group.state === "off" ? 0 : group.free),
-    ...usageOnly.map((device) => freeAt(device)),
-  );
-  const deviceDeadlines = [
-    ...powerGroups.map((group) => group.state === "off" ? 0
-      : group.state === null && !group.activity ? Infinity : group.free + idleMs),
-    ...usageOnly.map((device) => freeAt(device) + idleMs),
-  ];
-  const allDevicesIdleAt = deviceDeadlines.length ? Math.max(...deviceDeadlines) : Infinity;
-  const turnOff = (group: typeof groups[number]) => {
-    (group.capability === "power" ? plan.powerOff : plan.climateOff).push(...group.ids);
-  };
-  const countdown = (group: typeof groups[number], deadline: number) => {
-    for (const id of group.ids) plan.powerOffAt[id] = Math.min(plan.powerOffAt[id] ?? Infinity, deadline);
-  };
-  const empty = input.activeEntries === 0;
-  if (settings.shopEmpty.enabled && empty) {
-    const since = input.emptySince ?? now;
-    plan.emptySince = since;
-    plan.emptyHandled = input.emptyHandled;
-    if (input.emptyHandled !== since) {
-      let pending = false;
-      const warnings = new Map<number, string[]>();
-      for (const group of groups) {
-        if (group.excluded || group.state === "off") continue;
-        // An occupied or recently used shared supply must not be cut by the shop rule either.
-        const deadline = Math.max(since + settings.shopEmpty.minutes * 60_000, group.free);
-        if (now < deadline) {
-          pending = true;
-          wake(deadline);
-          if (Number.isFinite(deadline)) {
-            countdown(group, deadline);
-            warnings.set(deadline, [...(warnings.get(deadline) ?? []), ...group.ids]);
-          }
-        } else if (group.canRetry) turnOff(group);
-        else { pending = true; wake(group.attempted + RETRY_OFF_MS); }
+/**
+ * Everything that has run out by `now`, moved one step on: a timer that reaches
+ * its warning is warned about and given `leadMs` more, one whose warning has
+ * passed is switched off. Without a lead there is no first step.
+ */
+export function dueIdle(timers: IdleTimers, settings: IdleSettings, now: number, leadMs: number | null): IdleDue {
+  const due: IdleDue = { warn: [], off: [], shopOff: false };
+  const lead = leadMs && leadMs > 0 ? leadMs : 0;
+  const taken = new Set<string>();
+  const shop = shopAt(timers, settings);
+  if (shop !== null) {
+    const keys = switchable(timers, settings);
+    const warned = timers.shop.warned;
+    if (!warned && lead && keys.length && now >= shop - lead) {
+      const at = Math.max(shop, now + lead);
+      timers.shop.warned = { offAt: at };
+      due.warn.push({ reason: "shop_empty", keys, at });
+    } else if (now >= (warned?.offAt ?? shop)) {
+      timers.shop = { done: true };
+      due.shopOff = true;
+      for (const key of keys) {
+        due.off.push({ reason: "shop_empty", key });
+        taken.add(key);
       }
-      for (const [deadline, ids] of warnings) {
-        const deferred = deadline !== since + settings.shopEmpty.minutes * 60_000;
-        remindBefore(deferred ? `empty:${since}:${deadline}` : `empty:${since}`, deferred ? "device_idle" : "shop_empty", [...new Set(ids)], deadline);
-      }
-      if (!pending) plan.emptyHandled = since;
     }
-  } else if (empty) {
-    plan.emptySince = input.emptySince ?? now;
   }
+  for (const [key, entry] of Object.entries(timers.entries)) {
+    if (taken.has(key)) continue;
+    const rule = ruleOf(entry, timers, settings);
+    if (!rule) {
+      // Whatever was pending belonged to a rule that no longer times it.
+      delete entry.warned;
+      delete entry.sent;
+      continue;
+    }
+    if (entry.warned && now < entry.warned.offAt) continue;
+    if (rule.action === "mark") {
+      delete entry.warned;
+      if (now >= rule.at) entry.marked = true;
+      continue;
+    }
+    if (!entry.power) {
+      if (now < rule.at) continue;
+      // Nothing to switch off; it stops counting as a device in use.
+      delete timers.entries[key];
+      timers.climateDue = true;
+      continue;
+    }
+    if (entry.warned) due.off.push({ reason: "device_idle", key });
+    else if (lead && now >= rule.at - lead) {
+      const at = Math.max(rule.at, now + lead);
+      entry.warned = { offAt: at };
+      due.warn.push({ reason: "device_idle", keys: [key], at });
+    } else if (!lead && now >= rule.at) due.off.push({ reason: "device_idle", key });
+  }
+  return due;
+}
 
-  for (const group of groups) {
-    // Without a known state the device's own activity is the only clock, and it
-    // is switched off once per stretch of idleness: nothing shows whether it took.
-    const blind = group.state === null;
-    const handled = blind && group.attempted > 0 && group.attempted >= group.activity;
-    if (group.excluded || group.state === "off" || !settings.device.enabled || (group.capability === "power" && blind && (!group.activity || handled))) {
-      continue;
-    }
-    // Never idle while occupied: an occupant without an expiry holds it indefinitely.
-    if (group.free === Infinity || (group.capability === "climate" && !empty && allDevicesIdleAt === Infinity)) {
-      continue;
-    }
-    // A predicted occupancy expiry is a recheck time, not an active climate countdown.
-    if (group.capability === "climate" && !empty && now < allDevicesFreeAt) {
-      wake(allDevicesFreeAt);
-      continue;
-    }
-    // No separate idle flag: this deadline only controls shutdown.
-    const deadline = group.capability === "power" ? group.free + idleMs
-      : Math.max(group.free, empty ? (plan.emptySince ?? now) + idleMs : allDevicesIdleAt);
-    if (group.capability === "climate" && blind && group.attempted > 0 && group.attempted >= deadline) continue;
-    const switchesOff = empty ? !settings.shopEmpty.enabled : settings.device.whileOccupied === "off";
-    if (now < deadline) {
-      wake(deadline);
-      // Counting down once nothing keeps it busy, where the rule would switch it off.
-      if (now >= group.free && switchesOff) countdown(group, deadline);
-      if (switchesOff)
-        remindBefore(`${group.capability === "power" ? "device" : "climate"}:${group.ids[0]}`, "device_idle", group.ids, deadline);
-      if (switchesOff) wake(group.free);
-      continue;
-    }
-    if ((group.capability === "power" ? plan.powerOff : plan.climateOff).includes(group.ids[0]!)) continue;
-    // With nobody in, the device rule switches off unless the shop rule is
-    // about to; with players in, the owner's choice applies.
-    if (switchesOff && group.canRetry) turnOff(group);
-    if (switchesOff && !group.canRetry) wake(group.attempted + RETRY_OFF_MS);
+/**
+ * How a power-off went. One that failed is sent again later. One that was
+ * accepted ends the timer, unless Home Assistant reports the device: then its
+ * `off` ends it, and the power-off is repeated a few times while none comes.
+ */
+export function settleIdleOff(timers: IdleTimers, key: string, ok: boolean, now: number): void {
+  const entry = timers.entries[key];
+  if (!entry) return;
+  if (!ok) {
+    entry.warned = { offAt: now + RETRY_OFF_MS };
+    return;
   }
-  return plan;
+  timers.climateDue = true;
+  const sent = (entry.sent ?? 0) + 1;
+  if (entry.seen && sent < MAX_UNCONFIRMED) {
+    entry.sent = sent;
+    entry.warned = { offAt: now + RETRY_OFF_MS };
+  } else delete timers.entries[key];
+}
+
+/** Whether anything that a rule could switch off is still on or in use. */
+export function idleBusy(timers: IdleTimers, settings: IdleSettings): boolean {
+  return Object.values(timers.entries).some((entry) => !excluded(entry, settings));
+}
+
+/** When the alarm is next needed: the earliest warning or power-off ahead. */
+export function nextIdleWake(timers: IdleTimers, settings: IdleSettings, now: number, leadMs: number | null): number | null {
+  const lead = leadMs && leadMs > 0 ? leadMs : 0;
+  const times: number[] = [];
+  const shop = shopAt(timers, settings);
+  if (shop !== null) times.push(timers.shop.warned?.offAt ?? (lead && switchable(timers, settings).length ? shop - lead : shop));
+  for (const entry of Object.values(timers.entries)) {
+    const rule = ruleOf(entry, timers, settings);
+    if (!rule) continue;
+    if (entry.warned) times.push(entry.warned.offAt);
+    else times.push(rule.action === "off" && entry.power && lead ? rule.at - lead : rule.at);
+  }
+  return times.length ? Math.max(Math.min(...times), now + MIN_WAKE_MS) : null;
+}
+
+/** When each resource is due to be switched off, in ms, for the board. One a rule only marks has none. */
+export function idleScheduleOf(timers: IdleTimers, settings: IdleSettings, now: number): Record<string, number> {
+  const schedule: Record<string, number> = {};
+  const shop = shopAt(timers, settings);
+  const byShop = shop === null ? null : timers.shop.warned?.offAt ?? shop;
+  const shopKeys = new Set(shop === null ? [] : switchable(timers, settings));
+  for (const [key, entry] of Object.entries(timers.entries)) {
+    if (!entry.power) continue;
+    const rule = ruleOf(entry, timers, settings);
+    const at = shopKeys.has(key) ? byShop : rule?.action === "off" ? entry.warned?.offAt ?? rule.at : null;
+    if (at === null || at <= now) continue;
+    for (const id of entry.ids) schedule[id] = at;
+  }
+  return schedule;
 }

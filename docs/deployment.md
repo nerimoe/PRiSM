@@ -141,7 +141,7 @@ bun run deploy:beta
 脚本先编译三个部署阶段，再开始改变线上服务；也可在生成生产平台配置后运行 `bun run scripts/deploy-platform.ts --dry-run`，仅编译三个阶段，不请求线上接口或执行迁移。
 
 1. 发布独立维护 Worker，网页、API、OAuth 回调及新设备连接均返回不可缓存的 HTTP 503 和 `Retry-After: 30`；页面显示「正在升级，请稍后重试」。不依赖旧 stable 认识维护开关。
-2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。
+2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。店铺 Hub（ShopHub）的 alarm 同样不处理、每分钟往后推一次，所以维护期间到期的闲置关机不会丢，部署结束后执行。
 3. 屏障生效后获取 D1 Time Travel 恢复书签，并在构建日志及 `.wrangler/platform-deploy-*/recovery.json` 记录。请保留构建日志。没有获取到书签则停止，不开始迁移。
 4. 按文件名和数字前缀顺序执行未应用 SQL。沿用 Wrangler 的 `d1_migrations` 表和完整文件名，因此两个 0029 都会执行，已执行的文件跳过。SQL、重建表的屏障及迁移记录在同一个 D1 batch 内提交；失败整批回滚，之前成功的文件仍保留。部署流水线不再直接运行 `wrangler d1 migrations apply`，避免绕过屏障。
 5. 发布处于 verify 阶段的正式 Worker，继续返回维护响应。执行一次性 UTC 计费转换和位置时区补齐，检查完成标记、当前及历史方案的 UTC 状态、外键及真实 API 健康响应。数据转换失败保持屏障，重复部署不会再次偏移。

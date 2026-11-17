@@ -5,7 +5,6 @@ import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { Session } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
 import { can, loadResource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
@@ -193,7 +192,6 @@ async function handleLogin(c:C,routePublicId?:string) {
   if(!sent)jsonError(502,
     status==="unknown"?"设备离线或连接地址不正确，请联系店员":"设备连接失败，请联系店员检查配置",
     "DEVICE_UNAVAILABLE",response);
-  touchShopHubAfter(c,shop.id);
   // What the card row shows. A coin after the card, if any, follows the game
   // taking it (the relay's card report), not this answer.
   const locale=requestLocale(c.req.header("accept-language"));

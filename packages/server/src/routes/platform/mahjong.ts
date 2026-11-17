@@ -8,7 +8,7 @@ import { requireUser } from "../../middleware/auth.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { checkShopLocation } from "../../middleware/geo.js";
 import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
-import { pagesChanged } from "../../durable-objects/shop-hub-client.js";
+import { idleSignalAfter, pagesChanged } from "../../durable-objects/shop-hub-client.js";
 import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings, TenantShop } from "../../bindings.js";
@@ -294,6 +294,8 @@ export async function moveMahjong(
       if (old && (!joining || old.machineId !== machine.id))
         await occupancy.left({ resourceId: old.machineId, playerId: player.id, at }).catch(error => console.error("Occupancy release failed", error));
       await occupancy.syncHeld(at).catch(error => console.error("Occupancy sync failed", error));
+      // Taken seats hold the table's idle timer; the last one leaving starts it.
+      idleSignalAfter(c, shop.id, { kind: "seats" });
       const sync = Promise.all(ids.flatMap(id => [
         refreshActivityBill(c.env, shop.id, id, false, true),
         pagesChanged(c.env, shop.id, { player: id }, "seat"),
