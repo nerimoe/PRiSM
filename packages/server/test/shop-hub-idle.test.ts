@@ -191,6 +191,30 @@ describe("idle timers in the shop hub", () => {
     }
   });
 
+  it("holds a kept device on for the shop's keep time, however short its idle time", async () => {
+    const start = Date.now();
+    let now = start;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const { hub, sqlite, tell, fireAlarm, offs } = await fixture({ ...deviceRule(), keepMinutes: 30 }, { onForMinutes: 0 });
+    const spy = haCalls();
+    try {
+      openBill(sqlite);
+      await tell({ kind: "on", deviceId: "m1" });
+      now = start + 5 * MIN;
+      await tell({ kind: "keep", deviceId: "m1" });
+      expect(await hub.idleSchedule()).toEqual({ m1: start + 35 * MIN });
+      now = start + 20 * MIN;
+      await fireAlarm();
+      expect(offs()).toEqual([]);
+      now = start + 35 * MIN;
+      await fireAlarm();
+      expect(offs()).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
   it("ends the timer when the device is switched off", async () => {
     const { tell, state, alarm } = await fixture(deviceRule(), { onForMinutes: 0 });
     await tell({ kind: "on", deviceId: "m1" });

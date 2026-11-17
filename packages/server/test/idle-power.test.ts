@@ -21,6 +21,7 @@ describe("idle settings", () => {
     expect(settings.shopEmpty.enabled).toBe(false);
     expect(settings.device.enabled).toBe(false);
     expect(settings.device.whileOccupied).toBe("mark");
+    expect(settings.keepMinutes).toBe(45);
   });
 
   it("reads the device rule of shops that set an idle time before it had a switch", () => {
@@ -48,7 +49,7 @@ describe("a device's idle timer", () => {
     expect(nextIdleWake(state, rules(), T + MIN, null)).toBeNull();
   });
 
-  it("starts again at a coin, an authorised card or keep, and from the end of a stay", () => {
+  it("starts again at a coin or an authorised card, and from the end of the stay one began", () => {
     const state = timers();
     const settings = rules();
     applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
@@ -60,6 +61,25 @@ describe("a device's idle timer", () => {
     // A coin during the stay does not shorten it.
     applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 12 * MIN);
     expect(nextIdleWake(state, settings, T + 12 * MIN, null)).toBe(T + 50 * MIN);
+  });
+
+  it("is held by keep for a time of its own, which a coin does not shorten", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    // Kept at T+5 for 45 minutes: far past the 10 minutes its idle time gives.
+    applyIdleEvent(state, { kind: "activity", ...machine("m1"), until: T + 50 * MIN }, T + 5 * MIN);
+    expect(idleScheduleOf(state, settings, T + 5 * MIN)).toEqual({ m1: T + 50 * MIN });
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 20 * MIN);
+    expect(idleScheduleOf(state, settings, T + 20 * MIN)).toEqual({ m1: T + 50 * MIN });
+    // It is warned about and switched off like any other.
+    expect(dueIdle(state, settings, T + 47 * MIN, LEAD).warn).toEqual([{ reason: "device_idle", keys: ["k:m1"], at: T + 50 * MIN }]);
+    expect(offKeys(dueIdle(state, settings, T + 50 * MIN, LEAD))).toEqual(["k:m1"]);
+    // Use after the kept time has passed counts from then, as ever.
+    const later = timers();
+    applyIdleEvent(later, { kind: "activity", ...machine("m1"), until: T + 45 * MIN }, T);
+    applyIdleEvent(later, { kind: "activity", ...machine("m1") }, T + 60 * MIN);
+    expect(idleScheduleOf(later, settings, T + 60 * MIN)).toEqual({ m1: T + 70 * MIN });
   });
 
   it("has a timer for a device nobody saw switch on once it is used", () => {
@@ -253,6 +273,21 @@ describe("the shop-empty timer", () => {
     applyIdleEvent(state, { kind: "on", ...machine("m3") }, T);
     setIdleEmpty(state, true, T);
     expect(offKeys(dueIdle(state, settings, T + 15 * MIN, null))).toEqual(["k:m1"]);
+  });
+
+  it("leaves a kept device on, to its own timer once the shop's has run out", () => {
+    const state = timers();
+    const settings = shopRule();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("m2") }, T);
+    setIdleEmpty(state, true, T);
+    applyIdleEvent(state, { kind: "activity", ...machine("m2"), until: T + 45 * MIN }, T);
+    expect(idleScheduleOf(state, settings, T)).toEqual({ m1: T + 15 * MIN });
+    expect(dueIdle(state, settings, T + 12 * MIN, LEAD).warn).toEqual([{ reason: "shop_empty", keys: ["k:m1"], at: T + 15 * MIN }]);
+    expect(offKeys(dueIdle(state, settings, T + 15 * MIN, LEAD))).toEqual(["k:m1"]);
+    settleIdleOff(state, "k:m1", true, T + 15 * MIN);
+    expect(idleScheduleOf(state, settings, T + 15 * MIN)).toEqual({ m2: T + 45 * MIN });
+    expect(offKeys(dueIdle(state, settings, T + 45 * MIN, null))).toEqual(["k:m2"]);
   });
 
   it("leaves a device switched on afterwards to a timer of its own", () => {

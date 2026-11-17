@@ -190,9 +190,9 @@ const VISITS = new Set(["session.started", "session.stopped", "checkout.settled"
 /** Paying at a cabinet, as its own books report it. */
 const PAID = new Set(["cabinet.coin", "cabinet.consumed"]);
 
-/** Requests that show someone using a device once the hardware takes them: a coin, a card sent, `keep`. */
+/** Requests that show someone using a device once the hardware takes them: a coin, a card sent. */
 const USES = new Set(Object.values(capabilities).flatMap((spec) =>
-  Object.entries(spec.actions).filter(([name, action]) => action?.countsAsPlay && name !== "power.on" && name !== "power.off").map(([name]) => `${name}.sent`)));
+  Object.entries(spec.actions).filter(([name, action]) => action?.countsAsPlay && !name.startsWith("power.")).map(([name]) => `${name}.sent`)));
 
 /** What an event means to the idle timers (`resources/capabilities/idle-power.ts`), if anything. */
 function idleSignalOf({ event, type }: Heard): IdleSignal | null {
@@ -200,6 +200,7 @@ function idleSignalOf({ event, type }: Heard): IdleSignal | null {
   if (!event.deviceId) return null;
   if (type === "power.on.sent") return { kind: "on", deviceId: event.deviceId };
   if (type === "power.off.sent") return { kind: "off", deviceId: event.deviceId };
+  if (type === "power.keep.sent") return { kind: "keep", deviceId: event.deviceId };
   // An authorised card is one the resource bills its player for: `occupancy.seen`, their stay on it.
   if (type === "occupancy.seen") return { kind: "activity", deviceId: event.deviceId, stay: true };
   if (USES.has(type) || (event.kind === "signal" && event.origin === "device" && PAID.has(event.name)))
@@ -209,9 +210,9 @@ function idleSignalOf({ event, type }: Heard): IdleSignal | null {
 
 /**
  * The hub's idle timers hear what moves them and nothing else: a device
- * switched on starts its timer, switched off ends it, a coin, an authorised
- * card or `keep` starts it again, and a bill opening or closing says whether
- * the shop is empty.
+ * switched on starts its timer, switched off ends it, a coin or an authorised
+ * card starts it again, `keep` holds it, and a bill opening or closing says
+ * whether the shop is empty.
  */
 export const idleTimerSubscriber: AfterSubscriber<EventContext> = {
   name: "hub-idle-timers",

@@ -6,8 +6,10 @@
  * A switch that is on has a timer:
  * - switched on starts it;
  * - switched off ends it;
- * - a coin, an authorised card or `keep` starts it again (a card that begins a
- *   stay starts it from the end of that stay);
+ * - a coin or an authorised card starts it again, from the end of the stay it
+ *   began or renewed when there is one;
+ * - `keep` holds it for a time of its own, long enough for software the
+ *   cabinet reports nothing about;
  * - a table whose seats are taken has none until the last one leaves.
  *
  * Two rules read the timers, both off until the shop turns them on:
@@ -56,6 +58,8 @@ export const idleSettingsSchema = z.preprocess(
         whileOccupied: z.preprocess((value) => value === "remind" ? "off" : value, z.enum(["mark", "off"]).default("mark")),
       })
       .default({}),
+    /** How long one `keep` holds a device on, whatever its idle time. */
+    keepMinutes: z.number().int().min(1).max(24 * 60).default(45),
     devices: z
       .record(
         z.object({
@@ -93,11 +97,13 @@ export function climatePower(state: string | null): "on" | "off" | null {
 export type IdleSignal =
   | { kind: "on" | "off"; deviceId: string; at?: number }
   /**
-   * A coin, an authorised card, `keep`. `stay`: it began or renewed a player's
-   * stay on the resource, so the timer starts where that stay ends: a device is
-   * not switched off under someone the resource still counts as playing.
+   * A coin or a card. `stay`: it began or renewed a player's stay on the
+   * resource, so the timer starts where that stay ends: a device is not
+   * switched off under someone the resource still counts as playing.
    */
   | { kind: "activity"; deviceId: string; at?: number; stay?: boolean }
+  /** `keep`: the device stays on for the shop's keep time from now. */
+  | { kind: "keep"; deviceId: string }
   /** Home Assistant reports the device switched on, without that being a change. */
   | { kind: "seen"; deviceId: string; at?: number }
   /** A bill started or closed: the shop may have become empty, or stopped being so. */
@@ -113,8 +119,10 @@ export type IdleEntry = {
   ids: string[];
   /** Whether there is a switch to turn off. Without one the timer only counts towards the last device. */
   power: boolean;
-  /** When it was last switched on, paid at, or kept, in ms. */
+  /** When it was last switched on or paid at, or when the stay that began then ends, in ms. */
   at: number;
+  /** Kept on until then, in ms, however long ago it was last used. */
+  until?: number;
   /** Seats are taken: no timer until they are left. */
   held?: true;
   /** Home Assistant reports its power, so a power-off that took will be heard. */
@@ -143,7 +151,7 @@ export const emptyIdleTimers = (): IdleTimers => ({ entries: {}, emptySince: nul
 
 /** A signal about a resource, once the hub knows its switch. */
 export type IdleEvent =
-  | { kind: "on" | "activity"; key: string; ids: string[]; power: boolean; at?: number; seen?: boolean }
+  | { kind: "on" | "activity"; key: string; ids: string[]; power: boolean; at?: number; seen?: boolean; until?: number }
   /** It is on and Home Assistant says so; when it was switched on is not news. */
   | { kind: "seen"; key: string; ids: string[]; power: boolean; at?: number }
   | { kind: "off"; key: string }
@@ -181,6 +189,7 @@ export function applyIdleEvent(timers: IdleTimers, event: IdleEvent, now: number
   }
   if (event.seen) entry.seen = true;
   entry.at = Math.max(known ? entry.at : 0, event.at ?? now);
+  if (event.until !== undefined) entry.until = Math.max(entry.until ?? 0, event.until);
   restart(entry);
 }
 
@@ -207,11 +216,11 @@ function ruleOf(entry: IdleEntry, timers: IdleTimers, settings: IdleSettings): {
     // The shop's own timer switches everything off; after it has, each device is on its own.
     if (!timers.shop.done) return null;
     const minutes = settings.device.enabled ? settings.device.minutes : settings.shopEmpty.minutes;
-    return { at: entry.at + minutes * 60_000, action: "off" };
+    return { at: Math.max(entry.at + minutes * 60_000, entry.until ?? 0), action: "off" };
   }
   if (!settings.device.enabled) return null;
   return {
-    at: entry.at + settings.device.minutes * 60_000,
+    at: Math.max(entry.at + settings.device.minutes * 60_000, entry.until ?? 0),
     action: timers.emptySince === null && settings.device.whileOccupied === "mark" ? "mark" : "off",
   };
 }
@@ -220,9 +229,15 @@ const shopAt = (timers: IdleTimers, settings: IdleSettings) =>
   settings.shopEmpty.enabled && timers.emptySince !== null && !timers.shop.done
     ? timers.emptySince + settings.shopEmpty.minutes * 60_000 : null;
 
-/** What the shop-empty timer switches off: every switch that is on, free and not excluded. */
-const switchable = (timers: IdleTimers, settings: IdleSettings) =>
-  Object.entries(timers.entries).filter(([, entry]) => entry.power && !entry.held && !excluded(entry, settings)).map(([key]) => key);
+/**
+ * What the shop-empty timer switches off at `at`: every switch that is on,
+ * free, not excluded and not kept on past then. A kept device is left to its
+ * own timer.
+ */
+const switchable = (timers: IdleTimers, settings: IdleSettings, at: number) =>
+  Object.entries(timers.entries)
+    .filter(([, entry]) => entry.power && !entry.held && !excluded(entry, settings) && (entry.until ?? 0) <= at)
+    .map(([key]) => key);
 
 export type IdleReason = "shop_empty" | "device_idle";
 
@@ -246,8 +261,8 @@ export function dueIdle(timers: IdleTimers, settings: IdleSettings, now: number,
   const taken = new Set<string>();
   const shop = shopAt(timers, settings);
   if (shop !== null) {
-    const keys = switchable(timers, settings);
     const warned = timers.shop.warned;
+    const keys = switchable(timers, settings, warned?.offAt ?? Math.max(shop, now + lead));
     if (!warned && lead && keys.length && now >= shop - lead) {
       const at = Math.max(shop, now + lead);
       timers.shop.warned = { offAt: at };
@@ -323,7 +338,7 @@ export function nextIdleWake(timers: IdleTimers, settings: IdleSettings, now: nu
   const lead = leadMs && leadMs > 0 ? leadMs : 0;
   const times: number[] = [];
   const shop = shopAt(timers, settings);
-  if (shop !== null) times.push(timers.shop.warned?.offAt ?? (lead && switchable(timers, settings).length ? shop - lead : shop));
+  if (shop !== null) times.push(timers.shop.warned?.offAt ?? (lead && switchable(timers, settings, shop).length ? shop - lead : shop));
   for (const entry of Object.values(timers.entries)) {
     const rule = ruleOf(entry, timers, settings);
     if (!rule) continue;
@@ -338,7 +353,7 @@ export function idleScheduleOf(timers: IdleTimers, settings: IdleSettings, now: 
   const schedule: Record<string, number> = {};
   const shop = shopAt(timers, settings);
   const byShop = shop === null ? null : timers.shop.warned?.offAt ?? shop;
-  const shopKeys = new Set(shop === null ? [] : switchable(timers, settings));
+  const shopKeys = new Set(byShop === null ? [] : switchable(timers, settings, byShop));
   for (const [key, entry] of Object.entries(timers.entries)) {
     if (!entry.power) continue;
     const rule = ruleOf(entry, timers, settings);

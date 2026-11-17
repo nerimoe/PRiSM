@@ -269,6 +269,7 @@ describe("shop facts", () => {
       { kind: "activity", deviceId: "m1" },
       { kind: "on", deviceId: "m1" },
       { kind: "off", deviceId: "m1" },
+      { kind: "keep", deviceId: "m1" },
     ]);
     // An authorised card is the stay it begins; a cabinet's own count of a coin is a coin; a card nobody is billed for is nothing.
     hub.idle.length = 0;

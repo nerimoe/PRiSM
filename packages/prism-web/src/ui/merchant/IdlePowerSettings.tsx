@@ -7,6 +7,8 @@ import { ActionForm, Field, input, useMerchant } from "./shared";
 export type IdleSettings = {
   shopEmpty: { enabled: boolean; minutes: number };
   device: { enabled: boolean; minutes: number; whileOccupied: "mark" | "off" };
+  /** How long one `keep` holds a device on. */
+  keepMinutes: number;
   devices: Record<string, { exclude?: boolean }>;
 };
 
@@ -66,6 +68,7 @@ export function IdlePowerSettings() {
                 minutes: Number(f.get("deviceMinutes")) || settings.device.minutes,
                 whileOccupied: String(f.get("whileOccupied") ?? settings.device.whileOccupied),
               },
+              keepMinutes: Number(f.get("keepMinutes")) || settings.keepMinutes,
             }),
           })
         }
@@ -96,7 +99,17 @@ export function IdlePowerSettings() {
                 </select>
               </Field>
               <p className="text-sm leading-relaxed text-ink/60 sm:col-span-2">
-                {t("自动关机可提前由 Bot 预告：在 Bot 设置中开启「设备闲置（关机前提醒）」并设置提前分钟数。预告是否发送成功不影响到时关机。")}
+                {t("自动关机可提前由 Bot 预告：在 Bot 的播报设置里加一条监听「闲置关机提醒」的规则，并设置提前分钟数。预告是否发送成功不影响到时关机。")}
+              </p>
+            </div>
+          )}
+          {(emptyOn || deviceOn) && (
+            <div className="grid gap-2">
+              <Field label="延迟关机一次保持时长" unit="分钟">
+                <input className={input} type="number" min="1" max="1440" name="keepMinutes" defaultValue={settings.keepMinutes} required />
+              </Field>
+              <p className="text-sm leading-relaxed text-ink/60">
+                {t("玩家或店员点「延迟关机」（Bot 的 keep 命令）后，设备在这段时间内不会被自动关机，适合运行不上报刷卡和投币的软件。到期前照常预告，可以再延迟一次。")}
               </p>
             </div>
           )}

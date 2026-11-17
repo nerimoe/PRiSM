@@ -52,7 +52,9 @@ merchantIdleRouter.get("/idle-power", async (c) => {
 /** The shop-wide rules. Which devices are never switched off is kept unless sent. */
 merchantIdleRouter.put("/idle-power", async (c) => {
   const shopId = await shopOf(c, true);
-  const body = z.object({ shopEmpty: z.unknown().optional(), device: z.unknown().optional(), devices: z.unknown().optional() })
+  const body = z.object({
+    shopEmpty: z.unknown().optional(), device: z.unknown().optional(), keepMinutes: z.unknown().optional(), devices: z.unknown().optional(),
+  })
     .parse(await c.req.json());
   const current = await read(c, shopId);
   const next = idleSettingsSchema.parse({

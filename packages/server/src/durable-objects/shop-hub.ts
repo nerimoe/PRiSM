@@ -1402,7 +1402,10 @@ export class ShopHub extends BaseDurableObject<Env> {
           const group = devices!.groups.get(signal.deviceId);
           if (!group) continue;
           if (signal.kind === "off") applyIdleEvent(timers, { kind: "off", key: group.key }, now);
-          else {
+          else if (signal.kind === "keep") {
+            // Kept on for the shop's keep time, however short its idle time is.
+            applyIdleEvent(timers, { kind: "activity", ...group, until: now + settings.keepMinutes * 60_000 }, now);
+          } else {
             // A stay keeps its device on to its end: the timer starts there.
             const at = signal.kind === "activity" && signal.stay ? now + (devices!.stays.get(signal.deviceId) ?? 0) : signal.at;
             applyIdleEvent(timers, { kind: signal.kind, ...group, ...(at === undefined ? {} : { at }) }, now);
