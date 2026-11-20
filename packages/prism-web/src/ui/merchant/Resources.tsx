@@ -435,7 +435,7 @@ export function ResourcesPage() {
           title={"id" in editing ? "编辑资源" : "添加资源"}
           close={() => setEditing(null)}
           dismissDisabled={editorLocked}
-          wide
+          xl
         >
           <ResourceEditor
             value={"id" in editing ? editing : undefined}
