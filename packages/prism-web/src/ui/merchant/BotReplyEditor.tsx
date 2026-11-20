@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { botMessage, botMessageText, botAnnouncementTemplates, shopAnnouncementCatalog, botReplyCommands, botReplyTemplates, botReplyTemplateError, renderBotReplyTemplate } from "@prism/core";
+import { botMessage, botMessageText, botAnnouncementTemplates, announcementCatalog, announcementLabel, botReplyCommands, botReplyTemplates, botReplyTemplateError, renderBotReplyTemplate } from "@prism/core";
 import { useI18n } from "../../i18n";
 import { buttonQuiet, input } from "./shared";
 
@@ -7,7 +7,7 @@ export function BotReplyEditor({ value, onChange, announcements = false }: { ann
   const { t } = useI18n();
   const helpId = useId();
   const commands: ReadonlyArray<readonly [string, string]> = announcements
-    ? shopAnnouncementCatalog.map(item => [`announce.${item.type}`, item.label] as const) : botReplyCommands;
+    ? announcementCatalog.map(item => [`announce.${item.key}`, announcementLabel(item.key)] as const) : botReplyCommands;
   const catalog = announcements ? botAnnouncementTemplates : botReplyTemplates;
   const [command, setCommand] = useState<string>(commands[0]![0]);
   const [scene, setScene] = useState("bind.success");

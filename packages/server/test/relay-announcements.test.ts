@@ -78,12 +78,12 @@ describe("what a cabinet's books tell the platform", () => {
     await report("io.heartbeat", { ha: [], cabinet: read(2, 5, 219, 60) });
     // A snapshot event was missed; the beat carries the whole difference.
     await report("io.heartbeat", { ha: [], cabinet: read(4, 4, 220, 60) });
-    expect(told.map(({ type, detail }) => ({ type, detail }))).toEqual([
-      { type: "cabinet.coin", detail: { coins: 1, credit: 5 } },
-      { type: "cabinet.coin", detail: { coins: 1, credit: 4 } },
-      { type: "cabinet.consumed", detail: { credits: 1, credit: 4 } },
+    expect(told.map(({ key, values }) => ({ key, values }))).toEqual([
+      { key: "cabinet.coin", values: { coins: "1", credits: "0", credit: "5" } },
+      { key: "cabinet.coin", values: { coins: "1", credits: "0", credit: "4" } },
+      { key: "cabinet.consumed", values: { coins: "0", credits: "1", credit: "4" } },
     ]);
-    expect(told.every((event) => event.label && !("kind" in event) && event.player === null)).toBe(true);
+    expect(told.every((event) => event.at && event.player === null)).toBe(true);
     const logged = sqlite.query<{ name: string }, []>("SELECT name FROM device_events WHERE kind='signal' ORDER BY rowid").all();
     expect(logged.map((row) => row.name)).toEqual(["cabinet.coin", "cabinet.coin", "cabinet.consumed"]);
     const state = sqlite.query<{ value_json: string }, []>(
@@ -100,7 +100,7 @@ describe("what a cabinet's books tell the platform", () => {
     expect(request).toMatchObject({ jsonrpc: "2.0", method: "cabinet.getSnapshot", params: {} });
     await relay.webSocketMessage(sockets[0] as any, JSON.stringify({ jsonrpc: "2.0", id: request.id, result: read(2, 3, 218, 59) }));
     expect(await reading).toMatchObject({ ok: true, cabinet: { players: [{ credit: 3, remain: 0 }, { credit: 3, remain: 0 }] } });
-    expect(told.map(({ type }) => type)).toEqual(["cabinet.consumed"]);
+    expect(told.map(({ key }) => key)).toEqual(["cabinet.consumed"]);
   });
 
   it("audits balance increases and clears with before/after readings without duplicate heartbeat entries", async () => {
@@ -123,7 +123,7 @@ describe("what a cabinet's books tell the platform", () => {
       { name: "cabinet.consumed", payload: { credits: 1, credit: 5, previousCredit: 6, previousTotalCoin: 218, totalCoin: 218 } },
       { name: "cabinet.reset", payload: { credit: 0, previousCredit: 5, previousTotalCoin: 218, totalCoin: 0 } },
     ]);
-    expect(told.map(({ type }) => type)).toEqual(["cabinet.consumed", "cabinet.reset"]);
+    expect(told.map(({ key }) => key)).toEqual(["cabinet.consumed", "cabinet.reset"]);
   });
 
   it("passes on an IO that cannot read its books", async () => {
@@ -142,7 +142,7 @@ describe("what a cabinet's books tell the platform", () => {
     await report("event.cabinetSnapshot", { revision: 2, read_at_ms: 2, error: "backup: copy differs" });
     expect(told).toEqual([]);
     await report("event.cabinetSnapshot", read(3, 3, 218, 59));
-    expect(told.map(({ type }) => type)).toEqual(["cabinet.consumed"]);
+    expect(told.map(({ key }) => key)).toEqual(["cabinet.consumed"]);
   });
 });
 
@@ -152,9 +152,9 @@ describe("what a cabinet's card reports tell the shop's bots", () => {
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: OP } });
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: "HINATA(1)" } });
     // Each says how the card got there: sent from a page or a bot (a virtual swipe), or put on the reader.
-    expect(told.map(({ type, label, via, resourceName, detail }) => ({ type, label, via, resourceName, detail }))).toEqual([
-      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { verb: "虚拟刷卡" } },
-      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { verb: "刷卡" } },
+    expect(told.map(({ key, via, resourceName, values }) => ({ key, via, resourceName, values }))).toEqual([
+      { key: "card.consumed", via: "relay", resourceName: "舞萌左机", values: { verb: "虚拟刷卡" } },
+      { key: "card.consumed", via: "relay", resourceName: "舞萌左机", values: { verb: "刷卡" } },
     ]);
   });
 

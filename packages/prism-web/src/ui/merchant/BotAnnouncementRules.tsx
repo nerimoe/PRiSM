@@ -1,14 +1,8 @@
-import { shopAnnouncementCatalog, shopAnnouncementSources } from "@prism/core";
+import { announcementCatalog, announcementLabel, announcementTopics, shopAnnouncementSources } from "@prism/core";
 import type { BotAnnouncementRule } from "../../api";
 import { useI18n } from "../../i18n";
 import { Field, buttonQuiet, input } from "./shared";
 
-const families = [
-  ["event", "现场事件"],
-  ["request", "平台操作"],
-  ["shop", "店铺动态"],
-  ["notice", "提醒"],
-] as const;
 
 const emptyRule: BotAnnouncementRule = { events: [], sources: [], to: [], staff: false };
 
@@ -36,18 +30,18 @@ export function BotAnnouncementRules({ value, onChange }: { value: BotAnnounceme
               {t("删除规则")}
             </button>
           </div>
-          {families.map(([family, heading]) => (
-            <fieldset key={family} className="grid gap-2">
+          {announcementTopics.map(({ topic, label: heading }) => (
+            <fieldset key={topic} className="grid gap-2">
               <legend className="text-xs font-medium text-ink/70">{t(heading)}</legend>
               <div className="grid gap-2 sm:grid-cols-2">
-                {shopAnnouncementCatalog.filter((entry) => entry.family === family).map((entry) => (
-                  <label key={entry.type} className="flex items-center gap-2 text-sm">
+                {announcementCatalog.filter((entry) => entry.topic === topic).map((entry) => (
+                  <label key={entry.key} className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
-                      checked={rule.events.includes(entry.type)}
-                      onChange={(e) => change(index, { events: toggled(rule.events, entry.type, e.target.checked) })}
+                      checked={rule.events.includes(entry.key)}
+                      onChange={(e) => change(index, { events: toggled(rule.events, entry.key, e.target.checked) })}
                     />
-                    {t(entry.label)}
+                    {t(announcementLabel(entry.key))}
                   </label>
                 ))}
               </div>

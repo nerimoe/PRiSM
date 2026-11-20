@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { botMessage, botMessageText, botReplyTemplates, botAnnouncementTemplates, shopAnnouncementCatalog, botReplyTemplateError, canonicalBotCommand, renderBotReplyTemplate } from "../src/index";
+import { botMessage, botMessageText, botReplyTemplates, botAnnouncementTemplates, announcementCatalog, botReplyTemplateError, canonicalBotCommand, renderBotReplyTemplate } from "../src/index";
 
 it("validates every catalog default and rejects unsupported or missing variables", () => {
   expect(new Set([...botReplyTemplates, ...botAnnouncementTemplates].map(item => item.key)).size).toBe(botReplyTemplates.length + botAnnouncementTemplates.length);
@@ -25,9 +25,12 @@ it("substitutes once, retains player segments and falls back safely", () => {
   expect(canonicalBotCommand("mahjong")).toBe("上桌");
 });
 
-it("covers every announcement type, including both idle reminder reasons", () => {
-  for (const item of shopAnnouncementCatalog)
-    expect(botAnnouncementTemplates.some(template => template.key.startsWith(`announce.${item.type}.`))).toBe(true);
-  expect(botReplyTemplateError("announce.card.message", "{device}：{player}")).toBeNull();
+it("covers every announcement in the catalog, including both idle reminder reasons", () => {
+  for (const item of announcementCatalog)
+    expect(botAnnouncementTemplates.some(template => template.key.startsWith(`announce.${item.key}.`))).toBe(true);
+  expect(botReplyTemplateError("announce.card.consumed.message", "{device}：{player}")).toBeNull();
+  // Any of an announcement's variables may be left out, and only its own may be used.
+  expect(botReplyTemplateError("announce.coin.sent.message", "有人投币了")).toBeNull();
+  expect(botReplyTemplateError("announce.coin.sent.message", "{coins}")).toContain("未知变量");
   expect(botReplyTemplateError("announce.idle.reminder.shop_empty", "快关机了")).toContain("{minutes}");
 });

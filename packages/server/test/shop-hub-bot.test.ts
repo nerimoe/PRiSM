@@ -251,7 +251,7 @@ describe("bot connection", () => {
     // Its hello sets the alarm for the timers as they stand, now that a lead is known.
     expect(state.has("idle")).toBe(true);
     // No rule listens for it, a rule with nowhere to say it, and a lead of 0: none is planned.
-    configure({ idleReminderMinutes: 5, announceRules: [{ events: ["card"], sources: [], to: ["onebot:42"], staff: false }] });
+    configure({ idleReminderMinutes: 5, announceRules: [{ events: ["card.consumed"], sources: [], to: ["onebot:42"], staff: false }] });
     expect(await lead()).toBeNull();
     configure({ idleReminderMinutes: 5, announceRules: [{ events: ["idle.reminder"], sources: [], to: [], staff: false }] });
     expect(await lead()).toBeNull();
@@ -341,28 +341,28 @@ describe("what a bot is told", () => {
       [JSON.stringify({ tokenId: "t1", announceRules: [{ events: types, sources: [], to: ["onebot:42"], staff: false }] })],
     );
   }
-  const event = (type: string, extra: Record<string, unknown> = {}) =>
-    ({ type, label: type, message: [{ text: `${type} 的话` }], resourceId: "m1", resourceName: "舞萌", player: null, ...extra });
+  const event = (key: string, extra: Record<string, unknown> = {}) =>
+    ({ key, resourceId: "m1", resourceName: "舞萌", player: null, values: { verb: "刷卡" }, ...extra });
   const told = (ws: FakeSocket) =>
     ws.sent.map((raw) => JSON.parse(raw)).filter((frame) => frame.type === "say").map((frame) => frame.message[0].text);
 
   it("says only what its rules listen for, and not what came of its own commands", async () => {
     const { sqlite, hub, ws, send } = await fixture();
-    botResource(sqlite, ["card", "idle.reminder"]);
+    botResource(sqlite, ["card.consumed", "idle.reminder"]);
     await send({ type: "hello", commands: 1 });
-    await hub.shopEvent(event("card"));
-    await hub.shopEvent(event("power.on"));
-    await hub.shopEvent(event("card", { botId: "bot-res" }));
-    expect(told(ws)).toEqual(["card 的话"]);
+    await hub.shopEvent(event("card.consumed"));
+    await hub.shopEvent(event("power.changed.on"));
+    await hub.shopEvent(event("card.consumed", { botId: "bot-res" }));
+    expect(told(ws)).toEqual(["💳 未绑定的卡 在 舞萌 刷卡"]);
     sqlite.close();
   });
 
   it("tells a bot that does not send commands nothing of the shop's news", async () => {
     const { sqlite, hub, ws, send } = await fixture();
-    botResource(sqlite, ["card", "idle.reminder"]);
+    botResource(sqlite, ["card.consumed", "idle.reminder"]);
     await send({ type: "hello" });
     const before = ws.sent.length;
-    await hub.shopEvent(event("card"));
+    await hub.shopEvent(event("card.consumed"));
     await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [] }]);
     expect(ws.sent.length).toBe(before);
     sqlite.close();
@@ -370,14 +370,14 @@ describe("what a bot is told", () => {
 
   it("reads its rules again when its settings change", async () => {
     const { sqlite, hub, ws, send } = await fixture();
-    botResource(sqlite, ["card"]);
+    botResource(sqlite, ["card.consumed"]);
     await send({ type: "hello", commands: 1 });
     sqlite.run(`UPDATE device_capabilities SET config_json=? WHERE device_id='bot-res'`,
-      [JSON.stringify({ tokenId: "t1", announceRules: [{ events: ["power.on"], sources: [], to: ["onebot:42"], staff: false }] })]);
+      [JSON.stringify({ tokenId: "t1", announceRules: [{ events: ["power.changed.on"], sources: [], to: ["onebot:42"], staff: false }] })]);
     await hub.botsChanged();
-    await hub.shopEvent(event("card"));
-    await hub.shopEvent(event("power.on"));
-    expect(told(ws)).toEqual(["power.on 的话"]);
+    await hub.shopEvent(event("card.consumed"));
+    await hub.shopEvent(event("power.changed.on"));
+    expect(told(ws)).toEqual(["✅ 舞萌 已开机"]);
     sqlite.close();
   });
 });
@@ -476,24 +476,25 @@ describe("a bot's commands", () => {
 
   it("uses each bot's announcement templates, refreshes them and also customizes idle warnings", async () => {
     const { sqlite, hub, ws, sockets } = await fixture();
-    botResource(sqlite, { announceRules: [{ events: ["card", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false }], replyTemplates: {
-      "announce.card.message": "{device} 欢迎 {player}", "announce.idle.reminder.shop_empty": "无人，{minutes} 分钟后关机",
+    botResource(sqlite, { announceRules: [{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false }], replyTemplates: {
+      "announce.card.consumed.message": "{device} 欢迎 {player}", "announce.idle.reminder.shop_empty": "无人，{minutes} 分钟后关机",
     } });
     sqlite.run(`INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','t2','second','integration','integ',?,'active','2026-01-01')`, [await sha256Hex("second")]);
     sqlite.run(`INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot2','pub-bot2','第二个 Bot','')`);
-    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot2','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t2", announceRules: [{ events: ["card", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false }] })]);
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot2','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t2", announceRules: [{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false }] })]);
     const second = new FakeSocket();
     second.tags = ["bot"];
     second.attachment = { ...(ws.attachment as object), token: "second" };
     sockets.push(second);
     for (const socket of [ws, second]) await hub.webSocketMessage(socket as any, JSON.stringify({ type: "hello", commands: 1 }));
-    const event = { type: "card", resourceId: "m1", resourceName: "舞萌", player: { playerId: "p1", displayName: "小明", identities: [] }, message: [{ text: "原始刷卡消息" }] };
+    const event = { key: "card.consumed", resourceId: "m1", resourceName: "舞萌", player: { playerId: "p1", displayName: "小明", identities: [] }, values: { verb: "刷卡" } };
     await hub.shopEvent(event);
     expect(says(ws).at(-1).message).toEqual([{ text: "舞萌 欢迎 " }, { player: event.player }]);
-    expect(text(says(second).at(-1))).toBe("原始刷卡消息");
+    // The second bot has no words of its own: the catalog's.
+    expect(says(second).at(-1).message).toEqual([{ text: "💳 " }, { player: event.player }, { text: " 在 舞萌 刷卡" }]);
     const count = says(ws).length;
     await hub.shopEvent({ ...event, botId: "bot-res" });
-    await hub.shopEvent({ ...event, type: "power.on" });
+    await hub.shopEvent({ ...event, key: "power.changed.on" });
     expect(says(ws).length).toBe(count);
     await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [] }]);
     expect(text(says(ws).at(-1))).toBe("无人，1 分钟后关机");
@@ -501,21 +502,21 @@ describe("a bot's commands", () => {
     sqlite.run(`UPDATE device_capabilities SET config_json=json_set(config_json,'$.replyTemplates',json('{}')) WHERE device_id='bot-res'`);
     await hub.botsChanged();
     await hub.shopEvent(event);
-    expect(text(says(ws).at(-1))).toBe("原始刷卡消息");
+    expect(says(ws).at(-1).message).toEqual(says(second).at(-1).message);
     sqlite.close();
   });
 
   it("says the shop's news as words at every destination its rules name, a group and a person alike", async () => {
     const { sqlite, hub, ws } = await fixture();
-    botResource(sqlite, { announceRules: [{ events: ["card", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false }] });
+    botResource(sqlite, { announceRules: [{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false }] });
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
-    await hub.shopEvent({ type: "card", message: [{ text: "💳 刷卡" }], resourceId: "m1", resourceName: "舞萌", player: null });
-    await hub.shopEvent({ type: "power.on", message: [{ text: "✅ 开机" }], resourceId: "m1", resourceName: "舞萌", player: null });
+    await hub.shopEvent({ key: "card.consumed", resourceId: "m1", resourceName: "舞萌", player: null, values: { verb: "刷卡" } });
+    await hub.shopEvent({ key: "power.changed.on", resourceId: "m1", resourceName: "舞萌", player: null });
     // The idle warning goes where the rules send it, like anything else.
     await (hub as any).notify([{ reason: "shop_empty", at: 1, devices: [] }]);
     expect(says(ws)).toEqual([
-      { type: "say", to: "onebot:42", message: [{ text: "💳 刷卡" }] },
-      { type: "say", to: "onebot:private:10001", message: [{ text: "💳 刷卡" }] },
+      { type: "say", to: "onebot:42", message: [{ text: "💳 未绑定的卡 在 舞萌 刷卡" }] },
+      { type: "say", to: "onebot:private:10001", message: [{ text: "💳 未绑定的卡 在 舞萌 刷卡" }] },
       { type: "say", to: "onebot:42", message: [{ text: "店里没人，1 分钟后全部关机" }] },
       { type: "say", to: "onebot:private:10001", message: [{ text: "店里没人，1 分钟后全部关机" }] },
     ]);
@@ -527,9 +528,9 @@ describe("a bot's commands", () => {
     const { sqlite, hub, ws } = await fixture();
     botResource(sqlite, {
       announceRules: [
-        { events: ["card"], sources: [], to: ["onebot:42"], staff: false },
+        { events: ["card.consumed"], sources: [], to: ["onebot:42"], staff: false },
         // What is done on a scanned page is told to the staff, and in the staff group.
-        { events: ["checkout.settled", "request.power.on"], sources: ["page"], to: ["onebot:staff"], staff: true },
+        { events: ["checkout.settled", "power.on.sent"], sources: ["page"], to: ["onebot:staff"], staff: true },
       ],
     });
     // A staff member: someone who works at the shop and bound a chat identity there.
@@ -539,19 +540,19 @@ describe("a bot's commands", () => {
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','staff-player','onebot','20001','2026-01-01')");
     sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','u-staff','onebot','20001','2026-01-01')");
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
-    const told = (type: string, via?: string, extra: Record<string, unknown> = {}) =>
-      hub.shopEvent({ type, message: [{ text: type }], resourceId: "m1", resourceName: "舞萌", player: null, ...(via ? { via } : {}), ...extra });
+    const told = (key: string, via?: string, extra: Record<string, unknown> = {}) =>
+      hub.shopEvent({ key, resourceId: "m1", resourceName: "舞萌", player: null, values: { bill: key, verb: "刷卡" }, ...(via ? { via } : {}), ...extra });
 
     await told("checkout.settled", "page");
     await told("checkout.settled", "merchant");
-    await told("request.power.on", "page");
-    await told("card", "relay");
+    await told("power.on.sent", "page");
+    await told("card.consumed", "relay");
     // What this bot's own command did is not told back to it, whatever its rules say.
     await told("checkout.settled", "page", { botId: "bot-res" });
     expect(says(ws).map((frame) => [frame.to, text(frame)])).toEqual([
       ["onebot:staff", "checkout.settled"], ["onebot:private:20001", "checkout.settled"],
-      ["onebot:staff", "request.power.on"], ["onebot:private:20001", "request.power.on"],
-      ["onebot:42", "card"],
+      ["onebot:staff", "✅ 店员 在扫码页开启了 舞萌"], ["onebot:private:20001", "✅ 店员 在扫码页开启了 舞萌"],
+      ["onebot:42", "💳 未绑定的卡 在 舞萌 刷卡"],
     ]);
     sqlite.close();
   });

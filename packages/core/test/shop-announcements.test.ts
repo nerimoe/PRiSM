@@ -1,22 +1,47 @@
 import { describe, expect, it } from "bun:test";
 import {
+  announcementCatalog,
   announcementDestinations,
+  announcementKeyOf,
+  announcementLabel,
+  announcementWhere,
+  isAnnouncementKey,
   isShopAnnouncementSource,
-  isShopAnnouncementType,
-  shopAnnouncementCatalog,
-  shopAnnouncementLabel,
   shopAnnouncementSources,
   staffDestination,
   type ShopAnnouncementRule,
 } from "../src/shop-announcements";
 
 describe("shop announcement catalog", () => {
-  it("names every type once and gives each a label", () => {
-    const types = shopAnnouncementCatalog.map((entry) => entry.type);
-    expect(new Set(types).size).toBe(types.length);
-    for (const entry of shopAnnouncementCatalog) expect(shopAnnouncementLabel(entry.type)).toBe(entry.label);
-    expect(isShopAnnouncementType("card")).toBe(true);
-    expect(isShopAnnouncementType("card.login")).toBe(false);
+  it("names every entry once, by the event it is", () => {
+    const keys = announcementCatalog.map((entry) => entry.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(isAnnouncementKey("card.consumed")).toBe(true);
+    expect(isAnnouncementKey("card")).toBe(false);
+    // An attempt's outcomes say which they are; a fact is just its name.
+    expect(announcementLabel("power.on.sent")).toBe("开机 · 已发出");
+    expect(announcementLabel("power.off.idle.sent")).toBe("闲置自动关机");
+    expect(announcementLabel("power.changed.on")).toBe("机台开机");
+  });
+
+  it("tells an event under its own key, how an attempt went, and a slice the shop sees as its own", () => {
+    expect(announcementKeyOf({ type: "power.on.requested" })).toBeNull();
+    expect(announcementKeyOf({ type: "power.on.sent", via: "page" })).toBe("power.on.sent");
+    expect(announcementKeyOf({ type: "power.on.unanswered" })).toBe("power.on.failed");
+    expect(announcementKeyOf({ type: "coin.refused" })).toBe("coin.refused");
+    expect(announcementKeyOf({ type: "power.off.sent", via: "system" })).toBe("power.off.idle.sent");
+    expect(announcementKeyOf({ type: "coin.sent", via: "system", payload: { cause: "card" } })).toBe("coin.auto.sent");
+    expect(announcementKeyOf({ type: "power.changed", payload: { to: "on" } })).toBe("power.changed.on");
+    expect(announcementKeyOf({ type: "power.changed", payload: { to: null } })).toBeNull();
+    expect(announcementKeyOf({ type: "card.consumed" })).toBe("card.consumed");
+    expect(announcementKeyOf({ type: "entry.refused" })).toBe("entry.refused");
+    expect(announcementKeyOf({ type: "card.state" })).toBeNull();
+  });
+
+  it("says where something came from before its verb", () => {
+    expect(announcementWhere("page")).toBe("在扫码页");
+    expect(announcementWhere("bot")).toBe("通过 Bot ");
+    expect(announcementWhere("relay")).toBe("");
   });
 
   it("names every source a device event can record", () => {
@@ -32,45 +57,45 @@ describe("where a bot says an announcement", () => {
   const rule = (rule: Partial<ShopAnnouncementRule>): ShopAnnouncementRule => ({ events: [], sources: [], to: [], staff: false, ...rule });
 
   it("says nothing without a rule that listens for it", () => {
-    expect(announcementDestinations([], { type: "card", via: "relay" }, staff)).toEqual([]);
-    expect(announcementDestinations([rule({ events: ["start"], to: ["onebot:42"] })], { type: "card", via: "relay" }, staff)).toEqual([]);
+    expect(announcementDestinations([], { key: "card.consumed", via: "relay" }, staff)).toEqual([]);
+    expect(announcementDestinations([rule({ events: ["occupancy.started"], to: ["onebot:42"] })], { key: "card.consumed", via: "relay" }, staff)).toEqual([]);
   });
 
   it("treats a group and a person as the same kind of destination", () => {
-    const rules = [rule({ events: ["card", "idle.reminder"], to: ["onebot:42", "onebot:private:10001"] })];
-    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
+    const rules = [rule({ events: ["card.consumed", "idle.reminder"], to: ["onebot:42", "onebot:private:10001"] })];
+    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
     // The idle warning is an event like any other.
-    expect(announcementDestinations(rules, { type: "idle.reminder", via: "system" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
+    expect(announcementDestinations(rules, { key: "idle.reminder", via: "system" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
   });
 
   it("names staff as whoever they are when it happens", () => {
     const rules = [rule({ events: ["checkout.settled"], to: ["onebot:99"], staff: true })];
-    expect(announcementDestinations(rules, { type: "checkout.settled" }, staff))
+    expect(announcementDestinations(rules, { key: "checkout.settled" }, staff))
       .toEqual(["onebot:99", "onebot:private:10001", "kook:private:k9"]);
-    expect(announcementDestinations(rules, { type: "checkout.settled" }, [])).toEqual(["onebot:99"]);
+    expect(announcementDestinations(rules, { key: "checkout.settled" }, [])).toEqual(["onebot:99"]);
     expect(staffDestination({ provider: "onebot", subject: "7" })).toBe("onebot:private:7");
   });
 
   it("hears a rule's events only from the sources it names, and from anywhere when it names none", () => {
     const rules = [
-      rule({ events: ["checkout.settled", "request.power.on"], sources: ["page"], staff: true }),
-      rule({ events: ["card"], to: ["onebot:42"] }),
+      rule({ events: ["checkout.settled", "power.on.sent"], sources: ["page"], staff: true }),
+      rule({ events: ["card.consumed"], to: ["onebot:42"] }),
     ];
-    expect(announcementDestinations(rules, { type: "checkout.settled", via: "page" }, staff))
+    expect(announcementDestinations(rules, { key: "checkout.settled", via: "page" }, staff))
       .toEqual(["onebot:private:10001", "kook:private:k9"]);
     // The same thing done through a bot, or with no source known, is not what the rule listens for.
-    expect(announcementDestinations(rules, { type: "checkout.settled", via: "bot" }, staff)).toEqual([]);
-    expect(announcementDestinations(rules, { type: "checkout.settled" }, staff)).toEqual([]);
-    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff)).toEqual(["onebot:42"]);
-    expect(announcementDestinations(rules, { type: "card" }, staff)).toEqual(["onebot:42"]);
+    expect(announcementDestinations(rules, { key: "checkout.settled", via: "bot" }, staff)).toEqual([]);
+    expect(announcementDestinations(rules, { key: "checkout.settled" }, staff)).toEqual([]);
+    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff)).toEqual(["onebot:42"]);
+    expect(announcementDestinations(rules, { key: "card.consumed" }, staff)).toEqual(["onebot:42"]);
   });
 
   it("says it once at a place several rules name, in the order the rules name them", () => {
     const rules = [
-      rule({ events: ["card"], to: ["onebot:42", "onebot:private:10001"] }),
-      rule({ events: ["card"], to: ["onebot:7", "onebot:42"], staff: true }),
+      rule({ events: ["card.consumed"], to: ["onebot:42", "onebot:private:10001"] }),
+      rule({ events: ["card.consumed"], to: ["onebot:7", "onebot:42"], staff: true }),
     ];
-    expect(announcementDestinations(rules, { type: "card", via: "relay" }, staff))
+    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff))
       .toEqual(["onebot:42", "onebot:private:10001", "onebot:7", "kook:private:k9"]);
   });
 });

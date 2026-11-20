@@ -33,8 +33,14 @@ export const SHOP_FACTS = [
   "checkout.settled",
   /** A player added a card at one of the shop's readers: its type, never its number. */
   "card.bound",
-  /** A checkout the shop's rules turned away: nothing was charged, the bill keeps running. */
+  /**
+   * What a player or staff asked of the shop and its rules turned away, with
+   * why: nothing changed. A checkout's bill keeps running.
+   */
   "checkout.refused",
+  "entry.refused",
+  "wallet.adjust.refused",
+  "redeem.refused",
   "wallet.adjusted",
   "assets.adjusted",
   "gift.redeemed",
@@ -130,14 +136,17 @@ function billOf(result: SettlePlayerCheckoutResult): { bill?: Record<string, unk
 }
 
 /**
- * Why a checkout was turned away that is not news: there was nothing to pay,
- * or the front desk's own preview went stale and is shown again.
+ * Why an attempt was turned away that is not news: there was nothing to pay,
+ * the front desk's own preview went stale and is shown again, or the player is
+ * asked to agree first.
  */
 const NOT_REFUSALS = new Set([
   "PLAYER_HAS_NO_UNSETTLED_SESSIONS",
   "ACTIVE_SESSION_NOT_FOUND",
   "CASHIER_PREVIEW_EXPIRED",
   "CASHIER_PREVIEW_CHANGED",
+  // Entering waits for the player to agree to the shop's terms: a step, not a refusal.
+  "CHECKIN_CONSENT_REQUIRED",
 ]);
 
 /**
@@ -157,38 +166,50 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     return result;
   };
   /**
-   * A checkout call that may be turned away. What the shop's rules refused (a
-   * domain error) is said as `checkout.refused` with its reason, and, when the
-   * balance was short, the bill as it stands; then the caller hears the error
-   * as before. Anything else is a fault, not a refusal, and is only passed on.
+   * A call someone makes of the shop that its rules may turn away: an
+   * attempt. What the rules refused (a domain error) is said as
+   * `<action>.refused` with its reason, and what `more` adds (a checkout's
+   * bill as it stands); then the caller hears the error as before. Anything
+   * else is a fault, not a refusal, and is only passed on. What went through
+   * is said by the service's facts.
    */
-  const checkingOut = <Args extends unknown[], Result>(
+  const attempting = <Args extends unknown[], Result>(
+    action: "checkout" | "entry" | "wallet.adjust" | "redeem",
     call: (...args: Args) => Promise<Result>,
     whose: (...args: Args) => Promise<string | null> | string | null,
-    preview: (playerId: string) => Promise<Parameters<typeof toPlayerCheckoutPreviewView>[0]>,
+    more?: (error: PrismDomainError, playerId: string) => Promise<Record<string, unknown>>,
   ) => async (...args: Args): Promise<Result> => {
     try {
       return await call(...args);
     } catch (error) {
       if (error instanceof PrismDomainError && !NOT_REFUSALS.has(error.code)) {
         const playerId = await Promise.resolve(whose(...args)).catch(() => null);
-        const owed = error.code.includes("INSUFFICIENT") && playerId
-          ? await preview(playerId).then((result) => {
-            // What a receipt is worded from; the timeline is the page's, and long.
-            const { timeline: _timeline, chargeItems: _items, ...bill } = toPlayerCheckoutPreviewView(result);
-            return { bill };
-          }).catch(() => ({}))
-          : {};
+        const extra = more && playerId ? await more(error, playerId).catch(() => ({})) : {};
+        const resourceId = (args[0] as { resourceId?: unknown } | undefined)?.resourceId;
         await publish({
-          name: "checkout.refused",
+          name: `${action}.refused`,
           playerId,
+          ...(typeof resourceId === "string" ? { resourceId } : {}),
           ...(staffOf(args[0]) ? { staffId: staffOf(args[0]) } : {}),
-          payload: { code: error.code, message: error.message, ...owed },
+          payload: { code: error.code, message: error.message, ...extra },
         });
       }
       throw error;
     }
   };
+  /** Short of money: the bill as it stands goes with a refused checkout, to say how much. */
+  const owed = (preview: (playerId: string) => Promise<Parameters<typeof toPlayerCheckoutPreviewView>[0]>) =>
+    async (error: PrismDomainError, playerId: string) => {
+      if (!error.code.includes("INSUFFICIENT")) return {};
+      // What a receipt is worded from; the timeline is the page's, and long.
+      const { timeline: _timeline, chargeItems: _items, ...bill } = toPlayerCheckoutPreviewView(await preview(playerId));
+      return { bill };
+    };
+  const checkingOut = <Args extends unknown[], Result>(
+    call: (...args: Args) => Promise<Result>,
+    whose: (...args: Args) => Promise<string | null> | string | null,
+    preview: (playerId: string) => Promise<Parameters<typeof toPlayerCheckoutPreviewView>[0]>,
+  ) => attempting("checkout", call, whose, owed(preview));
   const staffOf = (input: unknown) => {
     const staffId = (input as { staffId?: unknown } | undefined)?.staffId;
     return typeof staffId === "string" ? staffId : null;
@@ -221,14 +242,14 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     ...deps,
     resourceBilling: {
       ...resourceBilling,
-      activate: after(resourceBilling.activate.bind(resourceBilling), (result, input) =>
+      activate: attempting("entry", after(resourceBilling.activate.bind(resourceBilling), (result, input) =>
         // A plan that was already running started nothing.
         result.created === false ? [] : [{
           name: "session.started",
           resourceId: input.resourceId ?? null,
           playerId: input.playerId,
           payload: { sessionId: result.session.id, pricingConfigId: result.session.pricingConfigId ?? null },
-        }]),
+        }]), (input) => input.playerId),
     },
     playerCheckoutCommands: checkouts(deps.playerCheckoutCommands),
     staffCheckoutCommands: checkouts(deps.staffCheckoutCommands),
@@ -239,10 +260,10 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     },
     staffAssetCommands: {
       ...assets,
-      adjustWallet: after(assets.adjustWallet.bind(assets), (result, input) => [{
+      adjustWallet: attempting("wallet.adjust", after(assets.adjustWallet.bind(assets), (result, input) => [{
         name: "wallet.adjusted", playerId: input.playerId, staffId: input.staffId,
         payload: { amount: input.amount, reason: input.reason, balanceBefore: result.balanceBefore, balanceAfter: result.balanceAfter },
-      }]),
+      }]), (input) => input.playerId),
       adjustAssets: after(assets.adjustAssets.bind(assets), (_result, input) => [
         { name: "assets.adjusted", playerId: input.playerId, staffId: input.staffId },
       ]),
@@ -252,10 +273,10 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     },
     playerRedeemCommands: {
       ...redeem,
-      redeemCode: after(redeem.redeemCode.bind(redeem), (result, input) => [{
+      redeemCode: attempting("redeem", after(redeem.redeemCode.bind(redeem), (result, input) => [{
         name: "gift.redeemed", playerId: input.playerId,
         payload: { granted: result.grantedAssets.map((asset) => ({ name: asset.assetName, quantity: asset.quantity })) },
-      }]),
+      }]), (input) => input.playerId),
     },
     businessItemOrderCommands: {
       ...orders,
@@ -307,17 +328,17 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
       stopSessionByIdentity: after(integration.stopSessionByIdentity.bind(integration), (session) => [
         { name: "session.stopped", playerId: session.playerId, payload: { sessionId: session.id } },
       ]),
-      adjustWalletByIdentity: after(integration.adjustWalletByIdentity.bind(integration), async (result, input) => [{
+      adjustWalletByIdentity: attempting("wallet.adjust", after(integration.adjustWalletByIdentity.bind(integration), async (result, input) => [{
         name: "wallet.adjusted", playerId: (await integration.resolvePlayerByIdentity(input)).id,
         payload: { amount: input.amount, reason: input.reason, balanceBefore: result.balanceBefore, balanceAfter: result.balanceAfter },
-      }]),
+      }]), async (input) => (await integration.resolvePlayerByIdentity(input)).id),
       adjustAssetsByIdentity: after(integration.adjustAssetsByIdentity.bind(integration), async (_result, input) => [
         { name: "assets.adjusted", playerId: (await integration.resolvePlayerByIdentity(input)).id },
       ]),
-      redeemByIdentity: after(integration.redeemByIdentity.bind(integration), async (result, input) => [{
+      redeemByIdentity: attempting("redeem", after(integration.redeemByIdentity.bind(integration), async (result, input) => [{
         name: "gift.redeemed", playerId: (await integration.resolvePlayerByIdentity(input)).id,
         payload: { granted: result.grantedAssets.map((asset) => ({ name: asset.assetName, quantity: asset.quantity })) },
-      }]),
+      }]), async (input) => (await integration.resolvePlayerByIdentity(input)).id),
     },
   };
 }

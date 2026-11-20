@@ -1,56 +1,180 @@
 /**
- * What a shop's bots may announce, and the rules by which a bot says it.
+ * What a shop's bots may say, named by the events themselves.
  *
- * Four families:
+ * The platform keeps two kinds of event apart, and so does this catalog:
  *
- * - **events**: something happened at the shop, as its own hardware told it
- *   (Home Assistant saw a machine come on, a game took a card, a cabinet's coin
- *   count moved). Each is told once, whoever caused it.
- * - **requests**: someone asked the platform to do something and the call to the
- *   hardware went through. That is all a request says.
- * - **notices**: the platform's own warnings, such as an idle power-off ahead.
- * - **shop**: what happened at the shop without a device doing anything: a
- *   player entering, a bill settled, a balance changed, a request turned away.
+ * - an **attempt**: someone (or the platform's own rule) asked for something,
+ *   and how that went: sent (the hardware took it), refused (the shop's rules
+ *   said no) or failed (the hardware did not answer, or said no);
+ * - a **fact**: something that happened, as the shop's hardware or its books
+ *   say: a machine came on, a game took a card, a bill was settled.
  *
- * A shop that wants "the machine came on" picks the event; one that wants "this
- * player switched it on" picks the request.
+ * They are never tied together: a machine can come on with nobody asking, and
+ * a request can be taken without the machine coming on. A shop that wants
+ * "the machine came on" listens for the fact; one that wants "this player
+ * switched it on" listens for the attempt. Each key is the event's own type
+ * (`power.on.sent`, `card.consumed`), or a named slice of one where the shop
+ * thinks of it as its own thing (`power.off.idle.sent`, `coin.auto.sent`).
+ *
+ * Notices are neither: the platform's own warnings (an idle power-off ahead,
+ * a deployment).
  */
-export const shopAnnouncementCatalog = [
-  { type: "power.on", label: "开机", family: "event" },
-  { type: "power.off", label: "关机", family: "event" },
-  { type: "card", label: "刷卡", family: "event" },
-  { type: "start", label: "上机", family: "event" },
-  { type: "cabinet.coin", label: "机台投币", family: "event" },
-  { type: "cabinet.consumed", label: "开局扣币", family: "event" },
-  { type: "cabinet.reset", label: "投币计数清零", family: "event" },
-  { type: "request.power.on", label: "远程开机", family: "request" },
-  { type: "request.power.off", label: "远程关机", family: "request" },
-  { type: "request.power.idle_off", label: "闲置自动关机", family: "request" },
-  { type: "request.card", label: "虚拟刷卡", family: "request" },
-  { type: "request.coin", label: "远程投币", family: "request" },
-  { type: "idle.reminder", label: "闲置关机提醒", family: "notice" },
-  { type: "platform.maintenance", label: "系统维护", family: "notice" },
-  { type: "session.started", label: "入场", family: "shop" },
-  { type: "session.stopped", label: "停止计费", family: "shop" },
-  { type: "checkout.settled", label: "结账", family: "shop" },
-  { type: "checkout.refused", label: "结账失败", family: "shop" },
-  { type: "wallet.adjusted", label: "调整余额", family: "shop" },
-  { type: "gift.redeemed", label: "兑换礼物", family: "shop" },
-  { type: "card.bound", label: "添加卡片", family: "shop" },
-  { type: "request.refused", label: "操作被拒绝", family: "shop" },
-] as const;
 
-export type ShopAnnouncementType = (typeof shopAnnouncementCatalog)[number]["type"];
-export type ShopAnnouncementFamily = (typeof shopAnnouncementCatalog)[number]["family"];
+export type AnnouncementTopic = "power" | "card" | "coin" | "billing" | "system";
+export type AnnouncementKind = "attempt" | "fact" | "notice";
+export type AttemptOutcome = "sent" | "refused" | "failed";
 
-const labels = new Map<string, string>(shopAnnouncementCatalog.map((entry) => [entry.type, entry.label]));
+/** The topics a shop finds its announcements under, in order. */
+export const announcementTopics: ReadonlyArray<{ topic: AnnouncementTopic; label: string }> = [
+  { topic: "power", label: "开关机" },
+  { topic: "card", label: "刷卡与上机" },
+  { topic: "coin", label: "投币" },
+  { topic: "billing", label: "账单" },
+  { topic: "system", label: "其他" },
+];
 
-export function shopAnnouncementLabel(type: ShopAnnouncementType): string {
-  return labels.get(type)!;
+export const attemptOutcomes: ReadonlyArray<{ outcome: AttemptOutcome; label: string }> = [
+  { outcome: "sent", label: "已发出" },
+  { outcome: "refused", label: "被拒绝" },
+  { outcome: "failed", label: "失败" },
+];
+
+/**
+ * One thing a shop may listen for. `text` is what is said unless the shop
+ * wrote its own; `{…}` are filled in from the event (`announcementSamples`
+ * lists them). An attempt's outcomes are separate entries sharing `action`.
+ */
+export type AnnouncementEntry = {
+  key: string;
+  topic: AnnouncementTopic;
+  kind: AnnouncementKind;
+  /** What the shop calls it; an attempt's outcome adds its own word. */
+  label: string;
+  /** For an attempt: what was asked for, and how it went. */
+  action?: string;
+  outcome?: AttemptOutcome;
+  text: string;
+  /** What a fact needs from the shop's hardware to be known at all. */
+  needs?: string;
+};
+
+const attempt = (topic: AnnouncementTopic, action: string, label: string, texts: Partial<Record<AttemptOutcome, string>>): AnnouncementEntry[] =>
+  attemptOutcomes.filter(({ outcome }) => texts[outcome]).map(({ outcome }) => ({
+    key: `${action}.${outcome}`, topic, kind: "attempt", label, action, outcome, text: texts[outcome]!,
+  }));
+const fact = (topic: AnnouncementTopic, key: string, label: string, text: string, needs?: string): AnnouncementEntry =>
+  ({ key, topic, kind: "fact", label, text, ...(needs ? { needs } : {}) });
+const notice = (topic: AnnouncementTopic, key: string, label: string, text: string): AnnouncementEntry =>
+  ({ key, topic, kind: "notice", label, text });
+
+/** Refused and failed read alike for every attempt: who, what, and why. */
+const refused = (what: string) => `⛔ {player} {where}${what}被拒绝：{reason}`;
+const failed = (what: string) => `⚠️ {player} {where}${what}没有成功：{reason}`;
+
+export const announcementCatalog: readonly AnnouncementEntry[] = [
+  ...attempt("power", "power.on", "开机", {
+    sent: "✅ {player} {where}开启了 {device}", refused: refused("开机"), failed: failed("开启 {device} "),
+  }),
+  ...attempt("power", "power.off", "关机", {
+    sent: "🛑 {player} {where}关闭了 {device}", refused: refused("关机"), failed: failed("关闭 {device} "),
+  }),
+  ...attempt("power", "power.keep", "延迟关机", {
+    sent: "⏳ {player} {where}延迟了 {device} 的自动关机", refused: refused("延迟关机"), failed: failed("延迟 {device} 关机"),
+  }),
+  ...attempt("power", "power.off.idle", "闲置自动关机", { sent: "💤 {device} 闲置，已自动关机" }),
+  fact("power", "power.changed.on", "机台开机", "✅ {device} 已开机", "Home Assistant 实时连接"),
+  fact("power", "power.changed.off", "机台关机", "🛑 {device} 已关机", "Home Assistant 实时连接"),
+  notice("power", "idle.reminder", "闲置关机提醒", "{devices} 闲置中，{minutes} 分钟后关机"),
+
+  ...attempt("card", "aime.scan", "虚拟刷卡", {
+    sent: "💳 {player} {where}给 {device} 虚拟刷卡", refused: refused("虚拟刷卡"), failed: failed("给 {device} 虚拟刷卡"),
+  }),
+  fact("card", "card.consumed", "刷卡", "💳 {player} 在 {device} {verb}", "直连的 HINATA IO"),
+  fact("card", "occupancy.started", "上机", "🎮 {player} 在 {device} 上机"),
+  fact("card", "card.bound", "添加卡片", "💳 {player} 添加了一张 {card} 卡"),
+
+  ...attempt("coin", "coin", "投币", {
+    sent: "🪙 {player} {where}给 {device} 投币", refused: refused("投币"), failed: failed("给 {device} 投币"),
+  }),
+  ...attempt("coin", "coin.auto", "自动投币", { sent: "🪙 {player} 刷卡后，{device} 自动投了一枚币" }),
+  fact("coin", "cabinet.coin", "机台入币", "🪙 {device} 投币 {coins} 个，当前 {credit} 币", "直连的 HINATA IO"),
+  fact("coin", "cabinet.consumed", "开局扣币", "🎮 {device} 开局消耗 {credits} 币，剩余 {credit} 币", "直连的 HINATA IO"),
+  fact("coin", "cabinet.reset", "投币计数清零", "🧾 {device} 投币计数已清零", "直连的 HINATA IO"),
+
+  ...attempt("billing", "entry", "入场", { refused: refused("入场") }),
+  ...attempt("billing", "checkout", "结账", { refused: "{bill}" }),
+  ...attempt("billing", "wallet.adjust", "调整余额", { refused: refused("调整余额") }),
+  ...attempt("billing", "redeem", "兑换", { refused: refused("兑换") }),
+  fact("billing", "session.started", "入场", "🚪 {player} {where}入场"),
+  fact("billing", "session.stopped", "停止计费", "⏹ {player} 停止了一项计费"),
+  fact("billing", "checkout.settled", "结账", "{bill}"),
+  fact("billing", "wallet.adjusted", "调整余额", "💰 {player} 余额调整 {amount}"),
+  fact("billing", "gift.redeemed", "兑换礼物", "🎁 {player} 兑换了礼物"),
+
+  notice("system", "platform.maintenance", "系统维护", "🛠 {minutes} 分钟后开始后端维护，预计 {expected} 分钟内完成，期间暂停服务"),
+];
+
+/** Example values for every `{…}` an announcement may use, for previews and checks. */
+export const announcementSamples: Readonly<Record<string, string>> = {
+  player: "小明", device: "舞萌", where: "在扫码页", reason: "玩家未入场", amount: "+20", coins: "2", credits: "1", credit: "3",
+  card: "Aime", verb: "刷卡", devices: "舞萌、中二", minutes: "5", expected: "3",
+  bill: "🧾 结算账单\n玩家：小明\n游玩时长：1小时｜计价：20元",
+};
+
+const entries = new Map(announcementCatalog.map((entry) => [entry.key, entry]));
+
+export function announcementEntry(key: string): AnnouncementEntry | undefined {
+  return entries.get(key);
 }
 
-export function isShopAnnouncementType(value: string): value is ShopAnnouncementType {
-  return labels.has(value);
+export function isAnnouncementKey(value: string): boolean {
+  return entries.has(value);
+}
+
+/** What an entry is called on its own: an attempt's outcome after its action. */
+export function announcementLabel(key: string): string {
+  const entry = entries.get(key);
+  if (!entry) return key;
+  if (entry.kind !== "attempt") return entry.label;
+  const outcomes = announcementCatalog.filter((other) => other.action === entry.action);
+  return outcomes.length > 1 ? `${entry.label} · ${attemptOutcomes.find((o) => o.outcome === entry.outcome)!.label}` : entry.label;
+}
+
+/** Results of an action, as an attempt's outcome. A request nobody answered failed. */
+const OUTCOMES: Record<string, AttemptOutcome> = { sent: "sent", failed: "failed", unanswered: "failed", refused: "refused" };
+
+/**
+ * The entry an event is told under, if any. `type` is the event's type
+ * (`deviceEventType`); a request itself is not news, only how it went.
+ */
+export function announcementKeyOf(event: { type: string; via?: string | null; payload?: Record<string, unknown> }): string | null {
+  const { type } = event;
+  const payload = event.payload ?? {};
+  if (type === "power.changed") {
+    return payload.to === "on" ? "power.changed.on" : payload.to === "off" ? "power.changed.off" : null;
+  }
+  const dot = type.lastIndexOf(".");
+  const outcome = OUTCOMES[type.slice(dot + 1)];
+  if (outcome) {
+    const action = type.slice(0, dot);
+    // The platform's own: its idle rule switching off, its coin after a card.
+    if (action === "power.off" && event.via === "system") return outcome === "sent" ? "power.off.idle.sent" : null;
+    if (action === "coin" && payload.cause === "card") return outcome === "sent" ? "coin.auto.sent" : null;
+    const key = `${action}.${outcome}`;
+    return entries.has(key) ? key : null;
+  }
+  return entries.has(type) ? type : null;
+}
+
+/** How where something came from reads before its verb: 小明 在扫码页开启了 舞萌. */
+export function announcementWhere(via: string | null | undefined): string {
+  switch (via) {
+    case "page": return "在扫码页";
+    case "merchant": return "在后台";
+    case "bot": return "通过 Bot ";
+    case "api": return "通过接口";
+    default: return "";
+  }
 }
 
 /**
@@ -59,12 +183,12 @@ export function isShopAnnouncementType(value: string): value is ShopAnnouncement
  */
 export const shopAnnouncementSources = [
   { channel: "page", label: "扫码页" },
-  { channel: "merchant", label: "商户后台" },
+  { channel: "merchant", label: "后台" },
   { channel: "bot", label: "Bot" },
   { channel: "api", label: "接口" },
   { channel: "relay", label: "机台" },
   { channel: "ha", label: "Home Assistant" },
-  { channel: "system", label: "平台规则" },
+  { channel: "system", label: "自动" },
 ] as const;
 
 export type ShopAnnouncementSource = (typeof shopAnnouncementSources)[number]["channel"];
@@ -85,9 +209,6 @@ export function isShopAnnouncementSource(value: string): value is ShopAnnounceme
  * are the same kind of thing. `staff` stands for the private chats of whoever
  * is staff when the event happens, so the rule need not be edited as they
  * come and go.
- *
- * This list is all a bot announces by: there is no place it says things in
- * besides what its rules name.
  */
 export type ShopAnnouncementRule = {
   events: readonly string[];
@@ -106,12 +227,12 @@ export const staffDestination = (identity: { provider: string; subject: string }
  */
 export function announcementDestinations(
   rules: readonly ShopAnnouncementRule[],
-  event: { type: string; via?: string | null },
+  event: { key: string; via?: string | null },
   staff: readonly { provider: string; subject: string }[],
 ): string[] {
   const to: string[] = [];
   for (const rule of rules) {
-    if (!rule.events.includes(event.type)) continue;
+    if (!rule.events.includes(event.key)) continue;
     if (rule.sources.length && !(event.via && rule.sources.includes(event.via))) continue;
     to.push(...rule.to);
     if (rule.staff) to.push(...staff.map(staffDestination));

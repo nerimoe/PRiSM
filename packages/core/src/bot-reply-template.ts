@@ -1,4 +1,4 @@
-import { shopAnnouncementCatalog } from "./shop-announcements";
+import { announcementCatalog, announcementLabel, announcementSamples } from "./shop-announcements";
 import { botMessage, type BotMessage, type BotMessagePlayer } from "./bot-message";
 
 export type BotReplyTemplate = {
@@ -49,40 +49,21 @@ export const botReplyTemplates: BotReplyTemplate[] = [
   ]),
 ];
 
+/** What every announcement may name, besides what its own words use. */
+const ANNOUNCEMENT_BASE = ["player", "device", "where"];
+const ANNOUNCEMENT_EXTRA: Record<string, string[]> = { "checkout.settled": ["amount"], "checkout.refused": ["reason"], "card.consumed": ["verb"] };
+
+/**
+ * An announcement's words for every entry in the catalog, then the notices,
+ * whose words depend on which kind they are. Any variable may be left out.
+ */
 export const botAnnouncementTemplates: BotReplyTemplate[] = [
-  ...[
-    ["power.on", "✅ {device} 已开机"], ["power.off", "🛑 {device} 已关机"],
-    ["request.power.on", "✅ {player} 远程开启了 {device}"],
-    ["request.power.off", "🛑 {player} 远程关闭了 {device}"],
-    ["request.power.idle_off", "💤 {device} 闲置，已自动关机"],
-    ["card", "💳 {player} 在 {device} {verb}"], ["start", "🎮 {player} 在 {device} 上机"],
-    ["request.card", "💳 {player} 在 {device} 发起虚拟刷卡"],
-    ["request.coin", "🪙 {player} 在 {device} {verb}"],
-    ["cabinet.coin", "🪙 {device} 投币 {coins} 个，当前 {credit} 币"],
-    ["cabinet.consumed", "🎮 {device} 开局消耗 {credits} 币，剩余 {credit} 币"],
-    ["cabinet.reset", "🧾 {device} 投币计数已清零"],
-    ["session.started", "🚪 {player} 入场"],
-    ["session.stopped", "⏹ {player} 停止了一项计费"],
-    ["wallet.adjusted", "💰 {player} 余额调整 {amount}"],
-    ["gift.redeemed", "🎁 {player} 兑换了礼物"],
-    ["card.bound", "💳 {player} 添加了一张 {card} 卡"],
-    ["request.refused", "⛔ {player} {action}被拒绝：{reason}"],
-  ].map(([type, text]) => {
-    const samples: Record<string, string> = {
-      device: "舞萌", player: "小明", coins: "2", credits: "1", credit: "3", amount: "20", action: "投币", reason: "玩家未入场",
-      card: "Aime", verb: type === "card" ? "虚拟刷卡" : "自动投币",
-    };
-    const variables = [...text!.matchAll(/\{([^{}]+)\}/g)].map(match => match[1]!);
-    // {verb} (刷卡 or 虚拟刷卡, 投币 or 自动投币) came later: a shop's own words from before may leave it out.
-    return reply(`announce.${type}.message`, shopAnnouncementCatalog.find(item => item.type === type)!.label,
-      text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables.filter(key => key !== "verb"));
+  ...announcementCatalog.filter((entry) => entry.kind !== "notice").map((entry) => {
+    const own = [...entry.text.matchAll(/\{([^{}]+)\}/g)].map((match) => match[1]!);
+    const variables = [...new Set([...ANNOUNCEMENT_BASE, ...own, ...(ANNOUNCEMENT_EXTRA[entry.key] ?? [])])];
+    return reply(`announce.${entry.key}.message`, announcementLabel(entry.key), entry.text,
+      Object.fromEntries(variables.map((key) => [key, announcementSamples[key] ?? ""])), []);
   }),
-  // A checkout is said as its bill; a shop's own words may place it with {bill}, or leave it out.
-  reply(`announce.checkout.settled.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.settled")!.label,
-    "{bill}", { player: "小明", amount: "20", bill: "🧾 结账账单\n玩家：小明\n游玩时长：1小时｜计价：20元" }, []),
-  // A refused checkout says why; when the balance was short, the bill as it stands follows as {bill}.
-  reply(`announce.checkout.refused.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.refused")!.label,
-    "⛔ {player} 结账失败：{reason}", { player: "小明", reason: "余额不足", bill: "⛔ 结账失败：余额不足\n玩家：小明\n预计结账后余额：余额不足（还差 5元）" }, []),
   // Said by the platform for every shop around a deployment: ahead of it, and once it is over.
   reply("announce.platform.maintenance.ahead", "系统维护预告", "🛠 {minutes} 分钟后开始后端维护，预计 {expected} 分钟内完成，期间暂停服务",
     { minutes: "5", expected: "3" }, ["minutes"]),

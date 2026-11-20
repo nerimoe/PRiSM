@@ -134,7 +134,7 @@ describe("HA-confirmed power announcements", () => {
       return tell(event);
     };
   };
-  const stateOf = (event: { type: string }) => event.type.slice("power.".length);
+  const stateOf = (event: { key: string }) => event.key.slice("power.changed.".length);
 
   for (const shared of [false, true]) it(`announces confirmed on/off changes once to every Bot, with shared power=${shared}`, async () => {
     const { hub, sockets, sqlite, connectionId, power } = await fixture();
@@ -165,7 +165,7 @@ describe("HA-confirmed power announcements", () => {
         [[on[0], on[1], on[2], "2026-10-21T09:02:00.000Z", { friendly_name: "Power" }]], false));
       await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
       expect(events).toMatchObject(["on", "off"].map((state, index) => ({
-        type: `power.${state}`, resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", via: "ha", player: null,
+        key: `power.changed.${state}`, resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 3 : 1}:00.000Z`,
       })));
       expect(other).toEqual(events);
@@ -197,7 +197,7 @@ describe("HA-confirmed power announcements", () => {
       await report("unknown", 7);
       await report("heat", 8);
       expect(events).toMatchObject(["on", "off"].map((state, index) => ({
-        type: `power.${state}`, resourceId: "m3", resourceName: "m3、m4", via: "ha", player: null,
+        key: `power.changed.${state}`, resourceId: "m3", resourceName: "m3、m4", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 4 : 1}:00.000Z`,
       })));
     } finally { sqlite.close(); }
@@ -225,7 +225,7 @@ describe("HA-confirmed power announcements", () => {
       await report("on", 7);
       expect(events).toEqual([]);
       await report("off", 8);
-      expect(events).toEqual([expect.objectContaining({ type: "power.off", via: "ha" })]);
+      expect(events).toEqual([expect.objectContaining({ key: "power.changed.off", via: "ha" })]);
     } finally { sqlite.close(); }
   });
 
@@ -959,9 +959,9 @@ describe("ShopHub device pages", () => {
     expect(told).toEqual([]);
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.b", "on", "2026-10-21T09:31:00.000Z", "2026-10-21T09:31:00.000Z"]], false));
-    expect(told.map(({ type, label, resourceId, player }) => ({ type, label, resourceId, player }))).toEqual([
-      { type: "power.off", label: "关机", resourceId: "m1", player: null },
-      { type: "power.on", label: "开机", resourceId: "m2", player: null },
+    expect(told.map(({ key, resourceId, player }) => ({ key, resourceId, player }))).toEqual([
+      { key: "power.changed.off", resourceId: "m1", player: null },
+      { key: "power.changed.on", resourceId: "m2", player: null },
     ]);
     // What Home Assistant saw, not a request someone made through the platform.
     expect(told.every((event) => event.via === "ha")).toBe(true);

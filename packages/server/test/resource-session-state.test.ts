@@ -442,9 +442,9 @@ describe("telling bots what happened", () => {
       await bus.perform({ device, action: "power.off", actor: { type: "staff", staffId: "boss" } });
       await createRuntimeBus({ db, env, shopId: "shop-id", notifyHub: false })
         .perform({ device, action: "power.off", actor: { type: "system" } });
-      // A request is only that, and says so; older bots hear nothing until Home Assistant confirms.
-      expect((hub.events as Array<Record<string, unknown>>).map((event) => event.type)).toEqual(["request.power.on", "request.power.off"]);
-      expect((hub.events as Array<Record<string, unknown>>).some((event) => "kind" in event)).toBe(false);
+      // An attempt is told as one, by how it went; that the machine came on is Home Assistant's to say.
+      expect((hub.events as Array<Record<string, unknown>>).map((event) => [event.key, event.via, event.botId ?? null]))
+        .toEqual([["power.on.sent", "bot", "bot-1"], ["power.off.sent", null, null]]);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });

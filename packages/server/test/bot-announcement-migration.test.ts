@@ -133,3 +133,35 @@ describe("migration 0052: rules that warn of idle power-offs hear of maintenance
     sqlite.close();
   });
 });
+
+describe("migration 0053: rules and words name what they announce by the event itself", () => {
+  it("maps every old name onto the events it meant, and moves a shop's own words with them", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.run(`CREATE TABLE device_capabilities(shop_id TEXT, device_id TEXT, capability TEXT, config_json TEXT, PRIMARY KEY (shop_id, device_id, capability))`);
+    const config = {
+      tokenId: "t",
+      replyTemplates: { "announce.card.message": "刷了 {device}", "announce.request.refused.message": "{action} 不行", "wallet.success": "ok" },
+      announceRules: [
+        { events: ["card", "request.coin", "request.refused", "idle.reminder", "power.on", "start", "request.power.idle_off"], sources: ["page"], to: ["onebot:1"], staff: true },
+        { events: [], sources: [], to: [], staff: false },
+      ],
+    };
+    sqlite.query("INSERT INTO device_capabilities VALUES ('s','b','bot',?),('s','c','bot','{\"tokenId\":\"u\"}')").run(JSON.stringify(config));
+    run(sqlite, "0053_announcement_keys.sql");
+    const read = (id: string) => JSON.parse((sqlite.query("SELECT config_json FROM device_capabilities WHERE device_id = ?").get(id) as { config_json: string }).config_json);
+    const migrated = read("b");
+    expect(migrated.announceRules[0]).toEqual({
+      events: [
+        "card.consumed", "coin.sent", "coin.auto.sent",
+        "power.on.refused", "power.off.refused", "power.keep.refused", "aime.scan.refused", "coin.refused",
+        "idle.reminder", "power.changed.on", "occupancy.started", "power.off.idle.sent",
+      ],
+      sources: ["page"], to: ["onebot:1"], staff: true,
+    });
+    expect(migrated.announceRules[1].events).toEqual([]);
+    // A refusal's words named the action, which each refusal now says itself.
+    expect(migrated.replyTemplates).toEqual({ "announce.card.consumed.message": "刷了 {device}", "wallet.success": "ok" });
+    expect(read("c")).toEqual({ tokenId: "u" });
+    sqlite.close();
+  });
+});

@@ -15,7 +15,7 @@
  *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
-import { botReplyTemplateError, isShopAnnouncementSource, isShopAnnouncementType } from "@prism/core";
+import { botReplyTemplateError, isAnnouncementKey, isShopAnnouncementSource } from "@prism/core";
 
 export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
   for (const [key, text] of Object.entries(templates)) {
@@ -247,7 +247,7 @@ export const mahjong: CapabilitySpec<MahjongConfig> = {
  */
 /** One thing a bot listens for and where it says it (`ShopAnnouncementRule`). */
 export const announceRuleSchema = z.object({
-  events: z.array(z.string().refine(isShopAnnouncementType, "未知的事件")).max(40),
+  events: z.array(z.string().refine(isAnnouncementKey, "未知的事件")).max(80),
   sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
   /** Wherever the bot can say something: a group or a person, as the bot addresses it. */
   to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),

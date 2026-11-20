@@ -1,34 +1,46 @@
 import { describe, expect, it } from "bun:test";
-import { shopAnnouncementCatalog } from "@prism/core";
-import { announcementMessage, announcementText, idleReminderMessage, idleReminderText, shopEventFrame } from "../src/resources/shop-events.js";
+import { announcementCatalog } from "@prism/core";
+import { announcementFrame, announcementMessage, idleReminderMessage, idleReminderText } from "../src/resources/shop-events.js";
 
 const place = { resourceId: "m1", resourceName: "舞萌" };
 const alice = { playerId: "p1", displayName: "Alice", identities: [] };
+const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
+  .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
 
 describe("what the platform tells a bot to say", () => {
-  it("has words for every type in the catalog", () => {
-    for (const { type } of shopAnnouncementCatalog) {
-      expect(announcementText({ ...place, type, player: null }).length).toBeGreaterThan(0);
+  it("has words for every entry in the catalog", () => {
+    for (const { key } of announcementCatalog) {
+      expect(words(announcementMessage({ ...place, key, player: null })).length).toBeGreaterThan(0);
     }
   });
 
-  it("leaves the player's name to the bot, and names a card nobody owns", () => {
-    expect(announcementText({ ...place, type: "card", player: alice })).toBe("💳 {player} 在 舞萌 刷卡");
-    expect(announcementText({ ...place, type: "card", player: null })).toBe("💳 未绑定的卡 在 舞萌 刷卡");
-    expect(announcementText({ ...place, type: "request.power.off", player: null })).toBe("🛑 店员 远程关闭了 舞萌");
+  it("names the player as a segment, a card nobody owns, and staff", () => {
+    expect(announcementMessage({ ...place, key: "card.consumed", player: alice, values: { verb: "刷卡" } }))
+      .toEqual([{ text: "💳 " }, { player: alice }, { text: " 在 舞萌 刷卡" }]);
+    expect(words(announcementMessage({ ...place, key: "card.consumed", player: null, values: { verb: "刷卡" } }))).toBe("💳 未绑定的卡 在 舞萌 刷卡");
+    expect(words(announcementMessage({ ...place, key: "power.off.sent", player: null, via: "merchant" }))).toBe("🛑 店员 在后台关闭了 舞萌");
   });
 
-  it("makes the player a segment of the message, for the bot to name", () => {
-    expect(announcementMessage({ ...place, type: "card", player: alice })).toEqual([{ text: "💳 " }, { player: alice }, { text: " 在 舞萌 刷卡" }]);
-    expect(announcementMessage({ ...place, type: "card", player: null })).toEqual([{ text: "💳 未绑定的卡 在 舞萌 刷卡" }]);
+  it("says where an attempt came from, and why it did not go through", () => {
+    expect(words(announcementMessage({ ...place, key: "power.on.sent", player: alice, via: "page" }))).toBe("✅ <Alice> 在扫码页开启了 舞萌");
+    expect(words(announcementMessage({ ...place, key: "coin.sent", player: alice, via: "bot" }))).toBe("🪙 <Alice> 通过 Bot 给 舞萌 投币");
+    expect(words(announcementMessage({ ...place, key: "coin.auto.sent", player: alice, via: "system" }))).toBe("🪙 <Alice> 刷卡后，舞萌 自动投了一枚币");
+    expect(words(announcementMessage({ ...place, key: "coin.refused", player: alice, via: "page", values: { reason: "达到机台投币上限" } })))
+      .toBe("⛔ <Alice> 在扫码页投币被拒绝：达到机台投币上限");
+    expect(words(announcementMessage({ ...place, key: "aime.scan.sent", player: alice, via: "page" }))).toBe("💳 <Alice> 在扫码页给 舞萌 虚拟刷卡");
   });
 
-  it("customizes each announcement with facts and keeps the player as a segment", () => {
-    const templates = { "announce.card.message": "{device} 欢迎 {player}", "announce.cabinet.coin.message": "{device}：投入 {coins}，余额 {credit}" };
-    expect(announcementMessage({ ...place, type: "card", player: alice }, templates)).toEqual([{ text: "舞萌 欢迎 " }, { player: alice }]);
-    expect(announcementMessage({ ...place, type: "card", player: null }, templates)).toEqual([{ text: "舞萌 欢迎 未绑定的卡" }]);
-    expect(announcementMessage({ ...place, type: "cabinet.coin", player: null, detail: { coins: 2, credit: 24 } }, templates)).toEqual([{ text: "舞萌：投入 2，余额 24" }]);
-    expect(announcementMessage({ ...place, type: "card", player: alice }, { "announce.card.message": "{unknown}" })).toEqual(announcementMessage({ ...place, type: "card", player: alice }));
+  it("is said in a shop's own words, which may use what the event knows", () => {
+    const templates = {
+      "announce.card.consumed.message": "{device} 欢迎 {player}",
+      "announce.cabinet.coin.message": "{device}：投入 {coins}，余额 {credit}",
+    };
+    expect(announcementMessage({ ...place, key: "card.consumed", player: alice }, templates)).toEqual([{ text: "舞萌 欢迎 " }, { player: alice }]);
+    expect(words(announcementMessage({ ...place, key: "cabinet.coin", player: null, values: { coins: "2", credits: "0", credit: "24" } }, templates)))
+      .toBe("舞萌：投入 2，余额 24");
+    // Words naming something the event does not know are not used.
+    expect(announcementMessage({ ...place, key: "card.consumed", player: alice, values: { verb: "刷卡" } }, { "announce.card.consumed.message": "{unknown}" }))
+      .toEqual(announcementMessage({ ...place, key: "card.consumed", player: alice, values: { verb: "刷卡" } }));
   });
 
   it("customizes both idle reminder reasons with current remaining minutes", () => {
@@ -37,16 +49,9 @@ describe("what the platform tells a bot to say", () => {
     expect(idleReminderMessage({ reason: "device_idle", at: 10000, devices: [{ name: "舞萌" }] }, templates, 0)).toEqual([{ text: "舞萌 将在 1 分钟后关机" }]);
   });
 
-  it("puts the facts of a cabinet's books into its words", () => {
-    expect(announcementText({ ...place, type: "cabinet.coin", player: null, detail: { coins: 2, credit: 24 } }))
-      .toBe("🪙 舞萌 投币 2 个，当前 24 币");
-    expect(announcementText({ ...place, type: "cabinet.consumed", player: null, detail: { credits: 1, credit: 3 } }))
-      .toBe("🎮 舞萌 开局消耗 1 币，剩余 3 币");
-  });
-
-  it("sends the message with the label in every frame", () => {
-    expect(shopEventFrame({ ...place, type: "power.on", player: null }, new Date(0))).toEqual({
-      ...place, type: "power.on", player: null, label: "开机", message: [{ text: "✅ 舞萌 已开机" }], at: "1970-01-01T00:00:00.000Z",
+  it("hands a hub the announcement and when it happened, and no words of its own", () => {
+    expect(announcementFrame({ ...place, key: "power.changed.on", player: null, via: "ha" }, new Date(0))).toEqual({
+      ...place, key: "power.changed.on", player: null, via: "ha", at: "1970-01-01T00:00:00.000Z",
     });
   });
 

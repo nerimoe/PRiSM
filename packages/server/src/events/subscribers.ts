@@ -20,8 +20,8 @@ import { machinePoweredOff, pagesChanged, shopHub } from "../durable-objects/sho
 import { pushSessionEvent } from "../routes/shops/live-activity-events.js";
 import { capabilitySpec } from "../resources/capabilities/catalog.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
-import { yuanOf, type Cents } from "@prism/core";
-import { announceShopEvent, eventPlayer, refusalDetail, type ShopEvent } from "../resources/shop-events.js";
+import { announcementKeyOf, botMessage, yuanOf, type BotMessage, type Cents } from "@prism/core";
+import { announce, attemptReason, eventPlayer } from "../resources/shop-events.js";
 import { receiptMessage } from "../resources/bot-replies.js";
 import { shopCurrencyName } from "../resources/bot.js";
 import { capabilities } from "../resources/capabilities/catalog.js";
@@ -87,34 +87,12 @@ export const occupancySubscriber: InlineSubscriber<EventContext> = {
   },
 };
 
-/** A request the hardware took, as the bots' announcement of it. */
-const REQUESTS: Record<string, "request.power.on" | "request.power.off" | "request.card" | "request.coin"> = {
-  "power.on.sent": "request.power.on",
-  "power.off.sent": "request.power.off",
-  "aime.scan.sent": "request.card",
-  "coin.sent": "request.coin",
-};
-
-/** What a cabinet's books said changed, told as it is. A credit that is not a coin is recorded only. */
-const CABINET = ["cabinet.coin", "cabinet.consumed", "cabinet.reset"] as const;
-
-/** What happened at the shop without a device (`shop-facts.ts`), told under its own name. */
-const FACTS = ["session.started", "session.stopped", "checkout.settled", "checkout.refused", "wallet.adjusted", "gift.redeemed", "card.bound"] as const;
-
 /** A card's kind as a shop calls it. */
 const CARD_KINDS: Record<string, string> = { aime: "Aime", felica: "FeliCa", banapass: "Banapass", amusement_ic: "Amusement IC" };
 
 /** How a card reached the game, as players say it: on the reader, or sent from a page or a bot. */
 const cardVerb = (event: { payload: Record<string, unknown>; operationId: string | null }) =>
   (event.payload.cardFrom ?? (event.operationId ? "platform" : "reader")) === "platform" ? "虚拟刷卡" : "刷卡";
-
-/** Why a checkout was turned away, where the platform's own words are not the player's; otherwise those. */
-const CHECKOUT_REFUSALS: Record<string, string> = {
-  INSUFFICIENT_BALANCE: "余额不足",
-};
-
-/** Every request that can be turned away, as the event that says it was. */
-const REFUSALS = ACTIONS.map((action) => `${action}.refused`);
 
 /** How a shop's bill is worded: what its money is called, and its clock. */
 async function shopWords(context: EventContext): Promise<{ currency: string; timeZone: string }> {
@@ -131,82 +109,68 @@ async function shopWords(context: EventContext): Promise<{ currency: string; tim
 /** A signed amount as a shop reads it: `+5`, `-2.5`. */
 const signed = (amount: unknown) => (typeof amount === "number" ? `${amount > 0 ? "+" : ""}${amount}` : "");
 
+/** The numbers a cabinet's books said, as a bot names them. */
+const books = (payload: Record<string, unknown>) =>
+  Object.fromEntries(["coins", "credits", "credit"].map((key) => [key, String(typeof payload[key] === "number" ? payload[key] : 0)]));
+
 /**
- * What the shop's bots may announce (`resources/shop-events.ts`): that a
- * request was taken by the hardware or turned away, that a game took a card,
- * that someone started on a resource, what a cabinet's books say, and what
- * happened to a player's visit, bill or balance. Each says where it came from,
- * which a bot's rules may ask (`ShopAnnouncementRule`).
+ * What the shop's bots may announce: every event the catalog in `@prism/core`
+ * names (`announcementKeyOf`), attempts and facts alike, told under that key
+ * with what its words need. Each says where it came from, which a bot's rules
+ * may ask (`ShopAnnouncementRule`).
  */
 export const announcementSubscriber: AfterSubscriber<EventContext> = {
   name: "bot-announcements",
   when: "after",
-  wants: [...Object.keys(REQUESTS), "card.consumed", "occupancy.started", ...CABINET, ...FACTS, ...REFUSALS],
+  wants: "*",
   async run(context, heard) {
     if (context.insideHub) return;
-    const ids = [...new Set(heard.map((one) => one.event.deviceId).filter((id): id is string => !!id))];
+    const told = heard.flatMap((one) => {
+      const key = announcementKeyOf({ type: one.type, via: one.event.via?.channel ?? null, payload: one.event.payload });
+      return key ? [{ one, key }] : [];
+    });
+    if (!told.length) return;
+    const ids = [...new Set(told.map(({ one }) => one.event.deviceId).filter((id): id is string => !!id))];
     const names = new Map((await context.db.prepare("SELECT id, name FROM machines WHERE shop_id = ? AND id IN (SELECT value FROM json_each(?))")
       .bind(context.shopId, JSON.stringify(ids)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
-    const tell = (event: ShopEvent) => announceShopEvent(context.env, context.shopId, event);
-    const player = (playerId: string | null) => eventPlayer(context.db, context.shopId, playerId);
     let shop: Promise<{ currency: string; timeZone: string }> | undefined;
 
-    for (const one of heard) {
-      const { event, type } = one;
-      // A bot has answered its own command already and does not announce it again.
-      const botId = event.via?.channel === "bot" ? event.via.resourceId : null;
-      const place = {
+    for (const { one, key } of told) {
+      const { event } = one;
+      const { payload } = event;
+      const who = await eventPlayer(context.db, context.shopId, forPlayer(one));
+      // Somebody starting on a resource is news only when the shop knows who.
+      if (key === "occupancy.started" && !who) continue;
+      const values: Record<string, string | BotMessage> = {};
+      if (key.endsWith(".refused") || key.endsWith(".failed")) values.reason = attemptReason(payload);
+      if (key === "card.consumed") values.verb = cardVerb(event);
+      if (key.startsWith("cabinet.")) Object.assign(values, books(payload));
+      if (key === "wallet.adjusted") values.amount = signed(payload.amount);
+      if (key === "card.bound") values.card = CARD_KINDS[String(payload.type)] ?? String(payload.type ?? "");
+      if (key === "checkout.settled") values.amount = String(yuanOf(payload.total as Cents));
+      // A checkout is told as its bill, worded as the bot words its own checkout's; a refused one
+      // by the bill as it stands when the balance fell short of it, otherwise in a line.
+      if (key === "checkout.settled" || key === "checkout.refused") {
+        const bill = payload.bill && typeof payload.bill === "object" ? payload.bill as Record<string, unknown> : null;
+        values.bill = bill
+          ? receiptMessage(bill, {
+            title: key === "checkout.settled" ? "🧾 结算账单" : `⛔ 结账失败：${values.reason}`,
+            preview: key === "checkout.refused", who: { player: who }, ...await (shop ??= shopWords(context)),
+          })
+          : key === "checkout.settled"
+            ? botMessage("🧾 ", ...(who ? [who] : ["店员"]), ` 结账 ${values.amount}`)
+            : botMessage("⛔ ", ...(who ? [who] : ["店员"]), ` 结账失败：${values.reason}`);
+      }
+      await announce(context.env, context.shopId, {
+        key,
         resourceId: event.deviceId ?? "",
         resourceName: event.deviceId ? names.get(event.deviceId) ?? event.deviceId : "",
-        ...(botId ? { botId } : {}),
-      };
-      const announce = (told: ShopEvent) => tell(event.via ? { ...told, via: event.via.channel } : told);
-      if ((FACTS as readonly string[]).includes(type)) {
-        const { payload } = event;
-        const who = await player(event.playerId);
-        const reason = type === "checkout.refused"
-          ? CHECKOUT_REFUSALS[String(payload.code)] ?? (typeof payload.message === "string" && payload.message ? payload.message : String(payload.code ?? ""))
-          : "";
-        const detail = type === "checkout.settled" ? { amount: String(yuanOf(payload.total as Cents)) }
-          : type === "checkout.refused" ? { reason, code: String(payload.code ?? "") }
-          : type === "wallet.adjusted" ? { amount: signed(payload.amount) }
-          : type === "card.bound" ? { card: CARD_KINDS[String(payload.type)] ?? String(payload.type ?? "") } : undefined;
-        // A checkout is told as its bill, worded as the bot words its own checkout's; a refused
-        // one by the bill as it stands, when the balance fell short of it.
-        const bill = payload.bill && typeof payload.bill === "object" ? payload.bill as Record<string, unknown> : null;
-        const message = bill && (type === "checkout.settled" || type === "checkout.refused")
-          ? receiptMessage(bill, {
-            title: type === "checkout.settled" ? "🧾 结算账单" : `⛔ 结账失败：${reason}`,
-            preview: type === "checkout.refused", who: { player: who }, ...await (shop ??= shopWords(context)),
-          })
-          : undefined;
-        await announce({ type: type as (typeof FACTS)[number], ...place, player: who, ...(detail ? { detail } : {}), ...(message ? { message } : {}) });
-        continue;
-      }
-      if (type.endsWith(".refused")) {
-        await announce({
-          type: "request.refused", ...place, player: await player(forPlayer(one)),
-          detail: refusalDetail(type.slice(0, -".refused".length), event.payload),
-        });
-        continue;
-      }
-      if (!event.deviceId) continue;
-      const request = REQUESTS[type];
-      if (request) {
-        // A coin says whose idea it was: someone asking, or the cabinet's rule after a card.
-        const detail = request === "request.coin" ? { verb: event.payload.cause === "card" ? "自动投币" : "投币" } : undefined;
-        await announce({ type: request, ...place, player: await player(forPlayer(one)), ...(detail ? { detail } : {}) });
-      } else if (type === "card.consumed") {
-        // The game took a card: whether it came from the reader or the platform,
-        // this is when it happened, so this is where it is told, saying which.
-        await announce({ type: "card", ...place, player: await player(event.playerId), detail: { verb: cardVerb(event) } });
-      } else if (type === "occupancy.started") {
-        const who = await player(event.playerId);
-        if (who) await announce({ type: "start", ...place, player: who });
-      } else if ((CABINET as readonly string[]).includes(type)) {
-        const { previousCredit: _credit, previousTotalCoin: _previous, totalCoin: _total, ...detail } = event.payload;
-        await announce({ type: type as (typeof CABINET)[number], ...place, player: null, detail });
-      }
+        player: who,
+        via: event.via?.channel ?? null,
+        // A bot has answered its own command already and does not announce it again.
+        ...(event.via?.channel === "bot" && event.via.resourceId ? { botId: event.via.resourceId } : {}),
+        ...(Object.keys(values).length ? { values } : {}),
+      });
     }
   },
 };

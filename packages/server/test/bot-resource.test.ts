@@ -84,14 +84,14 @@ describe("a bot is a resource", () => {
 
   it("validates and persists per-bot replies, and can restore defaults", async () => {
     const { bot, createBot, call } = await fixture();
-    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}", "announce.card.message": "{player} 正在 {device} 刷卡" };
+    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}", "announce.card.consumed.message": "{player} 正在 {device} 刷卡" };
     const first = await createBot({ replyTemplates: templates });
     const other = await createBot();
     expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
     expect((await bot(other.token).get("bot")).body.settings.replyTemplates).toEqual({});
     for (const replyTemplates of [
       { "wallet.success": "{balnce}" }, { "billing.success": "已结账" },
-      { "unknown.success": "hello" }, { "announce.card.message": "{player} {unknown}" }, { "announce.idle.reminder.shop_empty": "快关机了" }, { "bind.success": "<at id='all'/>" },
+      { "unknown.success": "hello" }, { "announce.card.consumed.message": "{player} {unknown}" }, { "announce.idle.reminder.shop_empty": "快关机了" }, { "bind.success": "<at id='all'/>" },
     ]) {
       const result = await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates } });
       expect(result.status).toBe(422);
@@ -111,7 +111,7 @@ describe("a bot is a resource", () => {
     // A group and a person are the same kind of destination; the idle warning is an event like any other.
     const rules = [
       { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], staff: true },
-      { events: ["card", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false },
+      { events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false },
     ];
     expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules: rules } })).status).toBe(200);
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
@@ -119,7 +119,7 @@ describe("a bot is a resource", () => {
     await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { playerCommands: "readonly" } });
     expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
     for (const announceRules of [
-      [{ events: ["card"], sources: ["phone"], to: [], staff: false }],
+      [{ events: ["card.consumed"], sources: ["phone"], to: [], staff: false }],
       [{ events: ["nope"], sources: [], to: ["onebot:1"], staff: false }],
     ]) {
       expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules } })).status).toBe(422);

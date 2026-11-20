@@ -7,11 +7,10 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
-import { announcementMessage, idleReminderMessage, maintenanceMessage, shopEventFrame } from "../resources/shop-events.js";
+import { announcementFrame, announcementMessage, idleReminderMessage, maintenanceMessage, type Announcement } from "../resources/shop-events.js";
 import type { MaintenanceNotice } from "../deployment-gate.js";
 import { findBotByToken } from "../resources/bot.js";
 import { announcementDestinations, botMessage, type BotMessage } from "@prism/core";
-import type { ShopEvent } from "../resources/shop-events.js";
 import {
   applyIdleEvent, climatePower, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake,
   parseIdleSettings, setIdleEmpty, settleIdleOff,
@@ -690,29 +689,22 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Something happened at the shop that bots may announce (a device switched
-   * on, a card, a bill settled). Each bot says it wherever its rules send it
-   * (`announcementDestinations`), in its own words when it has any, and not
-   * at all when it came of the bot's own command: it answered that already.
+   * Something happened at the shop that bots may announce (`Announcement`).
+   * Each bot says it wherever its rules send it (`announcementDestinations`),
+   * in its own words when it has any, and not at all when it came of the bot's
+   * own command: it answered that already.
    */
   async shopEvent(event: Record<string, unknown>): Promise<void> {
+    const announcement = event as unknown as Announcement;
     const shopId = (await this.shopId()) ?? "";
     for (const ws of this.bots()) {
       const attachment = ws.deserializeAttachment() as BotAttachment | null;
       if (!attachment?.commands) continue;
       try {
         const found = await this.botOf(shopId, attachment.token);
-        if (!found || event.botId === found.bot.id) continue;
-        const to = announcementDestinations(
-          found.bot.config.announceRules,
-          { type: String(event.type), via: typeof event.via === "string" ? event.via : null },
-          found.view.staff,
-        );
-        if (!to.length) continue;
-        const told = { ...event, ...(Array.isArray(event.bill) ? { message: event.bill } : {}) } as unknown as ShopEvent;
-        const message = Array.isArray(event.message)
-          ? announcementMessage(told, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
-        this.sayTo(ws, to, message);
+        if (!found || announcement.botId === found.bot.id) continue;
+        const to = announcementDestinations(found.bot.config.announceRules, { key: announcement.key, via: announcement.via ?? null }, found.view.staff);
+        if (to.length) this.sayTo(ws, to, announcementMessage(announcement, found.bot.config.replyTemplates));
       } catch {
         // A bot that left misses it.
       }
@@ -793,7 +785,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
       // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
       const reminded = commands && commands.bot.config.idleReminderMinutes > 0
-        && announcementDestinations(commands.bot.config.announceRules, { type: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
+        && announcementDestinations(commands.bot.config.announceRules, { key: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
       const lead = reminded ? commands.bot.config.idleReminderMinutes * 60 : undefined;
       const { commands: _was, ...rest } = attachment;
       ws.serializeAttachment({
@@ -1513,8 +1505,8 @@ export class ShopHub extends BaseDurableObject<Env> {
         if (!ok) continue;
         // Released the same way as any other power-off, and told as the idle rule's own.
         for (const id of ids) await this.poweredOff(shopId, id).catch((error) => console.error("Idle release failed", { shopId, id, error }));
-        await this.shopEvent(shopEventFrame({
-          type: "request.power.idle_off", resourceId: ids[0]!, resourceName: named(ids).map((one) => one.name).join("、"), player: null, via: "system",
+        await this.shopEvent(announcementFrame({
+          key: "power.off.idle.sent", resourceId: ids[0]!, resourceName: named(ids).map((one) => one.name).join("、"), player: null, via: "system",
         })).catch((error) => console.error("Idle announcement failed", { shopId, error }));
       }
     }
@@ -1600,7 +1592,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         if (!done || done.told.includes(found.bot.id)) return found.bot.id;
         await this.ctx.storage.put("maintenanceDone", { ...done, told: [...done.told, found.bot.id] } satisfies MaintenanceDone);
       }
-      const to = announcementDestinations(found.bot.config.announceRules, { type: "platform.maintenance", via: "system" }, found.view.staff);
+      const to = announcementDestinations(found.bot.config.announceRules, { key: "platform.maintenance", via: "system" }, found.view.staff);
       if (to.length) this.sayTo(ws, to, maintenanceMessage(notice, found.bot.config.replyTemplates));
       return found.bot.id;
     } catch {
@@ -1619,7 +1611,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         try {
           const found = await this.botOf(shopId, attachment.token);
           if (!found) continue;
-          const to = announcementDestinations(found.bot.config.announceRules, { type: "idle.reminder", via: "system" }, found.view.staff);
+          const to = announcementDestinations(found.bot.config.announceRules, { key: "idle.reminder", via: "system" }, found.view.staff);
           if (to.length) this.sayTo(ws, to, idleReminderMessage(notice, found.bot.config.replyTemplates));
         } catch {
           // A bot that left misses it; the power-off happens regardless.
@@ -1954,13 +1946,12 @@ export class ShopHub extends BaseDurableObject<Env> {
         const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
           .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
         const names = new Map(rows.results.map((row) => [row.id, row.name]));
-        const event: ShopEvent = {
-          type: change.state === "on" ? "power.on" : "power.off",
+        await this.shopEvent(announcementFrame({
+          key: change.state === "on" ? "power.changed.on" : "power.changed.off",
           resourceId: change.deviceIds[0]!,
           resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
           player: null, via: "ha",
-        };
-        await this.shopEvent({ ...shopEventFrame(event), at: change.at });
+        }, new Date(change.at)));
       } catch (error) {
         console.error("HA power announcement failed", { shopId, error });
       }

@@ -9,7 +9,12 @@ import { announcementSubscriber, billingSubscriber, idleTimerSubscriber, shopCha
 import type { Heard } from "../src/events/dispatcher.js";
 import { PrismDomainError, type DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
-import { announcementMessage, type ShopEvent } from "../src/resources/shop-events.js";
+import { announcementMessage, type Announcement } from "../src/resources/shop-events.js";
+
+/** What a bot would say for a frame its hub was handed, in the catalog's words or a shop's own. */
+const said = (frame: Record<string, any>, templates?: Record<string, string>) =>
+  (announcementMessage(frame as Announcement, templates) as Array<{ text?: string; player?: { displayName: string } }>)
+    .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
 
@@ -266,18 +271,43 @@ describe("shop facts", () => {
       // Recorded before it said so: a card the platform sent belongs to an operation.
       heard("card.consumed", { origin: "device", operationId: "op", payload: {}, via: { channel: "relay", resourceId: null } }),
     ]);
-    const words = (event: Record<string, any>) =>
-      (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
-    expect(told.map(words)).toEqual([
-      "💳 <小明> 添加了一张 Aime 卡",
-      "🪙 <小明> 在 舞萌 自动投币",
-      "🪙 <小明> 在 舞萌 投币",
-      "💳 <小明> 在 舞萌 刷卡",
-      "💳 <小明> 在 舞萌 虚拟刷卡",
+    expect(told.map((frame) => [frame.key, said(frame)])).toEqual([
+      ["card.bound", "💳 <小明> 添加了一张 Aime 卡"],
+      ["coin.auto.sent", "🪙 <小明> 刷卡后，舞萌 自动投了一枚币"],
+      ["coin.sent", "🪙 <小明> 在扫码页给 舞萌 投币"],
+      ["card.consumed", "💳 <小明> 在 舞萌 刷卡"],
+      ["card.consumed", "💳 <小明> 在 舞萌 虚拟刷卡"],
     ]);
-    // A shop's own words from before the source was said still apply.
-    expect(words({ message: announcementMessage(told[1] as ShopEvent, { "announce.request.coin.message": "{player} 在 {device} 投了币" }, told[1]!.message) }))
-      .toBe("<小明> 在 舞萌 投了币");
+    // A shop's own words, which need not say where from.
+    expect(said(told[2]!, { "announce.coin.sent.message": "{player} 在 {device} 投了币" })).toBe("<小明> 在 舞萌 投了币");
+    sqlite.close();
+  });
+
+  it("says an entry, a balance change or a redemption the shop's rules turned away, and passes the error on", async () => {
+    const { sqlite, runtime, origin, facts } = fixture();
+    const base = services([]);
+    const refusal = (code: string) => new PrismDomainError(code, code);
+    const deps = withOrigin({
+      ...base,
+      resourceBilling: { ...base.resourceBilling, async activate() { throw refusal("BILLING_DISABLED"); } },
+      staffAssetCommands: { ...base.staffAssetCommands, async adjustWallet() { throw refusal("INSUFFICIENT_BALANCE"); } },
+      playerRedeemCommands: { async redeemCode() { throw refusal("REDEEM_CODE_USED"); } },
+    } as unknown as PrismAppDependencies, runtime, origin({ channel: "merchant", resourceId: null }));
+    await expect(deps.resourceBilling.activate({ playerId: "p1", resourceId: "m1" } as never)).rejects.toThrow("BILLING_DISABLED");
+    await expect(deps.staffAssetCommands.adjustWallet({ playerId: "p1", staffId: "s1", amount: -5 } as never)).rejects.toThrow("INSUFFICIENT_BALANCE");
+    await expect(deps.playerRedeemCommands.redeemCode({ playerId: "p2", code: "X" } as never)).rejects.toThrow("REDEEM_CODE_USED");
+    expect(facts().map((row) => [row.name, row.device_id, row.player_id, row.staff_id, JSON.parse(row.payload_json!).code])).toEqual([
+      ["entry.refused", "m1", "p1", null, "BILLING_DISABLED"],
+      ["wallet.adjust.refused", null, "p1", "s1", "INSUFFICIENT_BALANCE"],
+      ["redeem.refused", null, "p2", null, "REDEEM_CODE_USED"],
+    ]);
+    // Being asked to agree first is a step, not a refusal.
+    const consent = withOrigin({
+      ...base,
+      resourceBilling: { ...base.resourceBilling, async activate() { throw refusal("CHECKIN_CONSENT_REQUIRED"); } },
+    } as unknown as PrismAppDependencies, runtime, origin({ channel: "page", resourceId: null }));
+    await expect(consent.resourceBilling.activate({ playerId: "p1" } as never)).rejects.toThrow();
+    expect(facts()).toHaveLength(3);
     sqlite.close();
   });
 
@@ -293,12 +323,10 @@ describe("shop facts", () => {
         origin: "platform", playerId: "p1", staffId: null, occurredAt: new Date(), via: { channel: "bot", resourceId: "bot-1" }, payload,
       },
     });
-    const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
-      .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
     await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [refused({ code: "CASHIER_PAYMENT_REQUIRED", message: "请在前台确认现场收款" })]);
     // The words the player is told, as the platform has them.
-    expect(told[0]).toMatchObject({ type: "checkout.refused", botId: "bot-1", detail: { reason: "请在前台确认现场收款" } });
-    expect(words(told[0]!.message)).toBe("⛔ <小明> 结账失败：请在前台确认现场收款");
+    expect(told[0]).toMatchObject({ key: "checkout.refused", botId: "bot-1", values: { reason: "请在前台确认现场收款" } });
+    expect(said(told[0]!)).toBe("⛔ <小明> 结账失败：请在前台确认现场收款");
     const bill = {
       settlementPreview: { playerId: "p1", subtotal: 30, total: 30, previewedAt: "2026-11-20T07:00:00.000Z" },
       sessionPreviews: [{ label: "畅玩", startedAt: "2026-11-20T06:00:00.000Z", endedAt: null, status: "active", total: 30, adjustments: [] }],
@@ -306,9 +334,9 @@ describe("shop facts", () => {
       wallet: { balanceBefore: 25, balanceAfter: -5 },
     };
     await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [refused({ code: "INSUFFICIENT_BALANCE", message: "x", bill })]);
-    const said = words(told[1]!.message);
-    expect(said.startsWith("⛔ 结账失败：余额不足\n玩家：<小明>\n")).toBe(true);
-    expect(said).toContain("还差 5");
+    const bill2 = said(told[1]!);
+    expect(bill2.startsWith("⛔ 结账失败：余额不足\n玩家：<小明>\n")).toBe(true);
+    expect(bill2).toContain("还差 5");
     sqlite.close();
   });
 
@@ -334,17 +362,12 @@ describe("shop facts", () => {
         payload: { sessionIds: ["s1"], subtotal: 3000, total: 2500, bill },
       },
     }]);
-    const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
-      .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
-    const said = words(told[0]!.message);
-    expect(said.startsWith("🧾 结算账单\n玩家：<小明>\n")).toBe(true);
-    for (const line of ["畅玩", "游玩时段：14:00-15:30", "会员折扣", "75"]) expect(said).toContain(line);
-    // The hub renders each bot's own words over it.
-    const rendered = (templates: Record<string, string>) =>
-      words(announcementMessage({ ...told[0], message: told[0]!.bill } as ShopEvent, templates, told[0]!.message));
-    expect(rendered({})).toBe(said);
-    expect(rendered({ "announce.checkout.settled.message": "{player} 付了 {amount}" })).toBe("<小明> 付了 25");
-    expect(rendered({ "announce.checkout.settled.message": "收银台：\n{bill}" })).toBe(`收银台：\n${said}`);
+    const receipt = said(told[0]!);
+    expect(receipt.startsWith("🧾 结算账单\n玩家：<小明>\n")).toBe(true);
+    for (const line of ["畅玩", "游玩时段：14:00-15:30", "会员折扣", "75"]) expect(receipt).toContain(line);
+    // Each bot renders its own words over it.
+    expect(said(told[0]!, { "announce.checkout.settled.message": "{player} 付了 {amount}" })).toBe("<小明> 付了 25");
+    expect(said(told[0]!, { "announce.checkout.settled.message": "收银台：\n{bill}" })).toBe(`收银台：\n${receipt}`);
     sqlite.close();
   });
 
@@ -370,16 +393,15 @@ describe("shop facts", () => {
       heard("coin.refused", { deviceId: "m1", capability: "hinata_io", payload: { code: "COIN_CABINET_FULL", message: "达到机台投币上限" } }),
       heard("power.on.refused", { deviceId: "m1", capability: "power", playerId: null, payload: { code: "SOMETHING_NEW", message: "请先开机" } }),
     ]);
-    const words = (event: Record<string, any>) =>
-      (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
-    expect(told.map((event) => [event.type, event.via, event.resourceName, event.botId ?? null, words(event)])).toEqual([
-      ["session.started", "page", "舞萌", null, "🚪 <小明> 入场"],
+    expect(told.map((frame) => [frame.key, frame.via, frame.resourceName, frame.botId ?? null, said(frame)])).toEqual([
+      ["session.started", "page", "舞萌", null, "🚪 <小明> 在扫码页入场"],
+      // Without a bill to word, the amount alone.
       ["checkout.settled", "page", "", null, "🧾 <小明> 结账 25"],
       // Through a bot: that bot answered it already and is not told again.
       ["wallet.adjusted", "bot", "", "bot-1", "💰 <小明> 余额调整 -5"],
-      ["request.refused", "page", "舞萌", null, "⛔ <小明> 投币被拒绝：达到机台投币上限"],
+      ["coin.refused", "page", "舞萌", null, "⛔ <小明> 在扫码页投币被拒绝：达到机台投币上限"],
       // A reason the platform has no word for is told in the refusal's own.
-      ["request.refused", "page", "舞萌", null, "⛔ 店员 开机被拒绝：请先开机"],
+      ["power.on.refused", "page", "舞萌", null, "⛔ 店员 在扫码页开机被拒绝：请先开机"],
     ]);
     sqlite.close();
   });
