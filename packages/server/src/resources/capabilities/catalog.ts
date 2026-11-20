@@ -245,18 +245,34 @@ export const mahjong: CapabilitySpec<MahjongConfig> = {
  * connect. Everything the platform already knows (staff, currency, tables,
  * doors) is derived, never configured here.
  */
-/** One thing a bot listens for and where it says it (`ShopAnnouncementRule`). */
-export const announceRuleSchema = z.object({
-  events: z.array(z.string().refine(isAnnouncementKey, "未知的事件")).max(80),
-  sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
+/** One way a bot announces: its destinations and a whole table of what it says (`AnnouncementGroup`). */
+export const announceGroupSchema = z.object({
+  id: z.string().trim().min(1).max(40),
+  name: z.string().trim().min(1).max(40),
   /** Wherever the bot can say something: a group or a person, as the bot addresses it. */
   to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
   /** Also each staff member's private chat, whoever is staff when it happens. */
   staff: z.boolean().default(false),
+  events: z.record(
+    z.string().refine(isAnnouncementKey, "未知的事件"),
+    z.object({
+      on: z.boolean().default(true),
+      sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
+    }),
+  ).default({}),
+  /** This group's own words; only announcement templates. */
+  templates: botReplyTemplatesSchema.refine(
+    (templates) => Object.keys(templates).every((key) => key.startsWith("announce.")),
+    "播报组只能保存播报文案",
+  ).default({}),
 });
 
 const botConfig = z.object({
-  replyTemplates: botReplyTemplatesSchema.default({}),
+  /** The words of the bot's answers to commands; what it announces is in each group's own. */
+  replyTemplates: botReplyTemplatesSchema.refine(
+    (templates) => Object.keys(templates).every((key) => !key.startsWith("announce.")),
+    "播报文案在播报组里设置",
+  ).default({}),
   /** The integration token the bot connects with. */
   tokenId: z.string().min(1),
   /** `readonly`: players may only bind, look up and redeem through the bot. */
@@ -277,11 +293,11 @@ const botConfig = z.object({
    */
   doorPasswordOnEntry: z.boolean().default(false),
   /**
-   * Everything the bot announces, and where: each rule names the events it
-   * listens for, where they must have come from (anywhere, when empty) and the
-   * destinations it says them at. A bot with no rules announces nothing.
+   * Everything the bot announces, and where: each group is one audience with
+   * its own table of what it says and in which words. A bot with no groups
+   * announces nothing.
    */
-  announceRules: z.array(announceRuleSchema).max(20).default([]),
+  announceGroups: z.array(announceGroupSchema).max(10).default([]),
   /** How many minutes before an idle power-off its warning is said; 0 for never. */
   idleReminderMinutes: z.number().int().min(0).max(120).default(5),
   /** Whether the bot may be given Home Assistant connections to watch. */

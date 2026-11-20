@@ -10,7 +10,7 @@ import { loadResource } from "../resources/resource.js";
 import { announcementFrame, announcementMessage, idleReminderMessage, maintenanceMessage, type Announcement } from "../resources/shop-events.js";
 import type { MaintenanceNotice } from "../deployment-gate.js";
 import { findBotByToken } from "../resources/bot.js";
-import { announcementDestinations, botMessage, type BotMessage } from "@prism/core";
+import { announcementDeliveries, botMessage, type BotMessage } from "@prism/core";
 import {
   applyIdleEvent, climatePower, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake,
   parseIdleSettings, setIdleEmpty, settleIdleOff,
@@ -690,7 +690,8 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /**
    * Something happened at the shop that bots may announce (`Announcement`).
-   * Each bot says it wherever its rules send it (`announcementDestinations`),
+   * Each bot says it once per announcement group that hears it, in that group's
+   * words at its destinations (`announcementDeliveries`),
    * in its own words when it has any, and not at all when it came of the bot's
    * own command: it answered that already.
    */
@@ -703,8 +704,9 @@ export class ShopHub extends BaseDurableObject<Env> {
       try {
         const found = await this.botOf(shopId, attachment.token);
         if (!found || announcement.botId === found.bot.id) continue;
-        const to = announcementDestinations(found.bot.config.announceRules, { key: announcement.key, via: announcement.via ?? null }, found.view.staff);
-        if (to.length) this.sayTo(ws, to, announcementMessage(announcement, found.bot.config.replyTemplates));
+        for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null }, found.view.staff)) {
+          this.sayTo(ws, to, announcementMessage(announcement, templates));
+        }
       } catch {
         // A bot that left misses it.
       }
@@ -785,7 +787,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
       // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
       const reminded = commands && commands.bot.config.idleReminderMinutes > 0
-        && announcementDestinations(commands.bot.config.announceRules, { key: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
+        && announcementDeliveries(commands.bot.config.announceGroups, { key: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
       const lead = reminded ? commands.bot.config.idleReminderMinutes * 60 : undefined;
       const { commands: _was, ...rest } = attachment;
       ws.serializeAttachment({
@@ -1589,8 +1591,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         if (!done || done.told.includes(found.bot.id)) return found.bot.id;
         await this.ctx.storage.put("maintenanceDone", { ...done, told: [...done.told, found.bot.id] } satisfies MaintenanceDone);
       }
-      const to = announcementDestinations(found.bot.config.announceRules, { key: "platform.maintenance", via: "system" }, found.view.staff);
-      if (to.length) this.sayTo(ws, to, maintenanceMessage(notice, found.bot.config.replyTemplates));
+      for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "platform.maintenance", via: "system" }, found.view.staff)) {
+        this.sayTo(ws, to, maintenanceMessage(notice, templates));
+      }
       return found.bot.id;
     } catch {
       // A bot that left misses it.
@@ -1608,8 +1611,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         try {
           const found = await this.botOf(shopId, attachment.token);
           if (!found) continue;
-          const to = announcementDestinations(found.bot.config.announceRules, { key: "idle.reminder", via: "system" }, found.view.staff);
-          if (to.length) this.sayTo(ws, to, idleReminderMessage(notice, found.bot.config.replyTemplates));
+          for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "idle.reminder", via: "system" }, found.view.staff)) {
+            this.sayTo(ws, to, idleReminderMessage(notice, templates));
+          }
         } catch {
           // A bot that left misses it; the power-off happens regardless.
         }

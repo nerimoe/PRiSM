@@ -26,7 +26,7 @@ const base = {
   bot: {
     playerCommands: "all", readOnlyNotice: "请扫码", staffCommands: true, powerOffStaffOnly: false,
     doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
-    announceRules: [], idleReminderMinutes: 5,
+    announceGroups: [], idleReminderMinutes: 5,
   },
 };
 const machines = [
@@ -124,37 +124,42 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
       assert.equal(await page.getByRole("button", { name: "轮换 Bot 凭据", exact: true }).isVisible(), false);
       await page.getByRole("radio", { name: "只读", exact: true }).check();
       await page.getByLabel("只读提示", { exact: true }).fill("请扫码操作");
-      await nav.getByRole("button", { name: "播报设置", exact: true }).click();
-      // A bot announces by rules only: what it listens for, and where it says it.
-      await page.getByRole("button", { name: "添加监听规则", exact: true }).click();
-      const rule = page.getByRole("region", { name: "监听规则 1", exact: true });
-      await rule.getByRole("checkbox", { name: "刷卡", exact: true }).check();
-      await rule.getByLabel("发到", { exact: true }).fill("onebot:42\nonebot:private:10001");
-      await rule.getByRole("checkbox", { name: "同时私聊每位店员", exact: true }).check();
+      await nav.getByRole("button", { name: "播报", exact: true }).click();
+      // A bot announces by groups: who hears it, and for each event whether, from where and in which words.
+      await page.getByRole("button", { name: "新建播报组", exact: true }).click();
+      await page.getByLabel("发到", { exact: true }).fill("onebot:42\nonebot:private:10001");
+      await page.getByRole("checkbox", { name: "同时私聊每位店员", exact: true }).check();
+      await page.getByRole("navigation", { name: "事件", exact: true }).getByRole("button", { name: "刷卡", exact: true }).click();
+      const card = page.getByRole("region", { name: "刷卡", exact: true });
+      await card.getByRole("checkbox", { name: "播报", exact: true }).check();
+      await card.getByRole("button", { name: "编辑文案", exact: true }).click();
+      await card.getByLabel("文案", { exact: true }).fill("{device} 收到 {coins}");
       await nav.getByRole("button", { name: "命令回复", exact: true }).click();
       const replies = page.getByRole("region", { name: "命令回复", exact: true });
       await replies.getByLabel("回复内容", { exact: true }).fill("绑定成功，欢迎光临");
-      await nav.getByRole("button", { name: "播报文案", exact: true }).click();
-      const news = page.getByRole("region", { name: "播报消息", exact: true });
-      await news.getByLabel("播报类型", { exact: true }).selectOption("announce.card");
-      await news.getByLabel("回复内容", { exact: true }).fill("{device} 收到刷卡");
       await nav.getByRole("button", { name: "使用权限", exact: true }).click();
       assert.equal(await page.getByLabel("只读提示", { exact: true }).inputValue(), "请扫码操作");
       await page.getByRole("button", { name: "保存", exact: true }).click();
-      await news.getByRole("alert").waitFor();
-      assert.equal(await nav.getByRole("button", { name: "播报文案", exact: true }).getAttribute("aria-pressed"), "true");
+      // Words naming something the event does not know keep the settings from saving, and show where.
+      await card.getByRole("alert").waitFor();
+      assert.equal(await nav.getByRole("button", { name: "播报", exact: true }).getAttribute("aria-pressed"), "true");
       assert.equal(patches.length, 0, "invalid hidden templates prevent saving");
-      await news.getByLabel("回复内容", { exact: true }).fill("{player} 在 {device} 刷卡");
+      await card.getByLabel("文案", { exact: true }).fill("{player} 在 {device} 刷卡");
       await nav.getByRole("button", { name: "命令回复", exact: true }).click();
       assert.equal(await replies.getByLabel("回复内容", { exact: true }).inputValue(), "绑定成功，欢迎光临");
       await page.getByRole("button", { name: "保存", exact: true }).click();
       await until(() => patches.length > 0, "saving settings across groups");
       assert.equal(patches[0].body.bot.playerCommands, "readonly");
       assert.equal(patches[0].body.bot.readOnlyNotice, "请扫码操作");
-      assert.deepEqual(patches[0].body.bot.announceRules, [
-        { events: ["card"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: true },
-      ]);
-      assert.deepEqual(patches[0].body.bot.replyTemplates, { "bind.success": "绑定成功，欢迎光临", "announce.card.message": "{player} 在 {device} 刷卡" });
+      const [group] = patches[0].body.bot.announceGroups;
+      assert.equal(patches[0].body.bot.announceGroups.length, 1);
+      assert.deepEqual({ ...group, id: undefined }, {
+        id: undefined, name: "播报组 1", to: ["onebot:42", "onebot:private:10001"], staff: true,
+        events: { "card.consumed": { on: true, sources: [] } },
+        templates: { "announce.card.consumed.message": "{player} 在 {device} 刷卡" },
+      });
+      // The bot's own words are only its answers to commands.
+      assert.deepEqual(patches[0].body.bot.replyTemplates, { "bind.success": "绑定成功，欢迎光临" });
       assert.deepEqual(exceptions, []);
     } finally { await browser.close(); }
   }

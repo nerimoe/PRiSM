@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { groupsOf } from "./announce-groups.js";
 import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -84,14 +85,15 @@ describe("a bot is a resource", () => {
 
   it("validates and persists per-bot replies, and can restore defaults", async () => {
     const { bot, createBot, call } = await fixture();
-    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}", "announce.card.consumed.message": "{player} 正在 {device} 刷卡" };
+    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}" };
     const first = await createBot({ replyTemplates: templates });
     const other = await createBot();
     expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
     expect((await bot(other.token).get("bot")).body.settings.replyTemplates).toEqual({});
     for (const replyTemplates of [
       { "wallet.success": "{balnce}" }, { "billing.success": "已结账" },
-      { "unknown.success": "hello" }, { "announce.card.consumed.message": "{player} {unknown}" }, { "announce.idle.reminder.shop_empty": "快关机了" }, { "bind.success": "<at id='all'/>" },
+      // What the bot announces is said in each group's words, not here.
+      { "unknown.success": "hello" }, { "announce.card.consumed.message": "{player} 正在 {device} 刷卡" }, { "bind.success": "<at id='all'/>" },
     ]) {
       const result = await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates } });
       expect(result.status).toBe(422);
@@ -103,32 +105,34 @@ describe("a bot is a resource", () => {
     expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual({});
   });
 
-  it("announces by one list of rules, and refuses an event or a source nobody knows", async () => {
+  it("announces by groups, each a whole table in its own words, and refuses what nobody knows", async () => {
     const { bot, createBot, call } = await fixture();
     const created = await createBot();
-    // A bot with no rules announces nothing.
-    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual([]);
+    // A bot with no groups announces nothing.
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual([]);
     // A group and a person are the same kind of destination; the idle warning is an event like any other.
-    const rules = [
-      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], staff: true },
+    const groups = groupsOf([
+      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], staff: true, templates: { "announce.checkout.settled.message": "{player} 结账了" } },
       { events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false },
-    ];
-    expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules: rules } })).status).toBe(200);
-    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
-    // Other settings leave the rules alone.
+    ]);
+    expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups: groups } })).status).toBe(200);
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
+    // Other settings leave the groups alone.
     await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { playerCommands: "readonly" } });
-    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
-    for (const announceRules of [
-      [{ events: ["card.consumed"], sources: ["phone"], to: [], staff: false }],
-      [{ events: ["nope"], sources: [], to: ["onebot:1"], staff: false }],
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
+    for (const announceGroups of [
+      groupsOf([{ events: ["card.consumed"], sources: ["phone"] }]),
+      groupsOf([{ events: ["nope"], to: ["onebot:1"] }]),
+      groupsOf([{ events: ["card.consumed"], templates: { "announce.card.consumed.message": "{unknown}" } }]),
+      groupsOf([{ events: ["card.consumed"], templates: { "wallet.success": "{balance}" } }]),
     ]) {
-      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceRules } })).status).toBe(422);
+      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups } })).status).toBe(422);
     }
-    // What a bot had before rules is no setting any more.
-    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }]) {
+    // What a bot had before groups is no setting any more.
+    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }, { announceRules: [] }]) {
       expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: old })).status).toBe(422);
     }
-    expect((await bot(created.token).get("bot")).body.settings.announceRules).toEqual(rules);
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
     expect((await bot(created.token).get("bot")).body.settings).not.toHaveProperty("announceChannelIds");
   });
 
@@ -145,7 +149,7 @@ describe("a bot is a resource", () => {
     expect(config.status).toBe(200);
     expect(config.body).toMatchObject({
       bot: { id: created.id, name: "店铺 Bot" },
-      settings: { playerCommands: "readonly", idleReminderMinutes: 10, announceRules: [], staffCommands: true },
+      settings: { playerCommands: "readonly", idleReminderMinutes: 10, announceGroups: groupsOf([]), staffCommands: true },
       currencyName: "猫粮",
       staff: [{ provider: "onebot", subject: "10001" }],
       // The only door, found without being chosen.

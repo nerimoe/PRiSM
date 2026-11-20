@@ -202,42 +202,59 @@ export function isShopAnnouncementSource(value: string): value is ShopAnnounceme
 }
 
 /**
- * One thing a bot listens for and what it does about it: when any of `events`
- * happens, having come from one of `sources` (anywhere, when none is named), it
- * is said at every destination in `to`, and with `staff` to each staff member.
+ * One way a shop's bot announces: a whole table of what it says and where.
+ * A shop may have several, each its own audience: the staff group hearing
+ * every bill in full, a players' group hearing that a machine came on.
  *
- * A destination is wherever the bot can say something, written as the bot
- * addresses it: a group (`onebot:42`) and a person (`onebot:private:10001`)
- * are the same kind of thing. `staff` stands for the private chats of whoever
- * is staff when the event happens, so the rule need not be edited as they
- * come and go.
+ * - `to`: wherever the bot can say something, written as the bot addresses
+ *   it; a group (`onebot:42`) and a person (`onebot:private:10001`) are the
+ *   same kind of thing. `staff` adds the private chat of whoever is staff
+ *   when it happens, so the group need not be edited as they come and go.
+ * - `events`: by catalog key, whether it is said (`on`) and only when it came
+ *   from one of `sources` (anywhere, when empty). A key that is not here is
+ *   off.
+ * - `templates`: this group's own words, keyed as the catalog's templates
+ *   (`announce.<key>.message`, and the notices' own); anything not here is
+ *   said in the catalog's words.
  */
-export type ShopAnnouncementRule = {
-  events: readonly string[];
-  sources: readonly string[];
+export type AnnouncementGroup = {
+  id: string;
+  name: string;
   to: readonly string[];
   staff: boolean;
+  events: Readonly<Record<string, { on: boolean; sources: readonly string[] }>>;
+  templates: Readonly<Record<string, string>>;
 };
 
 /** A staff member's private chat, as a bot is told where to say something. */
 export const staffDestination = (identity: { provider: string; subject: string }) =>
   `${identity.provider}:private:${identity.subject}`;
 
+/** Whether a group says an announcement from where it came. */
+export function groupHears(group: AnnouncementGroup, event: { key: string; via?: string | null }): boolean {
+  const setting = group.events[event.key];
+  if (!setting?.on) return false;
+  return !setting.sources.length || (!!event.via && setting.sources.includes(event.via));
+}
+
 /**
- * Where a bot says an announcement: every destination its rules send it to,
- * each once, in the order the rules name them. Empty when no rule listens for it.
+ * How a bot says an announcement: once per group that hears it, in that
+ * group's words, at that group's destinations. A destination two groups name
+ * hears it once, in the words of the group listed first. Empty when no group
+ * hears it.
  */
-export function announcementDestinations(
-  rules: readonly ShopAnnouncementRule[],
+export function announcementDeliveries(
+  groups: readonly AnnouncementGroup[],
   event: { key: string; via?: string | null },
   staff: readonly { provider: string; subject: string }[],
-): string[] {
-  const to: string[] = [];
-  for (const rule of rules) {
-    if (!rule.events.includes(event.key)) continue;
-    if (rule.sources.length && !(event.via && rule.sources.includes(event.via))) continue;
-    to.push(...rule.to);
-    if (rule.staff) to.push(...staff.map(staffDestination));
+): Array<{ to: string[]; templates: Readonly<Record<string, string>> }> {
+  const said = new Set<string>();
+  const deliveries: Array<{ to: string[]; templates: Readonly<Record<string, string>> }> = [];
+  for (const group of groups) {
+    if (!groupHears(group, event)) continue;
+    const to = [...group.to, ...(group.staff ? staff.map(staffDestination) : [])].filter((one) => !said.has(one));
+    for (const one of to) said.add(one);
+    if (to.length) deliveries.push({ to: [...new Set(to)], templates: group.templates });
   }
-  return [...new Set(to)];
+  return deliveries;
 }

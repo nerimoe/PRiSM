@@ -165,3 +165,36 @@ describe("migration 0053: rules and words name what they announce by the event i
     sqlite.close();
   });
 });
+
+describe("migration 0054: each rule becomes a group with a whole table, in the bot's words", () => {
+  it("turns rules into groups, keeps their destinations and sources, and moves the announcement words into each", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.run(`CREATE TABLE device_capabilities(shop_id TEXT, device_id TEXT, capability TEXT, config_json TEXT, PRIMARY KEY (shop_id, device_id, capability))`);
+    const config = {
+      tokenId: "t",
+      replyTemplates: { "announce.card.consumed.message": "刷了 {device}", "wallet.success": "ok" },
+      announceRules: [
+        { events: ["card.consumed", "idle.reminder"], sources: ["page"], to: ["onebot:1"], staff: true },
+        { events: ["checkout.settled"], sources: [], to: ["onebot:2"], staff: false },
+      ],
+    };
+    sqlite.query("INSERT INTO device_capabilities VALUES ('s','b','bot',?),('s','c','bot','{\"tokenId\":\"u\"}'),('s','m','power','{}')").run(JSON.stringify(config));
+    run(sqlite, "0054_announcement_groups.sql");
+    const read = (id: string) => JSON.parse((sqlite.query("SELECT config_json FROM device_capabilities WHERE device_id = ?").get(id) as { config_json: string }).config_json);
+    const words = { "announce.card.consumed.message": "刷了 {device}" };
+    expect(read("b")).toEqual({
+      tokenId: "t",
+      replyTemplates: { "wallet.success": "ok" },
+      announceGroups: [
+        { id: "group-1", name: "播报组 1", to: ["onebot:1"], staff: true, templates: words,
+          events: { "card.consumed": { on: true, sources: ["page"] }, "idle.reminder": { on: true, sources: ["page"] } } },
+        { id: "group-2", name: "播报组 2", to: ["onebot:2"], staff: false, templates: words,
+          events: { "checkout.settled": { on: true, sources: [] } } },
+      ],
+    });
+    // A bot without rules announces nothing still, and keeps no announcement words.
+    expect(read("c")).toEqual({ tokenId: "u", announceGroups: [], replyTemplates: {} });
+    expect(read("m")).toEqual({});
+    sqlite.close();
+  });
+});

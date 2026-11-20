@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   announcementCatalog,
-  announcementDestinations,
+  announcementDeliveries,
   announcementKeyOf,
   announcementLabel,
   announcementWhere,
@@ -9,7 +9,7 @@ import {
   isShopAnnouncementSource,
   shopAnnouncementSources,
   staffDestination,
-  type ShopAnnouncementRule,
+  type AnnouncementGroup,
 } from "../src/shop-announcements";
 
 describe("shop announcement catalog", () => {
@@ -54,50 +54,39 @@ describe("shop announcement catalog", () => {
   });
 });
 
-describe("where a bot says an announcement", () => {
+describe("how a bot says an announcement", () => {
   const staff = [{ provider: "onebot", subject: "10001" }, { provider: "kook", subject: "k9" }];
-  const rule = (rule: Partial<ShopAnnouncementRule>): ShopAnnouncementRule => ({ events: [], sources: [], to: [], staff: false, ...rule });
+  const group = (group: Partial<AnnouncementGroup>): AnnouncementGroup =>
+    ({ id: "g", name: "播报组", to: [], staff: false, events: {}, templates: {}, ...group });
+  const on = (...keys: string[]) => Object.fromEntries(keys.map((key) => [key, { on: true, sources: [] }]));
 
-  it("says nothing without a rule that listens for it", () => {
-    expect(announcementDestinations([], { key: "card.consumed", via: "relay" }, staff)).toEqual([]);
-    expect(announcementDestinations([rule({ events: ["occupancy.started"], to: ["onebot:42"] })], { key: "card.consumed", via: "relay" }, staff)).toEqual([]);
+  it("says nothing a group does not hear, or hears switched off", () => {
+    expect(announcementDeliveries([], { key: "card.consumed", via: "relay" }, staff)).toEqual([]);
+    expect(announcementDeliveries([group({ events: on("occupancy.started"), to: ["onebot:42"] })], { key: "card.consumed" }, staff)).toEqual([]);
+    expect(announcementDeliveries([group({ events: { "card.consumed": { on: false, sources: [] } }, to: ["onebot:42"] })], { key: "card.consumed" }, staff)).toEqual([]);
   });
 
-  it("treats a group and a person as the same kind of destination", () => {
-    const rules = [rule({ events: ["card.consumed", "idle.reminder"], to: ["onebot:42", "onebot:private:10001"] })];
-    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
-    // The idle warning is an event like any other.
-    expect(announcementDestinations(rules, { key: "idle.reminder", via: "system" }, staff)).toEqual(["onebot:42", "onebot:private:10001"]);
-  });
-
-  it("names staff as whoever they are when it happens", () => {
-    const rules = [rule({ events: ["checkout.settled"], to: ["onebot:99"], staff: true })];
-    expect(announcementDestinations(rules, { key: "checkout.settled" }, staff))
-      .toEqual(["onebot:99", "onebot:private:10001", "kook:private:k9"]);
-    expect(announcementDestinations(rules, { key: "checkout.settled" }, [])).toEqual(["onebot:99"]);
+  it("says it in the group's own words, at a group and a person alike, and to whoever is staff", () => {
+    const templates = { "announce.card.consumed.message": "{player} 来了" };
+    expect(announcementDeliveries([group({ events: on("card.consumed"), to: ["onebot:42", "onebot:private:10001"], staff: true, templates })], { key: "card.consumed" }, staff))
+      .toEqual([{ to: ["onebot:42", "onebot:private:10001", "kook:private:k9"], templates }]);
     expect(staffDestination({ provider: "onebot", subject: "7" })).toBe("onebot:private:7");
   });
 
-  it("hears a rule's events only from the sources it names, and from anywhere when it names none", () => {
-    const rules = [
-      rule({ events: ["checkout.settled", "power.on.sent"], sources: ["page"], staff: true }),
-      rule({ events: ["card.consumed"], to: ["onebot:42"] }),
-    ];
-    expect(announcementDestinations(rules, { key: "checkout.settled", via: "page" }, staff))
-      .toEqual(["onebot:private:10001", "kook:private:k9"]);
-    // The same thing done through a bot, or with no source known, is not what the rule listens for.
-    expect(announcementDestinations(rules, { key: "checkout.settled", via: "bot" }, staff)).toEqual([]);
-    expect(announcementDestinations(rules, { key: "checkout.settled" }, staff)).toEqual([]);
-    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff)).toEqual(["onebot:42"]);
-    expect(announcementDestinations(rules, { key: "card.consumed" }, staff)).toEqual(["onebot:42"]);
+  it("hears an event only from the sources the group names for it, and from anywhere when it names none", () => {
+    const groups = [group({ events: { "checkout.settled": { on: true, sources: ["page"] }, "card.consumed": { on: true, sources: [] } }, to: ["onebot:9"] })];
+    expect(announcementDeliveries(groups, { key: "checkout.settled", via: "page" }, staff)).toHaveLength(1);
+    expect(announcementDeliveries(groups, { key: "checkout.settled", via: "bot" }, staff)).toEqual([]);
+    expect(announcementDeliveries(groups, { key: "checkout.settled" }, staff)).toEqual([]);
+    expect(announcementDeliveries(groups, { key: "card.consumed" }, staff)).toHaveLength(1);
   });
 
-  it("says it once at a place several rules name, in the order the rules name them", () => {
-    const rules = [
-      rule({ events: ["card.consumed"], to: ["onebot:42", "onebot:private:10001"] }),
-      rule({ events: ["card.consumed"], to: ["onebot:7", "onebot:42"], staff: true }),
-    ];
-    expect(announcementDestinations(rules, { key: "card.consumed", via: "relay" }, staff))
-      .toEqual(["onebot:42", "onebot:private:10001", "onebot:7", "kook:private:k9"]);
+  it("says it once per group, and once at a destination two groups name, in the first group's words", () => {
+    const first = group({ id: "a", events: on("card.consumed"), to: ["onebot:42", "onebot:private:10001"], templates: { "announce.card.consumed.message": "A" } });
+    const second = group({ id: "b", events: on("card.consumed"), to: ["onebot:7", "onebot:42"], staff: true, templates: { "announce.card.consumed.message": "B" } });
+    expect(announcementDeliveries([first, second], { key: "card.consumed" }, staff)).toEqual([
+      { to: ["onebot:42", "onebot:private:10001"], templates: first.templates },
+      { to: ["onebot:7", "kook:private:k9"], templates: second.templates },
+    ]);
   });
 });

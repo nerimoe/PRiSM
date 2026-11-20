@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import { groupsOf } from "./announce-groups.js";
 import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -108,7 +109,7 @@ function listening(hub: unknown, sockets: unknown[], lead: number, fails = false
   target.botOf = async () => ({
     bot: {
       id: "bot", name: "Bot", enabled: true,
-      config: { announceRules: [{ events: ["idle.reminder"], sources: [], to: ["onebot:1"], staff: false }], replyTemplates: {}, idleReminderMinutes: lead },
+      config: { announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:1"], staff: false }]), replyTemplates: {}, idleReminderMinutes: lead },
     },
     view: { staff: [] },
   });

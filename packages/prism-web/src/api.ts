@@ -93,7 +93,7 @@ export type Shop = {
  * `to` (a group or a person, as the bot addresses it) and, with `staff`, to
  * each staff member privately.
  */
-export type BotAnnouncementRule = { events: string[]; sources: string[]; to: string[]; staff: boolean };
+export type { AnnouncementGroup } from "@prism/core";
 
 export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
 
@@ -208,8 +208,8 @@ export type BotSettings = {
   receiptsToStaff: boolean;
   /** `login`/`入场` also hands out the door code. */
   doorPasswordOnEntry: boolean;
-  /** Everything the bot announces and where; with no rules it announces nothing. */
-  announceRules: BotAnnouncementRule[];
+  /** Everything the bot announces, where and in which words, one group at a time; with none it announces nothing. */
+  announceGroups: import("@prism/core").AnnouncementGroup[];
   /** Minutes before an idle power-off its warning is said; 0 for never. */
   idleReminderMinutes: number;
 };

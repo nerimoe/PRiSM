@@ -21,7 +21,7 @@ import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, us
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
 import { resourceCapabilities, type CapabilityId } from "./resource-capabilities";
 import { BotReplyEditor } from "./BotReplyEditor";
-import { BotAnnouncementRules } from "./BotAnnouncementRules";
+import { BotAnnouncementGroups } from "./BotAnnouncementGroups";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
 import { idlePath, useIdleSettings } from "./IdlePowerSettings";
@@ -156,7 +156,7 @@ export function ResourceEditor({
     null,
   );
   const [live, setLive] = useState<Resource | null>(value ?? null);
-  const [botPane, setBotPane] = useState<"permissions" | "broadcasts" | "replies" | "messages" | "connection">("permissions");
+  const [botPane, setBotPane] = useState<"permissions" | "broadcasts" | "replies" | "connection">("permissions");
   const [bot, setBot] = useState<BotSettings>(() => ({ ...defaultBotSettings, ...(value?.bot ?? {}) }));
   const changeBot = (patch: Partial<BotSettings>) => setBot((current) => ({ ...current, ...patch }));
   // Shown once, after the bot is created or its token replaced.
@@ -208,6 +208,12 @@ export function ResourceEditor({
       for (const [key, text] of Object.entries(bot.replyTemplates ?? {})) {
         const error = botReplyTemplateError(key, text);
         if (error) return `${key}：${error}`;
+      }
+      for (const group of bot.announceGroups ?? []) {
+        for (const [key, text] of Object.entries(group.templates)) {
+          const error = botReplyTemplateError(key, text);
+          if (error) return `${group.name} · ${key}：${error}`;
+        }
       }
     }
     if (id === "mahjong" && billed && !mahjongPricing.length) return t("请选择一条麻将计费规则");
@@ -371,7 +377,9 @@ export function ResourceEditor({
             setPane(id);
             if (id === "bot") {
               const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text));
-              if (invalid) setBotPane(invalid[0].startsWith("announce.") ? "messages" : "replies");
+              if (invalid) setBotPane("replies");
+              else if ((bot.announceGroups ?? []).some((group) => Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text))))
+                setBotPane("broadcasts");
             }
             throw new Error(reason);
           }
@@ -812,8 +820,7 @@ export function ResourceEditor({
         <CapabilityPane title="店铺 Bot" problem={incomplete("bot")} remove={() => remove("bot")}>
           <nav aria-label={t("Bot 设置")} className="flex flex-wrap gap-1 border-b border-ink/10 pb-3">
             {([
-              ["permissions", "使用权限"], ["broadcasts", "播报设置"], ["replies", "命令回复"],
-              ["messages", "播报文案"], ["connection", "接入凭据"],
+              ["permissions", "使用权限"], ["broadcasts", "播报"], ["replies", "命令回复"], ["connection", "接入凭据"],
             ] as const).map(([id, label]) => (
               <button key={id} type="button" aria-pressed={botPane === id}
                 className={`focus-ring rounded-lg px-2.5 py-2 text-xs transition-colors ${botPane === id ? "bg-mint/10 font-semibold text-ink" : "text-ink/55 hover:bg-ink/5 hover:text-ink"}`}
@@ -885,10 +892,9 @@ export function ResourceEditor({
             </div>
           </div>
           <div hidden={botPane !== "broadcasts"}>
-            <fieldset className="grid gap-3">
-              <legend className="mb-1 text-sm font-medium">{t("播报与提醒")}</legend>
-              <BotAnnouncementRules value={bot.announceRules ?? []} onChange={(announceRules) => changeBot({ announceRules })} />
-              <Field label="提醒提前量" unit="分钟">
+            <div className="grid gap-4">
+              <BotAnnouncementGroups value={bot.announceGroups ?? []} onChange={(announceGroups) => changeBot({ announceGroups })} />
+              <Field label="闲置关机提醒提前量" unit="分钟">
                 <input
                   className={input}
                   type="number"
@@ -901,16 +907,13 @@ export function ResourceEditor({
               <details className="border-t border-ink/10 pt-3 text-xs text-ink/55">
                 <summary className="cursor-pointer">{t("播报说明")}</summary>
                 <p className="mt-2 leading-relaxed">
-                {t("现场事件由机台和 Home Assistant 上报，无论从哪里操作都只播报一次。平台操作只表示有人在平台发起了请求，不代表机器已执行。两组都勾选会各播报一次。机台投币、开局扣币等需要机台开启 cabinetMonitor。闲置提醒也是一种事件，勾选它的规则发到哪里就提醒到哪里；提前量为 0 时不提醒。同一条动态被多条规则发到同一个地方只说一次。本 Bot 自己执行的命令不会再次播报。")}
+                {t("「尝试」是有人要求做某件事，以及结果：已发出表示机器接受了命令，不代表真的完成。「事实」是真的发生了的事，比如机器开了、游戏读到了卡。同时勾选会各播报一次。每个播报组各自决定播什么、怎么说、发到哪里；同一个地方被两个组都选中时只说一次。本 Bot 自己执行的命令不会再播报。提前量为 0 时不发闲置关机提醒。")}
                 </p>
               </details>
-            </fieldset>
+            </div>
           </div>
           <div hidden={botPane !== "replies"}>
             <BotReplyEditor value={bot.replyTemplates ?? {}} onChange={replyTemplates => changeBot({ replyTemplates })} />
-          </div>
-          <div hidden={botPane !== "messages"}>
-            <BotReplyEditor announcements value={bot.replyTemplates ?? {}} onChange={replyTemplates => changeBot({ replyTemplates })} />
           </div>
           <div hidden={botPane !== "connection"}>
             <BotTokenPanel live={live} hasBotToken={!!live?.hasBotToken} />
@@ -953,7 +956,7 @@ const defaultBotSettings: BotSettings = {
   doorResourceId: null,
   receiptsToStaff: false,
   doorPasswordOnEntry: false,
-  announceRules: [],
+  announceGroups: [],
   idleReminderMinutes: 5,
 };
 

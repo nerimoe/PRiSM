@@ -9,7 +9,7 @@ import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
-import { announceRuleSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
+import { announceGroupSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
 import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
@@ -550,7 +550,7 @@ const machineInput=z.object({
     receiptsToStaff:z.boolean().optional(),
     doorPasswordOnEntry:z.boolean().optional(),
     idleReminderMinutes:z.number().int().min(0).max(120).optional(),
-    announceRules:z.array(announceRuleSchema).max(20).optional(),
+    announceGroups:z.array(announceGroupSchema).max(10).optional(),
   }).strict().nullable().optional(),
   rotateBotToken:z.boolean().optional(),
   // Billing: the group whose default plan the resource bills (null or

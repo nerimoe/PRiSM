@@ -1,14 +1,13 @@
 import { useId, useState } from "react";
-import { botMessage, botMessageText, botAnnouncementTemplates, announcementCatalog, announcementLabel, botReplyCommands, botReplyTemplates, botReplyTemplateError, renderBotReplyTemplate } from "@prism/core";
+import { botMessage, botMessageText, botReplyCommands, botReplyTemplates, botReplyTemplateError, renderBotReplyTemplate } from "@prism/core";
 import { useI18n } from "../../i18n";
 import { buttonQuiet, input } from "./shared";
 
-export function BotReplyEditor({ value, onChange, announcements = false }: { announcements?: boolean; value: Record<string, string>; onChange: (value: Record<string, string>) => void }) {
+export function BotReplyEditor({ value, onChange }: { value: Record<string, string>; onChange: (value: Record<string, string>) => void }) {
   const { t } = useI18n();
   const helpId = useId();
-  const commands: ReadonlyArray<readonly [string, string]> = announcements
-    ? announcementCatalog.map(item => [`announce.${item.key}`, announcementLabel(item.key)] as const) : botReplyCommands;
-  const catalog = announcements ? botAnnouncementTemplates : botReplyTemplates;
+  const commands: ReadonlyArray<readonly [string, string]> = botReplyCommands;
+  const catalog = botReplyTemplates;
   const [command, setCommand] = useState<string>(commands[0]![0]);
   const [scene, setScene] = useState("bind.success");
   const choices = catalog.filter(item => item.key.startsWith(`${command}.`));
@@ -23,14 +22,14 @@ export function BotReplyEditor({ value, onChange, announcements = false }: { ann
   };
   const preview = renderBotReplyTemplate(definition.key, { [definition.key]: text || definition.text }, botMessage(definition.text), definition.samples);
   return (
-    <section aria-label={t(announcements ? "播报消息" : "命令回复")} className="grid gap-3">
-      <h4 className="text-sm font-semibold">{t(announcements ? "播报消息" : "命令回复")}</h4>
+    <section aria-label={t("命令回复")} className="grid gap-3">
+      <h4 className="text-sm font-semibold">{t("命令回复")}</h4>
       <div className="grid gap-3">
         <p className="text-xs text-ink/55">{t("仅修改当前 Bot 的消息。留空使用系统默认；预览为示例数据，保存资源后生效。")}</p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="grid gap-1 text-sm">{t(announcements ? "播报类型" : "命令")}
-            <select aria-label={t(announcements ? "播报类型" : "命令")} className={input} value={command} onChange={event => { setCommand(event.target.value); setScene(""); }}>
-              {commands.map(([key, label]) => <option key={key} value={key}>{t(label)}{!announcements && ` · ${key}`}</option>)}
+          <label className="grid gap-1 text-sm">{t("命令")}
+            <select aria-label={t("命令")} className={input} value={command} onChange={event => { setCommand(event.target.value); setScene(""); }}>
+              {commands.map(([key, label]) => <option key={key} value={key}>{t(label)}{` · ${key}`}</option>)}
             </select>
           </label>
           <label className="grid gap-1 text-sm">{t("回复场景")}
