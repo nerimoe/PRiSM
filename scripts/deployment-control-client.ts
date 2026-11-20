@@ -36,6 +36,30 @@ export async function deploymentHealth(options: Omit<Options, "token">): Promise
   throw new Error(`Public health check timed out (${last}); expected release ${options.revision.slice(0, 12)} after resume was not confirmed`);
 }
 
+/**
+ * Ask the live Worker, whichever release it is, to tell every shop's bots about
+ * this deployment. The number of shops told, or null when the live release
+ * does not take notices (it predates them, or does not know this run).
+ */
+export async function sendMaintenanceNotice(
+  options: { origin: URL; token: string; fetch?: typeof fetch },
+  notice: { stage: "ahead"; minutes: number; expectedMinutes: number } | { stage: "done" },
+): Promise<number | null> {
+  const request = options.fetch ?? fetch;
+  const response = await request(new URL(deploymentControlPath, options.origin), {
+    method: "POST", headers: { authorization: `Bearer ${options.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ action: "notice", ...notice }), signal: AbortSignal.timeout(60_000), redirect: "error",
+  });
+  if (response.status === 404) return null;
+  const text = await response.text().catch(() => "");
+  let result: { ok?: boolean; told?: number; error?: unknown } = {};
+  try { result = JSON.parse(text); } catch { /* an edge error page */ }
+  if (!response.ok || result.ok !== true) {
+    throw new Error(`HTTP ${response.status}${typeof result.error === "string" ? `: ${result.error}` : text ? `: ${text.replace(/\s+/g, " ").slice(0, 200)}` : ""}`);
+  }
+  return typeof result.told === "number" ? result.told : 0;
+}
+
 /** A new upload can reach the domain after Wrangler reports deployment success. */
 export async function deploymentRequest(options: Options, body: Record<string, unknown>, expectedPhase?: string): Promise<Result> {
   const request = options.fetch ?? fetch;

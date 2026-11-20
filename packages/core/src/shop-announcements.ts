@@ -29,6 +29,7 @@ export const shopAnnouncementCatalog = [
   { type: "request.card", label: "通过平台刷卡", family: "request" },
   { type: "request.coin", label: "通过平台投币", family: "request" },
   { type: "idle.reminder", label: "闲置关机提醒", family: "notice" },
+  { type: "platform.maintenance", label: "系统维护", family: "notice" },
   { type: "session.started", label: "入场", family: "shop" },
   { type: "session.stopped", label: "停止计费", family: "shop" },
   { type: "checkout.settled", label: "结账", family: "shop" },

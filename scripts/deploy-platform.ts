@@ -7,6 +7,8 @@ import { deploymentHealth, deploymentRequest } from "./deployment-control-client
 import { deploymentControlPath } from "../packages/server/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
 import { deployWorker, deploymentCommand as command, tailLines } from "./deploy-worker";
+import { enterDeployQueue, type DeployTurn } from "./deploy-queue";
+import { sendMaintenanceNotice } from "./deployment-control-client";
 
 assertDeploymentBranch(process.env);
 
@@ -21,6 +23,31 @@ if (origin.protocol !== "https:" || origin.origin !== base.vars.APP_ORIGIN)
 const revision = (await command(["git", "rev-parse", "HEAD"], true)).trim();
 if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Cannot determine release revision");
 const token = randomToken(48), tokenHash = await sha256(token);
+const committedAt = Number((await command(["git", "log", "-1", "--format=%ct", "HEAD"], true)).trim()) * 1000;
+if (!Number.isSafeInteger(committedAt) || committedAt <= 0) throw new Error("Cannot determine the release's commit time");
+/** Minutes the shops' bots are told ahead of the maintenance, and then waited. 0: no notice, no wait. */
+const noticeMinutes = minutesSetting("PRISM_MAINTENANCE_NOTICE_MINUTES", 0, 0, 15);
+/** How long the bots are told the maintenance will take. */
+const expectedMinutes = minutesSetting("PRISM_MAINTENANCE_EXPECTED_MINUTES", 3, 1, 60);
+
+function minutesSetting(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${name} must be a whole number of minutes from ${min} to ${max}`);
+  return value;
+}
+
+/** One statement on the target D1, through Wrangler, with its rows. */
+async function sql(statement: string): Promise<Array<Record<string, unknown>>> {
+  const output = await command(["wrangler", "d1", "execute", "DB", "--remote", "--config", configPath, "--json", "--command", statement], true);
+  try {
+    const answers = JSON.parse(output) as Array<{ results?: Array<Record<string, unknown>> }>;
+    return answers.at(-1)?.results ?? [];
+  } catch {
+    throw new Error(`D1 did not answer JSON:\n${tailLines(output)}`);
+  }
+}
 const files = (await readdir(resolve(root, "migrations"))).filter(name => name.endsWith(".sql"))
   .sort((a, b) => parseInt(a) - parseInt(b) || (a < b ? -1 : a > b ? 1 : 0));
 if (files.some(name => !/^\d+_[a-z0-9_-]+\.sql$/.test(name))) throw new Error("Unsupported migration filename");
@@ -45,10 +72,58 @@ const controlOptions = { origin, token, revision, sleep: (milliseconds: number) 
 let activePhase: string | undefined;
 const control = (body: Record<string, unknown>) => deploymentRequest(controlOptions, body, activePhase);
 
+let turn: Extract<DeployTurn, { kind: "deploy" }> | null = null;
+/** The live Worker accepts notices only from the run holding the turn; without one there is none to send. */
+let skipNotices = false;
+let beating: ReturnType<typeof setInterval> | null = null;
 const steps: PlatformDeploymentSteps = {
   async preflight() {
     // Compile every phase before changing the live Worker or database.
     for (const phase of configs.keys()) await command([...deploymentArgs(phase), "--dry-run"]);
+  },
+  async queue() {
+    let entered: DeployTurn;
+    try {
+      entered = await enterDeployQueue({ sql, revision, committedAt, noticeHash: tokenHash, sleep: (ms) => Bun.sleep(ms) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("Gave up waiting")) throw error;
+      // Without the queue (the API token may not write to D1) the deployment goes on as before: alone, unannounced.
+      console.warn(`Deploy queue unavailable; deploying without taking turns or telling the shops:
+${message}`);
+      skipNotices = true;
+      return "deploy";
+    }
+    if (entered.kind === "superseded") {
+      console.log(`A newer commit (${entered.by.slice(0, 12)}) is deploying or deployed; ${revision.slice(0, 12)} steps aside and changes nothing.`);
+      return "superseded";
+    }
+    turn = entered;
+    // Keep the turn while the slow steps run; a run that stops saying so is taken for gone.
+    beating = setInterval(() => { void turn?.heartbeat().catch((error) => console.warn(`Deploy queue heartbeat failed: ${error instanceof Error ? error.message : String(error)}`)); }, 30_000);
+    console.log(`Deploy turn taken for ${revision.slice(0, 12)}.`);
+    return "deploy";
+  },
+  async announce(stage) {
+    if (skipNotices || (stage === "ahead" && noticeMinutes === 0)) return;
+    const told = await sendMaintenanceNotice(
+      { origin, token },
+      stage === "ahead" ? { stage, minutes: noticeMinutes, expectedMinutes } : { stage },
+    );
+    if (told === null) {
+      // The live release predates notices: nobody was told, so nobody is waited for.
+      console.log("The live Worker does not take maintenance notices yet; going on without one.");
+      return;
+    }
+    console.log(`Maintenance notice (${stage}) sent to ${told} shop(s).`);
+    if (stage === "ahead") {
+      console.log(`Waiting ${noticeMinutes} minute(s) before maintenance, as the shops were told.`);
+      await Bun.sleep(noticeMinutes * 60_000);
+    }
+  },
+  async release(deployed) {
+    if (beating) clearInterval(beating);
+    await turn?.finish(deployed);
   },
   async deploy(phase) {
     console.log(`Deploying ${phase} phase for ${base.name} (${revision.slice(0, 12)})`);
@@ -95,7 +170,9 @@ const steps: PlatformDeploymentSteps = {
 try {
   if (Bun.argv.includes("--dry-run")) await steps.preflight();
   else await deployPlatform(steps);
+  if (beating) clearInterval(beating);
 } catch (error) {
+  if (beating) clearInterval(beating);
   // The last thing in the log: which step, why, and what state it left, above any stack.
   const recovery = resolve(folder, "recovery.json");
   console.error([

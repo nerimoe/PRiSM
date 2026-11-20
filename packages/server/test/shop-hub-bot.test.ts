@@ -202,6 +202,36 @@ describe("bot connection", () => {
     sqlite.close();
   });
 
+  it("says a deployment ahead where its rules send it, and that it is over once, when the bot is back", async () => {
+    const { hub, ws, sqlite } = await fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`,
+      [JSON.stringify({ tokenId: "t1", announceRules: [{ events: ["platform.maintenance"], sources: [], to: ["onebot:42"], staff: false }] })],
+    );
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    const said = () => ws.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "say")
+      .map((frame) => [frame.to, (frame.message as Array<{ text?: string }>).map((part) => part.text ?? "").join("")]);
+    await hub.maintenance({ stage: "ahead", minutes: 5, expectedMinutes: 3 });
+    expect(said()).toEqual([["onebot:42", "🛠 5 分钟后开始后端维护，预计 3 分钟内完成，期间暂停服务"]]);
+    // Over while the bot is connected: said now, and not again when it says hello after the platform restarted.
+    await hub.maintenance({ stage: "done" });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    expect(said().slice(1)).toEqual([["onebot:42", "✅ 后端维护完成，服务已恢复"]]);
+    // Over while it was away: said when it is back.
+    ws.sent.length = 0;
+    await hub.maintenance({ stage: "ahead", minutes: 5, expectedMinutes: 3 });
+    const away = ws.deserializeAttachment();
+    ws.serializeAttachment(null);
+    await hub.maintenance({ stage: "done" });
+    ws.serializeAttachment(away);
+    expect(said().map(([, text]) => text)).toEqual(["🛠 5 分钟后开始后端维护，预计 3 分钟内完成，期间暂停服务"]);
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    expect(said().map(([, text]) => text).at(-1)).toBe("✅ 后端维护完成，服务已恢复");
+    sqlite.close();
+  });
+
   it("plans an idle reminder only for a bot whose rules say it somewhere, by the lead it is set to", async () => {
     const { hub, ws, sqlite, state } = await fixture();
     sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");

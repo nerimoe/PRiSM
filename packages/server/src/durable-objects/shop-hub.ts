@@ -7,7 +7,8 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
-import { announcementMessage, idleReminderMessage, shopEventFrame } from "../resources/shop-events.js";
+import { announcementMessage, idleReminderMessage, maintenanceMessage, shopEventFrame } from "../resources/shop-events.js";
+import type { MaintenanceNotice } from "../deployment-gate.js";
 import { findBotByToken } from "../resources/bot.js";
 import { announcementDestinations, botMessage, type BotMessage } from "@prism/core";
 import type { ShopEvent } from "../resources/shop-events.js";
@@ -90,6 +91,11 @@ try {
  */
 export const LEASE_MS = 150_000;
 /** A watcher that failed is not chosen again for this long, while others exist. */
+/** How long after a deployment a bot that comes back is still told it is over. */
+const MAINTENANCE_DONE_MS = 15 * 60_000;
+/** A deployment that is over, and the bots already told. */
+type MaintenanceDone = { at: number; told: string[] };
+
 const BENCH_MS = 5 * 60_000;
 /**
  * The default number of clients watching at once. The second keeps the state flowing while the first
@@ -800,6 +806,9 @@ export class ShopHub extends BaseDurableObject<Env> {
         ...(commands ? { commands: true as const } : {}),
       } satisfies BotAttachment);
       if (frame.ha && (!commands || commands.bot.enabled)) await this.botOnline(shopId, id, frame.name ?? commands?.bot.name);
+      // Back after a deployment: say it is over, if it was over lately and this bot has not heard.
+      const done = commands ? await this.ctx.storage.get<MaintenanceDone>("maintenanceDone") : undefined;
+      if (done && Date.now() - done.at <= MAINTENANCE_DONE_MS) await this.sayMaintenance(ws, { stage: "done" });
       // Reminders may now be due earlier than the next planned check.
       await this.touch(shopId);
       return;
@@ -1565,6 +1574,39 @@ export class ShopHub extends BaseDurableObject<Env> {
       .map((ws) => (ws.deserializeAttachment() as BotAttachment | null)?.reminderLeadMs)
       .filter((lead): lead is number => typeof lead === "number");
     return leads.length ? Math.max(...leads) : null;
+  }
+
+  /**
+   * A deployment ahead or over, said where each bot's rules send
+   * `platform.maintenance`. Bots lose their connection while the platform is
+   * replaced, so `done` is also kept a while and said to each bot when it says
+   * hello again, once.
+   */
+  async maintenance(notice: MaintenanceNotice): Promise<void> {
+    if (notice.stage === "done") await this.ctx.storage.put("maintenanceDone", { at: Date.now(), told: [] } satisfies MaintenanceDone);
+    else await this.ctx.storage.delete("maintenanceDone");
+    for (const ws of this.bots()) await this.sayMaintenance(ws, notice);
+  }
+
+  /** Say a maintenance notice to one bot, by its rules. Returns the bot's id when it was one the shop knows. */
+  private async sayMaintenance(ws: WebSocket, notice: MaintenanceNotice): Promise<string | null> {
+    const attachment = ws.deserializeAttachment() as BotAttachment | null;
+    if (!attachment?.commands) return null;
+    try {
+      const found = await this.botOf((await this.shopId()) ?? "", attachment.token);
+      if (!found) return null;
+      if (notice.stage === "done") {
+        const done = await this.ctx.storage.get<MaintenanceDone>("maintenanceDone");
+        if (!done || done.told.includes(found.bot.id)) return found.bot.id;
+        await this.ctx.storage.put("maintenanceDone", { ...done, told: [...done.told, found.bot.id] } satisfies MaintenanceDone);
+      }
+      const to = announcementDestinations(found.bot.config.announceRules, { type: "platform.maintenance", via: "system" }, found.view.staff);
+      if (to.length) this.sayTo(ws, to, maintenanceMessage(notice, found.bot.config.replyTemplates));
+      return found.bot.id;
+    } catch {
+      // A bot that left misses it.
+      return null;
+    }
   }
 
   /** An idle power-off ahead: an announcement like any other, said where each bot's rules send `idle.reminder`. */

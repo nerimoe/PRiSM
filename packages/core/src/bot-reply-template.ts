@@ -80,6 +80,10 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
   // A refused checkout says why; when the balance was short, the bill as it stands follows as {bill}.
   reply(`announce.checkout.refused.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.refused")!.label,
     "⛔ {player} 结账失败：{reason}", { player: "小明", reason: "余额不足", bill: "⛔ 结账失败：余额不足\n玩家：小明\n预计结账后余额：余额不足（还差 5元）" }, []),
+  // Said by the platform for every shop around a deployment: ahead of it, and once it is over.
+  reply("announce.platform.maintenance.ahead", "系统维护预告", "🛠 {minutes} 分钟后开始后端维护，预计 {expected} 分钟内完成，期间暂停服务",
+    { minutes: "5", expected: "3" }, ["minutes"]),
+  reply("announce.platform.maintenance.done", "系统维护完成", "✅ 后端维护完成，服务已恢复"),
   reply("announce.idle.reminder.shop_empty", "店内无人", "店里没人，{minutes} 分钟后全部关机", { minutes: "5" }, ["minutes"]),
   reply("announce.idle.reminder.device_idle", "设备闲置", "{devices} 闲置中，{minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟", { devices: "舞萌、中二", minutes: "5" }, ["devices", "minutes"]),
 ];

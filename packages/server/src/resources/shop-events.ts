@@ -12,6 +12,7 @@ import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { botMessage, renderBotReplyTemplate, shopAnnouncementLabel, type BotMessage, type ShopAnnouncementType } from "@prism/core";
 import type { Env } from "../bindings.js";
 import { sendShopEvent } from "../durable-objects/shop-hub-client.js";
+import type { MaintenanceNotice } from "../deployment-gate.js";
 
 export type EventPlayer = {
   playerId: string;
@@ -106,6 +107,7 @@ export function announcementText(event: ShopEvent): string {
     case "cabinet.consumed": return `🎮 ${place} 开局消耗 ${n("credits")} 币，剩余 ${n("credit")} 币`;
     case "cabinet.reset": return `🧾 ${place} 投币计数已清零`;
     case "idle.reminder": return `${shopAnnouncementLabel(event.type)}：${place}`;
+    case "platform.maintenance": return shopAnnouncementLabel(event.type);
     case "session.started": return `🚪 ${actor} 入场`;
     case "session.stopped": return `⏹ ${actor} 停止了一项计费`;
     case "checkout.settled": return `🧾 ${actor} 结账 ${text("amount")}`;
@@ -154,6 +156,17 @@ export function idleReminderMessage(notice: Parameters<typeof idleReminderText>[
     devices: notice.devices.map(device => device.name).join("、"),
     minutes: String(Math.max(1, Math.round((notice.at - now) / 60_000))),
   });
+}
+
+/** What a bot says around a deployment, in the shop's own words when it has any. */
+export function maintenanceMessage(notice: MaintenanceNotice, templates?: Record<string, string>): BotMessage {
+  if (notice.stage === "done") {
+    return renderBotReplyTemplate("announce.platform.maintenance.done", templates, botMessage("✅ 后端维护完成，服务已恢复"));
+  }
+  const minutes = String(notice.minutes);
+  const expected = String(notice.expectedMinutes);
+  return renderBotReplyTemplate("announce.platform.maintenance.ahead", templates,
+    botMessage(`🛠 ${minutes} 分钟后开始后端维护，预计 ${expected} 分钟内完成，期间暂停服务`), { minutes, expected });
 }
 
 /** Tell the shop's bots. Best effort: an event that cannot be sent is logged and dropped. */

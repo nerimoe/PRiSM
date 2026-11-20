@@ -110,3 +110,26 @@ describe("migration 0051: a bot announces by one list of rules", () => {
     sqlite.close();
   });
 });
+
+describe("migration 0052: rules that warn of idle power-offs hear of maintenance too", () => {
+  it("adds platform.maintenance once, only where the idle warning is heard", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.run(`CREATE TABLE device_capabilities(shop_id TEXT, device_id TEXT, capability TEXT, config_json TEXT, PRIMARY KEY (shop_id, device_id, capability))`);
+    const rules = [
+      { events: ["card", "idle.reminder"], sources: [], to: ["onebot:1"], staff: false },
+      { events: ["card"], sources: ["page"], to: [], staff: true },
+      { events: ["idle.reminder", "platform.maintenance"], sources: [], to: ["onebot:2"], staff: false },
+    ];
+    sqlite.query("INSERT INTO device_capabilities VALUES ('s','b','bot',?),('s','c','bot','{\"tokenId\":\"u\"}'),('s','m','power',?)")
+      .run(JSON.stringify({ tokenId: "t", announceRules: rules }), JSON.stringify({ announceRules: [{ events: ["idle.reminder"] }] }));
+    run(sqlite, "0052_maintenance_announcements.sql");
+    const config = (id: string) => JSON.parse((sqlite.query("SELECT config_json FROM device_capabilities WHERE device_id = ?").get(id) as { config_json: string }).config_json);
+    expect(config("b").announceRules.map((rule: { events: string[] }) => rule.events)).toEqual([
+      ["card", "idle.reminder", "platform.maintenance"], ["card"], ["idle.reminder", "platform.maintenance"],
+    ]);
+    expect(config("b").announceRules[0]).toMatchObject({ to: ["onebot:1"], staff: false });
+    expect(config("c")).toEqual({ tokenId: "u" });
+    expect(config("m").announceRules[0].events).toEqual(["idle.reminder"]);
+    sqlite.close();
+  });
+});

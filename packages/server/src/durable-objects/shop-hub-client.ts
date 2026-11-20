@@ -5,6 +5,7 @@
 import type { Env } from "../bindings.js";
 import type { HaReport } from "../hardware/aimeio-relay.js";
 import type { IdleSignal } from "../resources/capabilities/idle-power.js";
+import type { MaintenanceNotice } from "../deployment-gate.js";
 
 type ShopHubNamespace = {
   getByName(name: string): {
@@ -23,6 +24,7 @@ type ShopHubNamespace = {
     connectedBots(): Promise<string[]>;
     shopEvent(event: Record<string, unknown>): Promise<void>;
     idleSchedule(): Promise<Record<string, number>>;
+    maintenance(notice: MaintenanceNotice): Promise<void>;
   };
 };
 

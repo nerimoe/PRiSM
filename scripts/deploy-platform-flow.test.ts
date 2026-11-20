@@ -43,3 +43,39 @@ test("an unconfirmed emergency block is reported instead of claiming maintenance
   expect(message.startsWith('Deployment step "health" failed')).toBe(true);
   expect(calls).toContain("resume");
 });
+
+function queued(turn: "deploy" | "superseded", fail?: string, announceFails = false) {
+  const { calls, steps } = fixture(fail);
+  steps.queue = async () => { calls.push("queue"); return turn; };
+  steps.announce = async (stage) => { calls.push(`announce:${stage}`); if (announceFails) throw new Error("bots unreachable"); };
+  steps.release = async (deployed) => { calls.push(`release:${deployed}`); };
+  return { calls, steps };
+}
+
+test("a run takes its turn, warns the shops before maintenance, says it is over after health, then gives the turn up", async () => {
+  const { calls, steps } = queued("deploy");
+  expect(await deployPlatform(steps)).toBe("deployed");
+  expect(calls).toEqual([
+    "preflight", "queue", "announce:ahead", "deploy:maintenance", "begin", "checkpoint", "migrate",
+    "deploy:verify", "convert", "check", "deploy:live", "resume", "health", "announce:done", "release:true",
+  ]);
+});
+
+test("a run a newer commit supersedes changes nothing", async () => {
+  const { calls, steps } = queued("superseded");
+  expect(await deployPlatform(steps)).toBe("superseded");
+  expect(calls).toEqual(["preflight", "queue"]);
+});
+
+test("a notice that cannot be sent does not stop the deployment", async () => {
+  const { calls, steps } = queued("deploy", undefined, true);
+  expect(await deployPlatform(steps)).toBe("deployed");
+  expect(calls.at(-1)).toBe("release:true");
+});
+
+test("a failed run fences, gives its turn up as nothing, and tells no one it is over", async () => {
+  const { calls, steps } = queued("deploy", "migrate");
+  await expect(deployPlatform(steps)).rejects.toThrow('Deployment step "migrate" failed');
+  expect(calls.slice(-3)).toEqual(["migrate", "block", "release:false"]);
+  expect(calls).not.toContain("announce:done");
+});

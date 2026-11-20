@@ -56,7 +56,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - **店内动态**：发生在店里、Bot 可以播报的事。每条有 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`）、`via`（从哪里进入平台），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台规则里的事件列表也从它生成。分四组，**请求和事件互不关联**：
   - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。
   - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。
-  - **提醒**：`idle.reminder`（闲置关机预告）。它和其它动态一样由规则决定发到哪里，只是由 Hub 在预告时间发出。
+  - **提醒**：`idle.reminder`（闲置关机预告）。它和其它动态一样由规则决定发到哪里，只是由 Hub 在预告时间发出。 `platform.maintenance`（系统维护）也属于这一组：部署新版本前，平台按构建变量 `PRISM_MAINTENANCE_NOTICE_MINUTES` 提前告诉每家店的 Bot「N 分钟后开始后端维护，预计 M 分钟内完成」，上线并通过健康检查后再说「后端维护完成」。部署期间 Bot 会断线重连，所以完成通知在 Hub 里保留 15 分钟，Bot 重连发 hello 时补说一次，每个 Bot 只说一次。部署失败时平台停在维护状态、Bot 连不上，不会有完成通知。迁移 `0052` 给已经监听 `idle.reminder` 的规则加上了它。
   - **店铺动态**（没有设备参与的事，来自业务事实和被拒绝的请求）：`session.started`（入场）、`session.stopped`（停止计费）、`checkout.settled`（结账，`detail.amount` 是金额；播报的是**完整账单**：游玩时段、各计费方案、折扣与封顶、余额变化，措辞与 Bot 自己的结账回执相同，标题为「🧾 结账账单」。账单来自结账事实的 `payload.bill`，即结账时实际收费的明细，事后不再重算；记不下账单时只播金额）、`checkout.refused`（结账失败：店铺的规则拒绝了这次结账，什么都没扣，计费照常继续；`detail.reason` 是原因，`detail.code` 是错误码。余额不足时附上此刻的预览账单，播报里能看到还差多少，标题为「⛔ 结账失败：余额不足」；其他原因只播一行。没有可结的账单、前台预览过期需要重看，不算失败，不播报）、`wallet.adjusted`（调整余额，`detail.amount` 带正负号）、`gift.redeemed`（兑换礼物）、`request.refused`（设备请求被拒绝，`detail` 带 `action`、`reason`、`code`）。没有设备时 `resourceId`／`resourceName` 为空字符串。
   `via` 的取值：`page` 扫码页、`merchant` 商户后台、`bot`、`api`、`relay` 机台、`ha` Home Assistant、`system` 平台规则（目录在 `shopAnnouncementSources`）。HA 看到的电源变化是 `ha`，闲置关机及其预告是 `system`。
   **说什么由平台写**：每条动态的话由平台写好（`resources/shop-events.ts` 的 `announcementText`），格式见下文「Bot 消息」；没有玩家时平台直接写好（如「未绑定的卡」）。Bot 收到就发，不自己判断播不播、怎么措辞，平台新增类型或改措辞都不用更新插件。Bot 设置一改就会收到 `config.changed`，Hub 下一条动态就按新规则发。
@@ -91,7 +91,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 ### 播报消息模板
 
-同一 Bot 编辑页的「播报消息」可以编辑所有播报类型：开关机、刷卡、上机、机台投币、开局扣币、计数清零、平台操作和闲置关机提醒。店内无人、单台设备闲置分别设置。模板存入同一个 `replyTemplates`，键为 `announce.<事件类型>.message`；闲置提醒为 `announce.idle.reminder.shop_empty` 和 `announce.idle.reminder.device_idle`。
+同一 Bot 编辑页的「播报消息」可以编辑所有播报类型：开关机、刷卡、上机、机台投币、开局扣币、计数清零、平台操作和闲置关机提醒。店内无人、单台设备闲置分别设置。模板存入同一个 `replyTemplates`，键为 `announce.<事件类型>.message`；闲置提醒为 `announce.idle.reminder.shop_empty` 和 `announce.idle.reminder.device_idle`。系统维护为 `announce.platform.maintenance.ahead`（变量 `{minutes}` 必须保留，`{expected}` 是预计时长）和 `announce.platform.maintenance.done`。
 
 事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。结账默认就是整份账单 `{bill}`，还可用 `{player}` 和 `{amount}`；结账失败可用 `{player}`、`{reason}` 和 `{bill}`（只有余额不足时有内容）；三者都可以不写，例如写成 `{player} 结账 {amount}` 就只播一行。其他类型界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
 
