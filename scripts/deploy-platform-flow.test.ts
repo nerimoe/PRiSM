@@ -37,6 +37,9 @@ test("an unconfirmed emergency block is reported instead of claiming maintenance
   const { calls, steps } = fixture("health");
   const original = steps.control;
   steps.control = async action => { if (action === "block") throw new Error("network down"); await original(action); };
-  await expect(deployPlatform(steps)).rejects.toThrow("unable to confirm maintenance");
+  const message = await deployPlatform(steps).then(() => "", (error: Error) => error.message);
+  expect(message).toContain("unable to confirm maintenance (network down)");
+  // The step that failed is named in the message itself, not only in its cause.
+  expect(message.startsWith('Deployment step "health" failed')).toBe(true);
   expect(calls).toContain("resume");
 });

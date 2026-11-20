@@ -36,7 +36,14 @@ export async function deployPlatform(steps: PlatformDeploymentSteps): Promise<vo
   } catch (error) {
     if (maintenanceInstalled) {
       try { await steps.control("block"); }
-      catch { throw new Error("Deployment failed; unable to confirm maintenance. Check the target Worker before retrying.", { cause: error }); }
+      catch (blocked) {
+        // Both reasons in the message itself: a log may not print an error's cause.
+        const why = (value: unknown) => (value instanceof Error ? value.message : String(value));
+        throw new Error(
+          `${why(error)}\nThen unable to confirm maintenance (${why(blocked)}). Check the target Worker before retrying.`,
+          { cause: error },
+        );
+      }
     }
     throw error;
   }

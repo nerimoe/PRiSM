@@ -25,6 +25,11 @@ export async function deployWorker(
   }
 }
 
+/** The last lines a failed command printed, to name in its error: the log above may be long, or cut off. */
+export function tailLines(text: string, lines = 12): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean).slice(-lines).join("\n");
+}
+
 export async function deploymentCommand(args: string[], capture = false): Promise<string> {
   const process = Bun.spawn(args, { cwd: fileURLToPath(new URL("..", import.meta.url)), stdout: capture ? "pipe" : "inherit", stderr: "pipe", stdin: "ignore" });
   const errors = (async () => {
@@ -40,7 +45,9 @@ export async function deploymentCommand(args: string[], capture = false): Promis
   const [status, stderr] = await Promise.all([process.exited, errors]);
   if (status !== 0) {
     const ErrorType = isTransientTriggerFailure(stderr) ? TransientTriggerError : Error;
-    throw new ErrorType(`${args.join(" ")} failed (exit ${status})`);
+    // A captured command (`--json`) prints its error to stdout, which nothing else shows.
+    const said = tailLines([stderr, capture ? output : ""].filter(Boolean).join("\n"));
+    throw new ErrorType(`${args.join(" ")} failed (exit ${status})${said ? `:\n${said}` : ""}`);
   }
   return output;
 }

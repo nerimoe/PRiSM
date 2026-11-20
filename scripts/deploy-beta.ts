@@ -12,5 +12,8 @@ for (const args of [
     cwd: root, stdin: "inherit", stdout: "inherit", stderr: "inherit",
   });
   const status = await child.exited;
-  if (status !== 0) process.exit(status);
+  if (status !== 0) {
+    console.error(`deploy:beta stopped: \`bun ${args.join(" ")}\` failed (exit ${status}).`);
+    process.exit(status);
+  }
 }

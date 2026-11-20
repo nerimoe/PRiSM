@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { deployWorker, deploymentCommand, isTransientTriggerFailure, TransientTriggerError } from "./deploy-worker";
+import { deployWorker, deploymentCommand, isTransientTriggerFailure, tailLines, TransientTriggerError } from "./deploy-worker";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
 
 const malformed = "Some triggers failed to deploy for prism-link-beta:\n  - Received a malformed response from the API";
@@ -86,6 +86,17 @@ test("persistent trigger failure cannot advance to migration or resume", async (
     if (failedPhase === "maintenance") expect(controls).toEqual([]);
     else expect(controls.at(-1)).toBe("block");
   }
+});
+
+test("a failed command says the last of what it printed, its captured output included", async () => {
+  const failing = (script: string, capture: boolean) =>
+    deploymentCommand([process.execPath, "-e", script], capture).then(() => "", (error: Error) => error.message);
+  // Wrangler's `--json` puts its error on stdout, which is captured and shown nowhere else.
+  expect(await failing('console.log(JSON.stringify({ error: { text: "D1 database not found" } })); process.exit(1)', true))
+    .toContain("D1 database not found");
+  expect(await failing('process.stderr.write("\\x1b[31m✘ [ERROR]\\x1b[0m Authentication error\\n"); process.exit(2)', false))
+    .toMatch(/failed \(exit 2\):\n✘ \[ERROR\] Authentication error$/);
+  expect(tailLines(Array.from({ length: 30 }, (_, n) => `line ${n}`).join("\n"), 3)).toBe("line 27\nline 28\nline 29");
 });
 
 test("the real subprocess preserves captured stdout and classifies trigger stderr", async () => {

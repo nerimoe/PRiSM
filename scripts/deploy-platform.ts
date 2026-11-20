@@ -6,7 +6,7 @@ import { randomToken, sha256 } from "../packages/server/src/crypto";
 import { deploymentHealth, deploymentRequest } from "./deployment-control-client";
 import { deploymentControlPath } from "../packages/server/src/deployment-gate";
 import { deployPlatform, type PlatformDeploymentSteps } from "./deploy-platform-flow";
-import { deployWorker, deploymentCommand as command } from "./deploy-worker";
+import { deployWorker, deploymentCommand as command, tailLines } from "./deploy-worker";
 
 assertDeploymentBranch(process.env);
 
@@ -68,7 +68,13 @@ const steps: PlatformDeploymentSteps = {
   },
   async checkpoint() {
     // Capture after fencing: no later business writes can be lost by restoring this bookmark.
-    const data = JSON.parse(await command(["wrangler", "d1", "time-travel", "info", "DB", "--config", configPath, "--json"], true)) as { bookmark?: string };
+    const output = await command(["wrangler", "d1", "time-travel", "info", "DB", "--config", configPath, "--json"], true);
+    let data: { bookmark?: string };
+    try {
+      data = JSON.parse(output);
+    } catch {
+      throw new Error(`D1 time-travel info did not answer JSON:\n${tailLines(output)}`);
+    }
     if (!data.bookmark) throw new Error("D1 recovery bookmark was not returned");
     await Bun.write(resolve(folder, "recovery.json"), JSON.stringify({ worker: base.name, databaseId: base.d1_databases[0].database_id, revision, ...data }, null, 2));
     console.log(`D1 recovery bookmark: ${data.bookmark} (retain this deployment log for recovery)`);
@@ -86,5 +92,19 @@ const steps: PlatformDeploymentSteps = {
     console.log("Deployment verified; business requests resumed.");
   },
 };
-if (Bun.argv.includes("--dry-run")) await steps.preflight();
-else await deployPlatform(steps);
+try {
+  if (Bun.argv.includes("--dry-run")) await steps.preflight();
+  else await deployPlatform(steps);
+} catch (error) {
+  // The last thing in the log: which step, why, and what state it left, above any stack.
+  const recovery = resolve(folder, "recovery.json");
+  console.error([
+    "",
+    "========== deploy:beta failed ==========",
+    error instanceof Error ? error.message : String(error),
+    activePhase ? `Last confirmed phase: ${activePhase}.` : "No phase was confirmed; the live Worker was not replaced.",
+    (await Bun.file(recovery).exists()) ? `D1 recovery bookmark: ${recovery}` : "No D1 recovery bookmark was taken.",
+    "========================================",
+  ].join("\n"));
+  process.exit(1);
+}
