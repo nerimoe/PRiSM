@@ -104,7 +104,10 @@ export async function publishShopFacts(runtime: FactRuntime, origin: FactOrigin,
     const written = await createDeviceEventRepository(createD1Executor(runtime.db, runtime.shopId)).record({ events });
     await createEventDispatcher({
       subscribers: eventSubscribers,
-      context: { db: runtime.db, env: runtime.env, shopId: runtime.shopId, initiatorClientId: origin.clientId ?? null },
+      context: {
+        db: runtime.db, env: runtime.env, shopId: runtime.shopId, initiatorClientId: origin.clientId ?? null,
+        ...(origin.defer ? { later: origin.defer } : {}),
+      },
       ...(origin.defer ? { defer: origin.defer } : {}),
     })(written);
   } catch (error) {

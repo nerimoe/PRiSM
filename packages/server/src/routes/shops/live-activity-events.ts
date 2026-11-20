@@ -13,6 +13,9 @@ import { activityBill, refreshActivityBill } from "../../durable-objects/live-ac
 
 type C = Context<AppBindings>;
 
+/** How long the phone that entered has to show the visit itself before it is pushed a start. */
+export const OWN_START_GRACE_MS = 15_000;
+
 /**
  * Tells the phones that are showing a visit that it started or ended.
  *
@@ -79,6 +82,12 @@ export async function pushSessionEvent(
   },
   // Test seam: APNs transport is injectable, never replaced in production.
   transport?: ApnsTransport,
+  options: {
+    /** Runs work after the caller is answered; without it the entering phone is never pushed its own start. */
+    later?: (work: Promise<unknown>) => void;
+    /** Test seam for the entering phone's grace period. */
+    wait?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const config = liveActivityConfig(c.env);
   // No APNs credentials (local, beta, tests) means the whole feature is inert.
@@ -150,12 +159,7 @@ export async function pushSessionEvent(
       staleAfterSeconds: snapshot?.nextCheckAt ? Math.max(1, Math.ceil(snapshot.nextCheckAt / 1000 - nowSeconds)) : undefined,
     });
 
-    for (const row of tokenRows) {
-      if (input.initiatorClientId && row.client_id === input.initiatorClientId) {
-        // Skip the client that initiated this session in the foreground to avoid race
-        // condition / duplicate activity with local Activity.request().
-        continue;
-      }
+    const sendStart = async (row: StartTokenRow) => {
       console.log("Pushing Live Activity start", {
         shopId: input.shopId,
         userId: account.userId,
@@ -185,6 +189,27 @@ export async function pushSessionEvent(
           reason: outcome.reason,
         });
       }
+    };
+    // The phone that entered starts its own activity in the foreground, so it is not pushed
+    // one at once: that would show the visit twice. iOS sometimes refuses that start for
+    // minutes, though, and nothing else would show the visit there; so when the phone has
+    // not registered an activity for the visit after a grace period, it is pushed one too.
+    const own = tokenRows.filter((row) => input.initiatorClientId && row.client_id === input.initiatorClientId);
+    for (const row of tokenRows) if (!own.includes(row)) await sendStart(row);
+    if (own.length && options.later) {
+      const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      options.later((async () => {
+        await wait(OWN_START_GRACE_MS);
+        const shown = await c.env.DB.prepare(
+          `SELECT 1 FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND session_id=? AND client_id=? LIMIT 1`,
+        ).bind(input.shopId, account.userId, sessionId, input.initiatorClientId ?? null).first();
+        const open = await c.env.DB.prepare(
+          "SELECT 1 FROM sessions WHERE shop_id=? AND id=? AND ended_at IS NULL AND payment_status='unpaid'",
+        ).bind(input.shopId, sessionId).first();
+        if (shown || !open) return;
+        console.log(JSON.stringify({ event: "live_activity_own_start_missing", session: sessionId }));
+        for (const row of own) await sendStart(row);
+      })().catch((error) => console.error("Live Activity own start fallback failed", error)));
     }
     return;
   }

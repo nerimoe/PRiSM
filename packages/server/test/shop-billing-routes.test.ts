@@ -292,7 +292,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
   it("refreshes registered bills after shared asset changes and ignores read-only previews", async () => {
     const { db, sqlite, env } = createTestContext();
     const { shopId, publicId, staffUserId, staffSessionToken } = await setupShopFixture(db, sqlite);
-    sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text());
+    sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text()); sqlite.exec(await Bun.file(new URL("../../../migrations/0055_live_activity_token_client.sql", import.meta.url)).text());
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'player','Player','active',CURRENT_TIMESTAMP)", [shopId]);
     sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES (?,'visit','player',?,'active','unpaid','[]')", [shopId, new Date().toISOString()]);
     sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id) VALUES (?,?,'player')", [shopId, staffUserId]);
@@ -413,7 +413,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     it(`pushes the final App Clip bill promptly after ${checkout} checkout`, async () => {
       const { db, sqlite, env } = createTestContext();
       const { shopId, publicId, staffUserId, staffSessionToken } = await setupShopFixture(db, sqlite);
-      sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text());
+      sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text()); sqlite.exec(await Bun.file(new URL("../../../migrations/0055_live_activity_token_client.sql", import.meta.url)).text());
       sqlite.exec(await Bun.file(new URL("../../../migrations/0026_live_activity_start_tokens.sql", import.meta.url)).text());
       sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'clip-player','Clip Player','active',CURRENT_TIMESTAMP)", [shopId]);
       sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id) VALUES (?,?,'clip-player')", [shopId, staffUserId]);
@@ -740,7 +740,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       id TEXT PRIMARY KEY, shop_id TEXT NOT NULL, user_id TEXT NOT NULL,
       activity_id TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL,
       bundle_id TEXT NOT NULL, session_id TEXT, attributes_json TEXT NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, client_id TEXT,
       UNIQUE (shop_id, user_id, activity_id))`);
     const app = createApp();
     const url = `https://prism.test/api/v1/shops/${publicId}/player/live-activity`;
@@ -778,7 +778,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       id TEXT PRIMARY KEY, shop_id TEXT NOT NULL, user_id TEXT NOT NULL,
       activity_id TEXT NOT NULL, token TEXT NOT NULL, environment TEXT NOT NULL,
       bundle_id TEXT NOT NULL, session_id TEXT, attributes_json TEXT NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, client_id TEXT,
       UNIQUE(shop_id, user_id, activity_id))`);
     const app = createApp();
     const url = `https://prism.test/api/v1/shops/${publicId}/player/live-activity/register`;

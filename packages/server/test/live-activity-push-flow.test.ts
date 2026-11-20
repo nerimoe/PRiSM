@@ -18,7 +18,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
       );
       CREATE TABLE live_activity_tokens (
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT,
-        shop_id TEXT, user_id TEXT, created_at TEXT, updated_at TEXT
+        shop_id TEXT, user_id TEXT, created_at TEXT, updated_at TEXT, client_id TEXT
       );
       INSERT INTO shop_player_accounts VALUES ('shop', 'account', 'player');
       INSERT INTO shops VALUES ('shop', 'demo', 'Example');
@@ -26,7 +26,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
       INSERT INTO live_activity_start_tokens VALUES ('start', 'abcdef123456', 'sandbox',
         'moe.neri.hinatago', 'iphone', 'account', NULL);
       INSERT INTO live_activity_tokens VALUES ('activity', 'abcdef654321', 'sandbox',
-        'moe.neri.hinatago', 'session', 'shop', 'account', '2026-10-08T01:00:00Z', NULL);
+        'moe.neri.hinatago', 'session', 'shop', 'account', '2026-10-08T01:00:00Z', NULL, 'other-iphone');
     `);
 
     const db = {
@@ -92,6 +92,36 @@ describe("Live Activity start-to-end APNs fanout", () => {
       endedAtUnix: Date.parse("2026-10-08T02:00:00Z") / 1000,
     });
     expect((sqlite.query("SELECT session_id FROM live_activity_tokens WHERE id='activity'").get() as any)?.session_id).toBeNull();
+
+    // The phone that entered starts its own activity, so it is not pushed one at once. When it
+    // shows none for the visit after the grace period, it is pushed a start like any phone.
+    sqlite.run("UPDATE sessions SET ended_at=NULL, payment_status='unpaid' WHERE id='session'");
+    sqlite.run("DELETE FROM live_activity_tokens");
+    const later: Promise<unknown>[] = [];
+    const options = { later: (work: Promise<unknown>) => { later.push(work); }, wait: async () => {} };
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    expect(pushes).toHaveLength(2);
+    await Promise.all(later.splice(0));
+    expect(pushes).toHaveLength(3);
+    expect(pushes[2]?.payload.aps.event).toBe("start");
+    expect(pushes[2]?.url).toContain("/3/device/abcdef123456");
+
+    // A phone that shows the visit itself, or a visit already over, is left alone.
+    sqlite.run(`INSERT INTO live_activity_tokens VALUES ('own', 'abcdef999999', 'sandbox', 'moe.neri.hinatago',
+      'session', 'shop', 'account', '2026-10-08T01:00:05Z', NULL, 'iphone')`);
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    await Promise.all(later.splice(0));
+    sqlite.run("DELETE FROM live_activity_tokens");
+    sqlite.run("UPDATE sessions SET payment_status='paid', ended_at='2026-10-08T02:00:00Z' WHERE id='session'");
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    await Promise.all(later.splice(0));
+    expect(pushes).toHaveLength(3);
     sqlite.close();
   });
 });

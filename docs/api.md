@@ -423,7 +423,8 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
-| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。请求头 `x-prism-client-id` 记为这张卡所在的安装，用来判断入场的那部手机有没有自己建成活动。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/start-failed` | iOS 拒绝在这部手机上创建这次在店的活动时，App 上报 `{ sessionId, error }`（错误描述最多 500 字）。只记日志，不改任何状态。 |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
 | `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`previousEvent`、`nextEvent`、`asOfUnix`，以及可选的 `billable` / `remainingToCapCents`。事件为 `{ atUnix, label }` 或 null，时间均为 Unix 秒；事件与账单时间轴的事件一致（开始计费、结束计费、切换计费规则、封顶结束、已封顶、新的一天），另加单位收费节点「计费」/「下次计费」；上一事件不随快照刷新改变，详见 live-activity-push.md。 |
 

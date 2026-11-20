@@ -156,6 +156,8 @@ wrangler secret put APNS_PRIVATE_KEY --config wrangler.generated.jsonc
 | 跨店 | 令牌按 `shop_id` 查询，B 店操作不会推送到 A 店的活动 |
 | 登出 | App 调用 `unregister` 并结束活动，避免残留推送 |
 | 用户关闭实时活动权限 | 本地不会创建活动，因而没有令牌，服务端自然跳过 |
+| 入场的那部手机 | 它在前台自己创建活动，所以入场时不给它推送启动，避免同一次在店出两张卡。但 iOS 有时会连续几分钟拒绝本地创建（实测入场后 6 分钟才建成），这期间那部手机什么都不显示：所以入场 15 秒（`OWN_START_GRACE_MS`）后若这台安装还没有为这次在店上报令牌、在店也还没结束，就照常给它推送启动。判断靠令牌上记下的安装（`live_activity_tokens.client_id`，即上报时的 `x-prism-client-id`，迁移 `0055`）；这项检查放在请求的 `waitUntil` 里单独执行，不拖住其他监听者 |
+| App 本地创建被拒 | App 把 iOS 给的错误上报到 `player/live-activity/start-failed`，服务端只记日志（`live_activity_start_failed`），每次在店报一次；之后 30 秒内不再重试，也不再每次刷新都拉账单 |
 
 ## 已知前置条件
 

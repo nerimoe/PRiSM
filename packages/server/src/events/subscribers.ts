@@ -43,6 +43,8 @@ export type EventContext = {
   hub?: HubCalls;
   /** The client that asked for what happened: it shows it already and is not pushed its own news. */
   initiatorClientId?: string | null;
+  /** Runs work after the caller is answered (the request's `waitUntil`), apart from the other listeners. */
+  later?: (work: Promise<unknown>) => void;
 };
 
 /** Every request a device can be asked for (`ActionName`). */
@@ -310,7 +312,7 @@ export const billingSubscriber: AfterSubscriber<EventContext> = {
         await pushSessionEvent({ env }, {
           shopId, playerId, sessionIds, event: type === "session.started" ? "start" : "end",
           initiatorClientId: context.initiatorClientId ?? null,
-        });
+        }, undefined, context.later ? { later: context.later } : {});
       } else {
         await refreshActivityBill(env, shopId, playerId, false, true);
       }
