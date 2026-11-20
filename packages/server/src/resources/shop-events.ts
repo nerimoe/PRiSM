@@ -99,10 +99,10 @@ export function announcementText(event: ShopEvent): string {
     case "request.power.on": return `✅ ${event.player ? PLAYER_PLACEHOLDER : "店员"} 通过平台开启了 ${place}`;
     case "request.power.off": return `🛑 ${event.player ? PLAYER_PLACEHOLDER : "店员"} 通过平台关闭了 ${place}`;
     case "request.power.idle_off": return `💤 ${place} 闲置，已自动关机`;
-    case "card": return `💳 ${who} 在 ${place} 刷卡`;
+    case "card": return `💳 ${who} 在 ${place} 刷卡${text("source") ? `（${text("source")}）` : ""}`;
     case "start": return `🎮 ${who} 在 ${place} 上机`;
     case "request.card": return `💳 ${who} 通过平台在 ${place} 刷卡`;
-    case "request.coin": return `🪙 ${who} 在 ${place} 投币`;
+    case "request.coin": return `🪙 ${who} 在 ${place} 投币${text("source") ? `（${text("source")}）` : ""}`;
     case "cabinet.coin": return `🪙 ${place} 投币 ${n("coins")} 个，当前 ${n("credit")} 币`;
     case "cabinet.consumed": return `🎮 ${place} 开局消耗 ${n("credits")} 币，剩余 ${n("credit")} 币`;
     case "cabinet.reset": return `🧾 ${place} 投币计数已清零`;
@@ -114,6 +114,7 @@ export function announcementText(event: ShopEvent): string {
     case "checkout.refused": return `⛔ ${actor} 结账失败：${text("reason")}`;
     case "wallet.adjusted": return `💰 ${actor} 余额调整 ${text("amount")}`;
     case "gift.redeemed": return `🎁 ${actor} 兑换了礼物`;
+    case "card.bound": return `💳 ${actor} 绑定了一张 ${text("card")} 卡`;
     case "request.refused": return `⛔ ${actor} ${text("action")}被拒绝：${text("reason")}`;
   }
 }
@@ -130,6 +131,7 @@ export function announcementMessage(event: ShopEvent, templates?: Record<string,
     coins: n("coins"), credits: n("credits"), credit: n("credit"),
     amount: String(event.detail?.amount ?? ""), action: String(event.detail?.action ?? ""), reason: String(event.detail?.reason ?? ""),
     bill: event.message ?? message,
+    source: String(event.detail?.source ?? ""), card: String(event.detail?.card ?? ""),
   });
 }
 

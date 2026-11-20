@@ -244,6 +244,43 @@ describe("shop facts", () => {
     sqlite.close();
   });
 
+  it("tells a card bound without its number, and where a coin or a card came from", async () => {
+    const { sqlite, runtime } = fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','m1','pub-m1','舞萌','')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','小明','active','2026-01-01')");
+    const told: Array<Record<string, any>> = [];
+    const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({ async shopEvent(event: Record<string, any>) { told.push(event); } }) } } as unknown as Env;
+    let seq = 0;
+    const heard = (type: string, extra: Partial<DeviceEvent>): Heard => ({
+      type,
+      event: {
+        id: `c${++seq}`, deviceId: "m1", capability: "hinata_io", kind: "signal", name: type, operationId: null, parentOperationId: null,
+        origin: "platform", playerId: "p1", staffId: null, payload: {}, occurredAt: new Date(), via: { channel: "page", resourceId: null }, ...extra,
+      },
+    });
+    await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [
+      heard("card.bound", { capability: "shop", payload: { type: "aime", source: "reader" } }),
+      heard("coin.sent", { kind: "result", name: "coin", payload: { outcome: "ok", cause: "card" }, via: { channel: "system", resourceId: null } }),
+      heard("coin.sent", { kind: "result", name: "coin", payload: { outcome: "ok" } }),
+      heard("card.consumed", { origin: "device", payload: { cardFrom: "reader" }, via: { channel: "relay", resourceId: null } }),
+      // Recorded before it said so: a card the platform sent belongs to an operation.
+      heard("card.consumed", { origin: "device", operationId: "op", payload: {}, via: { channel: "relay", resourceId: null } }),
+    ]);
+    const words = (event: Record<string, any>) =>
+      (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
+    expect(told.map(words)).toEqual([
+      "💳 <小明> 绑定了一张 Aime 卡",
+      "🪙 <小明> 在 舞萌 投币（刷卡后自动投币）",
+      "🪙 <小明> 在 舞萌 投币（主动投币）",
+      "💳 <小明> 在 舞萌 刷卡（实体卡）",
+      "💳 <小明> 在 舞萌 刷卡（平台发卡）",
+    ]);
+    // A shop's own words from before the source was said still apply.
+    expect(words({ message: announcementMessage(told[1] as ShopEvent, { "announce.request.coin.message": "{player} 在 {device} 投了币" }, told[1]!.message) }))
+      .toBe("<小明> 在 舞萌 投了币");
+    sqlite.close();
+  });
+
   it("tells a refused checkout why, and the bill as it stands when there is one", async () => {
     const { sqlite, runtime } = fixture();
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','小明','active','2026-01-01')");

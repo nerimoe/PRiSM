@@ -93,6 +93,15 @@ describe("device bus: perform", () => {
     expect(operations.get("op")!.status).toBe("succeeded");
   });
 
+  it("keeps why the platform asked by itself on the request and its result", async () => {
+    const { bus, events } = busWith({ runners: { coin: async () => ({ outcome: "ok" }) } });
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, operationId: "op", cause: "card" });
+    expect(events.map((e) => [e.kind, e.payload.cause])).toEqual([["request", "card"], ["result", "card"]]);
+    // Someone asking says no cause.
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, operationId: "op2" });
+    expect(events.slice(2).map((e) => e.payload.cause)).toEqual([undefined, undefined]);
+  });
+
   it("keeps an unknown outcome pending, the way billing has always counted it", async () => {
     const { bus, operations } = busWith({
       runners: { coin: async () => { throw new Error("socket closed"); } },

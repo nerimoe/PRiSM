@@ -131,6 +131,10 @@ describe("direct-connect card login result",()=>{
       `UPDATE device_capabilities SET config_json='{"transport":"embedded","channel":"m_test","coinKey":32,"coinAfterSwipe":true}',secret_json='{}'
        WHERE device_id='machine-id' AND capability='hinata_io'`,
     );
+    // The player has an account at the shop, so the swipe binds the card to them here.
+    ctx.sqlite.run("PRAGMA foreign_keys=OFF");
+    ctx.sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop-id','p-one','One','active','2026-01-01')");
+    ctx.sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop-id','player-one','p-one','2026-01-01')");
     const cards:Array<Record<string,unknown>>=[],presses:unknown[]=[];
     (ctx.env as any).MACHINE_RELAY={getByName:()=>({
       // The relay answers with the card report it waited for, or null.
@@ -145,13 +149,18 @@ describe("direct-connect card login result",()=>{
       body:JSON.stringify({ticket:ctx.ticket,cardId:"card-one"}),
     }),ctx.env);
     const reply=(await res.json()) as {data:{card:string;coin?:{status:string;reason?:string}}};
+    const bound=ctx.sqlite.query("SELECT device_id,player_id,via,payload_json FROM device_events WHERE name='card.bound'").all();
+    const logged=JSON.stringify(ctx.sqlite.query("SELECT payload_json FROM device_events").all());
     ctx.sqlite.close();
-    return {res,reply:reply.data,cards,presses};
+    return {res,reply:reply.data,cards,presses,bound,logged};
   }
 
   it("waits for the game to take the card, not for its reader light",async()=>{
-    const {res,reply,cards,presses}=await embedded("read");
+    const {res,reply,cards,presses,bound,logged}=await embedded("read");
     expect(res.status).toBe(200);
+    // The swipe bound the card to the player here, on the page, and nothing logged its number.
+    expect(bound).toEqual([{device_id:"machine-id",player_id:"p-one",via:"page",payload_json:JSON.stringify({type:"aime",source:"scan"})}]);
+    expect(logged).not.toMatch(/\d{20}/);
     expect(reply.card).toBe("read");
     expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([["CARD_SENT","inline","已刷卡"]]);
     expect(cards[0]?.wait).toEqual({signal:"card.consumed",timeoutMs:4500});

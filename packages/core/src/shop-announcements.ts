@@ -36,6 +36,7 @@ export const shopAnnouncementCatalog = [
   { type: "checkout.refused", label: "结账失败", family: "shop" },
   { type: "wallet.adjusted", label: "调整余额", family: "shop" },
   { type: "gift.redeemed", label: "兑换礼物", family: "shop" },
+  { type: "card.bound", label: "绑定卡片", family: "shop" },
   { type: "request.refused", label: "操作被拒绝", family: "shop" },
 ] as const;
 

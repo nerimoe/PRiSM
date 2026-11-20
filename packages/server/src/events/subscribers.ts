@@ -99,7 +99,14 @@ const REQUESTS: Record<string, "request.power.on" | "request.power.off" | "reque
 const CABINET = ["cabinet.coin", "cabinet.consumed", "cabinet.reset"] as const;
 
 /** What happened at the shop without a device (`shop-facts.ts`), told under its own name. */
-const FACTS = ["session.started", "session.stopped", "checkout.settled", "checkout.refused", "wallet.adjusted", "gift.redeemed"] as const;
+const FACTS = ["session.started", "session.stopped", "checkout.settled", "checkout.refused", "wallet.adjusted", "gift.redeemed", "card.bound"] as const;
+
+/** A card's kind as a shop calls it. */
+const CARD_KINDS: Record<string, string> = { aime: "Aime", felica: "FeliCa", banapass: "Banapass", amusement_ic: "Amusement IC" };
+
+/** Where a card the game took came from: the reader, or sent by the platform at a page's or bot's asking. */
+const cardSource = (event: { payload: Record<string, unknown>; operationId: string | null }) =>
+  (event.payload.cardFrom ?? (event.operationId ? "platform" : "reader")) === "platform" ? "平台发卡" : "实体卡";
 
 /** Why a checkout was turned away, as a shop reads it; otherwise the platform's own words. */
 const CHECKOUT_REFUSALS: Record<string, string> = {
@@ -166,7 +173,8 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
           : "";
         const detail = type === "checkout.settled" ? { amount: String(yuanOf(payload.total as Cents)) }
           : type === "checkout.refused" ? { reason, code: String(payload.code ?? "") }
-          : type === "wallet.adjusted" ? { amount: signed(payload.amount) } : undefined;
+          : type === "wallet.adjusted" ? { amount: signed(payload.amount) }
+          : type === "card.bound" ? { card: CARD_KINDS[String(payload.type)] ?? String(payload.type ?? "") } : undefined;
         // A checkout is told as its bill, worded as the bot words its own checkout's; a refused
         // one by the bill as it stands, when the balance fell short of it.
         const bill = payload.bill && typeof payload.bill === "object" ? payload.bill as Record<string, unknown> : null;
@@ -189,11 +197,13 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       if (!event.deviceId) continue;
       const request = REQUESTS[type];
       if (request) {
-        await announce({ type: request, ...place, player: await player(forPlayer(one)) });
+        // A coin says whose idea it was: someone asking, or the cabinet's rule after a card.
+        const detail = request === "request.coin" ? { source: event.payload.cause === "card" ? "刷卡后自动投币" : "主动投币" } : undefined;
+        await announce({ type: request, ...place, player: await player(forPlayer(one)), ...(detail ? { detail } : {}) });
       } else if (type === "card.consumed") {
         // The game took a card: whether it came from the reader or the platform,
-        // this is when it happened, so this is where it is told.
-        await announce({ type: "card", ...place, player: await player(event.playerId) });
+        // this is when it happened, so this is where it is told, saying which.
+        await announce({ type: "card", ...place, player: await player(event.playerId), detail: { source: cardSource(event) } });
       } else if (type === "occupancy.started") {
         const who = await player(event.playerId);
         if (who) await announce({ type: "start", ...place, player: who });

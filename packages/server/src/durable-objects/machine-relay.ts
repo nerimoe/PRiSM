@@ -10,6 +10,7 @@ import { can, hinataConfigOf, loadResource } from "../resources/resource.js";
 import { cardRead, pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
+import { publishShopFacts } from "../events/shop-facts.js";
 import {
   capabilitiesForAttachment,
   capabilitiesFromRequest,
@@ -618,6 +619,8 @@ export class MachineRelay extends BaseDurableObject<Env> {
       ...event.params,
       card: withoutCardNumber(event.params.card),
       ...("previous_card" in event.params ? { previous_card: withoutCardNumber(event.params.previous_card) } : {}),
+      // Put on the reader, or sent by the platform (a page or a bot asked for it, `operationId` says which).
+      ...(event.params.card ? { cardFrom: source ? "platform" : "reader" } : {}),
     };
     this.answer(name, source, payload);
     if (!hinataIo.signals[name]?.store) return;
@@ -678,7 +681,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const env = { ...this.env, MACHINE_RELAY: { getByName: () => this } } as unknown as Env;
     // The platform's own rule asked for this coin, not the reader the card came through.
     await createRuntimeBus({ db: this.env.DB, env, shopId: channel.shopId, via: { channel: "system", resourceId: null } }).perform({
-      device, action: "coin", actor: { type: "player", playerId }, operationId,
+      device, action: "coin", actor: { type: "player", playerId }, operationId, cause: "card",
       ...(cardOperation ? { parentOperationId: cardOperation } : {}),
     });
   }
@@ -763,7 +766,13 @@ export class MachineRelay extends BaseDurableObject<Env> {
     if (capture.card === undefined) return { status: "waiting" };
     let result: CardCaptureResult;
     try {
-      result = await bindReaderCard(this.env.DB, this.env.URL_ENCRYPTION_KEY, capture, capture.card);
+      // Bound on the player's word, on their page, at this cabinet's reader.
+      const channel = await this.channel();
+      result = await bindReaderCard(this.env.DB, this.env.URL_ENCRYPTION_KEY, capture, capture.card, async ({ type }) => {
+        await publishShopFacts({ db: this.env.DB, env: this.env, shopId: capture.shopId }, { via: { channel: "page", resourceId: null } }, [{
+          name: "card.bound", resourceId: channel?.machineId ?? null, playerId: capture.playerId, payload: { type, source: "reader" },
+        }]);
+      });
     } catch (error) {
       console.error("Card capture failed", error);
       return { status: "waiting" };

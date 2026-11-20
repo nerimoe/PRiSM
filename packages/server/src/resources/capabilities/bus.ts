@@ -92,6 +92,12 @@ export type PerformInput = {
   forPlayerId?: string;
   /** Where this request came from, when it is not where the bus's events usually do. */
   via?: DeviceEventVia;
+  /**
+   * Why the platform made this request itself, when nobody asked for it:
+   * `card`, the coin a cabinet adds after the game took a player's card.
+   * Kept on the request and its result.
+   */
+  cause?: "card";
   /** Wait for what the action's spec `awaits`, before returning. */
   wait?: boolean;
 };
@@ -184,7 +190,11 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
       const operationId = input.operationId ?? deps.id();
       const actorFields = deviceActorFields(input.actor);
       // Whom staff acted for is kept with the request: a later card report names it.
-      const payload = { ...(input.payload ?? {}), ...(input.forPlayerId ? { forPlayerId: input.forPlayerId } : {}) };
+      const payload = {
+        ...(input.payload ?? {}),
+        ...(input.forPlayerId ? { forPlayerId: input.forPlayerId } : {}),
+        ...(input.cause ? { cause: input.cause } : {}),
+      };
       const requestedAt = deps.now();
       const operation: DeviceOperation = {
         id: operationId,
@@ -255,8 +265,9 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
               ...(failure ? { message: failure } : {}),
               ...(httpStatus ? { httpStatus } : {}),
               ...persisted,
-              // Whom staff acted for, as the request said: a listener hears the result alone.
+              // Whom staff acted for, and why, as the request said: a listener hears the result alone.
               ...(input.forPlayerId ? { forPlayerId: input.forPlayerId } : {}),
+              ...(input.cause ? { cause: input.cause } : {}),
             },
             ...actorFields,
             ...(input.via ? { via: input.via } : {}),

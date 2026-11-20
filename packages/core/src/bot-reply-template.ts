@@ -55,9 +55,9 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     ["request.power.on", "✅ {player} 通过平台开启了 {device}"],
     ["request.power.off", "🛑 {player} 通过平台关闭了 {device}"],
     ["request.power.idle_off", "💤 {device} 闲置，已自动关机"],
-    ["card", "💳 {player} 在 {device} 刷卡"], ["start", "🎮 {player} 在 {device} 上机"],
+    ["card", "💳 {player} 在 {device} 刷卡（{source}）"], ["start", "🎮 {player} 在 {device} 上机"],
     ["request.card", "💳 {player} 通过平台在 {device} 刷卡"],
-    ["request.coin", "🪙 {player} 在 {device} 投币"],
+    ["request.coin", "🪙 {player} 在 {device} 投币（{source}）"],
     ["cabinet.coin", "🪙 {device} 投币 {coins} 个，当前 {credit} 币"],
     ["cabinet.consumed", "🎮 {device} 开局消耗 {credits} 币，剩余 {credit} 币"],
     ["cabinet.reset", "🧾 {device} 投币计数已清零"],
@@ -65,14 +65,17 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     ["session.stopped", "⏹ {player} 停止了一项计费"],
     ["wallet.adjusted", "💰 {player} 余额调整 {amount}"],
     ["gift.redeemed", "🎁 {player} 兑换了礼物"],
+    ["card.bound", "💳 {player} 绑定了一张 {card} 卡"],
     ["request.refused", "⛔ {player} {action}被拒绝：{reason}"],
   ].map(([type, text]) => {
     const samples: Record<string, string> = {
       device: "舞萌", player: "小明", coins: "2", credits: "1", credit: "3", amount: "20", action: "投币", reason: "玩家未入场",
+      card: "Aime", source: type === "card" ? "实体卡" : "刷卡后自动投币",
     };
     const variables = [...text!.matchAll(/\{([^{}]+)\}/g)].map(match => match[1]!);
+    // Where a card or a coin came from was added later: a shop's own words from before may leave it out.
     return reply(`announce.${type}.message`, shopAnnouncementCatalog.find(item => item.type === type)!.label,
-      text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables);
+      text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables.filter(key => key !== "source"));
   }),
   // A checkout is said as its bill; a shop's own words may place it with {bill}, or leave it out.
   reply(`announce.checkout.settled.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.settled")!.label,

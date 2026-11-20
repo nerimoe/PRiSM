@@ -876,6 +876,7 @@ const actionLabels: Record<string, string> = {
   "wallet.adjusted": "调整余额",
   "assets.adjusted": "调整资产",
   "gift.redeemed": "兑换礼物",
+  "card.bound": "绑定卡片",
 };
 
 /** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */
@@ -1398,6 +1399,14 @@ function ResourceHistory({ device }: { device: Resource }) {
               }
             }
             if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
+            // Where a card or a coin came from.
+            if (e.kind === "signal" && e.payload.card && typeof e.payload.cardFrom === "string")
+              detail.push(t(e.payload.cardFrom === "platform" ? "平台发卡" : "实体卡"));
+            if (e.kind === "request" && e.name === "coin") detail.push(t(e.payload.cause === "card" ? "刷卡后自动投币" : "主动投币"));
+            if (e.name === "card.bound") {
+              const kind = typeof e.payload.type === "string" ? e.payload.type : "";
+              detail.push(t(e.payload.source === "reader" ? "在读卡器上添加 · {kind}" : "扫码页刷卡时绑定 · {kind}", { kind }));
+            }
             const command = e.name === "bot.command" ? e.payload : null;
             // A request turned away before it reached the device, and what happened at the shop itself.
             const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;

@@ -39,11 +39,14 @@ export async function bindReaderCard(
   key: string | undefined,
   capture: CardCapture,
   card: ReportedCard | null,
+  /** Told when a card is newly bound to the player here; never given its number. */
+  bound?: (card: { type: string }) => Promise<void>,
 ): Promise<CardCaptureResult> {
   if (!card) return { status: "unsupported" };
   const cards = createCardStore(db, capture.shopId, key);
-  const bound = await cards.bind({ playerId: capture.playerId, card, source: "reader" });
-  if (bound === "taken") return { status: "taken", cardType: card.type };
+  const binding = await cards.bind({ playerId: capture.playerId, card, source: "reader" });
+  if (binding === "taken") return { status: "taken", cardType: card.type };
+  if (binding === "bound" && bound) await bound({ type: card.type });
   const account = await db.prepare("SELECT id FROM cards WHERE user_id = ? AND access_code = ?")
     .bind(capture.userId, card.accessCode).first<{ id: string }>();
   if (!account) {
@@ -51,5 +54,5 @@ export async function bindReaderCard(
       "INSERT INTO cards(id, user_id, label, card_type, access_code, source) VALUES (?, ?, ?, ?, ?, 'reader')",
     ).bind(crypto.randomUUID(), capture.userId, "读卡器添加", card.type, card.accessCode).run();
   }
-  return { status: account ? (bound === "exists" ? "exists" : "bound") : "added", cardType: card.type };
+  return { status: account ? (binding === "exists" ? "exists" : "bound") : "added", cardType: card.type };
 }
