@@ -1,10 +1,12 @@
--- A bot announces by groups now: each is one audience (where it is said, and
--- whether staff hear it privately) with a whole table of what it says, from
--- where, and in which words (`AnnouncementGroup` in @prism/core).
+-- A bot announces by groups now: each is one audience (where it is said) with
+-- a whole table of what it says, from where, and in which words
+-- (`AnnouncementGroup` in @prism/core).
 --
 -- Each listening rule becomes a group of its own, named in order: the events it
--- listened for are on, each with the rule's sources, and its destinations and
--- staff stay as they were. The bot's announcement words were the bot's alone;
+-- listened for are on, each with the rule's sources, and its destinations stay
+-- as they were. A rule that also told every staff member privately has their
+-- private chats written into its destinations, as anyone's are: the staff who
+-- work at the shop and bound a platform identity there now. The bot's announcement words were the bot's alone;
 -- each group starts with a copy of them, and the bot keeps only the words of
 -- its answers to commands.
 UPDATE device_capabilities
@@ -16,8 +18,19 @@ SET config_json = json_remove(
       SELECT json_group_array(json_object(
         'id', 'group-' || (r.key + 1),
         'name', '播报组 ' || (r.key + 1),
-        'to', json(COALESCE(json_extract(r.value, '$.to'), '[]')),
-        'staff', json(CASE WHEN json_extract(r.value, '$.staff') THEN 'true' ELSE 'false' END),
+        'to', json(COALESCE((
+          SELECT json_group_array(d.dest) FROM (
+            SELECT t.value AS dest FROM json_each(r.value, '$.to') t
+            UNION
+            SELECT b.provider || ':private:' || b.subject FROM shop_platform_bindings b
+            WHERE json_extract(r.value, '$.staff') AND b.shop_id = device_capabilities.shop_id AND (
+              b.user_id IN (SELECT user_id FROM shop_members WHERE shop_id = b.shop_id)
+              OR b.user_id IN (
+                SELECT a.user_id FROM shop_staff_accounts a
+                JOIN staff_users s ON s.shop_id = a.shop_id AND s.id = a.staff_id
+                WHERE a.shop_id = b.shop_id AND s.status = 'active'))
+          ) d
+        ), '[]')),
         'events', json((
           SELECT json_group_object(e.value, json_object('on', json('true'), 'sources', json(COALESCE(json_extract(r.value, '$.sources'), '[]'))))
           FROM json_each(r.value, '$.events') e

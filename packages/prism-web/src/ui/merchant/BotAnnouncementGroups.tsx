@@ -42,14 +42,12 @@ const newGroup = (groups: readonly AnnouncementGroup[]): AnnouncementGroup => ({
   id: `group-${Date.now().toString(36)}`,
   name: `播报组 ${groups.length + 1}`,
   to: [],
-  staff: false,
   events: {},
   templates: {},
 });
 
 /**
- * Everything a bot announces, one group at a time: who hears it (destinations,
- * staff), and for every event the group's switch, where it must have come
+ * Everything a bot announces, one group at a time: who hears it, and for every event the group's switch, where it must have come
  * from and the words it is said in, previewed as they would be said.
  */
 export function BotAnnouncementGroups({ value, onChange }: { value: AnnouncementGroup[]; onChange(groups: AnnouncementGroup[]): void }) {
@@ -98,10 +96,6 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
                   onChange={(e) => change({ to: e.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })} />
               </Field>
               <p className="text-xs text-ink/55">{t("每行一个目的地，群和人写法一样：群写 平台:群号，个人写 平台:private:用户号。")}</p>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={group.staff} onChange={(e) => change({ staff: e.target.checked })} />
-                {t("同时私聊每位店员")}
-              </label>
             </div>
           </div>
           <div className="grid gap-4 sm:grid-cols-[10.5rem_minmax(0,1fr)]">

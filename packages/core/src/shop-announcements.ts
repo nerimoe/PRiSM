@@ -208,8 +208,8 @@ export function isShopAnnouncementSource(value: string): value is ShopAnnounceme
  *
  * - `to`: wherever the bot can say something, written as the bot addresses
  *   it; a group (`onebot:42`) and a person (`onebot:private:10001`) are the
- *   same kind of thing. `staff` adds the private chat of whoever is staff
- *   when it happens, so the group need not be edited as they come and go.
+ *   same kind of thing; a staff member's private chat is written like any
+ *   other person's.
  * - `events`: by catalog key, whether it is said (`on`) and only when it came
  *   from one of `sources` (anywhere, when empty). A key that is not here is
  *   off.
@@ -221,14 +221,9 @@ export type AnnouncementGroup = {
   id: string;
   name: string;
   to: readonly string[];
-  staff: boolean;
   events: Readonly<Record<string, { on: boolean; sources: readonly string[] }>>;
   templates: Readonly<Record<string, string>>;
 };
-
-/** A staff member's private chat, as a bot is told where to say something. */
-export const staffDestination = (identity: { provider: string; subject: string }) =>
-  `${identity.provider}:private:${identity.subject}`;
 
 /** Whether a group says an announcement from where it came. */
 export function groupHears(group: AnnouncementGroup, event: { key: string; via?: string | null }): boolean {
@@ -246,13 +241,12 @@ export function groupHears(group: AnnouncementGroup, event: { key: string; via?:
 export function announcementDeliveries(
   groups: readonly AnnouncementGroup[],
   event: { key: string; via?: string | null },
-  staff: readonly { provider: string; subject: string }[],
 ): Array<{ to: string[]; templates: Readonly<Record<string, string>> }> {
   const said = new Set<string>();
   const deliveries: Array<{ to: string[]; templates: Readonly<Record<string, string>> }> = [];
   for (const group of groups) {
     if (!groupHears(group, event)) continue;
-    const to = [...group.to, ...(group.staff ? staff.map(staffDestination) : [])].filter((one) => !said.has(one));
+    const to = group.to.filter((one) => !said.has(one));
     for (const one of to) said.add(one);
     if (to.length) deliveries.push({ to: [...new Set(to)], templates: group.templates });
   }

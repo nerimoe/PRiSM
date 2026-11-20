@@ -209,7 +209,7 @@ describe("bot connection", () => {
     sqlite.run(
       `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
        VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`,
-      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: ["platform.maintenance"], sources: [], to: ["onebot:42"], staff: false }]) })],
+      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: ["platform.maintenance"], sources: [], to: ["onebot:42"] }]) })],
     );
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
     const said = () => ws.sent.map((frame) => JSON.parse(frame)).filter((frame) => frame.type === "say")
@@ -247,16 +247,16 @@ describe("bot connection", () => {
       return (ws.attachment as { reminderLeadMs: number | null }).reminderLeadMs;
     };
     // A rule that listens for the warning, with somewhere to say it.
-    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:42"], staff: false }]) });
+    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:42"] }]) });
     expect(await lead()).toBe(300_000);
     // Its hello sets the alarm for the timers as they stand, now that a lead is known.
     expect(state.has("idle")).toBe(true);
     // No rule listens for it, a rule with nowhere to say it, and a lead of 0: none is planned.
-    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["card.consumed"], sources: [], to: ["onebot:42"], staff: false }]) });
+    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["card.consumed"], sources: [], to: ["onebot:42"] }]) });
     expect(await lead()).toBeNull();
-    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: [], staff: false }]) });
+    configure({ idleReminderMinutes: 5, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: [] }]) });
     expect(await lead()).toBeNull();
-    configure({ idleReminderMinutes: 0, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:42"], staff: false }]) });
+    configure({ idleReminderMinutes: 0, announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:42"] }]) });
     expect(await lead()).toBeNull();
     // What a bot says in its hello about reminders is not asked.
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1, reminderLeadSeconds: 300 }));
@@ -339,7 +339,7 @@ describe("what a bot is told", () => {
     sqlite.run(
       `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
        VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`,
-      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: types, sources: [], to: ["onebot:42"], staff: false }]) })],
+      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: types, sources: [], to: ["onebot:42"] }]) })],
     );
   }
   const event = (key: string, extra: Record<string, unknown> = {}) =>
@@ -374,7 +374,7 @@ describe("what a bot is told", () => {
     botResource(sqlite, ["card.consumed"]);
     await send({ type: "hello", commands: 1 });
     sqlite.run(`UPDATE device_capabilities SET config_json=? WHERE device_id='bot-res'`,
-      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: ["power.changed.on"], sources: [], to: ["onebot:42"], staff: false }]) })]);
+      [JSON.stringify({ tokenId: "t1", announceGroups: groupsOf([{ events: ["power.changed.on"], sources: [], to: ["onebot:42"] }]) })]);
     await hub.botsChanged();
     await hub.shopEvent(event("card.consumed"));
     await hub.shopEvent(event("power.changed.on"));
@@ -477,12 +477,12 @@ describe("a bot's commands", () => {
 
   it("uses each group's own words, refreshes them and also customizes idle warnings", async () => {
     const { sqlite, hub, ws, sockets } = await fixture();
-    botResource(sqlite, { announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false, templates: {
+    botResource(sqlite, { announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], templates: {
       "announce.card.consumed.message": "{device} 欢迎 {player}", "announce.idle.reminder.shop_empty": "无人，{minutes} 分钟后关机",
     } }]) });
     sqlite.run(`INSERT INTO api_tokens(shop_id,id,label,role,token_prefix,token_hash,status,created_at) VALUES ('shop','t2','second','integration','integ',?,'active','2026-01-01')`, [await sha256Hex("second")]);
     sqlite.run(`INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot2','pub-bot2','第二个 Bot','')`);
-    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot2','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t2", announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], staff: false }]) })]);
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot2','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t2", announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"] }]) })]);
     const second = new FakeSocket();
     second.tags = ["bot"];
     second.attachment = { ...(ws.attachment as object), token: "second" };
@@ -509,7 +509,7 @@ describe("a bot's commands", () => {
 
   it("says the shop's news as words at every destination its rules name, a group and a person alike", async () => {
     const { sqlite, hub, ws } = await fixture();
-    botResource(sqlite, { announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false }]) });
+    botResource(sqlite, { announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"] }]) });
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
     await hub.shopEvent({ key: "card.consumed", resourceId: "m1", resourceName: "舞萌", player: null, values: { verb: "刷卡" } });
     await hub.shopEvent({ key: "power.changed.on", resourceId: "m1", resourceName: "舞萌", player: null });
@@ -525,21 +525,15 @@ describe("a bot's commands", () => {
     sqlite.close();
   });
 
-  it("hears a rule's events only from the sources it names, and tells staff whoever they are", async () => {
+  it("hears a group's events only from the sources it names", async () => {
     const { sqlite, hub, ws } = await fixture();
     botResource(sqlite, {
       announceGroups: groupsOf([
-        { events: ["card.consumed"], sources: [], to: ["onebot:42"], staff: false },
-        // What is done on a scanned page is told to the staff, and in the staff group.
-        { events: ["checkout.settled", "power.on.sent"], sources: ["page"], to: ["onebot:staff"], staff: true },
+        { events: ["card.consumed"], sources: [], to: ["onebot:42"] },
+        // What is done on a scanned page is told in the staff group, and to the owner privately.
+        { events: ["checkout.settled", "power.on.sent"], sources: ["page"], to: ["onebot:staff", "onebot:private:20001"] },
       ]),
     });
-    // A staff member: someone who works at the shop and bound a chat identity there.
-    sqlite.run("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('member-1','shop','u-staff','owner')");
-    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','staff-player','店主','active','2026-01-01')");
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','u-staff','staff-player','2026-01-01')");
-    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','staff-player','onebot','20001','2026-01-01')");
-    sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','u-staff','onebot','20001','2026-01-01')");
     await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
     const told = (key: string, via?: string, extra: Record<string, unknown> = {}) =>
       hub.shopEvent({ key, resourceId: "m1", resourceName: "舞萌", player: null, values: { bill: key, verb: "刷卡" }, ...(via ? { via } : {}), ...extra });

@@ -112,8 +112,8 @@ describe("a bot is a resource", () => {
     expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual([]);
     // A group and a person are the same kind of destination; the idle warning is an event like any other.
     const groups = groupsOf([
-      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], staff: true, templates: { "announce.checkout.settled.message": "{player} 结账了" } },
-      { events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"], staff: false },
+      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], templates: { "announce.checkout.settled.message": "{player} 结账了" } },
+      { events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"] },
     ]);
     expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups: groups } })).status).toBe(200);
     expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);

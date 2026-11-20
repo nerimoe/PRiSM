@@ -251,8 +251,6 @@ export const announceGroupSchema = z.object({
   name: z.string().trim().min(1).max(40),
   /** Wherever the bot can say something: a group or a person, as the bot addresses it. */
   to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
-  /** Also each staff member's private chat, whoever is staff when it happens. */
-  staff: z.boolean().default(false),
   events: z.record(
     z.string().refine(isAnnouncementKey, "未知的事件"),
     z.object({

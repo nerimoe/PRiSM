@@ -109,7 +109,7 @@ function listening(hub: unknown, sockets: unknown[], lead: number, fails = false
   target.botOf = async () => ({
     bot: {
       id: "bot", name: "Bot", enabled: true,
-      config: { announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:1"], staff: false }]), replyTemplates: {}, idleReminderMinutes: lead },
+      config: { announceGroups: groupsOf([{ events: ["idle.reminder"], sources: [], to: ["onebot:1"] }]), replyTemplates: {}, idleReminderMinutes: lead },
     },
     view: { staff: [] },
   });

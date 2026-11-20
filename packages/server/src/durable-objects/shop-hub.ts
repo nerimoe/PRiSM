@@ -704,7 +704,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       try {
         const found = await this.botOf(shopId, attachment.token);
         if (!found || announcement.botId === found.bot.id) continue;
-        for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null }, found.view.staff)) {
+        for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null })) {
           this.sayTo(ws, to, announcementMessage(announcement, templates));
         }
       } catch {
@@ -787,7 +787,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
       // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
       const reminded = commands && commands.bot.config.idleReminderMinutes > 0
-        && announcementDeliveries(commands.bot.config.announceGroups, { key: "idle.reminder", via: "system" }, commands.view.staff).length > 0;
+        && announcementDeliveries(commands.bot.config.announceGroups, { key: "idle.reminder", via: "system" }).length > 0;
       const lead = reminded ? commands.bot.config.idleReminderMinutes * 60 : undefined;
       const { commands: _was, ...rest } = attachment;
       ws.serializeAttachment({
@@ -1591,7 +1591,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         if (!done || done.told.includes(found.bot.id)) return found.bot.id;
         await this.ctx.storage.put("maintenanceDone", { ...done, told: [...done.told, found.bot.id] } satisfies MaintenanceDone);
       }
-      for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "platform.maintenance", via: "system" }, found.view.staff)) {
+      for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "platform.maintenance", via: "system" })) {
         this.sayTo(ws, to, maintenanceMessage(notice, templates));
       }
       return found.bot.id;
@@ -1611,7 +1611,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         try {
           const found = await this.botOf(shopId, attachment.token);
           if (!found) continue;
-          for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "idle.reminder", via: "system" }, found.view.staff)) {
+          for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "idle.reminder", via: "system" })) {
             this.sayTo(ws, to, idleReminderMessage(notice, templates));
           }
         } catch {

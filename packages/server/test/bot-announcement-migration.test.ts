@@ -170,11 +170,23 @@ describe("migration 0054: each rule becomes a group with a whole table, in the b
   it("turns rules into groups, keeps their destinations and sources, and moves the announcement words into each", () => {
     const sqlite = new Database(":memory:");
     sqlite.run(`CREATE TABLE device_capabilities(shop_id TEXT, device_id TEXT, capability TEXT, config_json TEXT, PRIMARY KEY (shop_id, device_id, capability))`);
+    sqlite.run("CREATE TABLE shop_platform_bindings(shop_id TEXT, user_id TEXT, provider TEXT, subject TEXT)");
+    sqlite.run("CREATE TABLE shop_members(shop_id TEXT, user_id TEXT)");
+    sqlite.run("CREATE TABLE shop_staff_accounts(shop_id TEXT, user_id TEXT, staff_id TEXT)");
+    sqlite.run("CREATE TABLE staff_users(shop_id TEXT, id TEXT, status TEXT)");
+    // Staff now: the owner, an active staff account, one already in a rule's list.
+    // Not staff: a player, a disabled account, someone at another shop.
+    sqlite.run("INSERT INTO shop_members VALUES ('s','owner'),('t','elsewhere')");
+    sqlite.run("INSERT INTO shop_staff_accounts VALUES ('s','clerk','c1'),('s','gone','c2')");
+    sqlite.run("INSERT INTO staff_users VALUES ('s','c1','active'),('s','c2','disabled')");
+    sqlite.run(`INSERT INTO shop_platform_bindings VALUES
+      ('s','owner','onebot','7'),('s','clerk','onebot','8'),
+      ('s','player','onebot','9'),('s','gone','onebot','10'),('t','elsewhere','onebot','11')`);
     const config = {
       tokenId: "t",
       replyTemplates: { "announce.card.consumed.message": "刷了 {device}", "wallet.success": "ok" },
       announceRules: [
-        { events: ["card.consumed", "idle.reminder"], sources: ["page"], to: ["onebot:1"], staff: true },
+        { events: ["card.consumed", "idle.reminder"], sources: ["page"], to: ["onebot:1", "onebot:private:8"], staff: true },
         { events: ["checkout.settled"], sources: [], to: ["onebot:2"], staff: false },
       ],
     };
@@ -186,9 +198,10 @@ describe("migration 0054: each rule becomes a group with a whole table, in the b
       tokenId: "t",
       replyTemplates: { "wallet.success": "ok" },
       announceGroups: [
-        { id: "group-1", name: "播报组 1", to: ["onebot:1"], staff: true, templates: words,
+        // Who was staff is written out, once each, as anyone's private chat is.
+        { id: "group-1", name: "播报组 1", to: ["onebot:1", "onebot:private:7", "onebot:private:8"], templates: words,
           events: { "card.consumed": { on: true, sources: ["page"] }, "idle.reminder": { on: true, sources: ["page"] } } },
-        { id: "group-2", name: "播报组 2", to: ["onebot:2"], staff: false, templates: words,
+        { id: "group-2", name: "播报组 2", to: ["onebot:2"], templates: words,
           events: { "checkout.settled": { on: true, sources: [] } } },
       ],
     });

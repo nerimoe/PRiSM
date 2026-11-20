@@ -128,7 +128,6 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
       // A bot announces by groups: who hears it, and for each event whether, from where and in which words.
       await page.getByRole("button", { name: "新建播报组", exact: true }).click();
       await page.getByLabel("发到", { exact: true }).fill("onebot:42\nonebot:private:10001");
-      await page.getByRole("checkbox", { name: "同时私聊每位店员", exact: true }).check();
       await page.getByRole("navigation", { name: "事件", exact: true }).getByRole("button", { name: "刷卡", exact: true }).click();
       const card = page.getByRole("region", { name: "刷卡", exact: true });
       await card.getByRole("checkbox", { name: "播报", exact: true }).check();
@@ -154,7 +153,7 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
       const [group] = patches[0].body.bot.announceGroups;
       assert.equal(patches[0].body.bot.announceGroups.length, 1);
       assert.deepEqual({ ...group, id: undefined }, {
-        id: undefined, name: "播报组 1", to: ["onebot:42", "onebot:private:10001"], staff: true,
+        id: undefined, name: "播报组 1", to: ["onebot:42", "onebot:private:10001"],
         events: { "card.consumed": { on: true, sources: [] } },
         templates: { "announce.card.consumed.message": "{player} 在 {device} 刷卡" },
       });
