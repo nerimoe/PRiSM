@@ -11,7 +11,7 @@ async function fixture(statuses: number[]) {
   sqlite.exec(`
     CREATE TABLE shop_player_accounts(shop_id TEXT, user_id TEXT, player_id TEXT);
     CREATE TABLE sessions(shop_id TEXT, id TEXT, player_id TEXT, started_at TEXT, ended_at TEXT, payment_status TEXT);
-    CREATE TABLE live_activity_tokens(id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT, shop_id TEXT, user_id TEXT, created_at TEXT);
+    CREATE TABLE live_activity_tokens(id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT, shop_id TEXT, user_id TEXT, created_at TEXT, client_id TEXT);
     CREATE TABLE settlements(shop_id TEXT, session_id TEXT, checkout_id TEXT);
     CREATE TABLE player_checkouts(shop_id TEXT, id TEXT, total INTEGER, settled_at TEXT);
     INSERT INTO shop_player_accounts VALUES ('shop','user','player');
@@ -45,7 +45,7 @@ async function fixture(statuses: number[]) {
   const addVisit = (id: string) => {
     const date = new Date(now).toISOString();
     sqlite.run("INSERT INTO sessions VALUES ('shop',?,'player',?,?,'paid')", [id, date, date]);
-    sqlite.run("INSERT INTO live_activity_tokens VALUES (?,?, 'production','moe.neri.hinatago.prism',?,'shop','user',?)", [id, id.repeat(64), id, date]);
+    sqlite.run("INSERT INTO live_activity_tokens VALUES (?,?, 'production','moe.neri.hinatago.prism',?,'shop','user',?,NULL)", [id, id.repeat(64), id, date]);
     sqlite.run("INSERT INTO settlements VALUES ('shop',?,?)", [id, id]);
     sqlite.run("INSERT INTO player_checkouts VALUES ('shop',?,1234,?)", [id, date]);
   };

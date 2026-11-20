@@ -4,6 +4,7 @@ import {
   LiveActivityPusher,
   liveActivityConfig,
   liveActivityEndPayload,
+  liveActivityStartPayload,
   liveActivityUpdatePayload,
 } from "./live-activity-push.js";
 import type { Env } from "../bindings.js";
@@ -18,9 +19,23 @@ import {
 } from "./alarm-budget.js";
 
 type Visit = { shopId: string; playerId: string; revision: number; terminal?: boolean; urgent?: boolean };
+
+/**
+ * iOS ends a Live Activity after eight hours: it leaves the Dynamic Island and stays on the
+ * Lock Screen frozen. Before that, a visit still going on is shown by a new activity, pushed
+ * to the same install, and the old one is ended and dismissed at once; the phone sees the
+ * same card carry on. The time is the old activity's registration, a little after it began.
+ */
+export const ROTATE_AFTER_MS = 7.5 * 3600_000;
+/** How long to wait before trying again to rotate an activity whose new start was not delivered. */
+export const ROTATE_RETRY_MS = 10 * 60_000;
+
 type Token = {
   id: string;
   token: string;
+  /** The install showing it, which a new activity is pushed to when it is rotated. */
+  client_id?: string | null;
+  user_id?: string;
   environment: "sandbox" | "production";
   bundle_id: string;
   session_id: string;
@@ -124,7 +139,7 @@ export class LiveBilling extends BaseDurableObject<Env> {
     const { shopId, playerId } = visit;
     const tokens = (
       await this.env.DB.prepare(
-        `SELECT t.id,t.token,t.environment,t.bundle_id,t.session_id,t.created_at,s.started_at,s.ended_at,s.payment_status,
+        `SELECT t.id,t.token,t.environment,t.bundle_id,t.session_id,t.created_at,t.client_id,t.user_id,s.started_at,s.ended_at,s.payment_status,
         pc.total AS checkout_total,pc.settled_at
         FROM live_activity_tokens t JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
         JOIN sessions s ON s.shop_id=t.shop_id AND s.id=t.session_id AND s.player_id=a.player_id
@@ -212,6 +227,14 @@ export class LiveBilling extends BaseDurableObject<Env> {
         return;
       }
       const ended = token.payment_status === "paid" || !snapshot;
+      if (!ended && snapshot && token.client_id && now >= Date.parse(token.created_at) + ROTATE_AFTER_MS) {
+        const failedAt = await this.ctx.storage.get<number>(`rotate-failed:${token.id}`);
+        if (!failedAt || now - failedAt >= ROTATE_RETRY_MS) {
+          attempted += 1;
+          if (await this.rotate(token, snapshot, pusher, shopId, now)) continue;
+          await this.ctx.storage.put(`rotate-failed:${token.id}`, now);
+        }
+      }
       // Business changes must invalidate preloaded bills even when ordinary quota is exhausted.
       if (!ended && !gate.allowed && !visit.urgent) continue;
       const bill: ActivityBill | undefined =
@@ -323,9 +346,17 @@ export class LiveBilling extends BaseDurableObject<Env> {
     const expiresAt = Math.min(
       ...valid.map((token) => new Date(token.created_at).getTime() + 8 * 3600_000),
     );
+    // The next activity due to be rotated, or a rotation to try again.
+    let rotateAt = Infinity;
+    if (snapshot) for (const token of valid) {
+      if (!token.client_id || token.payment_status === "paid") continue;
+      const failedAt = await this.ctx.storage.get<number>(`rotate-failed:${token.id}`);
+      rotateAt = Math.min(rotateAt, failedAt ? failedAt + ROTATE_RETRY_MS : Date.parse(token.created_at) + ROTATE_AFTER_MS);
+    }
     const next = Math.min(
       snapshot?.nextCheckAt ?? Infinity,
       expiresAt,
+      rotateAt,
       nextRetryAt,
       hasUnprocessed ? Date.now() + MIN_BILLING_ALARM_INTERVAL_MS : Infinity,
     );
@@ -346,5 +377,48 @@ export class LiveBilling extends BaseDurableObject<Env> {
       await this.ctx.storage.deleteAll();
       if (budget) await this.ctx.storage.put("alarm-budget", budget);
     }
+  }
+
+  /**
+   * Shows the visit on a new activity before iOS ends this one: a start pushed to the same
+   * install, with the bill as it stands, then the old activity ended and dismissed at once.
+   * False when no start was delivered (the install has no start token, or APNs refused it);
+   * the old activity then carries on as before until it can be rotated.
+   */
+  private async rotate(token: Token, snapshot: NonNullable<Snapshot>, pusher: LiveActivityPusher, shopId: string, now: number): Promise<boolean> {
+    if (!token.user_id || !token.client_id) return false;
+    const starts = (await this.env.DB.prepare(
+      "SELECT id, token, environment, bundle_id FROM live_activity_start_tokens WHERE user_id=? AND client_id=?",
+    ).bind(token.user_id, token.client_id).all<{ id: string; token: string; environment: "sandbox" | "production"; bundle_id: string }>()).results;
+    const shop = await this.env.DB.prepare("SELECT public_id AS publicId, name FROM shops WHERE id=?")
+      .bind(shopId).first<{ publicId: string; name: string }>();
+    if (!starts.length || !shop) return false;
+    const nowSeconds = Math.floor(now / 1000);
+    const startedAtUnix = Date.parse(token.started_at) / 1000;
+    const payload = liveActivityStartPayload({
+      sessionId: token.session_id, shopCode: shop.publicId, shopName: shop.name,
+      origin: this.env.APP_ORIGIN || "https://link.neri.moe",
+      startedAtUnix, now: nowSeconds, bill: snapshot.bill, nextBill: snapshot.nextBill,
+      staleAfterSeconds: snapshot.nextCheckAt ? Math.max(1, Math.ceil(snapshot.nextCheckAt / 1000) - nowSeconds) : undefined,
+    });
+    let delivered = false;
+    for (const start of starts) {
+      const result = await pusher.send({ token: start.token, environment: start.environment, bundleId: start.bundle_id }, payload, "10");
+      if (result.kind === "delivered") delivered = true;
+      if (result.kind === "expired") {
+        await this.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE id=? AND token=?").bind(start.id, start.token).run();
+      }
+    }
+    console.log(JSON.stringify({ event: "live_activity_rotated", outcome: delivered ? "started" : "not_started" }));
+    if (!delivered) return false;
+    // The new activity carries the visit on; the old one goes at once rather than freezing.
+    await pusher.send(
+      { token: token.token, environment: token.environment, bundleId: token.bundle_id },
+      liveActivityEndPayload({ startedAtUnix, endedAtUnix: now / 1000, now: nowSeconds, bill: snapshot.bill, dismissalAfterSeconds: 0 }),
+      "10",
+    );
+    await this.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=? AND token=?").bind(token.id, token.token).run();
+    await Promise.all([`sent:${token.id}`, `retry:${token.id}`, `rotate-failed:${token.id}`].map((key) => this.ctx.storage.delete(key)));
+    return true;
   }
 }
