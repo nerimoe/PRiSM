@@ -7,7 +7,7 @@ import type { Env, PrismAppDependencies } from "../src/bindings.js";
 import { publishShopFacts, withOrigin, type FactOrigin } from "../src/events/shop-facts.js";
 import { announcementSubscriber, billingSubscriber, idleTimerSubscriber, shopChangedSubscriber } from "../src/events/subscribers.js";
 import type { Heard } from "../src/events/dispatcher.js";
-import type { DeviceEvent } from "@prism/core";
+import { PrismDomainError, type DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { announcementMessage, type ShopEvent } from "../src/resources/shop-events.js";
 
@@ -194,6 +194,83 @@ describe("shop facts", () => {
     }
     // Both facts were lost, and said so; neither call failed.
     expect(errors.filter((error) => String(error).includes("shop_fact_publish_failed"))).toHaveLength(2);
+    sqlite.close();
+  });
+
+  it("says a checkout the shop's rules turned away, with the bill as it stands when the balance fell short", async () => {
+    const { sqlite, runtime, origin, facts } = fixture();
+    const calls: string[] = [];
+    const base = services(calls);
+    let refusal = new PrismDomainError("Insufficient currency holdings for this operation.", "INSUFFICIENT_BALANCE");
+    const failing = {
+      ...base.playerCheckoutCommands,
+      async checkout() { throw refusal; },
+      async previewCheckout() {
+        calls.push("preview");
+        const at = new Date("2026-11-20T07:00:00.000Z");
+        return {
+          settlementPreview: { playerId: "p1", sessionIds: ["s1"], subtotal: 3000, total: 3000, previewedAt: at },
+          sessionPreviews: [{
+            sessionId: "s1", label: "畅玩", startedAt: new Date("2026-11-20T06:00:00.000Z"), endedAt: null, status: "active",
+            subtotal: 3000, total: 3000, chargeItems: [], adjustments: [],
+          }],
+          chargeItems: [], adjustments: [], checkoutAdjustments: [], pricingCapAdjustments: [], globalCapWindows: [],
+          wallet: { balanceBefore: 2500, balanceAfter: -500 },
+        } as never;
+      },
+    };
+    const deps = withOrigin({ ...base, playerCheckoutCommands: failing } as unknown as PrismAppDependencies, runtime, origin({ channel: "page", resourceId: null }));
+    // The caller hears the same error; the refusal is a fact of its own.
+    await expect(deps.playerCheckoutCommands.checkout({ playerId: "p1" } as never)).rejects.toBe(refusal);
+    const [refused] = facts();
+    expect(refused).toMatchObject({ capability: "shop", kind: "signal", name: "checkout.refused", player_id: "p1", via: "page" });
+    const payload = JSON.parse(refused!.payload_json!);
+    expect(payload).toMatchObject({ code: "INSUFFICIENT_BALANCE" });
+    // Short of money: the bill as it stands goes with it, to say how much.
+    expect(calls).toEqual(["preview"]);
+    expect(payload.bill).toMatchObject({ settlementPreview: { total: 30 }, wallet: { balanceBefore: 25, balanceAfter: -5 } });
+    expect(payload.bill.timeline).toBeUndefined();
+    // Nothing to pay is not news, and a fault is not a refusal.
+    refusal = new PrismDomainError("Player has no sessions to settle.", "PLAYER_HAS_NO_UNSETTLED_SESSIONS");
+    await expect(deps.playerCheckoutCommands.checkout({ playerId: "p1" } as never)).rejects.toBe(refusal);
+    refusal = new Error("D1 went away") as never;
+    await expect(deps.playerCheckoutCommands.checkout({ playerId: "p1" } as never)).rejects.toBe(refusal);
+    expect(facts()).toHaveLength(1);
+    // Another reason is said without a bill.
+    refusal = new PrismDomainError("请在前台确认现场收款", "CASHIER_PAYMENT_REQUIRED");
+    await expect(deps.playerCheckoutCommands.checkout({ playerId: "p1" } as never)).rejects.toBe(refusal);
+    expect(JSON.parse(facts()[1]!.payload_json!)).toEqual({ code: "CASHIER_PAYMENT_REQUIRED", message: "请在前台确认现场收款" });
+    expect(calls).toEqual(["preview"]);
+    sqlite.close();
+  });
+
+  it("tells a refused checkout why, and the bill as it stands when there is one", async () => {
+    const { sqlite, runtime } = fixture();
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','小明','active','2026-01-01')");
+    const told: Array<Record<string, any>> = [];
+    const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({ async shopEvent(event: Record<string, any>) { told.push(event); } }) } } as unknown as Env;
+    const refused = (payload: Record<string, unknown>): Heard => ({
+      type: "checkout.refused",
+      event: {
+        id: `r${told.length}`, deviceId: null, capability: "shop", kind: "signal", name: "checkout.refused", operationId: null, parentOperationId: null,
+        origin: "platform", playerId: "p1", staffId: null, occurredAt: new Date(), via: { channel: "bot", resourceId: "bot-1" }, payload,
+      },
+    });
+    const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
+      .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
+    await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [refused({ code: "CASHIER_PAYMENT_REQUIRED", message: "请在前台确认现场收款" })]);
+    expect(told[0]).toMatchObject({ type: "checkout.refused", botId: "bot-1", detail: { reason: "需要在前台现场收款" } });
+    expect(words(told[0]!.message)).toBe("⛔ <小明> 结账失败：需要在前台现场收款");
+    const bill = {
+      settlementPreview: { playerId: "p1", subtotal: 30, total: 30, previewedAt: "2026-11-20T07:00:00.000Z" },
+      sessionPreviews: [{ label: "畅玩", startedAt: "2026-11-20T06:00:00.000Z", endedAt: null, status: "active", total: 30, adjustments: [] }],
+      checkoutAdjustments: [], pricingCapAdjustments: [], globalCapWindows: [],
+      wallet: { balanceBefore: 25, balanceAfter: -5 },
+    };
+    await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [refused({ code: "INSUFFICIENT_BALANCE", message: "x", bill })]);
+    const said = words(told[1]!.message);
+    expect(said.startsWith("⛔ 结账失败：余额不足\n玩家：<小明>\n")).toBe(true);
+    expect(said).toContain("还差 5");
     sqlite.close();
   });
 

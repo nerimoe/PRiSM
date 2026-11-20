@@ -21,7 +21,8 @@ import type { SettlePlayerCheckoutResult } from "@prism/application";
 import type { DeviceEvent, DeviceEventVia } from "@prism/core";
 import { createDeviceEventRepository } from "@prism/storage-sql";
 import { settledAsPreview } from "../resources/bot-replies.js";
-import { toPlayerCheckoutResultView } from "../routes/shops/views.js";
+import { toPlayerCheckoutPreviewView, toPlayerCheckoutResultView } from "../routes/shops/views.js";
+import { PrismDomainError } from "@prism/core";
 import type { Env, PrismAppDependencies } from "../bindings.js";
 import { createEventDispatcher } from "./dispatcher.js";
 import { eventSubscribers } from "./subscribers.js";
@@ -30,6 +31,8 @@ export const SHOP_FACTS = [
   "session.started",
   "session.stopped",
   "checkout.settled",
+  /** A checkout the shop's rules turned away: nothing was charged, the bill keeps running. */
+  "checkout.refused",
   "wallet.adjusted",
   "assets.adjusted",
   "gift.redeemed",
@@ -125,6 +128,17 @@ function billOf(result: SettlePlayerCheckoutResult): { bill?: Record<string, unk
 }
 
 /**
+ * Why a checkout was turned away that is not news: there was nothing to pay,
+ * or the front desk's own preview went stale and is shown again.
+ */
+const NOT_REFUSALS = new Set([
+  "PLAYER_HAS_NO_UNSETTLED_SESSIONS",
+  "ACTIVE_SESSION_NOT_FOUND",
+  "CASHIER_PREVIEW_EXPIRED",
+  "CASHIER_PREVIEW_CHANGED",
+]);
+
+/**
  * The shop's services as one caller sees them: the same services, publishing
  * what they did from where that caller stands. Only what changes a bill or a
  * balance is wrapped; everything else is the shared instance.
@@ -140,21 +154,58 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     await publish(...await facts(result, ...args));
     return result;
   };
+  /**
+   * A checkout call that may be turned away. What the shop's rules refused (a
+   * domain error) is said as `checkout.refused` with its reason, and, when the
+   * balance was short, the bill as it stands; then the caller hears the error
+   * as before. Anything else is a fault, not a refusal, and is only passed on.
+   */
+  const checkingOut = <Args extends unknown[], Result>(
+    call: (...args: Args) => Promise<Result>,
+    whose: (...args: Args) => Promise<string | null> | string | null,
+    preview: (playerId: string) => Promise<Parameters<typeof toPlayerCheckoutPreviewView>[0]>,
+  ) => async (...args: Args): Promise<Result> => {
+    try {
+      return await call(...args);
+    } catch (error) {
+      if (error instanceof PrismDomainError && !NOT_REFUSALS.has(error.code)) {
+        const playerId = await Promise.resolve(whose(...args)).catch(() => null);
+        const owed = error.code.includes("INSUFFICIENT") && playerId
+          ? await preview(playerId).then((result) => {
+            // What a receipt is worded from; the timeline is the page's, and long.
+            const { timeline: _timeline, chargeItems: _items, ...bill } = toPlayerCheckoutPreviewView(result);
+            return { bill };
+          }).catch(() => ({}))
+          : {};
+        await publish({
+          name: "checkout.refused",
+          playerId,
+          ...(staffOf(args[0]) ? { staffId: staffOf(args[0]) } : {}),
+          payload: { code: error.code, message: error.message, ...owed },
+        });
+      }
+      throw error;
+    }
+  };
   const staffOf = (input: unknown) => {
     const staffId = (input as { staffId?: unknown } | undefined)?.staffId;
     return typeof staffId === "string" ? staffId : null;
   };
 
-  const checkouts = (service: PrismAppDependencies["playerCheckoutCommands"]): PrismAppDependencies["playerCheckoutCommands"] => ({
+  const checkouts = (service: PrismAppDependencies["playerCheckoutCommands"]): PrismAppDependencies["playerCheckoutCommands"] => {
+    const preview = (playerId: string) => service.previewCheckout({ playerId });
+    const whose = (input: { playerId: string }) => input.playerId;
+    return {
     ...service,
-    checkout: after(service.checkout.bind(service), (result, input) => [settled(result, staffOf(input))]),
-    checkoutExternal: after(service.checkoutExternal.bind(service), (result, input) => [settled(result, staffOf(input))]),
-    checkoutWithOverride: after(service.checkoutWithOverride.bind(service), (result, input) => [settled(result, staffOf(input))]),
-    checkoutWithRecharge: after(service.checkoutWithRecharge.bind(service), (result, input) => [settled(result, staffOf(input))]),
+    checkout: checkingOut(after(service.checkout.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
+    checkoutExternal: checkingOut(after(service.checkoutExternal.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
+    checkoutWithOverride: checkingOut(after(service.checkoutWithOverride.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
+    checkoutWithRecharge: checkingOut(after(service.checkoutWithRecharge.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
     stopSession: after(service.stopSession.bind(service), (session) => [
       { name: "session.stopped", playerId: session.playerId, payload: { sessionId: session.id } },
     ]),
-  });
+    };
+  };
   const { integrationCommands: integration, staffAssetCommands: assets, playerRedeemCommands: redeem, resourceBilling, staffOperations } = deps;
   const { businessItemOrderCommands: orders, staffPlayerCommands: players } = deps;
   const { staffAssetDefinitionCommands: definitions, staffPricingEffectCommands: effects, staffPricingCommands: pricing } = deps;
@@ -241,8 +292,16 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     // Named by a chat identity: the player is whoever that identity is.
     integrationCommands: {
       ...integration,
-      confirmCheckoutByIdentity: after(integration.confirmCheckoutByIdentity.bind(integration), (result) => [settled(result)]),
-      checkoutWithOverrideByIdentity: after(integration.checkoutWithOverrideByIdentity.bind(integration), (result) => [settled(result)]),
+      confirmCheckoutByIdentity: checkingOut(
+        after(integration.confirmCheckoutByIdentity.bind(integration), (result) => [settled(result)]),
+        async (input) => (await integration.resolvePlayerByIdentity(input)).id,
+        (playerId) => deps.playerCheckoutCommands.previewCheckout({ playerId }),
+      ),
+      checkoutWithOverrideByIdentity: checkingOut(
+        after(integration.checkoutWithOverrideByIdentity.bind(integration), (result) => [settled(result)]),
+        async (input) => (await integration.resolvePlayerByIdentity(input)).id,
+        (playerId) => deps.playerCheckoutCommands.previewCheckout({ playerId }),
+      ),
       stopSessionByIdentity: after(integration.stopSessionByIdentity.bind(integration), (session) => [
         { name: "session.stopped", playerId: session.playerId, payload: { sessionId: session.id } },
       ]),

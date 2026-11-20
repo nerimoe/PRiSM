@@ -77,6 +77,9 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
   // A checkout is said as its bill; a shop's own words may place it with {bill}, or leave it out.
   reply(`announce.checkout.settled.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.settled")!.label,
     "{bill}", { player: "小明", amount: "20", bill: "🧾 结账账单\n玩家：小明\n游玩时长：1小时｜计价：20元" }, []),
+  // A refused checkout says why; when the balance was short, the bill as it stands follows as {bill}.
+  reply(`announce.checkout.refused.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.refused")!.label,
+    "⛔ {player} 结账失败：{reason}", { player: "小明", reason: "余额不足", bill: "⛔ 结账失败：余额不足\n玩家：小明\n预计结账后余额：余额不足（还差 5元）" }, []),
   reply("announce.idle.reminder.shop_empty", "店内无人", "店里没人，{minutes} 分钟后全部关机", { minutes: "5" }, ["minutes"]),
   reply("announce.idle.reminder.device_idle", "设备闲置", "{devices} 闲置中，{minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟", { devices: "舞萌、中二", minutes: "5" }, ["devices", "minutes"]),
 ];

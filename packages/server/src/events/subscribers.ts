@@ -99,7 +99,16 @@ const REQUESTS: Record<string, "request.power.on" | "request.power.off" | "reque
 const CABINET = ["cabinet.coin", "cabinet.consumed", "cabinet.reset"] as const;
 
 /** What happened at the shop without a device (`shop-facts.ts`), told under its own name. */
-const FACTS = ["session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "gift.redeemed"] as const;
+const FACTS = ["session.started", "session.stopped", "checkout.settled", "checkout.refused", "wallet.adjusted", "gift.redeemed"] as const;
+
+/** Why a checkout was turned away, as a shop reads it; otherwise the platform's own words. */
+const CHECKOUT_REFUSALS: Record<string, string> = {
+  INSUFFICIENT_BALANCE: "余额不足",
+  INSUFFICIENT_RECHARGE_BALANCE: "充值后余额仍不足",
+  CASHIER_PAYMENT_REQUIRED: "需要在前台现场收款",
+  CASHIER_PROFILE_REQUIRED: "仅前台卡片档案可现场收款",
+  CASHIER_PROFILE_RESTRICTED: "前台卡片档案不能保存资产",
+};
 
 /** Every request that can be turned away, as the event that says it was. */
 const REFUSALS = ACTIONS.map((action) => `${action}.refused`);
@@ -152,12 +161,19 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       if ((FACTS as readonly string[]).includes(type)) {
         const { payload } = event;
         const who = await player(event.playerId);
+        const reason = type === "checkout.refused"
+          ? CHECKOUT_REFUSALS[String(payload.code)] ?? (typeof payload.message === "string" && payload.message ? payload.message : String(payload.code ?? ""))
+          : "";
         const detail = type === "checkout.settled" ? { amount: String(yuanOf(payload.total as Cents)) }
+          : type === "checkout.refused" ? { reason, code: String(payload.code ?? "") }
           : type === "wallet.adjusted" ? { amount: signed(payload.amount) } : undefined;
-        // A checkout is told as its bill, worded as the bot words its own checkout's.
-        const message = type === "checkout.settled" && payload.bill && typeof payload.bill === "object"
-          ? receiptMessage(payload.bill as Record<string, unknown>, {
-            title: "🧾 结账账单", preview: false, who: { player: who }, ...await (shop ??= shopWords(context)),
+        // A checkout is told as its bill, worded as the bot words its own checkout's; a refused
+        // one by the bill as it stands, when the balance fell short of it.
+        const bill = payload.bill && typeof payload.bill === "object" ? payload.bill as Record<string, unknown> : null;
+        const message = bill && (type === "checkout.settled" || type === "checkout.refused")
+          ? receiptMessage(bill, {
+            title: type === "checkout.settled" ? "🧾 结账账单" : `⛔ 结账失败：${reason}`,
+            preview: type === "checkout.refused", who: { player: who }, ...await (shop ??= shopWords(context)),
           })
           : undefined;
         await announce({ type: type as (typeof FACTS)[number], ...place, player: who, ...(detail ? { detail } : {}), ...(message ? { message } : {}) });

@@ -109,6 +109,7 @@ export function announcementText(event: ShopEvent): string {
     case "session.started": return `🚪 ${actor} 入场`;
     case "session.stopped": return `⏹ ${actor} 停止了一项计费`;
     case "checkout.settled": return `🧾 ${actor} 结账 ${text("amount")}`;
+    case "checkout.refused": return `⛔ ${actor} 结账失败：${text("reason")}`;
     case "wallet.adjusted": return `💰 ${actor} 余额调整 ${text("amount")}`;
     case "gift.redeemed": return `🎁 ${actor} 兑换了礼物`;
     case "request.refused": return `⛔ ${actor} ${text("action")}被拒绝：${text("reason")}`;

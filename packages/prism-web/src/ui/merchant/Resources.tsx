@@ -847,6 +847,7 @@ function chatName(value: unknown): string {
 }
 
 const actionLabels: Record<string, string> = {
+  checkout: "结账",
   "power.on": "开机",
   "power.off": "关机",
   "power.keep": "延迟关机",
@@ -871,6 +872,7 @@ const actionLabels: Record<string, string> = {
   "session.started": "入场",
   "session.stopped": "停止计费",
   "checkout.settled": "结账",
+  "checkout.refused": "结账失败",
   "wallet.adjusted": "调整余额",
   "assets.adjusted": "调整资产",
   "gift.redeemed": "兑换礼物",
@@ -888,6 +890,9 @@ const refusalReasons: Record<string, string> = {
   DEVICE_DISABLED: "资源已停用",
   DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
   SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
+  INSUFFICIENT_BALANCE: "余额不足",
+  INSUFFICIENT_RECHARGE_BALANCE: "充值后余额仍不足",
+  CASHIER_PAYMENT_REQUIRED: "需要在前台现场收款",
 };
 
 type Books = {

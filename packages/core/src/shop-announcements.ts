@@ -32,6 +32,7 @@ export const shopAnnouncementCatalog = [
   { type: "session.started", label: "入场", family: "shop" },
   { type: "session.stopped", label: "停止计费", family: "shop" },
   { type: "checkout.settled", label: "结账", family: "shop" },
+  { type: "checkout.refused", label: "结账失败", family: "shop" },
   { type: "wallet.adjusted", label: "调整余额", family: "shop" },
   { type: "gift.redeemed", label: "兑换礼物", family: "shop" },
   { type: "request.refused", label: "操作被拒绝", family: "shop" },
