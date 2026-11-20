@@ -10,7 +10,6 @@ import { can, loadResource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readPower } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
-import { publishShopFacts } from "../../events/shop-facts.js";
 import { clientIp, jsonError, nowIso } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { checkShopLocation } from "../../middleware/geo.js";
@@ -174,12 +173,10 @@ async function handleLogin(c:C,routePublicId?:string) {
     ...(!playerId&&cardPlayerId?{forPlayerId:cardPlayerId}:{}),
   });
   if(scan.operation.status==="succeeded"&&cardPlayerId&&c.env.URL_ENCRYPTION_KEY) {
-    const binding=await createCardStore(c.env.DB,shop.id,c.env.URL_ENCRYPTION_KEY)
+    // The shop learning whose card this is, not the player adding one: no event.
+    await createCardStore(c.env.DB,shop.id,c.env.URL_ENCRYPTION_KEY)
       .bind({playerId:cardPlayerId,card:{type:card.card_type,accessCode:card.access_code},source:"scan"})
-      .catch(error=>{console.error("Card binding failed",error);return null;});
-    if(binding==="bound") await publishShopFacts(runtime,{via:{channel:"page",resourceId:null}},[{
-      name:"card.bound",resourceId:machine.id,playerId:cardPlayerId,payload:{type:card.card_type,source:"scan"},
-    }]);
+      .catch(error=>console.error("Card binding failed",error));
   }
   const sent=scan.operation.status==="succeeded";
   const status=sent?"completed":scan.operation.status==="pending"?"unknown":"failed";

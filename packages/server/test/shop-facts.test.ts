@@ -259,7 +259,7 @@ describe("shop facts", () => {
       },
     });
     await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [
-      heard("card.bound", { capability: "shop", payload: { type: "aime", source: "reader" } }),
+      heard("card.bound", { capability: "shop", payload: { type: "aime" } }),
       heard("coin.sent", { kind: "result", name: "coin", payload: { outcome: "ok", cause: "card" }, via: { channel: "system", resourceId: null } }),
       heard("coin.sent", { kind: "result", name: "coin", payload: { outcome: "ok" } }),
       heard("card.consumed", { origin: "device", payload: { cardFrom: "reader" }, via: { channel: "relay", resourceId: null } }),
@@ -269,11 +269,11 @@ describe("shop facts", () => {
     const words = (event: Record<string, any>) =>
       (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
     expect(told.map(words)).toEqual([
-      "💳 <小明> 绑定了一张 Aime 卡",
-      "🪙 <小明> 在 舞萌 投币（刷卡后自动投币）",
-      "🪙 <小明> 在 舞萌 投币（主动投币）",
-      "💳 <小明> 在 舞萌 刷卡（实体卡）",
-      "💳 <小明> 在 舞萌 刷卡（平台发卡）",
+      "💳 <小明> 添加了一张 Aime 卡",
+      "🪙 <小明> 在 舞萌 刷卡后自动投币",
+      "🪙 <小明> 在 舞萌 投币",
+      "💳 <小明> 在 舞萌 刷卡",
+      "💳 <小明> 在 舞萌 虚拟刷卡",
     ]);
     // A shop's own words from before the source was said still apply.
     expect(words({ message: announcementMessage(told[1] as ShopEvent, { "announce.request.coin.message": "{player} 在 {device} 投了币" }, told[1]!.message) }))
@@ -296,8 +296,9 @@ describe("shop facts", () => {
     const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
       .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
     await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [refused({ code: "CASHIER_PAYMENT_REQUIRED", message: "请在前台确认现场收款" })]);
-    expect(told[0]).toMatchObject({ type: "checkout.refused", botId: "bot-1", detail: { reason: "需要在前台现场收款" } });
-    expect(words(told[0]!.message)).toBe("⛔ <小明> 结账失败：需要在前台现场收款");
+    // The words the player is told, as the platform has them.
+    expect(told[0]).toMatchObject({ type: "checkout.refused", botId: "bot-1", detail: { reason: "请在前台确认现场收款" } });
+    expect(words(told[0]!.message)).toBe("⛔ <小明> 结账失败：请在前台确认现场收款");
     const bill = {
       settlementPreview: { playerId: "p1", subtotal: 30, total: 30, previewedAt: "2026-11-20T07:00:00.000Z" },
       sessionPreviews: [{ label: "畅玩", startedAt: "2026-11-20T06:00:00.000Z", endedAt: null, status: "active", total: 30, adjustments: [] }],
@@ -336,7 +337,7 @@ describe("shop facts", () => {
     const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
       .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
     const said = words(told[0]!.message);
-    expect(said.startsWith("🧾 结账账单\n玩家：<小明>\n")).toBe(true);
+    expect(said.startsWith("🧾 结算账单\n玩家：<小明>\n")).toBe(true);
     for (const line of ["畅玩", "游玩时段：14:00-15:30", "会员折扣", "75"]) expect(said).toContain(line);
     // The hub renders each bot's own words over it.
     const rendered = (templates: Record<string, string>) =>

@@ -105,11 +105,11 @@ export function IdlePowerSettings() {
           )}
           {(emptyOn || deviceOn) && (
             <div className="grid gap-2">
-              <Field label="延迟关机一次保持时长" unit="分钟">
+              <Field label="延迟关机时长" unit="分钟">
                 <input className={input} type="number" min="1" max="1440" name="keepMinutes" defaultValue={settings.keepMinutes} required />
               </Field>
               <p className="text-sm leading-relaxed text-ink/60">
-                {t("玩家或店员点「延迟关机」（Bot 的 keep 命令）后，设备在这段时间内不会被自动关机，适合运行不上报刷卡和投币的软件。到期前照常预告，可以再延迟一次。")}
+                {t("点「延迟关机」或发送 keep 后，设备在这段时间内不会被自动关机。")}
               </p>
             </div>
           )}

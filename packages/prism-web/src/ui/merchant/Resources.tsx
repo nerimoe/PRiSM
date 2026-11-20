@@ -876,7 +876,7 @@ const actionLabels: Record<string, string> = {
   "wallet.adjusted": "调整余额",
   "assets.adjusted": "调整资产",
   "gift.redeemed": "兑换礼物",
-  "card.bound": "绑定卡片",
+  "card.bound": "添加卡片",
 };
 
 /** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */
@@ -892,8 +892,6 @@ const refusalReasons: Record<string, string> = {
   DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
   SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
   INSUFFICIENT_BALANCE: "余额不足",
-  INSUFFICIENT_RECHARGE_BALANCE: "充值后余额仍不足",
-  CASHIER_PAYMENT_REQUIRED: "需要在前台现场收款",
 };
 
 type Books = {
@@ -1399,14 +1397,10 @@ function ResourceHistory({ device }: { device: Resource }) {
               }
             }
             if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
-            // Where a card or a coin came from.
-            if (e.kind === "signal" && e.payload.card && typeof e.payload.cardFrom === "string")
-              detail.push(t(e.payload.cardFrom === "platform" ? "平台发卡" : "实体卡"));
-            if (e.kind === "request" && e.name === "coin") detail.push(t(e.payload.cause === "card" ? "刷卡后自动投币" : "主动投币"));
-            if (e.name === "card.bound") {
-              const kind = typeof e.payload.type === "string" ? e.payload.type : "";
-              detail.push(t(e.payload.source === "reader" ? "在读卡器上添加 · {kind}" : "扫码页刷卡时绑定 · {kind}", { kind }));
-            }
+            // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
+            if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
+            if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("刷卡后自动投币"));
+            if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
             const command = e.name === "bot.command" ? e.payload : null;
             // A request turned away before it reached the device, and what happened at the shop itself.
             const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;

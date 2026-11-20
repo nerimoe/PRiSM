@@ -770,7 +770,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const channel = await this.channel();
       result = await bindReaderCard(this.env.DB, this.env.URL_ENCRYPTION_KEY, capture, capture.card, async ({ type }) => {
         await publishShopFacts({ db: this.env.DB, env: this.env, shopId: capture.shopId }, { via: { channel: "page", resourceId: null } }, [{
-          name: "card.bound", resourceId: channel?.machineId ?? null, playerId: capture.playerId, payload: { type, source: "reader" },
+          name: "card.bound", resourceId: channel?.machineId ?? null, playerId: capture.playerId, payload: { type },
         }]);
       });
     } catch (error) {

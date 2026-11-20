@@ -323,7 +323,7 @@ describe("a cabinet's card reports", () => {
     expect(sqlite.query("SELECT player_id, source FROM player_cards").all()).toEqual([{ player_id: "p2", source: "reader" }]);
     // Bound once, on the player's page, at this cabinet, and the record never holds the number.
     const bound = sqlite.query("SELECT device_id, capability, player_id, via, payload_json FROM device_events WHERE name = 'card.bound'").all() as Array<Record<string, string>>;
-    expect(bound).toEqual([{ device_id: "cab", capability: "shop", player_id: "p2", via: "page", payload_json: JSON.stringify({ type: "aime", source: "reader" }) }]);
+    expect(bound).toEqual([{ device_id: "cab", capability: "shop", player_id: "p2", via: "page", payload_json: JSON.stringify({ type: "aime" }) }]);
     expect(JSON.stringify(sqlite.query("SELECT payload_json FROM device_events").all())).not.toContain(CARD_B);
   });
 });

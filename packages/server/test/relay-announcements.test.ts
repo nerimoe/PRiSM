@@ -151,10 +151,10 @@ describe("what a cabinet's card reports tell the shop's bots", () => {
     const { told, report } = await fixture();
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: OP } });
     await report("event.cardConsumed", { interface: "aimeio", unit_no: 0, card: { source: "HINATA(1)" } });
-    // Each says where the card came from: sent by the platform, or put on the reader.
+    // Each says how the card got there: sent from a page or a bot (a virtual swipe), or put on the reader.
     expect(told.map(({ type, label, via, resourceName, detail }) => ({ type, label, via, resourceName, detail }))).toEqual([
-      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { source: "平台发卡" } },
-      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { source: "实体卡" } },
+      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { verb: "虚拟刷卡" } },
+      { type: "card", label: "刷卡", via: "relay", resourceName: "舞萌左机", detail: { verb: "刷卡" } },
     ]);
   });
 

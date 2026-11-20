@@ -31,7 +31,7 @@ export const SHOP_FACTS = [
   "session.started",
   "session.stopped",
   "checkout.settled",
-  /** A card was bound to a player here: its type and how, never its number. */
+  /** A player added a card at one of the shop's readers: its type, never its number. */
   "card.bound",
   /** A checkout the shop's rules turned away: nothing was charged, the bill keeps running. */
   "checkout.refused",

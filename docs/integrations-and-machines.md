@@ -54,10 +54,10 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - 心跳：发送文本 `ping`，回复 `pong`（Workers 上由运行时自动回复，不唤醒 Hub）。
 - `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台替它判断、写话，并按 Bot 的监听规则把店内动态和闲置提醒交给它说。没有声明 `commands` 的连接收不到任何店内动态，平台也不为它安排闲置提醒。
 - **店内动态**：发生在店里、Bot 可以播报的事。每条有 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`）、`via`（从哪里进入平台），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台规则里的事件列表也从它生成。分四组，**请求和事件互不关联**：
-  - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。 刷卡（`card`）的 `detail.source` 说明卡从哪来：「实体卡」是放在读卡器上的，「平台发卡」是扫码页或 Bot 让平台发过去的；机台的卡片回报在 `payload.cardFrom` 里记为 `reader` 或 `platform`。
-  - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。 投币（`request.coin`）的 `detail.source` 说明是谁的主意：「主动投币」是有人通过扫码页、Bot 或后台投的，「刷卡后自动投币」是机台设置了刷卡后自动投币、平台自己投的；后者在请求和结果的 `payload.cause` 里记为 `card`，来源 `via` 为 `system`。
+  - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。 刷卡（`card`）分「刷卡」（卡放在读卡器上）和「虚拟刷卡」（从扫码页或 Bot 发过去的卡），写在 `detail.verb` 里；机台的卡片回报在 `payload.cardFrom` 里记为 `reader` 或 `platform`。
+  - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。 投币（`request.coin`）分「投币」（有人通过扫码页、Bot 或后台投的）和「刷卡后自动投币」（机台开了「刷卡后自动投一币」，平台自己投的），写在 `detail.verb` 里；后者在请求和结果的 `payload.cause` 里记为 `card`，来源 `via` 为 `system`。
   - **提醒**：`idle.reminder`（闲置关机预告）。它和其它动态一样由规则决定发到哪里，只是由 Hub 在预告时间发出。 `platform.maintenance`（系统维护）也属于这一组：部署新版本前，平台按构建变量 `PRISM_MAINTENANCE_NOTICE_MINUTES` 提前告诉每家店的 Bot「N 分钟后开始后端维护，预计 M 分钟内完成」，上线并通过健康检查后再说「后端维护完成」。部署期间 Bot 会断线重连，所以完成通知在 Hub 里保留 15 分钟，Bot 重连发 hello 时补说一次，每个 Bot 只说一次。部署失败时平台停在维护状态、Bot 连不上，不会有完成通知。迁移 `0052` 给已经监听 `idle.reminder` 的规则加上了它。
-  - **店铺动态**（没有设备参与的事，来自业务事实和被拒绝的请求）：`session.started`（入场）、`session.stopped`（停止计费）、`checkout.settled`（结账，`detail.amount` 是金额；播报的是**完整账单**：游玩时段、各计费方案、折扣与封顶、余额变化，措辞与 Bot 自己的结账回执相同，标题为「🧾 结账账单」。账单来自结账事实的 `payload.bill`，即结账时实际收费的明细，事后不再重算；记不下账单时只播金额）、`checkout.refused`（结账失败：店铺的规则拒绝了这次结账，什么都没扣，计费照常继续；`detail.reason` 是原因，`detail.code` 是错误码。余额不足时附上此刻的预览账单，播报里能看到还差多少，标题为「⛔ 结账失败：余额不足」；其他原因只播一行。没有可结的账单、前台预览过期需要重看，不算失败，不播报）、`wallet.adjusted`（调整余额，`detail.amount` 带正负号）、`gift.redeemed`（兑换礼物）、`card.bound`（绑定卡片：玩家在扫码页刷卡时，或在读卡器上添加时，一张卡第一次绑定到他在本店的档案；`detail.card` 是卡的种类，事件里只记种类和方式 `source`（`scan`／`reader`），**从不记卡号**）、`request.refused`（设备请求被拒绝，`detail` 带 `action`、`reason`、`code`）。没有设备时 `resourceId`／`resourceName` 为空字符串。
+  - **店铺动态**（没有设备参与的事，来自业务事实和被拒绝的请求）：`session.started`（入场）、`session.stopped`（停止计费）、`checkout.settled`（结账，`detail.amount` 是金额；播报的是**完整账单**：游玩时段、各计费方案、折扣与封顶、余额变化，措辞与 Bot 自己的结账回执相同，标题为「🧾 结算账单」。账单来自结账事实的 `payload.bill`，即结账时实际收费的明细，事后不再重算；记不下账单时只播金额）、`checkout.refused`（结账失败：店铺的规则拒绝了这次结账，什么都没扣，计费照常继续；`detail.reason` 是原因，用的是玩家看到的那句话，`detail.code` 是错误码。余额不足时附上此刻的预览账单，播报里能看到还差多少，标题为「⛔ 结账失败：余额不足」；其他原因只播一行。没有可结的账单、前台预览过期需要重看，不算失败，不播报）、`wallet.adjusted`（调整余额，`detail.amount` 带正负号）、`gift.redeemed`（兑换礼物）、`card.bound`（添加卡片：玩家在扫码页点「添加卡片」，把卡放到读卡器上并确认后，卡加进他的账号和他在本店的档案；`detail.card` 是卡的种类，事件里只记种类，**从不记卡号**。玩家在扫码页用账号里已有的卡刷卡时，店里顺带记下这张卡是谁的，这不是玩家添加卡片，不产生事件）、`request.refused`（设备请求被拒绝，`detail` 带 `action`、`reason`、`code`）。没有设备时 `resourceId`／`resourceName` 为空字符串。
   `via` 的取值：`page` 扫码页、`merchant` 商户后台、`bot`、`api`、`relay` 机台、`ha` Home Assistant、`system` 平台规则（目录在 `shopAnnouncementSources`）。HA 看到的电源变化是 `ha`，闲置关机及其预告是 `system`。
   **说什么由平台写**：每条动态的话由平台写好（`resources/shop-events.ts` 的 `announcementText`），格式见下文「Bot 消息」；没有玩家时平台直接写好（如「未绑定的卡」）。Bot 收到就发，不自己判断播不播、怎么措辞，平台新增类型或改措辞都不用更新插件。Bot 设置一改就会收到 `config.changed`，Hub 下一条动态就按新规则发。
   Bot 自己的命令引起的动态（事件的来源是这个 Bot）带 `botId`，这个 Bot 已经回复过命令，不再播报。下机（占用超时）是在读取时才结算的，不会实时播报。外部中继没有回报，所以经外部中继的刷卡只有 `request.card`，没有 `card`。
@@ -93,7 +93,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 同一 Bot 编辑页的「播报消息」可以编辑所有播报类型：开关机、刷卡、上机、机台投币、开局扣币、计数清零、平台操作和闲置关机提醒。店内无人、单台设备闲置分别设置。模板存入同一个 `replyTemplates`，键为 `announce.<事件类型>.message`；闲置提醒为 `announce.idle.reminder.shop_empty` 和 `announce.idle.reminder.device_idle`。系统维护为 `announce.platform.maintenance.ahead`（变量 `{minutes}` 必须保留，`{expected}` 是预计时长）和 `announce.platform.maintenance.done`。
 
-事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。结账默认就是整份账单 `{bill}`，还可用 `{player}` 和 `{amount}`；结账失败可用 `{player}`、`{reason}` 和 `{bill}`（只有余额不足时有内容）；刷卡和投币多了可选的 `{source}`（卡或币从哪来），以前保存的文案不写它也照常生效；绑定卡片可用 `{player}` 和 `{card}`；三者都可以不写，例如写成 `{player} 结账 {amount}` 就只播一行。其他类型界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
+事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。结账默认就是整份账单 `{bill}`，还可用 `{player}` 和 `{amount}`；结账失败可用 `{player}`、`{reason}` 和 `{bill}`（只有余额不足时有内容）；刷卡和投币多了可选的 `{verb}`（刷卡或虚拟刷卡，投币或刷卡后自动投币），以前保存的文案不写它也照常生效；添加卡片可用 `{player}` 和 `{card}`；三者都可以不写，例如写成 `{player} 结账 {amount}` 就只播一行。其他类型界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
 
 模板逐 Bot 渲染，不会改变监听规则、真实事件和自身命令去重规则；昵称继续作为玩家片段交给聊天平台解析。模板不写入 WebSocket attachment，避免长文案超出休眠连接附件大小上限。未设置的消息保留原文案。
 
@@ -296,7 +296,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
 - **Hub 自己的总线**（闲置规则、监听者上报，`notifyHub: false`）上，后三类只是去通知 Hub 的订阅者保持沉默：Hub 自己告诉它的 Bot 和页面，也不能从内部回调自己。占用判定照常进行。
 - **不在订阅表里的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆，但同样按 Bot 的监听规则发出）；麻将桌的上下桌（座位变化由 `routes/platform/mahjong.ts` 自己通知这张桌的页面，并告诉 Hub 的闲置计时器座位变了）。
-- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`card.bound`（绑定卡片，在扫码页刷卡和读卡器添加这两处发布，只带卡的种类）、`checkout.refused`（结账被店铺的规则拒绝：只有业务拒绝，即领域错误才算，程序故障不算；调用方照样收到原来的错误）、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
+- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`card.bound`（添加卡片，只在玩家于读卡器上添加卡片时发布，只带卡的种类）、`checkout.refused`（结账被店铺的规则拒绝：只有业务拒绝，即领域错误才算，程序故障不算；调用方照样收到原来的错误）、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
   **玩家的页面和手机只由这些事实通知**：没有别的地方从 URL 或响应体里反推发生了什么。新增一种会改变账单的操作时，在 `withOrigin` 里给它的服务方法加一条事实；不加，页面和 Live Activity 就不会知道。
 - **被拒绝的请求也是事件**：设备请求在发给硬件之前被挡下（未入场、投币冷却、机台币满、设备不支持、没有这个设备）时，记一条 `<动作>.refused`，带 `code`（平台的原因码）和可读的 `message`（有的话），说明谁试了、从哪来。没有 `device_operations` 行，也不算作使用。Bot、员工和接口的请求在 `capabilities/actions.ts` 记；扫码页和商户后台的在 `routes/platform/resource-actions.ts` 记，其中询问玩家确认（`CHECKIN_CONSENT_REQUIRED`）、防重复提交、限流和硬件未响应不算拒绝。请求没有指明存在的设备时 `device_id` 为空，仍按来源出现在 Bot 的记录里。
 - **Bot 命令也是事件**：对 Bot 说的每条命令在回答之后记为这个 Bot 资源自己的一条回报（能力 `bot`，名字 `bot.command`，来源是这个 Bot）。payload 是 `command`、`args`、`from`／`target`（聊天平台身份）、`channel` 和 `outcome`：`answered`（执行并回答了）、`refused`（被 Bot 设置或平台拒绝，带 `code`）、`failed`（出错）。`bind` 和 `redeem` 的参数是可以再用的码，只记 `***`。因丢失回答而重发的同一条命令只记一次；记录写入失败只记日志，不影响回答。旧插件走 `request` 帧的请求不是命令，没有这条记录，但它发起的设备请求同样带着 Bot 来源。
@@ -387,7 +387,7 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 **投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
 
-**刷卡后自动投币**（`coinAfterSwipe`）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。 这枚币在操作记录和播报里标为「刷卡后自动投币」（`payload.cause: "card"`），和玩家主动投的币区分开。
+**刷卡后自动投币**（`coinAfterSwipe`）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。 这枚币在操作记录和播报里叫「刷卡后自动投币」（`payload.cause: "card"`），和有人投的币分开。
 
 #### 扫码刷卡的结果
 
@@ -485,7 +485,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 | 关机 | `power.off.sent`，或 Home Assistant 上报变为关 | 销毁 |
 | 建立或续上占用：被授权的刷卡、为玩家投的币 | `occupancy.seen`（资源对其计费的玩家才会有） | 重设到这次占用的到期时刻 |
 | 不带占用的使用：没有指定玩家的投币、机台自己记到的币、平台送卡 | `coin.sent`、`cabinet.coin`／`cabinet.consumed`、`aime.scan.sent` | 重设到此刻 |
-| 延迟关机 | `power.keep.sent` | 保持到「此刻 + 延迟关机一次保持时长」 |
+| 延迟关机 | `power.keep.sent` | 保持到「此刻 + 延迟关机时长」 |
 | 上桌 | 座位变化 | 暂停，没有到期时间 |
 | 最后一人下桌 | 座位变化 | 从此刻重新启动 |
 
@@ -510,7 +510,7 @@ Hub 只在计时器到点时被唤醒，到点后不再读取店里的状态去�
 
 **关机时间**：`GET /api/v1/merchant/machines/occupancy` 带上 `powerOffAt`（设备 ID → 时间，已过去的不列），出自计时器（`idleScheduleOf`）：只包含到期会被关掉的设备，只标记不关、上桌、被排除的没有。后台按店铺时区显示「HH:MM 自动关机（N 分钟后）」。
 
-**延迟关机**：`power.keep`（电源能力的动作，玩家要求已入场；店员可直接操作）。面板的 `POST /api/v1/merchant/machines/:id/actions` 与扫码动作接口、Bot 的 `keep` 命令都走它。它不向 HA 下发开机命令，设备开着才成功；已关机或状态读不到时拒绝，所以延迟永远不会把设备开起来。硬件收下后（`power.keep.sent`），这个开关在「延迟关机一次保持时长」（`keepMinutes`，默认 45 分钟，全店一个值，与闲置等待时长无关）内不会被自动关机，已发出的预告作废；之后的刷卡、投币不会把这段时间缩短，「店里没人」的计时器到点时也不关它。到期前照常预告，可以再延迟一次。它是给运行不上报刷卡和投币的软件准备的：闲置等待设得很短时，不用每隔几分钟续一次。
+**延迟关机**：`power.keep`（电源能力的动作，玩家要求已入场；店员可直接操作）。面板的 `POST /api/v1/merchant/machines/:id/actions` 与扫码动作接口、Bot 的 `keep` 命令都走它。它不向 HA 下发开机命令，设备开着才成功；已关机或状态读不到时拒绝，所以延迟永远不会把设备开起来。硬件收下后（`power.keep.sent`），这个开关在「延迟关机时长」（`keepMinutes`，默认 45 分钟，全店一个值，与闲置等待时长无关）内不会被自动关机，已发出的预告作废；之后的刷卡、投币不会把这段时间缩短，「店里没人」的计时器到点时也不关它。到期前照常预告，可以再延迟一次。它是给运行不上报刷卡和投币的软件准备的：闲置等待设得很短时，不用每隔几分钟续一次。
 
 ### 设备日志
 

@@ -158,8 +158,8 @@ describe("direct-connect card login result",()=>{
   it("waits for the game to take the card, not for its reader light",async()=>{
     const {res,reply,cards,presses,bound,logged}=await embedded("read");
     expect(res.status).toBe(200);
-    // The swipe bound the card to the player here, on the page, and nothing logged its number.
-    expect(bound).toEqual([{device_id:"machine-id",player_id:"p-one",via:"page",payload_json:JSON.stringify({type:"aime",source:"scan"})}]);
+    // The shop now knows whose card it is, which is not the player adding a card; nothing logged its number.
+    expect(bound).toEqual([]);
     expect(logged).not.toMatch(/\d{20}/);
     expect(reply.card).toBe("read");
     expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([["CARD_SENT","inline","已刷卡"]]);
