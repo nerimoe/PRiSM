@@ -142,6 +142,11 @@ userRouter.post("/me/live-activity/start-token", async (c) => {
     jsonError(400, "未知的应用标识", "INVALID_BUNDLE_ID");
   }
   const now = new Date().toISOString();
+  // The same token under another install of this account is the same app on the same phone
+  // come back (a reinstall): keep only this install, or that phone is started two activities.
+  await c.env.DB.prepare(
+    "DELETE FROM live_activity_start_tokens WHERE user_id=? AND client_id<>? AND token=?",
+  ).bind(user.id, body.clientId, body.token.toLowerCase()).run();
   await c.env.DB.prepare(
     `INSERT INTO live_activity_start_tokens
       (id, user_id, client_id, bundle_id, environment, token, created_at, updated_at, last_seen_at)

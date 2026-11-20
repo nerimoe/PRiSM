@@ -14,7 +14,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
       CREATE TABLE sessions (shop_id TEXT, id TEXT, player_id TEXT, started_at TEXT, ended_at TEXT, payment_status TEXT);
       CREATE TABLE live_activity_start_tokens (
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, client_id TEXT,
-        user_id TEXT, last_seen_at TEXT
+        user_id TEXT, last_seen_at TEXT, updated_at TEXT
       );
       CREATE TABLE live_activity_tokens (
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT,
@@ -24,7 +24,10 @@ describe("Live Activity start-to-end APNs fanout", () => {
       INSERT INTO shops VALUES ('shop', 'demo', 'Example');
       INSERT INTO sessions VALUES ('shop', 'session', 'player', '2026-10-08T01:00:00Z', NULL, 'unpaid');
       INSERT INTO live_activity_start_tokens VALUES ('start', 'abcdef123456', 'sandbox',
-        'moe.neri.hinatago', 'iphone', 'account', NULL);
+        'moe.neri.hinatago', 'iphone', 'account', NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+      -- An install that has not run for months: the app is gone, and it is pushed nothing.
+      INSERT INTO live_activity_start_tokens VALUES ('gone', 'fedcba123456', 'sandbox',
+        'moe.neri.hinatago', 'old-iphone', 'account', NULL, '2026-01-01T00:00:00.000Z');
       INSERT INTO live_activity_tokens VALUES ('activity', 'abcdef654321', 'sandbox',
         'moe.neri.hinatago', 'session', 'shop', 'account', '2026-10-08T01:00:00Z', NULL, 'other-iphone');
     `);
@@ -80,6 +83,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
       sessionId: "session", shopCode: "demo", origin: "https://link.example",
     });
     expect((sqlite.query("SELECT last_seen_at FROM live_activity_start_tokens WHERE id='start'").get() as any)?.last_seen_at).not.toBeNull();
+    expect(sqlite.query("SELECT id FROM live_activity_start_tokens WHERE id='gone'").get()).toBeNull();
 
     sqlite.run("UPDATE sessions SET ended_at='2026-10-08T02:00:00Z' WHERE id='session'");
     await pushSessionEvent(c, {

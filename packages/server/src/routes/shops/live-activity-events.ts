@@ -17,6 +17,12 @@ type C = Context<AppBindings>;
 export const OWN_START_GRACE_MS = 15_000;
 
 /**
+ * An install registers its start token every time it runs; one silent this long is gone (the
+ * app removed, an App Clip the full app replaced) and is no longer pushed starts.
+ */
+export const START_TOKEN_MAX_AGE_MS = 30 * 24 * 3600_000;
+
+/**
  * Tells the phones that are showing a visit that it started or ended.
  *
  * Whoever starts or settles a session (a player, staff, the cashier, a bot)
@@ -120,6 +126,9 @@ export async function pushSessionEvent(
       .first<{ userId: string }>();
     if (!account) return;
 
+    const freshSince = new Date(Date.now() - START_TOKEN_MAX_AGE_MS).toISOString();
+    await c.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE user_id=? AND updated_at<?")
+      .bind(account.userId, freshSince).run();
     const startTokens = await c.env.DB.prepare(
       `SELECT id, token, environment, bundle_id, client_id
        FROM live_activity_start_tokens
