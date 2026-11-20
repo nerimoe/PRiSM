@@ -13,7 +13,8 @@
  * - a mahjong table's seats: joining and leaving tell the table's pages
  *   themselves (`routes/platform/mahjong.ts`).
  */
-import type { D1DatabaseLike } from "@prism/adapter-d1";
+import { createD1Executor, type D1DatabaseLike } from "@prism/adapter-d1";
+import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { Env } from "../bindings.js";
 import { refreshActivityBill } from "../durable-objects/live-activity-billing.js";
 import { machinePoweredOff, pagesChanged, shopHub, type HubCalls } from "../durable-objects/shop-hub-client.js";
@@ -82,7 +83,11 @@ export const occupancySubscriber: InlineSubscriber<EventContext> = {
       .observe({ resourceId: event.deviceId, event: observed });
     if (!result.counted) return;
     emit(cameOf(heard, { capability: "occupancy", name: "occupancy.seen", playerId: observed.playerId }));
-    if (result.started) emit(cameOf(heard, { capability: "occupancy", name: "occupancy.started", playerId: result.started.playerId }));
+    if (!result.started) return;
+    // Someone starting on a resource is a fact of its own, kept in its history; being seen again is not.
+    const started = cameOf(heard, { capability: "occupancy", name: "occupancy.started", playerId: result.started.playerId });
+    await createDeviceEventRepository(createD1Executor(context.db, context.shopId)).record({ events: [started] });
+    emit(started);
   },
 };
 
@@ -214,6 +219,9 @@ const USES = new Set(Object.values(capabilities).flatMap((spec) =>
 /** What an event means to the idle timers (`resources/capabilities/idle-power.ts`), if anything. */
 function idleSignalOf({ event, type }: Heard): IdleSignal | null {
   if (VISITS.has(type)) return { kind: "sessions" };
+  // A seat taken or left holds or frees its table; the bills that moved with it may empty the shop.
+  if (type === "seat.changed") return { kind: "seats" };
+  if (type === "idle.settings.changed") return { kind: "settings" };
   if (!event.deviceId) return null;
   if (type === "power.on.sent") return { kind: "on", deviceId: event.deviceId };
   // The idle rule's own power-off is settled by the hub that made it, waiting for the device to confirm.
@@ -241,10 +249,12 @@ export const idleTimerSubscriber: AfterSubscriber<EventContext> = {
     const told = new Set<string>();
     for (const one of heard) {
       const signal = idleSignalOf(one);
-      const key = JSON.stringify(signal);
-      if (!signal || told.has(key)) continue;
-      told.add(key);
-      signals.push(signal);
+      for (const each of signal ? [signal, ...(signal.kind === "seats" ? [{ kind: "sessions" } as const] : [])] : []) {
+        const key = JSON.stringify(each);
+        if (told.has(key)) continue;
+        told.add(key);
+        signals.push(each);
+      }
     }
     if (signals.length) await (context.hub ?? shopHub(context.env, context.shopId))?.idleEvents(context.shopId, signals);
   },
@@ -284,7 +294,7 @@ export const billingSubscriber: AfterSubscriber<EventContext> = {
   when: "after",
   wants: [
     "session.started", "session.stopped", "checkout.settled", "wallet.adjusted", "assets.adjusted", "gift.redeemed",
-    "order.changed", "player.changed", ...SENT,
+    "order.changed", "player.changed", "seat.changed", ...SENT,
   ],
   async run(context, heard) {
     const { env, shopId } = context;
@@ -293,7 +303,7 @@ export const billingSubscriber: AfterSubscriber<EventContext> = {
       const { event, type } = one;
       const playerId = event.kind === "result" ? forPlayer(one) : event.playerId;
       if (!playerId) continue;
-      await pagesChanged(env, shopId, { player: playerId }, "billing");
+      await pagesChanged(env, shopId, { player: playerId }, type === "seat.changed" ? "seat" : "billing", context.hub);
       const sessionIds = type === "checkout.settled" ? ids(event.payload.sessionIds)
         : type === "session.started" || type === "session.stopped" ? ids([event.payload.sessionId]) : [];
       if (sessionIds.length) {

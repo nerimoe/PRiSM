@@ -118,8 +118,9 @@ export function createEventDispatcher<Context>(input: {
 
 /**
  * An event that came of another: what a subscriber concluded from it. It is
- * heard like any event but not written to the device log; whoever concluded it
- * keeps its own record (a stay is a row of `resource_occupancies`).
+ * heard like any event; the dispatcher does not write it, and whoever
+ * concluded it decides whether it is worth keeping (someone starting on a
+ * resource is; being seen again is only `resource_occupancies`' to know).
  */
 export function cameOf(
   cause: Heard,

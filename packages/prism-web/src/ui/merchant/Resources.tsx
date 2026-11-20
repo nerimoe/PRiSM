@@ -877,6 +877,8 @@ const actionLabels: Record<string, string> = {
   "assets.adjusted": "调整资产",
   "gift.redeemed": "兑换礼物",
   "card.bound": "添加卡片",
+  "occupancy.started": "上机",
+  "seat.changed": "上下桌",
 };
 
 /** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */

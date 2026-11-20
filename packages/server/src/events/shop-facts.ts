@@ -48,6 +48,13 @@ export const SHOP_FACTS = [
   "order.changed",
   /** A player's standing at the shop changed: created, enabled or disabled, an identity bound or removed. */
   "player.changed",
+  /**
+   * A player took or left a seat at a table: `resourceId` is the table, and
+   * `payload.left` names the table they moved from. Their bills moved with it.
+   */
+  "seat.changed",
+  /** The shop's idle power-off rules were edited. */
+  "idle.settings.changed",
   /** The shop's own rules changed: its plans, prices, assets or settings. Nobody in particular. */
   "shop.changed",
 ] as const;

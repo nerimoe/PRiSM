@@ -192,8 +192,13 @@ describe("a cabinet's card reports", () => {
     // A card nobody bound here tells nothing.
     await report("event.cardConsumed", CARD_C);
 
-    const logged = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE kind='signal'").all() as { player_id: string | null; payload_json: string }[];
+    const logged = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE kind='signal' AND capability='hinata_io'").all() as { player_id: string | null; payload_json: string }[];
     expect(logged.map((row) => row.player_id)).toEqual(["p1", null]);
+    // The owner starting on the cabinet is kept as a fact of its own, pointing at the card it came of.
+    const started = sqlite.query("SELECT device_id, player_id, payload_json FROM device_events WHERE name='occupancy.started'").all() as Array<Record<string, string>>;
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ device_id: "cab", player_id: "p1" });
+    expect(JSON.parse(started[0]!.payload_json!)).toMatchObject({ causeType: "card.consumed" });
     expect(logged.map((row) => row.payload_json).join()).not.toContain(CARD_A);
     expect(logged.map((row) => row.payload_json).join()).not.toContain(CARD_C);
     expect(JSON.parse(logged[0]!.payload_json).card).toEqual({ source: "HINATA(1)", type: "aime" });

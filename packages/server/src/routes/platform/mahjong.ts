@@ -7,8 +7,8 @@ import { createSqlRepositories, type SqlStatement } from "@prism/storage-sql";
 import { requireUser } from "../../middleware/auth.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { checkShopLocation } from "../../middleware/geo.js";
-import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
-import { idleSignalAfter, pagesChanged } from "../../durable-objects/shop-hub-client.js";
+import { publishShopFacts, type FactOrigin } from "../../events/shop-facts.js";
+import { requestOrigin } from "../../middleware/tenant.js";
 import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings, TenantShop } from "../../bindings.js";
@@ -213,6 +213,7 @@ export async function operateMahjong(
   const once = (action: () => Promise<Response>) => options.bot ? action() : runPlayerOperation(c, shop.id, `mahjong/${machine.id}`, body, action);
   return once(async () => c.json(await moveMahjong(c, shop, machine, player, {
     joining, onBehalf: !!options.staff || !!options.bot, body, viewer: options.bot,
+    origin: requestOrigin(c, options.staff ? "merchant" : "page"),
   })));
 }
 
@@ -226,7 +227,11 @@ export async function moveMahjong(
   shop: TenantShop,
   machine: ScannedResource,
   player: { id: string },
-  input: { joining: boolean; onBehalf: boolean; body: Record<string, unknown>; viewer?: { playerId: string } },
+  input: {
+    joining: boolean; onBehalf: boolean; body: Record<string, unknown>; viewer?: { playerId: string };
+    /** Where the move was asked for, for the facts it publishes. */
+    origin: FactOrigin;
+  },
 ): Promise<MahjongMove> {
   const { joining, onBehalf, body, viewer } = input;
   const config = await mahjongConfig(c, machine);
@@ -294,14 +299,11 @@ export async function moveMahjong(
       if (old && (!joining || old.machineId !== machine.id))
         await occupancy.left({ resourceId: old.machineId, playerId: player.id, at }).catch(error => console.error("Occupancy release failed", error));
       await occupancy.syncHeld(at).catch(error => console.error("Occupancy sync failed", error));
-      // Taken seats hold the table's idle timer; the last one leaving starts it.
-      idleSignalAfter(c, shop.id, { kind: "seats" });
-      const sync = Promise.all(ids.flatMap(id => [
-        refreshActivityBill(c.env, shop.id, id, false, true),
-        pagesChanged(c.env, shop.id, { player: id }, "seat"),
-      ]))
-        .catch(error => console.error("Mahjong live bill sync failed", error));
-      try { c.executionCtx.waitUntil(sync); } catch { void sync; }
+      // What happened at the table; the listeners move the players' pages and bills and the table's idle timer.
+      await publishShopFacts({ db: c.env.DB, env: c.env, shopId: shop.id }, input.origin, ids.map((id) => ({
+        name: "seat.changed" as const, resourceId: machine.id, playerId: id,
+        payload: { joined: joining, ...(old && old.machineId !== machine.id ? { left: old.machineId } : {}) },
+      })));
       const remaining = (await deps.pricingSessions.getActive(player.id)).active.map(plan => plan.planName);
       return { mahjong: await mahjongState(c, machine, viewer), billing: { remaining },
         ...(joining && old ? { movedFrom: { id: old.machineId } } : {}) };

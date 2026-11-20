@@ -153,31 +153,6 @@ export function pagesChangedAfter(c: { env: Env; executionCtx: { waitUntil(promi
 }
 
 /**
- * Tell the hub's idle timers what no device event says: a seat taken or left,
- * the idle rules edited. From a Hono handler, after the response. Never throws.
- */
-export function idleSignalAfter(
-  c: { env: Env; executionCtx: { waitUntil(promise: Promise<unknown>): void } },
-  shopId: string,
-  signal: IdleSignal,
-): void {
-  let ctx: { waitUntil(promise: Promise<unknown>): void };
-  try {
-    ctx = c.executionCtx;
-  } catch {
-    // Local server and tests: nothing would keep the call alive.
-    return;
-  }
-  ctx.waitUntil((async () => {
-    try {
-      await shopHub(c.env, shopId)?.idleEvents(shopId, [signal]);
-    } catch (error) {
-      console.error("Shop hub idle signal failed", error);
-    }
-  })());
-}
-
-/**
  * Tell the shop's connected bots to reread their configuration. Never throws;
  * run after the response when an execution context is at hand.
  */

@@ -120,6 +120,8 @@ const isStaff = (view: BotView, identity: ChatIdentity) =>
   view.staff.some((staff) => staff.provider === identity.provider && staff.subject === identity.subject);
 
 const runtime = (ctx: BotCommandContext) => ({ env: ctx.env, executionCtx: { waitUntil: ctx.waitUntil } });
+/** Where what a command does comes from, for the facts it publishes: this bot. */
+const botOrigin = (ctx: BotCommandContext) => ({ via: { channel: "bot" as const, resourceId: ctx.bot.id }, defer: ctx.waitUntil });
 
 /* ------------------------------ commands --------------------------------- */
 
@@ -231,7 +233,7 @@ const join: BotCommand = {
     if (!ref) return notice(ctx, "请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。");
     const table = await mahjongTable(ctx, ref);
     const player = await seatedPlayer(ctx, table.id, true);
-    const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: true, onBehalf: true, body: {}, viewer: { playerId: player.id } });
+    const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: true, onBehalf: true, body: {}, viewer: { playerId: player.id }, origin: botOrigin(ctx) });
     const message = mahjongJoinedMessage({ name: table.name, ...moved.mahjong! });
     return answer(ctx, "success", ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
   },
@@ -377,7 +379,7 @@ export const botCommands: Record<string, BotCommand> = {
         const seat = (await mahjongState(runtime(ctx), table, { playerId: player.id }))?.seats.find((candidate) => candidate.playerId === player.id);
         if (!seat) continue;
         await seatedPlayer(ctx, table.id, false);
-        const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: false, onBehalf: true, body: {}, viewer: { playerId: player.id } });
+        const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: false, onBehalf: true, body: {}, origin: botOrigin(ctx), viewer: { playerId: player.id } });
         const message = mahjongLeftMessage({ name: table.name, ...moved.mahjong! }, seat.playing, moved.billing?.remaining ?? []);
         return answer(ctx, "success", ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
       }

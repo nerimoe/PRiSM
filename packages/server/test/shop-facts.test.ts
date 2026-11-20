@@ -452,7 +452,13 @@ describe("shop facts", () => {
     await idleTimerSubscriber.run(context, [reported("occupancy.seen", "occupancy"), reported("cabinet.coin"), reported("card.consumed")]);
     expect(hub.idle).toEqual([{ kind: "activity", deviceId: "m2", stay: true }, { kind: "activity", deviceId: "m2" }]);
     hub.idle.length = 0;
+    // A seat taken or left holds or frees its table, and the bills that moved with it may empty the shop;
+    // edited idle rules are read again.
+    hub.idle.length = 0;
+    await idleTimerSubscriber.run(context, [heard("seat.changed", { deviceId: "t1", payload: { joined: true } }), heard("idle.settings.changed", { playerId: null })]);
+    expect(hub.idle).toEqual([{ kind: "seats" }, { kind: "sessions" }, { kind: "settings" }]);
     // The idle rule's own power-off is the hub's to settle.
+    hub.idle.length = 0;
     await idleTimerSubscriber.run(context, [heard("power.off.sent", { kind: "result", capability: "power", deviceId: "m1", playerId: null,
       payload: { outcome: "ok" }, via: { channel: "system", resourceId: null } })]);
     expect(hub.idle).toEqual([]);
