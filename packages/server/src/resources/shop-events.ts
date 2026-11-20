@@ -29,6 +29,12 @@ export type ShopEvent = Place & {
   detail?: Record<string, unknown>;
   /** Where what it tells came into the platform (`DeviceEventChannel`); a bot's rules may ask. */
   via?: string;
+  /**
+   * What to say when one line is not enough, such as a checkout's bill. Said
+   * as it is unless the shop wrote its own words for the type, which may
+   * place it with `{bill}`.
+   */
+  message?: BotMessage;
 };
 
 /** Who a player is, as a bot names them: display name and platform identities. */
@@ -111,20 +117,23 @@ export function announcementText(event: ShopEvent): string {
 
 /** The announcement as a bot message: the player a segment the bot names as its chat knows them. */
 export function announcementMessage(event: ShopEvent, templates?: Record<string, string>, fallback?: BotMessage): BotMessage {
-  const [first = "", ...rest] = (fallback ? "" : announcementText(event)).split(PLAYER_PLACEHOLDER);
-  const message = fallback ?? botMessage(first, ...rest.flatMap((text) => (event.player ? [event.player, text] : [text])));
+  const own = fallback ?? event.message;
+  const [first = "", ...rest] = (own ? "" : announcementText(event)).split(PLAYER_PLACEHOLDER);
+  const message = own ?? botMessage(first, ...rest.flatMap((text) => (event.player ? [event.player, text] : [text])));
   const n = (key: string) => String(typeof event.detail?.[key] === "number" ? event.detail[key] : 0);
   return renderBotReplyTemplate(`announce.${event.type}.message`, templates, message, {
     device: event.resourceName || event.resourceId,
     player: event.player ?? (event.type === "card" || event.type === "start" || event.type === "request.card" || event.type === "request.coin" ? "未绑定的卡" : "店员"),
     coins: n("coins"), credits: n("credits"), credit: n("credit"),
     amount: String(event.detail?.amount ?? ""), action: String(event.detail?.action ?? ""), reason: String(event.detail?.reason ?? ""),
+    bill: event.message ?? message,
   });
 }
 
 /** The frame a bot receives: the announcement with its label, its message and its time. */
 export function shopEventFrame(event: ShopEvent, at = new Date()): Record<string, unknown> {
-  return { ...event, label: shopAnnouncementLabel(event.type), message: announcementMessage(event), at: at.toISOString() };
+  // `message` is the platform's words; each bot renders its own over them, `bill` included.
+  return { ...event, label: shopAnnouncementLabel(event.type), message: announcementMessage(event), at: at.toISOString(), ...(event.message ? { bill: event.message } : {}) };
 }
 
 /** What a bot says ahead of an idle power-off, `at` the power-off time. */

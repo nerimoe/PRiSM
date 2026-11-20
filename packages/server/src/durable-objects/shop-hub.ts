@@ -703,8 +703,9 @@ export class ShopHub extends BaseDurableObject<Env> {
           found.view.staff,
         );
         if (!to.length) continue;
+        const told = { ...event, ...(Array.isArray(event.bill) ? { message: event.bill } : {}) } as unknown as ShopEvent;
         const message = Array.isArray(event.message)
-          ? announcementMessage(event as ShopEvent, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
+          ? announcementMessage(told, found.bot.config.replyTemplates, event.message as BotMessage) : event.message as BotMessage;
         this.sayTo(ws, to, message);
       } catch {
         // A bot that left misses it.

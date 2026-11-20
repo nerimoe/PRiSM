@@ -9,6 +9,7 @@ import { announcementSubscriber, billingSubscriber, idleTimerSubscriber, shopCha
 import type { Heard } from "../src/events/dispatcher.js";
 import type { DeviceEvent } from "@prism/core";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
+import { announcementMessage, type ShopEvent } from "../src/resources/shop-events.js";
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
 
@@ -191,7 +192,44 @@ describe("shop facts", () => {
     } finally {
       console.error = original;
     }
-    expect(errors).toHaveLength(2);
+    // Both facts were lost, and said so; neither call failed.
+    expect(errors.filter((error) => String(error).includes("shop_fact_publish_failed"))).toHaveLength(2);
+    sqlite.close();
+  });
+
+  it("tells a checkout as its bill, which a shop's own words may place with {bill}", async () => {
+    const { sqlite, runtime } = fixture();
+    sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES ('shop','shop-code','A',0,0,80,'u')");
+    sqlite.run(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES ('shop','store.profile','{"timeZone":"Asia/Shanghai"}','2026-01-01')`);
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','小明','active','2026-01-01')");
+    const told: Array<Record<string, any>> = [];
+    const env = { DB: runtime.db, SHOP_HUB: { getByName: () => ({ async shopEvent(event: Record<string, any>) { told.push(event); } }) } } as unknown as Env;
+    const bill = {
+      settlementPreview: { playerId: "p1", subtotal: 30, total: 25 },
+      sessionPreviews: [{ label: "畅玩", startedAt: "2026-11-20T06:00:00.000Z", endedAt: "2026-11-20T07:30:00.000Z", status: "closed", total: 30, adjustments: [] }],
+      checkoutAdjustments: [{ id: "d", label: "会员折扣", amount: -5 }],
+      pricingCapAdjustments: [], globalCapWindows: [],
+      wallet: { balanceBefore: 100, balanceAfter: 75 },
+    };
+    await announcementSubscriber.run({ db: runtime.db, env, shopId: "shop" }, [{
+      type: "checkout.settled",
+      event: {
+        id: "e1", deviceId: null, capability: "shop", kind: "signal", name: "checkout.settled", operationId: null, parentOperationId: null,
+        origin: "platform", playerId: "p1", staffId: null, occurredAt: new Date(), via: { channel: "page", resourceId: null },
+        payload: { sessionIds: ["s1"], subtotal: 3000, total: 2500, bill },
+      },
+    }]);
+    const words = (message: unknown) => (message as Array<{ text?: string; player?: { displayName: string } }>)
+      .map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
+    const said = words(told[0]!.message);
+    expect(said.startsWith("🧾 结账账单\n玩家：<小明>\n")).toBe(true);
+    for (const line of ["畅玩", "游玩时段：14:00-15:30", "会员折扣", "75"]) expect(said).toContain(line);
+    // The hub renders each bot's own words over it.
+    const rendered = (templates: Record<string, string>) =>
+      words(announcementMessage({ ...told[0], message: told[0]!.bill } as ShopEvent, templates, told[0]!.message));
+    expect(rendered({})).toBe(said);
+    expect(rendered({ "announce.checkout.settled.message": "{player} 付了 {amount}" })).toBe("<小明> 付了 25");
+    expect(rendered({ "announce.checkout.settled.message": "收银台：\n{bill}" })).toBe(`收银台：\n${said}`);
     sqlite.close();
   });
 

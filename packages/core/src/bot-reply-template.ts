@@ -63,7 +63,6 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     ["cabinet.reset", "🧾 {device} 投币计数已清零"],
     ["session.started", "🚪 {player} 入场"],
     ["session.stopped", "⏹ {player} 停止了一项计费"],
-    ["checkout.settled", "🧾 {player} 结账 {amount}"],
     ["wallet.adjusted", "💰 {player} 余额调整 {amount}"],
     ["gift.redeemed", "🎁 {player} 兑换了礼物"],
     ["request.refused", "⛔ {player} {action}被拒绝：{reason}"],
@@ -75,6 +74,9 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     return reply(`announce.${type}.message`, shopAnnouncementCatalog.find(item => item.type === type)!.label,
       text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables);
   }),
+  // A checkout is said as its bill; a shop's own words may place it with {bill}, or leave it out.
+  reply(`announce.checkout.settled.message`, shopAnnouncementCatalog.find(item => item.type === "checkout.settled")!.label,
+    "{bill}", { player: "小明", amount: "20", bill: "🧾 结账账单\n玩家：小明\n游玩时长：1小时｜计价：20元" }, []),
   reply("announce.idle.reminder.shop_empty", "店内无人", "店里没人，{minutes} 分钟后全部关机", { minutes: "5" }, ["minutes"]),
   reply("announce.idle.reminder.device_idle", "设备闲置", "{devices} 闲置中，{minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟", { devices: "舞萌、中二", minutes: "5" }, ["devices", "minutes"]),
 ];

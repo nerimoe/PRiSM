@@ -20,6 +20,8 @@ import { createD1Executor, type D1DatabaseLike } from "@prism/adapter-d1";
 import type { SettlePlayerCheckoutResult } from "@prism/application";
 import type { DeviceEvent, DeviceEventVia } from "@prism/core";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import { settledAsPreview } from "../resources/bot-replies.js";
+import { toPlayerCheckoutResultView } from "../routes/shops/views.js";
 import type { Env, PrismAppDependencies } from "../bindings.js";
 import { createEventDispatcher } from "./dispatcher.js";
 import { eventSubscribers } from "./subscribers.js";
@@ -104,8 +106,23 @@ const settled = (result: SettlePlayerCheckoutResult, staffId?: string | null): S
     sessionIds: result.playerSettlement.sessionIds,
     subtotal: result.playerSettlement.subtotal,
     total: result.playerSettlement.total,
+    ...billOf(result),
   },
 });
+
+/**
+ * The bill as it was charged, in the shape a receipt is worded from: the
+ * record keeps what the player paid for, and a bot can say it. A bill that
+ * cannot be worded is left out; the checkout has happened all the same.
+ */
+function billOf(result: SettlePlayerCheckoutResult): { bill?: Record<string, unknown> } {
+  try {
+    return { bill: settledAsPreview(toPlayerCheckoutResultView(result)) };
+  } catch (error) {
+    console.error(JSON.stringify({ event: "checkout_bill_unworded", message: error instanceof Error ? error.message : String(error) }));
+    return {};
+  }
+}
 
 /**
  * The shop's services as one caller sees them: the same services, publishing

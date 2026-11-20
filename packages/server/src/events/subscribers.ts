@@ -22,6 +22,8 @@ import { capabilitySpec } from "../resources/capabilities/catalog.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
 import { yuanOf, type Cents } from "@prism/core";
 import { announceShopEvent, eventPlayer, refusalDetail, type ShopEvent } from "../resources/shop-events.js";
+import { receiptMessage } from "../resources/bot-replies.js";
+import { shopCurrencyName } from "../resources/bot.js";
 import { capabilities } from "../resources/capabilities/catalog.js";
 import type { IdleSignal } from "../resources/capabilities/idle-power.js";
 import { cameOf, type AfterSubscriber, type EventSubscriber, type Heard, type InlineSubscriber } from "./dispatcher.js";
@@ -102,6 +104,18 @@ const FACTS = ["session.started", "session.stopped", "checkout.settled", "wallet
 /** Every request that can be turned away, as the event that says it was. */
 const REFUSALS = ACTIONS.map((action) => `${action}.refused`);
 
+/** How a shop's bill is worded: what its money is called, and its clock. */
+async function shopWords(context: EventContext): Promise<{ currency: string; timeZone: string }> {
+  const [currency, row] = await Promise.all([
+    shopCurrencyName(context.db, context.shopId),
+    // Where the shop's clock is kept, read as the tenant middleware reads it.
+    context.db.prepare(
+      "SELECT json_extract(value_json, '$.timeZone') AS time_zone FROM app_settings WHERE shop_id = ? AND key = 'store.profile'",
+    ).bind(context.shopId).first<{ time_zone: string | null }>(),
+  ]);
+  return { currency, timeZone: row?.time_zone || "Asia/Shanghai" };
+}
+
 /** A signed amount as a shop reads it: `+5`, `-2.5`. */
 const signed = (amount: unknown) => (typeof amount === "number" ? `${amount > 0 ? "+" : ""}${amount}` : "");
 
@@ -123,6 +137,7 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       .bind(context.shopId, JSON.stringify(ids)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
     const tell = (event: ShopEvent) => announceShopEvent(context.env, context.shopId, event);
     const player = (playerId: string | null) => eventPlayer(context.db, context.shopId, playerId);
+    let shop: Promise<{ currency: string; timeZone: string }> | undefined;
 
     for (const one of heard) {
       const { event, type } = one;
@@ -136,9 +151,16 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       const announce = (told: ShopEvent) => tell(event.via ? { ...told, via: event.via.channel } : told);
       if ((FACTS as readonly string[]).includes(type)) {
         const { payload } = event;
+        const who = await player(event.playerId);
         const detail = type === "checkout.settled" ? { amount: String(yuanOf(payload.total as Cents)) }
           : type === "wallet.adjusted" ? { amount: signed(payload.amount) } : undefined;
-        await announce({ type: type as (typeof FACTS)[number], ...place, player: await player(event.playerId), ...(detail ? { detail } : {}) });
+        // A checkout is told as its bill, worded as the bot words its own checkout's.
+        const message = type === "checkout.settled" && payload.bill && typeof payload.bill === "object"
+          ? receiptMessage(payload.bill as Record<string, unknown>, {
+            title: "🧾 结账账单", preview: false, who: { player: who }, ...await (shop ??= shopWords(context)),
+          })
+          : undefined;
+        await announce({ type: type as (typeof FACTS)[number], ...place, player: who, ...(detail ? { detail } : {}), ...(message ? { message } : {}) });
         continue;
       }
       if (type.endsWith(".refused")) {

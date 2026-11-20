@@ -11,12 +11,16 @@ import { botMessage, renderBotReplyTemplate, formatOffsetTimestamp, type BotMess
 
 type R = Record<string, any>;
 
-/** Who a command was for: the player, and the chat identity it named. */
-export type Addressee = { player: BotMessagePlayer | null; provider: string; subject: string };
+/**
+ * Who a command was for: the player, and the chat identity it named. An
+ * announcement has no such identity and names the player alone.
+ */
+export type Addressee = { player: BotMessagePlayer | null; provider?: string; subject?: string };
 
 /** `玩家名（provider:subject）`, as a bot names whom it acted for. */
 function reference(who: Addressee): Array<string | BotMessagePlayer> {
-  return [who.player ?? "未知昵称", `（${who.provider}:${who.subject}）`];
+  const name = who.player ?? "未知昵称";
+  return who.provider && who.subject ? [name, `（${who.provider}:${who.subject}）`] : [name];
 }
 
 /* ------------------------------- numbers --------------------------------- */
