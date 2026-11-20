@@ -21,7 +21,7 @@ describe("shop announcement catalog", () => {
     // An attempt's outcomes say which they are; a fact is just its name.
     expect(announcementLabel("power.on.sent")).toBe("开机 · 已发出");
     expect(announcementLabel("power.off.idle.sent")).toBe("闲置自动关机");
-    expect(announcementLabel("power.changed.on")).toBe("机台开机");
+    expect(announcementLabel("power.changed.on")).toBe("设备开机");
   });
 
   it("tells an event under its own key, how an attempt went, and a slice the shop sees as its own", () => {
@@ -31,8 +31,10 @@ describe("shop announcement catalog", () => {
     expect(announcementKeyOf({ type: "coin.refused" })).toBe("coin.refused");
     expect(announcementKeyOf({ type: "power.off.sent", via: "system" })).toBe("power.off.idle.sent");
     expect(announcementKeyOf({ type: "coin.sent", via: "system", payload: { cause: "card" } })).toBe("coin.auto.sent");
-    expect(announcementKeyOf({ type: "power.changed", payload: { to: "on" } })).toBe("power.changed.on");
-    expect(announcementKeyOf({ type: "power.changed", payload: { to: null } })).toBeNull();
+    // Only a switch a current watcher saw happen: a first snapshot or a return from unavailable is not news.
+    expect(announcementKeyOf({ type: "power.changed", payload: { to: "on", switched: { from: "off", to: "on" } } })).toBe("power.changed.on");
+    expect(announcementKeyOf({ type: "climate.changed", payload: { to: { mode: "off" }, switched: { from: "on", to: "off" } } })).toBe("power.changed.off");
+    expect(announcementKeyOf({ type: "power.changed", payload: { to: "on" } })).toBeNull();
     expect(announcementKeyOf({ type: "card.consumed" })).toBe("card.consumed");
     expect(announcementKeyOf({ type: "entry.refused" })).toBe("entry.refused");
     expect(announcementKeyOf({ type: "card.state" })).toBeNull();

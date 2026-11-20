@@ -440,8 +440,12 @@ describe("telling bots what happened", () => {
       const bus = createRuntimeBus({ db, env, shopId: "shop-id" });
       await bus.perform({ device, action: "power.on", actor: { type: "player", playerId: "p1" }, via: { channel: "bot", resourceId: "bot-1" } });
       await bus.perform({ device, action: "power.off", actor: { type: "staff", staffId: "boss" } });
-      await createRuntimeBus({ db, env, shopId: "shop-id", notifyHub: false })
+      // The hub's own idle power-off: its listeners reach the hub in hand, which tells the bots.
+      const own: unknown[] = [];
+      await createRuntimeBus({ db, env, shopId: "shop-id", via: { channel: "system", resourceId: null },
+        hub: { async shopEvent(event: unknown) { own.push(event); }, async idleEvents() {}, async poweredOff() {}, async pagesChanged() {} } })
         .perform({ device, action: "power.off", actor: { type: "system" } });
+      expect(own).toEqual([expect.objectContaining({ key: "power.off.idle.sent", via: "system" })]);
       // An attempt is told as one, by how it went; that the machine came on is Home Assistant's to say.
       expect((hub.events as Array<Record<string, unknown>>).map((event) => [event.key, event.via, event.botId ?? null]))
         .toEqual([["power.on.sent", "bot", "bot-1"], ["power.off.sent", null, null]]);
@@ -450,7 +454,7 @@ describe("telling bots what happened", () => {
 });
 
 describe("switching a shared power supply off", () => {
-  const off = async (machine: string, runtime: { notifyHub?: boolean } = {}) => {
+  const off = async (machine: string, runtime: { hub?: Parameters<typeof createRuntimeBus>[0]["hub"] } = {}) => {
     const { db, env, hub, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
@@ -469,8 +473,11 @@ describe("switching a shared power supply off", () => {
     expect((await off("cab")).poweredOff).toEqual([["shop-id", "cab"]]);
   });
 
-  it("leaves the hub's own power-offs to the hub", async () => {
-    expect((await off("io", { notifyHub: false })).poweredOff).toEqual([]);
+  it("tells the hub in hand of its own power-offs, never through its object", async () => {
+    const own: unknown[][] = [];
+    const hub = { async shopEvent() {}, async idleEvents() {}, async poweredOff(...args: unknown[]) { own.push(args); }, async pagesChanged() {} };
+    expect((await off("io", { hub })).poweredOff).toEqual([]);
+    expect(own).toEqual([["shop-id", "io"]]);
   });
 
 

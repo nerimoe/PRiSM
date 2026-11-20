@@ -55,7 +55,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台替它判断、写话，并按 Bot 的监听规则把店内动态和闲置提醒交给它说。没有声明 `commands` 的连接收不到任何店内动态，平台也不为它安排闲置提醒。
 - **店内动态**：发生在店里、Bot 可以播报的事。目录在 `@prism/core` 的 `announcementCatalog`，是唯一定义处，**按事件本身命名**：规则、文案和播报都用事件的类型名（`deviceEventType`），不另起一套播报类型。每项属于一个话题（开关机、刷卡与上机、投币、账单、其他），并且是下面三类之一：
   - **尝试**：有人（或平台自己的规则）要求做某件事，以及结果如何。每个结果是一项：`<动作>.sent`（已发出：硬件接受了调用，不代表现场真的完成）、`<动作>.refused`（被拒绝：店铺的规则不让做，比如没入场、达到投币上限、余额不足）、`<动作>.failed`（失败：硬件没响应或拒绝了，`unanswered` 也算在这里）。设备尝试有开机 `power.on`、关机 `power.off`、延迟关机 `power.keep`、虚拟刷卡 `aime.scan`、投币 `coin`；店铺尝试有入场 `entry`、结账 `checkout`、调整余额 `wallet.adjust`、兑换 `redeem`，它们成功时由对应的事实说，只有 `refused` 一项。另有两项是平台自己做的，单独成项：闲置自动关机 `power.off.idle.sent`（来源 `system` 的关机）和自动投币 `coin.auto.sent`（刷卡后自动投的币，`payload.cause` 为 `card`），它们不算在「关机」「投币」里。
-  - **事实**：真的发生了的事，来自现场硬件或店铺账目：机台开机／关机 `power.changed.on`／`.off`（Home Assistant 看到电源从关到开或从开到关，首份快照、从 `unavailable` 恢复不算；需要实时连接）、刷卡 `card.consumed`（游戏读到卡，实体卡和虚拟刷卡都算，需要直连的 HINATA IO）、上机 `occupancy.started`、添加卡片 `card.bound`、机台入币 `cabinet.coin`、开局扣币 `cabinet.consumed`、投币计数清零 `cabinet.reset`，以及入场 `session.started`、停止计费 `session.stopped`、结账 `checkout.settled`、调整余额 `wallet.adjusted`、兑换礼物 `gift.redeemed`。
+  - **事实**：真的发生了的事，来自现场硬件或店铺账目：设备开机／关机 `power.changed.on`／`.off`（Home Assistant 看到电源从关到开或从开到关，首份快照、从 `unavailable` 恢复不算；需要实时连接）、刷卡 `card.consumed`（游戏读到卡，实体卡和虚拟刷卡都算，需要直连的 HINATA IO）、上机 `occupancy.started`、添加卡片 `card.bound`、机台入币 `cabinet.coin`、开局扣币 `cabinet.consumed`、投币计数清零 `cabinet.reset`，以及入场 `session.started`、停止计费 `session.stopped`、结账 `checkout.settled`、调整余额 `wallet.adjusted`、兑换礼物 `gift.redeemed`。
   - **提醒**：平台自己的预告，`idle.reminder`（闲置关机预告，由 Hub 在预告时间发出）和 `platform.maintenance`（系统维护：部署新版本前按构建变量 `PRISM_MAINTENANCE_NOTICE_MINUTES` 提前预告，上线后说维护完成；Bot 重连时补发完成通知）。
   **尝试和事实互不绑定**：机台可能没人发起就开了，命令也可能被接受了机台却没开。两条事件各自记录、各自播报；只有事实自己知道它回应的是哪个请求时（比如虚拟刷卡后游戏读到卡），才带上那个操作号。店家想知道「机器真的开了」就听事实，想知道「谁按了开机」就听尝试。
   每条动态交给 Bot 的帧有 `key`（目录里的项）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`）、`via`（从哪里进入平台）、需要时的 `values`（填进文案的值，比如被拒绝的原因 `reason`、投币数 `coins`、刷卡方式 `verb`、结账账单 `bill`），以及 `at`。
@@ -63,7 +63,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
   **说什么由每个 Bot 渲染**：平台不在帧里写好文字。Hub 按每个 Bot 的模板（没有就用目录里的默认文案）渲染后再发出，格式见下文「Bot 消息」。默认文案会说出来源，比如「小明 在扫码页开启了 舞萌」「小明 通过 Bot 给 舞萌 投币」。
   Bot 自己的命令引起的动态（来源是这个 Bot）带 `botId`，这个 Bot 已经回复过命令，不再播报。下机（占用超时）是在读取时才结算的，不会实时播报。外部中继没有回报，所以经外部中继的刷卡只有虚拟刷卡的「已发出」，没有「刷卡」。
 
-- 机台开机／关机（`power.changed.on`／`.off`）覆盖机台电源和空调，不论是平台操作、HA 手动开关和自动化还是闲置自动关机引起的。平台命令成功只代表请求被接受，是开机、关机这两个尝试的「已发出」；必须由有完整快照的当前监听器报告明确的开／关变化才算这两个事实：电源是 `on ↔ off`，空调是 `off ↔ 运行模式`，切换运行模式、调温、风速和室温变化不算。多个设备共用一个实体时合并成一条。
+- 设备开机／关机（`power.changed.on`／`.off`）覆盖机台电源和空调，不论是平台操作、HA 手动开关和自动化还是闲置自动关机引起的。平台命令成功只代表请求被接受，是开机、关机这两个尝试的「已发出」；必须由有完整快照的当前监听器报告明确的开／关变化才算这两个事实：电源是 `on ↔ off`，空调是 `off ↔ 运行模式`，切换运行模式、调温、风速和室温变化不算。多个设备共用一个实体时合并成一条。
 
 ### Bot 设置页分组
 
@@ -295,8 +295,9 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - `hub-power-off`（`after`）：`power.off.sent` 之后让店铺 Hub 开始观察这台机器的 IO。
   - `hub-idle-timers`（`after`）：把动到闲置计时器的事件告诉 Hub，别的不说：开机、关机、投币、被授权的刷卡（`occupancy.seen`）、延迟关机，以及场次的开始和结束。见「闲置自动关机」。
   - `coin-after-card`（`after`，只在 `MachineRelay` 自己的总线上）：听 `occupancy.seen`，起因是 `card.consumed` 时按机台设置补一枚币；这枚币是只有该对象能按下的按键，所以订阅者由它自己提供。
-- **Hub 自己的总线**（闲置规则、监听者上报，`notifyHub: false`）上，后三类只是去通知 Hub 的订阅者保持沉默：Hub 自己告诉它的 Bot 和页面，也不能从内部回调自己。占用判定照常进行。
-- **不在订阅表里的**：动作后回读设备状态（那是回答调用方的一部分）；Hub 按开关合并播报的 HA 电源变化、闲置关机与提醒（出自 Hub 自己的记忆，但同样按 Bot 的监听规则发出）；麻将桌的上下桌（座位变化由 `routes/platform/mahjong.ts` 自己通知这张桌的页面，并告诉 Hub 的闲置计时器座位变了）。
+- **Hub 自己写的事件也走同一批订阅者**：闲置规则的关机、监听者上报的状态、Bot 命令的记录，都由 Hub 用自己的总线写入，并把自己交给订阅者（`EventContext.hub`）。订阅者要找 Hub 时（播报、释放监听、闲置计时器）直接调用它，而不是经过 Durable Object 再调回 Hub（Durable Object 不能从内部调用自己）。所以 HA 看到的开关、闲置自动关机和其他事件一样，由 `bot-announcements` 播报，不再由 Hub 另写一份。唯一的例外是闲置计时器：Hub 自己的关机（来源 `system`）由 Hub 自己结算，订阅者不再转告它，否则会在 Hub 的闲置队列里等自己。
+- **不在订阅表里的**：动作后回读设备状态（那是回答调用方的一部分）；闲置关机预告和系统维护（不是设备上发生的事，没有事件，由 Hub 在需要时按 Bot 的监听规则发出）；麻将桌的上下桌（座位变化由 `routes/platform/mahjong.ts` 自己通知这张桌的页面，并告诉 Hub 的闲置计时器座位变了）。
+- **HA 看到的开关怎样成为播报**：Hub 存下监听者上报的电源或空调状态时，只有当前监听器在完整快照之后、亲眼看到从关到开或从开到关，才在这条状态变化的 payload 里写 `switched: { from, to }`；首份快照、监听器未就绪或已过期、从 `unavailable` 恢复的都只存状态。播报目录只把带 `switched` 的变化当作「设备开机／关机」。同一个开关上的几个资源在同一批里一起变化，播报时合并成一条，比如「m1、m2 已开机」。
 - **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`card.bound`（添加卡片，只在玩家于读卡器上添加卡片时发布，只带卡的种类）、`checkout.refused`、`entry.refused`、`wallet.adjust.refused`、`redeem.refused`（结账、入场、调整余额、兑换被店铺的规则拒绝，即这几个尝试的「被拒绝」：只有业务拒绝，即领域错误才算，程序故障不算，等玩家同意条款、没有可结的账单、前台预览过期也不算；调用方照样收到原来的错误）、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
   **玩家的页面和手机只由这些事实通知**：没有别的地方从 URL 或响应体里反推发生了什么。新增一种会改变账单的操作时，在 `withOrigin` 里给它的服务方法加一条事实；不加，页面和 Live Activity 就不会知道。
 - **被拒绝的请求也是事件**：设备请求在发给硬件之前被挡下（未入场、投币冷却、机台币满、设备不支持、没有这个设备）时，记一条 `<动作>.refused`，带 `code`（平台的原因码）和可读的 `message`（有的话），说明谁试了、从哪来。没有 `device_operations` 行，也不算作使用。Bot、员工和接口的请求在 `capabilities/actions.ts` 记；扫码页和商户后台的在 `routes/platform/resource-actions.ts` 记，其中询问玩家确认（`CHECKIN_CONSENT_REQUIRED`）、防重复提交、限流和硬件未响应不算拒绝。请求没有指明存在的设备时 `device_id` 为空，仍按来源出现在 Bot 的记录里。

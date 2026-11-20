@@ -14,6 +14,7 @@ import { loadResource } from "../resources/resource.js";
 import { IDLE_SETTINGS_KEY, parseIdleSettings, type IdleReason, type IdleSettings } from "../resources/capabilities/idle-power.js";
 import { readShopLiveStates } from "../resources/capabilities/device-state.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
+import type { HubCalls } from "./shop-hub-client.js";
 import { heldProviders } from "../resources/occupancy/providers.js";
 
 /** A warning for the bot, with device names so it can be said as is. */
@@ -133,12 +134,15 @@ export async function climatesToSwitchOff(db: D1DatabaseLike, shopId: string, se
   }).map((row) => row.id);
 }
 
-/** Switch a resource off as the system. True when the hardware took it. */
-export async function switchOff(env: Env, shopId: string, id: string, action: "power.off" | "climate.off"): Promise<boolean> {
+/**
+ * Switch a resource off as the system. True when the hardware took it. What
+ * follows from it (the bots told, the watch released) is the listeners', who
+ * reach `hub` directly.
+ */
+export async function switchOff(env: Env, shopId: string, id: string, action: "power.off" | "climate.off", hub: HubCalls): Promise<boolean> {
   const target = await loadResource(env.DB, shopId, id);
   if (!target) return false;
-  // The hub is told about what it switches off itself, so it does not call back into its own object.
-  const bus = createRuntimeBus({ db: env.DB, env, shopId, notifyHub: false, via: { channel: "system", resourceId: null } });
+  const bus = createRuntimeBus({ db: env.DB, env, shopId, hub, via: { channel: "system", resourceId: null } });
   try {
     return (await bus.perform({ device: target, action, actor: { type: "system" } })).operation.status === "succeeded";
   } catch (error) {

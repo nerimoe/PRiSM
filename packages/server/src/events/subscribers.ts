@@ -16,7 +16,7 @@
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { Env } from "../bindings.js";
 import { refreshActivityBill } from "../durable-objects/live-activity-billing.js";
-import { machinePoweredOff, pagesChanged, shopHub } from "../durable-objects/shop-hub-client.js";
+import { machinePoweredOff, pagesChanged, shopHub, type HubCalls } from "../durable-objects/shop-hub-client.js";
 import { pushSessionEvent } from "../routes/shops/live-activity-events.js";
 import { capabilitySpec } from "../resources/capabilities/catalog.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
@@ -35,12 +35,11 @@ export type EventContext = {
   shopId: string;
   now?: () => Date;
   /**
-   * The events were written by the shop hub itself (its idle rule, its
-   * watchers' reports). The hub tells its own bots and pages what it did and
-   * must not be called back from inside itself, so whatever only tells the hub
-   * stays quiet.
+   * The shop hub itself, when it wrote the events (its idle rule, its
+   * watchers' reports, a bot's command). Listeners call it directly rather
+   * than through its Durable Object, which cannot call itself.
    */
-  insideHub?: boolean;
+  hub?: HubCalls;
   /** The client that asked for what happened: it shows it already and is not pushed its own news. */
   initiatorClientId?: string | null;
 };
@@ -124,15 +123,23 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
   when: "after",
   wants: "*",
   async run(context, heard) {
-    if (context.insideHub) return;
-    const told = heard.flatMap((one) => {
+    const keyed = heard.flatMap((one) => {
       const key = announcementKeyOf({ type: one.type, via: one.event.via?.channel ?? null, payload: one.event.payload });
       return key ? [{ one, key }] : [];
     });
+    // Resources on one switch report switching together: one announcement names them all.
+    const together = new Map<string, string[]>();
+    const told = keyed.filter(({ one, key }) => {
+      if (!key.startsWith("power.changed.") || !one.event.deviceId) return true;
+      const at = `${key}@${one.event.occurredAt.toISOString()}`;
+      const ids = together.get(at);
+      together.set(at, [...(ids ?? []), one.event.deviceId]);
+      return !ids;
+    });
     if (!told.length) return;
-    const ids = [...new Set(told.map(({ one }) => one.event.deviceId).filter((id): id is string => !!id))];
+    const devices = [...new Set(keyed.map(({ one }) => one.event.deviceId).filter((id): id is string => !!id))];
     const names = new Map((await context.db.prepare("SELECT id, name FROM machines WHERE shop_id = ? AND id IN (SELECT value FROM json_each(?))")
-      .bind(context.shopId, JSON.stringify(ids)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
+      .bind(context.shopId, JSON.stringify(devices)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name]));
     let shop: Promise<{ currency: string; timeZone: string }> | undefined;
 
     for (const { one, key } of told) {
@@ -161,16 +168,19 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
             ? botMessage("🧾 ", ...(who ? [who] : ["店员"]), ` 结账 ${values.amount}`)
             : botMessage("⛔ ", ...(who ? [who] : ["店员"]), ` 结账失败：${values.reason}`);
       }
+      const ids = key.startsWith("power.changed.") && event.deviceId
+        ? together.get(`${key}@${event.occurredAt.toISOString()}`) ?? [event.deviceId]
+        : event.deviceId ? [event.deviceId] : [];
       await announce(context.env, context.shopId, {
         key,
         resourceId: event.deviceId ?? "",
-        resourceName: event.deviceId ? names.get(event.deviceId) ?? event.deviceId : "",
+        resourceName: ids.map((id) => names.get(id) ?? id).join("、"),
         player: who,
         via: event.via?.channel ?? null,
         // A bot has answered its own command already and does not announce it again.
         ...(event.via?.channel === "bot" && event.via.resourceId ? { botId: event.via.resourceId } : {}),
         ...(Object.keys(values).length ? { values } : {}),
-      });
+      }, context.hub, event.occurredAt);
     }
   },
 };
@@ -185,9 +195,8 @@ export const powerOffSubscriber: AfterSubscriber<EventContext> = {
   when: "after",
   wants: ["power.off.sent"],
   async run(context, heard) {
-    if (context.insideHub) return;
     for (const { event } of heard) {
-      if (event.deviceId) await machinePoweredOff(context.env, context.shopId, event.deviceId);
+      if (event.deviceId) await machinePoweredOff(context.env, context.shopId, event.deviceId, context.hub);
     }
   },
 };
@@ -207,7 +216,8 @@ function idleSignalOf({ event, type }: Heard): IdleSignal | null {
   if (VISITS.has(type)) return { kind: "sessions" };
   if (!event.deviceId) return null;
   if (type === "power.on.sent") return { kind: "on", deviceId: event.deviceId };
-  if (type === "power.off.sent") return { kind: "off", deviceId: event.deviceId };
+  // The idle rule's own power-off is settled by the hub that made it, waiting for the device to confirm.
+  if (type === "power.off.sent") return event.via?.channel === "system" ? null : { kind: "off", deviceId: event.deviceId };
   if (type === "power.keep.sent") return { kind: "keep", deviceId: event.deviceId };
   // An authorised card is one the resource bills its player for: `occupancy.seen`, their stay on it.
   if (type === "occupancy.seen") return { kind: "activity", deviceId: event.deviceId, stay: true };
@@ -227,7 +237,6 @@ export const idleTimerSubscriber: AfterSubscriber<EventContext> = {
   when: "after",
   wants: "*",
   async run(context, heard) {
-    if (context.insideHub) return;
     const signals: IdleSignal[] = [];
     const told = new Set<string>();
     for (const one of heard) {
@@ -237,7 +246,7 @@ export const idleTimerSubscriber: AfterSubscriber<EventContext> = {
       told.add(key);
       signals.push(signal);
     }
-    if (signals.length) await shopHub(context.env, context.shopId)?.idleEvents(context.shopId, signals);
+    if (signals.length) await (context.hub ?? shopHub(context.env, context.shopId))?.idleEvents(context.shopId, signals);
   },
 };
 

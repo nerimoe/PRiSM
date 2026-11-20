@@ -414,6 +414,8 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
         value: unknown;
         at?: Date;
         quiet?: boolean;
+        /** What the reporter knows of the change besides the value, such as that it was a live switch. */
+        payload?: Record<string, unknown>;
       }>,
     ): Promise<void> {
       if (!items.length) return;
@@ -439,7 +441,7 @@ export function createDeviceBus(deps: DeviceBusDependencies) {
                 name: item.key,
                 operationId: null,
                 origin: "observer",
-                payload: { to: item.value },
+                payload: { to: item.value, ...item.payload },
               }),
               ...(item.at ? { occurredAt: item.at } : {}),
             },

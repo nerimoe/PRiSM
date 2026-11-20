@@ -11,7 +11,7 @@
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { announcementEntry, announcementWhere, botMessage, renderBotReplyTemplate, type BotMessage } from "@prism/core";
 import type { Env } from "../bindings.js";
-import { sendShopEvent } from "../durable-objects/shop-hub-client.js";
+import { sendShopEvent, type HubCalls } from "../durable-objects/shop-hub-client.js";
 import type { MaintenanceNotice } from "../deployment-gate.js";
 
 export type EventPlayer = {
@@ -127,6 +127,6 @@ export function maintenanceMessage(notice: MaintenanceNotice, templates?: Record
 }
 
 /** Tell the shop's bots. Best effort: an event that cannot be sent is logged and dropped. */
-export async function announce(env: Env, shopId: string, announcement: Announcement): Promise<void> {
-  await sendShopEvent(env, shopId, announcementFrame(announcement));
+export async function announce(env: Env, shopId: string, announcement: Announcement, hub?: HubCalls, at?: Date): Promise<void> {
+  await sendShopEvent(env, shopId, announcementFrame(announcement, at), hub);
 }

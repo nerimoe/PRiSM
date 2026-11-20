@@ -82,8 +82,8 @@ export const announcementCatalog: readonly AnnouncementEntry[] = [
     sent: "⏳ {player} {where}延迟了 {device} 的自动关机", refused: refused("延迟关机"), failed: failed("延迟 {device} 关机"),
   }),
   ...attempt("power", "power.off.idle", "闲置自动关机", { sent: "💤 {device} 闲置，已自动关机" }),
-  fact("power", "power.changed.on", "机台开机", "✅ {device} 已开机", "Home Assistant 实时连接"),
-  fact("power", "power.changed.off", "机台关机", "🛑 {device} 已关机", "Home Assistant 实时连接"),
+  fact("power", "power.changed.on", "设备开机", "✅ {device} 已开机", "Home Assistant 实时连接"),
+  fact("power", "power.changed.off", "设备关机", "🛑 {device} 已关机", "Home Assistant 实时连接"),
   notice("power", "idle.reminder", "闲置关机提醒", "{devices} 闲置中，{minutes} 分钟后关机"),
 
   ...attempt("card", "aime.scan", "虚拟刷卡", {
@@ -150,8 +150,10 @@ const OUTCOMES: Record<string, AttemptOutcome> = { sent: "sent", failed: "failed
 export function announcementKeyOf(event: { type: string; via?: string | null; payload?: Record<string, unknown> }): string | null {
   const { type } = event;
   const payload = event.payload ?? {};
-  if (type === "power.changed") {
-    return payload.to === "on" ? "power.changed.on" : payload.to === "off" ? "power.changed.off" : null;
+  // A machine's power or an air conditioner switching, as a current watcher saw it happen.
+  if (type === "power.changed" || type === "climate.changed") {
+    const switched = payload.switched as { to?: unknown } | undefined;
+    return switched?.to === "on" ? "power.changed.on" : switched?.to === "off" ? "power.changed.off" : null;
   }
   const dot = type.lastIndexOf(".");
   const outcome = OUTCOMES[type.slice(dot + 1)];

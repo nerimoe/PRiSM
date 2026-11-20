@@ -927,7 +927,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     // losing the row must not cost the player their answer.
     if (record) {
       await createRuntimeBus({
-        db: this.env.DB, env: this.env, shopId: record.shopId, notifyHub: false,
+        db: this.env.DB, env: this.env, shopId: record.shopId, hub: this,
         via: { channel: "bot", resourceId: record.botId },
       }).signal({ device: { id: record.botId }, capability: "bot", name: "bot.command", payload: botCommandRecord(frame, record.outcome) })
         .catch((error) => console.error(JSON.stringify({
@@ -1499,20 +1499,17 @@ export class ShopHub extends BaseDurableObject<Env> {
       for (const { key } of due.off) {
         const ids = timers.entries[key]?.ids ?? [];
         if (!ids.length) continue;
-        // Shared bindings get one command.
-        const ok = await switchOff(this.env, shopId, ids[0]!, "power.off");
+        // Shared bindings get one command. Its event tells the bots and releases the device's
+        // watch, as any power-off does; the others on the same switch are released here.
+        const ok = await switchOff(this.env, shopId, ids[0]!, "power.off", this);
         settleIdleOff(timers, key, ok, Date.now());
         if (!ok) continue;
-        // Released the same way as any other power-off, and told as the idle rule's own.
-        for (const id of ids) await this.poweredOff(shopId, id).catch((error) => console.error("Idle release failed", { shopId, id, error }));
-        await this.shopEvent(announcementFrame({
-          key: "power.off.idle.sent", resourceId: ids[0]!, resourceName: named(ids).map((one) => one.name).join("、"), player: null, via: "system",
-        })).catch((error) => console.error("Idle announcement failed", { shopId, error }));
+        for (const id of ids.slice(1)) await this.poweredOff(shopId, id).catch((error) => console.error("Idle release failed", { shopId, id, error }));
       }
     }
     if (due.shopOff || (timers.climateDue && !idleBusy(timers, settings))) {
       delete timers.climateDue;
-      for (const id of await climatesToSwitchOff(this.env.DB, shopId, settings)) await switchOff(this.env, shopId, id, "climate.off");
+      for (const id of await climatesToSwitchOff(this.env.DB, shopId, settings)) await switchOff(this.env, shopId, id, "climate.off", this);
     }
     timers.wakeAt = nextIdleWake(timers, settings, Date.now(), lead);
     await this.ctx.storage.put("idle", timers);
@@ -1873,7 +1870,6 @@ export class ShopHub extends BaseDurableObject<Env> {
     const applied: Record<string, WatchedState> = {};
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
-    const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
     /** What the report says of each device's power, for the idle timers. */
     const idleSignals: IdleSignal[] = [];
     /** Machines this report says lost power: their watch is released, as on any power-off. */
@@ -1886,25 +1882,21 @@ export class ShopHub extends BaseDurableObject<Env> {
       const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
       applied[key] = next;
       const at = item.last_changed ? new Date(item.last_changed) : undefined;
-      if (announcePower && previous) {
-        const deviceIds: string[] = [];
-        let state: "on" | "off" | null = null;
-        for (const target of targets[key] ?? []) {
-          const before = target.capability === "climate" ? climatePower(previous.state)
-            : previous.state === "on" || previous.state === "off" ? previous.state : null;
-          const after = target.capability === "climate" ? climatePower(next.state)
-            : next.state === "on" || next.state === "off" ? next.state : null;
-          if (before && after && before !== after) { deviceIds.push(target.deviceId); state = after; }
-        }
-        if (state) powerChanges.push({ deviceIds: [...new Set(deviceIds)], state, at: (at ?? new Date()).toISOString() });
-      }
       for (const target of targets[key] ?? []) {
+        // A switch between off and on that a current watcher saw happen: the change says so, and
+        // that is what the bots are told. A first snapshot, a held watcher, or a device coming back
+        // from `unavailable` stores the state without it.
+        const before = !previous ? null : target.capability === "climate" ? climatePower(previous.state)
+          : previous.state === "on" || previous.state === "off" ? previous.state : null;
+        const after = target.capability === "climate" ? climatePower(next.state)
+          : next.state === "on" || next.state === "off" ? next.state : null;
+        const switched = announcePower && before && after && before !== after ? { payload: { switched: { from: before, to: after } } } : {};
         const device = { id: target.deviceId };
         if (target.capability === "power") {
           // A repeat of the same state (an attribute-only update) has nothing new to say.
           if (previous?.state === next.state) continue;
           const power = next.state === "on" || next.state === "off" ? next.state : null;
-          writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
+          writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}), ...switched });
           pushes.push([target.deviceId, { type: "state", power }]);
           // Off to on restarts the timer; anything else that reads `on` (a first
           // report, back from `unavailable`) only says the device is on.
@@ -1925,14 +1917,14 @@ export class ShopHub extends BaseDurableObject<Env> {
           if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next))) {
             // HA leaves last_changed alone when only temperature or fan settings change.
             const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
-            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
+            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}), ...switched });
           }
           pushes.push([target.deviceId, { type: "state", climate: view }]);
         }
       }
     }
     if (writes.length) {
-      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, notifyHub: false, via: { channel: "ha", resourceId: null } });
+      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, hub: this, via: { channel: "ha", resourceId: null } });
       try {
         for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
       } catch (error) {
@@ -1941,21 +1933,6 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
-    for (const change of powerChanges) {
-      try {
-        const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-          .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
-        const names = new Map(rows.results.map((row) => [row.id, row.name]));
-        await this.shopEvent(announcementFrame({
-          key: change.state === "on" ? "power.changed.on" : "power.changed.off",
-          resourceId: change.deviceIds[0]!,
-          resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
-          player: null, via: "ha",
-        }, new Date(change.at)));
-      } catch (error) {
-        console.error("HA power announcement failed", { shopId, error });
-      }
-    }
     // Pages and boards are told of a device's change only while the device is live, that is while
     // every Home Assistant connection it uses is announced. Until then a report is not yet the
     // device's state (a first snapshot, a held watcher); the announcement brings it once it is.

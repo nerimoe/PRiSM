@@ -451,9 +451,10 @@ describe("shop facts", () => {
     const reported = (name: string, capability = "hinata_io") => heard(name, { capability, deviceId: "m2", origin: "device", playerId: null });
     await idleTimerSubscriber.run(context, [reported("occupancy.seen", "occupancy"), reported("cabinet.coin"), reported("card.consumed")]);
     expect(hub.idle).toEqual([{ kind: "activity", deviceId: "m2", stay: true }, { kind: "activity", deviceId: "m2" }]);
-    // What the hub did itself is not told back to it.
     hub.idle.length = 0;
-    await idleTimerSubscriber.run({ ...context, insideHub: true }, [coin]);
+    // The idle rule's own power-off is the hub's to settle.
+    await idleTimerSubscriber.run(context, [heard("power.off.sent", { kind: "result", capability: "power", deviceId: "m1", playerId: null,
+      payload: { outcome: "ok" }, via: { channel: "system", resourceId: null } })]);
     expect(hub.idle).toEqual([]);
     sqlite.close();
   });

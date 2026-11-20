@@ -28,6 +28,15 @@ type ShopHubNamespace = {
   };
 };
 
+/**
+ * What the platform's listeners ask of a shop's hub. Outside the hub they go
+ * through its Durable Object; for events written inside the hub (its idle
+ * rule, its watchers' reports), the hub hands itself, so nothing calls the hub
+ * back through its own object.
+ */
+export type HubCalls = Pick<ShopHubNamespace["getByName"] extends (name: string) => infer Stub ? Stub : never,
+  "shopEvent" | "idleEvents" | "poweredOff" | "pagesChanged">;
+
 export function shopHub(env: Env, shopId: string) {
   return (env.SHOP_HUB as unknown as ShopHubNamespace | undefined)?.getByName(shopId) ?? null;
 }
@@ -78,9 +87,9 @@ export async function deviceRead(env: Env, shopId: string, deviceId: string, vie
  * A machine lost power: the hub starts watching what its IO does about it.
  * Never throws.
  */
-export async function machinePoweredOff(env: Env, shopId: string, machineId: string): Promise<void> {
+export async function machinePoweredOff(env: Env, shopId: string, machineId: string, hub?: HubCalls): Promise<void> {
   try {
-    await shopHub(env, shopId)?.poweredOff(shopId, machineId);
+    await (hub ?? shopHub(env, shopId))?.poweredOff(shopId, machineId);
   } catch (error) {
     console.error("Shop hub power-off observation failed", error);
   }
@@ -117,9 +126,9 @@ export type PageScope = { device: string } | { player: string } | { shop: true }
  * and they read themselves again. `reason` is only for logs. Never throws; a page
  * that misses this reads on its next focus or within a minute.
  */
-export async function pagesChanged(env: Env, shopId: string, scope: PageScope, reason: string): Promise<void> {
+export async function pagesChanged(env: Env, shopId: string, scope: PageScope, reason: string, hub?: HubCalls): Promise<void> {
   try {
-    await shopHub(env, shopId)?.pagesChanged(scope, reason);
+    await (hub ?? shopHub(env, shopId))?.pagesChanged(scope, reason);
   } catch (error) {
     console.error("Shop hub page notify failed", error);
   }
@@ -196,9 +205,9 @@ export function notifyBotsChangedAfter(c: { env: Env; executionCtx: { waitUntil(
 }
 
 /** Hand a shop event to the hub for its bots to announce. Never throws: an event is best effort. */
-export async function sendShopEvent(env: Env, shopId: string, event: Record<string, unknown>): Promise<void> {
+export async function sendShopEvent(env: Env, shopId: string, event: Record<string, unknown>, hub?: HubCalls): Promise<void> {
   try {
-    await shopHub(env, shopId)?.shopEvent(event);
+    await (hub ?? shopHub(env, shopId))?.shopEvent(event);
   } catch (error) {
     console.error("Shop hub event failed", error);
   }
