@@ -52,11 +52,11 @@ export const botReplyTemplates: BotReplyTemplate[] = [
 export const botAnnouncementTemplates: BotReplyTemplate[] = [
   ...[
     ["power.on", "✅ {device} 已开机"], ["power.off", "🛑 {device} 已关机"],
-    ["request.power.on", "✅ {player} 通过平台开启了 {device}"],
-    ["request.power.off", "🛑 {player} 通过平台关闭了 {device}"],
+    ["request.power.on", "✅ {player} 远程开启了 {device}"],
+    ["request.power.off", "🛑 {player} 远程关闭了 {device}"],
     ["request.power.idle_off", "💤 {device} 闲置，已自动关机"],
     ["card", "💳 {player} 在 {device} {verb}"], ["start", "🎮 {player} 在 {device} 上机"],
-    ["request.card", "💳 {player} 通过平台在 {device} 刷卡"],
+    ["request.card", "💳 {player} 在 {device} 发起虚拟刷卡"],
     ["request.coin", "🪙 {player} 在 {device} {verb}"],
     ["cabinet.coin", "🪙 {device} 投币 {coins} 个，当前 {credit} 币"],
     ["cabinet.consumed", "🎮 {device} 开局消耗 {credits} 币，剩余 {credit} 币"],
@@ -70,10 +70,10 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
   ].map(([type, text]) => {
     const samples: Record<string, string> = {
       device: "舞萌", player: "小明", coins: "2", credits: "1", credit: "3", amount: "20", action: "投币", reason: "玩家未入场",
-      card: "Aime", verb: type === "card" ? "虚拟刷卡" : "刷卡后自动投币",
+      card: "Aime", verb: type === "card" ? "虚拟刷卡" : "自动投币",
     };
     const variables = [...text!.matchAll(/\{([^{}]+)\}/g)].map(match => match[1]!);
-    // {verb} (刷卡 or 虚拟刷卡, 投币 or 刷卡后自动投币) came later: a shop's own words from before may leave it out.
+    // {verb} (刷卡 or 虚拟刷卡, 投币 or 自动投币) came later: a shop's own words from before may leave it out.
     return reply(`announce.${type}.message`, shopAnnouncementCatalog.find(item => item.type === type)!.label,
       text!, Object.fromEntries(variables.map(key => [key, samples[key]!])), variables.filter(key => key !== "verb"));
   }),

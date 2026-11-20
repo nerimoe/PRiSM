@@ -15,7 +15,7 @@ describe("what the platform tells a bot to say", () => {
   it("leaves the player's name to the bot, and names a card nobody owns", () => {
     expect(announcementText({ ...place, type: "card", player: alice })).toBe("💳 {player} 在 舞萌 刷卡");
     expect(announcementText({ ...place, type: "card", player: null })).toBe("💳 未绑定的卡 在 舞萌 刷卡");
-    expect(announcementText({ ...place, type: "request.power.off", player: null })).toBe("🛑 店员 通过平台关闭了 舞萌");
+    expect(announcementText({ ...place, type: "request.power.off", player: null })).toBe("🛑 店员 远程关闭了 舞萌");
   });
 
   it("makes the player a segment of the message, for the bot to name", () => {

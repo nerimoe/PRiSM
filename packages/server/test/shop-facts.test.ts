@@ -270,7 +270,7 @@ describe("shop facts", () => {
       (event.message as Array<{ text?: string; player?: { displayName: string } }>).map((part) => part.text ?? `<${part.player?.displayName}>`).join("");
     expect(told.map(words)).toEqual([
       "💳 <小明> 添加了一张 Aime 卡",
-      "🪙 <小明> 在 舞萌 刷卡后自动投币",
+      "🪙 <小明> 在 舞萌 自动投币",
       "🪙 <小明> 在 舞萌 投币",
       "💳 <小明> 在 舞萌 刷卡",
       "💳 <小明> 在 舞萌 虚拟刷卡",

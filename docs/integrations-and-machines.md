@@ -55,7 +55,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 - `{"type":"hello","commands":1}`：插件按命令协议工作（见下文「命令协议」），平台替它判断、写话，并按 Bot 的监听规则把店内动态和闲置提醒交给它说。没有声明 `commands` 的连接收不到任何店内动态，平台也不为它安排闲置提醒。
 - **店内动态**：发生在店里、Bot 可以播报的事。每条有 `type`、`label`（可读名称）、`resourceId`、`resourceName`、`player`（`playerId`、`displayName`、`identities`，认不出的为 `null`）、`via`（从哪里进入平台），需要时带 `detail`（如投币数）。类型目录在 `@prism/core` 的 `shopAnnouncementCatalog`，是唯一定义处，后台规则里的事件列表也从它生成。分四组，**请求和事件互不关联**：
   - **事件**（现场发生的事，来自现场硬件的回报，不论是谁、在哪里操作的都只说一次）：`power.on`／`power.off`（Home Assistant 看到电源从开到关或从关到开；首份快照、从 `unavailable` 恢复不算；只有被监听的连接才有）、`card`（游戏取走了卡，即 `card.consumed`，平台下发的卡和实体卡一样）、`start`（有人开始占用资源，即上机）、`cabinet.coin`／`cabinet.consumed`／`cabinet.reset`（机台账本的变化，见下文「机台账本」）。 刷卡（`card`）分「刷卡」（卡放在读卡器上）和「虚拟刷卡」（从扫码页或 Bot 发过去的卡），写在 `detail.verb` 里；机台的卡片回报在 `payload.cardFrom` 里记为 `reader` 或 `platform`。
-  - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。 投币（`request.coin`）分「投币」（有人通过扫码页、Bot 或后台投的）和「刷卡后自动投币」（机台开了「刷卡后自动投一币」，平台自己投的），写在 `detail.verb` 里；后者在请求和结果的 `payload.cause` 里记为 `card`，来源 `via` 为 `system`。
+  - **请求**（有人通过平台发起，且硬件接受了调用，不代表现场真的完成）：`request.power.on`／`request.power.off`（玩家或店员）、`request.power.idle_off`（闲置自动关机，由 Hub 自己发）、`request.card`、`request.coin`。 投币（`request.coin`）分「投币」（有人通过扫码页、Bot 或后台投的）和「自动投币」（机台开了「自动投币」，刷卡后平台自己投的），写在 `detail.verb` 里；后者在请求和结果的 `payload.cause` 里记为 `card`，来源 `via` 为 `system`。 这一组在规则里叫「远程开机」「远程关机」「闲置自动关机」「虚拟刷卡」「远程投币」，沿用后台「远程开关机」的说法；虚拟刷卡的请求播报为「发起虚拟刷卡」，游戏真正读到卡时另由「刷卡」播报。
   - **提醒**：`idle.reminder`（闲置关机预告）。它和其它动态一样由规则决定发到哪里，只是由 Hub 在预告时间发出。 `platform.maintenance`（系统维护）也属于这一组：部署新版本前，平台按构建变量 `PRISM_MAINTENANCE_NOTICE_MINUTES` 提前告诉每家店的 Bot「N 分钟后开始后端维护，预计 M 分钟内完成」，上线并通过健康检查后再说「后端维护完成」。部署期间 Bot 会断线重连，所以完成通知在 Hub 里保留 15 分钟，Bot 重连发 hello 时补说一次，每个 Bot 只说一次。部署失败时平台停在维护状态、Bot 连不上，不会有完成通知。迁移 `0052` 给已经监听 `idle.reminder` 的规则加上了它。
   - **店铺动态**（没有设备参与的事，来自业务事实和被拒绝的请求）：`session.started`（入场）、`session.stopped`（停止计费）、`checkout.settled`（结账，`detail.amount` 是金额；播报的是**完整账单**：游玩时段、各计费方案、折扣与封顶、余额变化，措辞与 Bot 自己的结账回执相同，标题为「🧾 结算账单」。账单来自结账事实的 `payload.bill`，即结账时实际收费的明细，事后不再重算；记不下账单时只播金额）、`checkout.refused`（结账失败：店铺的规则拒绝了这次结账，什么都没扣，计费照常继续；`detail.reason` 是原因，用的是玩家看到的那句话，`detail.code` 是错误码。余额不足时附上此刻的预览账单，播报里能看到还差多少，标题为「⛔ 结账失败：余额不足」；其他原因只播一行。没有可结的账单、前台预览过期需要重看，不算失败，不播报）、`wallet.adjusted`（调整余额，`detail.amount` 带正负号）、`gift.redeemed`（兑换礼物）、`card.bound`（添加卡片：玩家在扫码页点「添加卡片」，把卡放到读卡器上并确认后，卡加进他的账号和他在本店的档案；`detail.card` 是卡的种类，事件里只记种类，**从不记卡号**。玩家在扫码页用账号里已有的卡刷卡时，店里顺带记下这张卡是谁的，这不是玩家添加卡片，不产生事件）、`request.refused`（设备请求被拒绝，`detail` 带 `action`、`reason`、`code`）。没有设备时 `resourceId`／`resourceName` 为空字符串。
   `via` 的取值：`page` 扫码页、`merchant` 商户后台、`bot`、`api`、`relay` 机台、`ha` Home Assistant、`system` 平台规则（目录在 `shopAnnouncementSources`）。HA 看到的电源变化是 `ha`，闲置关机及其预告是 `system`。
@@ -93,7 +93,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 同一 Bot 编辑页的「播报消息」可以编辑所有播报类型：开关机、刷卡、上机、机台投币、开局扣币、计数清零、平台操作和闲置关机提醒。店内无人、单台设备闲置分别设置。模板存入同一个 `replyTemplates`，键为 `announce.<事件类型>.message`；闲置提醒为 `announce.idle.reminder.shop_empty` 和 `announce.idle.reminder.device_idle`。系统维护为 `announce.platform.maintenance.ahead`（变量 `{minutes}` 必须保留，`{expected}` 是预计时长）和 `announce.platform.maintenance.done`。
 
-事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。结账默认就是整份账单 `{bill}`，还可用 `{player}` 和 `{amount}`；结账失败可用 `{player}`、`{reason}` 和 `{bill}`（只有余额不足时有内容）；刷卡和投币多了可选的 `{verb}`（刷卡或虚拟刷卡，投币或刷卡后自动投币），以前保存的文案不写它也照常生效；添加卡片可用 `{player}` 和 `{card}`；三者都可以不写，例如写成 `{player} 结账 {amount}` 就只播一行。其他类型界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
+事件按场景开放 `{device}`（设备名）、`{player}`（平台昵称，未绑定时为未绑定的卡，代操作无玩家时为店员）、`{coins}`（投入币数）、`{credits}`（消耗币数）、`{credit}`（机内剩余币数）；闲置提醒使用 `{devices}` 和 `{minutes}`。结账默认就是整份账单 `{bill}`，还可用 `{player}` 和 `{amount}`；结账失败可用 `{player}`、`{reason}` 和 `{bill}`（只有余额不足时有内容）；刷卡和投币多了可选的 `{verb}`（刷卡或虚拟刷卡，投币或自动投币），以前保存的文案不写它也照常生效；添加卡片可用 `{player}` 和 `{card}`；三者都可以不写，例如写成 `{player} 结账 {amount}` 就只播一行。其他类型界面列出的变量必须保留，其他文字可自由编辑。预览、校验、恢复默认和保存方式与命令回复相同。
 
 模板逐 Bot 渲染，不会改变监听规则、真实事件和自身命令去重规则；昵称继续作为玩家片段交给聊天平台解析。模板不写入 WebSocket attachment，避免长文案超出休眠连接附件大小上限。未设置的消息保留原文案。
 
@@ -387,7 +387,7 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 **投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
 
-**刷卡后自动投币**（`coinAfterSwipe`）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。 这枚币在操作记录和播报里叫「刷卡后自动投币」（`payload.cause: "card"`），和有人投的币分开。
+**自动投币**（`coinAfterSwipe`，后台设置项叫「自动投币」）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。 这枚币在操作记录和播报里叫「自动投币」（`payload.cause: "card"`），和有人投的币分开。
 
 #### 扫码刷卡的结果
 

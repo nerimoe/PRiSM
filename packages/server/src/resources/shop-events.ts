@@ -96,12 +96,12 @@ export function announcementText(event: ShopEvent): string {
   switch (event.type) {
     case "power.on": return `✅ ${place} 已开机`;
     case "power.off": return `🛑 ${place} 已关机`;
-    case "request.power.on": return `✅ ${event.player ? PLAYER_PLACEHOLDER : "店员"} 通过平台开启了 ${place}`;
-    case "request.power.off": return `🛑 ${event.player ? PLAYER_PLACEHOLDER : "店员"} 通过平台关闭了 ${place}`;
+    case "request.power.on": return `✅ ${event.player ? PLAYER_PLACEHOLDER : "店员"} 远程开启了 ${place}`;
+    case "request.power.off": return `🛑 ${event.player ? PLAYER_PLACEHOLDER : "店员"} 远程关闭了 ${place}`;
     case "request.power.idle_off": return `💤 ${place} 闲置，已自动关机`;
     case "card": return `💳 ${who} 在 ${place} ${text("verb") || "刷卡"}`;
     case "start": return `🎮 ${who} 在 ${place} 上机`;
-    case "request.card": return `💳 ${who} 通过平台在 ${place} 刷卡`;
+    case "request.card": return `💳 ${who} 在 ${place} 发起虚拟刷卡`;
     case "request.coin": return `🪙 ${who} 在 ${place} ${text("verb") || "投币"}`;
     case "cabinet.coin": return `🪙 ${place} 投币 ${n("coins")} 个，当前 ${n("credit")} 币`;
     case "cabinet.consumed": return `🎮 ${place} 开局消耗 ${n("credits")} 币，剩余 ${n("credit")} 币`;

@@ -194,7 +194,7 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
       const request = REQUESTS[type];
       if (request) {
         // A coin says whose idea it was: someone asking, or the cabinet's rule after a card.
-        const detail = request === "request.coin" ? { verb: event.payload.cause === "card" ? "刷卡后自动投币" : "投币" } : undefined;
+        const detail = request === "request.coin" ? { verb: event.payload.cause === "card" ? "自动投币" : "投币" } : undefined;
         await announce({ type: request, ...place, player: await player(forPlayer(one)), ...(detail ? { detail } : {}) });
       } else if (type === "card.consumed") {
         // The game took a card: whether it came from the reader or the platform,

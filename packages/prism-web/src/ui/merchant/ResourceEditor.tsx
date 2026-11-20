@@ -712,7 +712,7 @@ export function ResourceEditor({
                       checked={coinAfterSwipe}
                       onChange={(e) => setCoinAfterSwipe(e.target.checked)}
                     />
-                    {t("刷卡后自动投一币")}
+                    {t("自动投币")}
                   </label>
                 )}
               </div>
@@ -731,7 +731,7 @@ export function ResourceEditor({
                 </Field>
               )}
               {embedded && (
-                <Hint>{t("机台内的币达到上限后，平台不再投币。需要 IO 1.2.4 及以上；读不到币数时按投币冷却处理，刷卡自动投币不生效。")}</Hint>
+                <Hint>{t("机台内的币达到上限后，平台不再投币。需要 IO 1.2.4 及以上；读不到币数时按投币冷却处理，自动投币不生效。")}</Hint>
               )}
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>

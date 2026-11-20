@@ -1399,7 +1399,7 @@ function ResourceHistory({ device }: { device: Resource }) {
             if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
             // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
             if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
-            if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("刷卡后自动投币"));
+            if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("自动投币"));
             if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
             const command = e.name === "bot.command" ? e.payload : null;
             // A request turned away before it reached the device, and what happened at the shop itself.
