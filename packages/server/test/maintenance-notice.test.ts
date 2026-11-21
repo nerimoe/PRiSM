@@ -77,6 +77,7 @@ describe("maintenance notices", () => {
     const words = (message: unknown) => (message as Array<{ text?: string }>).map((part) => part.text ?? "").join("");
     expect(words(maintenanceMessage({ stage: "ahead", minutes: 5, expectedMinutes: 3 }))).toBe("🛠 5 分钟后开始后端维护，预计 3 分钟内完成，期间暂停服务");
     expect(words(maintenanceMessage({ stage: "done" }))).toBe("✅ 后端维护完成，服务已恢复");
+    expect(words(maintenanceMessage({ stage: "ahead", minutes: 0, expectedMinutes: 3 }))).toBe("🛠 即将开始后端维护，预计 3 分钟内完成，期间暂停服务");
     expect(words(maintenanceMessage({ stage: "ahead", minutes: 5, expectedMinutes: 3 }, { "announce.platform.maintenance.ahead": "{minutes} 分钟后维护" })))
       .toBe("5 分钟后维护");
   });

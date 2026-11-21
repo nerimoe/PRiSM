@@ -25,7 +25,13 @@ if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Cannot determine release 
 const token = randomToken(48), tokenHash = await sha256(token);
 const committedAt = Number((await command(["git", "log", "-1", "--format=%ct", "HEAD"], true)).trim()) * 1000;
 if (!Number.isSafeInteger(committedAt) || committedAt <= 0) throw new Error("Cannot determine the release's commit time");
-/** Minutes the shops' bots are told ahead of the maintenance, and then waited. 0: no notice, no wait. */
+/**
+ * Minutes the shops' bots are told ahead of the maintenance, and then waited.
+ * 0 still tells them, as "about to start", and waits `NOTICE_FLOOR_MS` so the
+ * message reaches the groups before the platform pauses.
+ */
+/** However soon the maintenance, the bots get this long to say so before the platform pauses. */
+const NOTICE_FLOOR_MS = 30_000;
 const noticeMinutes = minutesSetting("PRISM_MAINTENANCE_NOTICE_MINUTES", 0, 0, 15);
 /** How long the bots are told the maintenance will take. */
 const expectedMinutes = minutesSetting("PRISM_MAINTENANCE_EXPECTED_MINUTES", 3, 1, 60);
@@ -105,7 +111,7 @@ ${message}`);
     return "deploy";
   },
   async announce(stage) {
-    if (skipNotices || (stage === "ahead" && noticeMinutes === 0)) return;
+    if (skipNotices) return;
     const told = await sendMaintenanceNotice(
       { origin, token },
       stage === "ahead" ? { stage, minutes: noticeMinutes, expectedMinutes } : { stage },
@@ -117,8 +123,9 @@ ${message}`);
     }
     console.log(`Maintenance notice (${stage}) sent to ${told} shop(s).`);
     if (stage === "ahead") {
-      console.log(`Waiting ${noticeMinutes} minute(s) before maintenance, as the shops were told.`);
-      await Bun.sleep(noticeMinutes * 60_000);
+      const wait = Math.max(noticeMinutes * 60_000, NOTICE_FLOOR_MS);
+      console.log(`Waiting ${Math.round(wait / 1000)} s before maintenance, as the shops were told.`);
+      await Bun.sleep(wait);
     }
   },
   async release(deployed) {

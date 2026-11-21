@@ -124,8 +124,10 @@ export function maintenanceMessage(notice: MaintenanceNotice, templates?: Record
   }
   const minutes = String(notice.minutes);
   const expected = String(notice.expectedMinutes);
+  // A deployment without lead time still says so, as starting now rather than "in 0 minutes".
+  const when = notice.minutes > 0 ? `${minutes} 分钟后开始` : "即将开始";
   return renderBotReplyTemplate("announce.platform.maintenance.ahead", templates,
-    botMessage(`🛠 ${minutes} 分钟后开始后端维护，预计 ${expected} 分钟内完成，期间暂停服务`), { minutes, expected });
+    botMessage(`🛠 ${when}后端维护，预计 ${expected} 分钟内完成，期间暂停服务`), { minutes, expected });
 }
 
 /** Tell the shop's bots. Best effort: an event that cannot be sent is logged and dropped. */

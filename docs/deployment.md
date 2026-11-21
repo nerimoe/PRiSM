@@ -178,7 +178,7 @@ Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测�
 
 | 构建变量 | 默认 | 说明 |
 |---|---|---|
-| `PRISM_MAINTENANCE_NOTICE_MINUTES` | `0` | 提前多少分钟预告，0 到 15；0 表示不预告、不等待。等待时间计入 Workers Builds 的构建时长。建议 beta 保持 0，stable 设为 5。 |
+| `PRISM_MAINTENANCE_NOTICE_MINUTES` | `0` | 提前多少分钟预告，0 到 15。0 也会预告，说「即将开始后端维护」；不管设多少，发出预告后至少等 30 秒再进入维护，让 Bot 来得及把消息发出去。等待时间计入 Workers Builds 的构建时长。建议 beta 保持 0，stable 设为 5。 |
 | `PRISM_MAINTENANCE_EXPECTED_MINUTES` | `3` | 预告里说的预计维护时长，1 到 60。 |
 
 ### 运行日志（Workers Observability）
