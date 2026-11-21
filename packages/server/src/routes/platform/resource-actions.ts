@@ -11,7 +11,7 @@ import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import type { AppBindings } from "../../bindings.js";
 import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
-import { cabinetKeys, type CabinetKey } from "../../resources/capabilities/catalog.js";
+import type { CabinetKey } from "../../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readClimate, readPower, type ClimateState } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
@@ -192,7 +192,7 @@ async function performResourceAction(
   let pressed: CabinetKey | null = null;
   if (action === "key.press") {
     if (!staff) jsonError(403, "只有店员可以按键", "FORBIDDEN");
-    pressed = cabinetKeys(hinataConfigOf(device)!).find((key) => key.id === body.keyId) ?? null;
+    pressed = hinataConfigOf(device)?.keys.find((key) => key.id === body.keyId) ?? null;
     if (!pressed) jsonError(404, "没有这个按键", "KEY_NOT_FOUND");
   }
   return runPlayerOperation(

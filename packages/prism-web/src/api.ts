@@ -163,10 +163,15 @@ export type Resource = {
   /** A Home Assistant `climate.*` entity, such as an air conditioner. */
   climate?: { connectionId?: string | null; url: string; entityId: string } | null;
   ttlockLockId: number | null;
-  /** How a coin goes in: `key`, the IO pressing `coinKey`. Further ways join this list. */
-  coinMethod?: "key";
-  /** The cabinet's named keys, shown as buttons in the admin; one of them may be the coin button. */
+  /** The HINATA IO's named keys, shown as buttons in the admin; the coin may press one of them. */
   keys?: { id: string; name: string; key: number }[];
+  /**
+   * The resource's coin, a capability of its own: how it goes in (`key`: the
+   * IO presses `keyId`), the limit and the coin after a swipe. Null when the
+   * resource takes no coin. The flat `coin*` fields say the same for older code.
+   */
+  coin?: { method: "key"; keyId: string | null; cap: number | null; afterSwipe: boolean } | null;
+  coinMethod?: "key";
   coinKeyId?: string | null;
   coinKey: number;
   coinEnabled?: boolean;

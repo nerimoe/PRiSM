@@ -6,7 +6,7 @@ import { hinataIo } from "../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
 import { cabinetChanges, coinGate, coinLimit, isCabinetBooks, type CabinetBooks } from "../resources/capabilities/cabinet.js";
-import { can, hinataConfigOf, loadResource } from "../resources/resource.js";
+import { can, coinConfigOf, hinataConfigOf, loadResource } from "../resources/resource.js";
 import { cardRead, pagesChanged, shopHub } from "./shop-hub-client.js";
 import { createCardStore, reportedCard, withoutCardNumber } from "../resources/cards.js";
 import { bindReaderCard, type CardCapture, type CardCaptureResult } from "../resources/card-capture.js";
@@ -672,7 +672,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
    */
   private async coinAfterCard(channel: Channel, playerId: string, cardOperation: string | null) {
     const device = await loadResource(this.env.DB, channel.shopId, channel.machineId);
-    if (!device || !hinataConfigOf(device)?.coinAfterSwipe || !can(device, "coin")) return;
+    if (!device || !coinConfigOf(device)?.afterSwipe || !can(device, "coin")) return;
     const operationId = crypto.randomUUID();
     if (await coinGate(this.env.DB, channel.shopId, device, operationId) !== "ok") return;
     // The key press is this object's own; it is not sent out and back to reach it.

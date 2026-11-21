@@ -28,6 +28,8 @@ type Entry = {
   capability: "power" | "hinata_io" | "door";
   config: Record<string, unknown>;
   secrets: Record<string, string>;
+  /** Further capabilities bound with it, without secrets (a cabinet's coin). */
+  alongside?: Array<{ capability: "coin"; config: Record<string, unknown> }>;
   /** Strings older commands may have recorded as the device id. */
   historyKeys: string[];
 };
@@ -143,7 +145,9 @@ async function plan(
       kind: "machine",
       aliases: [...new Set([id, ...aliases])],
       capability: "hinata_io",
-      config: { transport: "external", coinKey, coinAfterSwipe: false },
+      // Its coin key becomes the IO's one named key, which the coin presses.
+      config: { transport: "external", keys: coinKey > 0 ? [{ id: "coin", name: "投币", key: coinKey }] : [] },
+      ...(coinKey > 0 ? { alongside: [{ capability: "coin" as const, config: { method: "key", keyId: "coin", cap: null, afterSwipe: false } }] } : {}),
       secrets: {
         url: await encryptSecret(normalizeHinataUrl(ioUrl), key),
         ...(password ? { password: await encryptSecret(password, key) } : {}),
@@ -224,6 +228,13 @@ export async function adoptLegacyRegistries(input: {
            SELECT ?, ?, ?, ?, ?, NULL, ?, ? WHERE EXISTS (SELECT 1 FROM machines WHERE shop_id = ? AND id = ?)`,
         )
         .bind(shopId, entry.id, entry.capability, JSON.stringify(entry.config), JSON.stringify(entry.secrets), at, at, shopId, entry.id),
+      ...(entry.alongside ?? []).map((other) => db
+        .prepare(
+          `INSERT OR IGNORE INTO device_capabilities
+             (shop_id, device_id, capability, config_json, secret_json, credential_hash, created_at, updated_at)
+           SELECT ?, ?, ?, ?, '{}', NULL, ?, ? WHERE EXISTS (SELECT 1 FROM machines WHERE shop_id = ? AND id = ?)`,
+        )
+        .bind(shopId, entry.id, other.capability, JSON.stringify(other.config), at, at, shopId, entry.id)),
     );
     // Commands issued against the registry recorded its id (or the name typed
     // to the Bot) as the device. Point that history at the adopted device.

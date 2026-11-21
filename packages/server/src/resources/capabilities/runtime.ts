@@ -17,7 +17,7 @@ import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardwa
 import { TTLockClient } from "../../hardware/ttlock.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
-import { doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
+import { coinConfigOf, coinKeyOf, doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
 import { deviceRead, type HubCalls } from "../../durable-objects/shop-hub-client.js";
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
@@ -154,13 +154,17 @@ async function pressKey(runtime: DeviceRuntime, device: Parameters<ActionRunner>
 
 const countOf = (payload: Record<string, unknown>) => typeof payload.count === "number" ? payload.count : 1;
 
-/** A coin, the way this cabinet takes one (`coinMethod`). Never a key of the caller's choosing. */
+/** A coin, the way this resource takes one (its `coin` capability). Never a key of the caller's choosing. */
 function coinRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, operationId, payload }) => {
-    const config = hinataConfigOf(device)!;
-    // A configuration saved before there was a choice coins by key.
-    switch (config.coinMethod ?? "key") {
-      case "key": return pressKey(runtime, device, operationId, config.coinKey, countOf(payload));
+    const coin = coinConfigOf(device);
+    switch (coin?.method) {
+      case "key": {
+        const key = coinKeyOf(device);
+        if (!key) return { outcome: "failed", message: "投币按键不存在" };
+        return pressKey(runtime, device, operationId, key.key, countOf(payload));
+      }
+      default: return { outcome: "failed", message: "没有设置投币方式" };
     }
   };
 }

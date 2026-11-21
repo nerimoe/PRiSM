@@ -197,7 +197,7 @@ describe("pre-fork merchant machine lifecycle",()=>{
       homeAssistant:{url:"https://ha.example",entityId:"switch.cabinet"},ttlockLockId:77,relayConnection:"external",
     });
     const rows=()=>sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];
-    expect(rows().map(r=>r.capability)).toEqual(["door","hinata_io","power"]);
+    expect(rows().map(r=>r.capability)).toEqual(["coin","door","hinata_io","power"]);
     // Secrets are stored encrypted, never in the clear.
     expect(JSON.stringify(rows())).not.toContain("secret-pass");
     expect(JSON.stringify(rows())).not.toContain("ha-token");

@@ -75,6 +75,7 @@ const capabilityLabels: Record<CapabilityId, string> = {
   power: "电源",
   climate: "空调",
   hinata_io: "刷卡",
+  coin: "投币",
   door: "门锁",
   mahjong: "麻将桌",
   bot: "Bot",
@@ -992,6 +993,7 @@ const capabilityMeta: Record<
   power: { icon: Power, title: "电源控制" },
   climate: { icon: AirVent, title: "空调" },
   hinata_io: { icon: CreditCard, title: "刷卡 · HINATA IO" },
+  coin: { icon: Coins, title: "投币" },
   door: { icon: DoorOpen, title: "开门密码" },
   mahjong: { icon: Ungroup, title: "麻将桌" },
   bot: { icon: Bot, title: "Bot" },
@@ -1182,7 +1184,7 @@ function ResourceActions({
                 </div>
               )}
               {/* A coin, the cabinet's own way; staff are not held to the cooldown. */}
-              {id === "hinata_io" && actionNames.includes("coin") && (
+              {id === "coin" && actionNames.includes("coin") && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"

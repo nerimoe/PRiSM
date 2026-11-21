@@ -607,9 +607,11 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     await restore(app,env,headers,"destination",v2);
 
     const capabilities=sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities WHERE shop_id='destination' ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];
-    expect(capabilities.map(row=>row.capability)).toEqual(["hinata_io","power"]);
-    const io=capabilities[0]!;
-    expect(JSON.parse(io.config_json)).toEqual({transport:"external",coinKey:40,coinAfterSwipe:true});
+    // The old coin key becomes the IO's key 投币, which a coin of its own presses; an external relay has no coin after a swipe.
+    expect(capabilities.map(row=>row.capability)).toEqual(["coin","hinata_io","power"]);
+    expect(JSON.parse(capabilities[0]!.config_json)).toEqual({method:"key",keyId:"coin",cap:null,afterSwipe:false});
+    const io=capabilities[1]!;
+    expect(JSON.parse(io.config_json)).toEqual({transport:"external",keys:[{id:"coin",name:"投币",key:40}]});
     const secrets=JSON.parse(io.secret_json) as Record<string,string>;
     expect(await decryptSecret(secrets.url!,KEY)).toBe("https://relay.example/old");
     expect(await decryptSecret(secrets.password!,KEY)).toBe("pw");

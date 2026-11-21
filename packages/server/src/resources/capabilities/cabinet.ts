@@ -17,7 +17,7 @@
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { CabinetSnapshot } from "../../hardware/aimeio-relay.js";
-import { hinataConfigOf, type Resource } from "../resource.js";
+import { coinConfigOf, type Resource } from "../resource.js";
 
 export type CabinetBooks = Extract<CabinetSnapshot, { players: unknown }>;
 
@@ -61,7 +61,7 @@ export const COIN_SETTLE_MS = 2000;
  * the books are not known now (no IO reporting them, or its link is down).
  */
 export async function coinLimit(db: D1DatabaseLike, shopId: string, device: Resource): Promise<"full" | "room" | "unknown"> {
-  const cap = hinataConfigOf(device)?.coinCap ?? null;
+  const cap = coinConfigOf(device)?.cap ?? null;
   if (cap === null) return "unknown";
   const rows = await db.prepare(
     "SELECT key, value_json FROM device_state WHERE shop_id = ? AND device_id = ? AND capability = 'hinata_io' AND key IN ('cabinet', 'link')",

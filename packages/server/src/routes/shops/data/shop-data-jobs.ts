@@ -511,10 +511,14 @@ function v2DeviceStatements(db: D1Database, shopId: string, jobId: string, merge
   const capabilities = [
     capability("power", "'{}'", `json_object('binding',${machine("ha_binding_json")})`,
       `COALESCE(${machine("ha_binding_json")},'')!=''`),
+    // The old cabinet's coin key becomes the IO's one named key, which its coin presses.
     capability("hinata_io",
-      `json_object('transport','external','coinKey',${machine("coin_key")},'coinAfterSwipe',json(CASE WHEN ${machine("coin_after_swipe")}=1 THEN 'true' ELSE 'false' END))`,
+      `json_object('transport','external','keys',json(CASE WHEN COALESCE(${machine("coin_key")},0)>0 THEN json_array(json_object('id','coin','name','投币','key',${machine("coin_key")})) ELSE '[]' END))`,
       `json_patch('{}',json_object('url',${machine("hinata_url")},'password',${machine("hinata_password")}))`,
       `COALESCE(${machine("hinata_url")},'')!=''`),
+    // An external relay never says the game took a card, so an old coin after a swipe has nothing to follow.
+    capability("coin", `json_object('method','key','keyId','coin','cap',NULL,'afterSwipe',json('false'))`, "'{}'",
+      `COALESCE(${machine("hinata_url")},'')!='' AND COALESCE(${machine("coin_key")},0)>0`),
     capability("door", `json_object('lockId',${machine("ttlock_lock_id")})`, "'{}'", `${machine("ttlock_lock_id")} IS NOT NULL`),
     capability("mahjong", machine("mahjong_config_json"), "'{}'", `json_valid(${machine("mahjong_config_json")})`),
   ];

@@ -249,7 +249,8 @@ await client.requestScanByIdentity(
 | --- | --- | --- | --- | --- | --- |
 | `power` | `connectionId`、`entityId`（`switch.*`/`input_boolean.*`） | —（旧绑定：`binding`，见下文「店铺 Home Assistant 连接」） | `power.on`、`power.off` | — | `power`，外部权威（事件驱动读存储，无状态现查） |
 | `climate` | `connectionId`、`entityId`（`climate.*`） | —（同上） | `climate.on`、`climate.off`、`climate.set_mode`、`climate.set_temperature`、`climate.set_fan_mode` | — | `climate`，外部权威（同上） |
-| `hinata_io` | `transport`（`external`/`embedded`）、`coinKey`、`coinAfterSwipe`、`coinCap`（直连，见「投币上限」）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`coin` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
+| `hinata_io` | `transport`（`external`/`embedded`）、`keys`（店家命名的按键）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`key.press` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
+| `coin` | `method`（目前只有 `key`）、`keyId`（按下 `hinata_io` 的哪个按键）、`cap`（投币上限，直连）、`afterSwipe`（自动投币，直连） | — | `coin` | — | — |
 | `door` | `lockId` | — | `door.open` | — | — |
 | `mahjong` | `capacity`、`pricingConfigIds`（最多一个方案） | — | —（上下桌走麻将流程） | — | — |
 
@@ -338,7 +339,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - 空资源页说明「资源」是店里玩家扫码就能用的东西（机台、门、麻将桌，或没有硬件、只用来开始计费的二维码）；`/merchant/:shop/resources?add=1` 直接打开添加资源弹窗（开店指引使用；旧地址 `/devices` 会跳转过来）。二维码弹窗提供「打印」（新窗口只含二维码和资源名）、带「已复制」反馈的复制链接和测试扫码入口。NFC 入口就是把同一个链接写进标签的 NDEF URI 记录：iPhone 碰一下会唤起 hinata_go 里的 PRiSM Link App Clip（免安装），其它手机用浏览器或 HINATA Go 打开；弹窗下方写明了这一点。
 - 编辑器里开门密码能力会检查店铺 TTLock 账号：未连接时红字提示并链接到「设置 → 位置与设备」；麻将桌没有可选计费规则时链接到「计费」页；麻将桌所在资源没有计费方案时不要求选择对局方案，入座免费；外部中继缺连接密码时说明投币为何不可设置。
 - 能力判定集中在前端适配层 `packages/prism-web/src/ui/merchant/resource-capabilities.ts`（`resourceCapabilities`、`canOperateCoin`、`deviceActions`、`deviceSummaryKey`）。卡片徽章、操作记录里的可用动作、编辑器里的开关都读这一处，不再各自从 `ttlockLockId`/`homeAssistant`/`hasHinata` 推导。
-- 提交仍使用商户 API 的扁平字段（`homeAssistant`、`ttlockLockId`、`mahjong`、`hinataUrl`/`hinataPassword`、`relayConnection`、`coinKey`、`coinAfterSwipe`）；关闭某项能力时发送 `null`（刷卡为 `relayConnection: "external"` + `hinataUrl: null`）让服务端删除对应能力行。适配层只是视图模型，不改变接口契约。
+- 提交仍使用商户 API 的扁平字段（`homeAssistant`、`ttlockLockId`、`mahjong`、`hinataUrl`/`hinataPassword`、`relayConnection`、`keys`），投币用 `coin` 对象（`{ method, keyId, cap, afterSwipe }`，`null` 去掉投币）。旧客户端的 `coinKey`、`coinKeyId`、`coinCap`、`coinAfterSwipe` 仍然认：`coinKey` 是键码（0 表示不投币，没有这个键码的按键就加一个叫「投币」的），其余改动已有的投币。响应里的 `coin*` 扁平字段照旧，`coinEnabled` 是服务端判断的能不能投；关闭某项能力时发送 `null`（刷卡为 `relayConnection: "external"` + `hinataUrl: null`）让服务端删除对应能力行。适配层只是视图模型，不改变接口契约。
 
 **轮换令牌一律三次确认**（`ResourceEditor` 的 `RotateTokenConfirm`）。签发和轮换是两回事：签发是第一次给凭据，没有旧值可吊销，一次点击即可；**轮换**会立即吊销旧值、让正在用它的 Bot 或机台断线，因此要走三步：
 
@@ -358,12 +359,12 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - `mahjong.seat` / `mahjong.unseat` 接受 `playerId`，让所选玩家上桌/下桌。上桌与玩家自身上桌走同一套校验：玩家必须启用、计费开启时必须有进行中的入场（`CHECKIN_REQUIRED`），麻将计费规则必须齐全且处于可计费时段。店员操作不校验店员自身定位，但玩家资格、封禁与牌桌容量照常校验。
 - `GET /api/v1/merchant/machines/:id/mahjong` 返回 `{ mahjong }`；`mahjong` 为 `{ capacity, seats: [{ playerId, name, playing }] }`，供操作面板显示座位并选择下桌对象。没有麻将能力的设备返回 `null`。电源和空调的状态是另一个接口 `…/:id/state`，见「读取的接口」。
 
-- **按键和投币是两个动作。**
-  - **按键**（`keys`，「刷卡 · HINATA IO」里的「按键」）：店家自己添加的按键，每个有名称和键码，最多 16 个，例如「投币」「服务」「测试」。键码填字母、数字、F1–F24、Enter、Space、常用未加 Shift 的符号，或直接填 Windows Virtual-Key 码；服务端换算成数字键码保存（协议只传键码，带 Shift 的符号如 `!` 无法表示）。每个按键在后台这台资源的操作面板里显示为一个按钮，玩家页面不显示。
+- **按键和投币是两个能力。**
+  - **按键**（`hinata_io` 的 `keys`，「刷卡 · HINATA IO」里的「按键」）：店家自己添加的按键，每个有名称和键，最多 16 个，例如「投币」「服务」「测试」。键填字母、数字、F1–F24、Enter、Space、常用未加 Shift 的符号，或直接填 Windows Virtual-Key 码；服务端换算成数字键码保存（协议只传键码，带 Shift 的符号如 `!` 无法表示），后台读回来显示成键名（如 125 显示为 F14）。每个按键在后台这台资源的操作面板里显示为一个按钮，玩家页面不显示；被选作投币的那个按键不再单独列出，它就是「投币」按钮。
   - 按下其中一个是 `key.press`，请求带 `keyId`。只有店员能按（玩家请求返回 `403`），没有这个按键返回 `404 KEY_NOT_FOUND`。按键不走投币冷却、不查投币上限、不算投币、也不算在玩，事件记为 `key.press.*`，按了哪个（`keyId`、名称、键码）记在事件里。
-  - **投币**（`coin`）永远按机台自己的投币方式投，不能指定键。冷却、投币上限、投币事件和播报、计费里的「在玩」都挂在投币上。店员在后台投币不受投币冷却限制（冷却是防玩家连点的），投币上限照样检查。
-- **投币方式**（`coinMethod`，「投币方式」）：投币怎么进机台。目前只有 `key`（IO 模拟按键）：从上面的按键里选一个作「投币按键」（`coinKeyId`），保存时它的键码写进 `coinKey`；不选就是不启用投币。以后接 Home Assistant 继电器之类的投币方式会加在这里，投币的规则不变。
-- 有按键名称之前保存的配置只有 `coinKey`：读出来是一个叫「投币」、`id` 为 `coin` 的按键，并选作投币按键，`coinMethod` 按 `key`。下次在后台保存时按这个样子写回，不需要迁移。
+  - **投币**（`coin` 能力，编辑器里单独的「投币」一栏）：资源怎么收一枚币，以及管住每一枚币的规则——冷却、投币上限、投币事件和播报、计费里的「在玩」、谁在占用。投币事件记在 `coin` 能力下（迁移前的投币事件仍是 `hinata_io`）。店员在后台投币不受投币冷却限制（冷却是防玩家连点的），投币上限照样检查。
+- **投币方式**（`coin.method`，「投币方式」）：目前只有 `key`（HINATA IO 按键）：从 IO 的按键里选一个作「投币按键」（`keyId`），投币时由 IO 按下它。用按键投币要先有「刷卡 · HINATA IO」；去掉 IO 时投币一起去掉，删掉被选的按键投币就停用（编辑器提示选一个）。以后接 Home Assistant 继电器之类的方式会加在 `method` 里，投币的规则不变。
+- **迁移 `0056`** 把每台 IO 原来的投币设置（`coinKey`、`coinKeyId`、`coinCap`、`coinAfterSwipe`）搬到新的 `coin` 行：没有命名按键的，投币键变成一个叫「投币」、`id` 为 `coin` 的按键；IO 里只留连接和按键。备份、旧数据导入和旧注册表里还带 `coinKey` 的 IO，读的时候也按同样的规则读成 IO 加投币，保存时按新样子写回。
 
 ### 引用设备与 Bot 动作
 
@@ -402,9 +403,9 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 - 令牌直连的 IO（不是端到端加密）发 hello 后，平台接着发 `io.setLiveConfig cabinetMonitor=1`，不用改机器上的配置文件。IO 只记在内存里，每次连接平台都再发一次；旧版 IO 不认识这个方法，游戏没有 `sysfile.dat` 时 IO 不会开始读，这两种都只回一个错误，平台不处理。
 - 后台「操作」面板的 HINATA IO 一栏显示 `GET /api/v1/merchant/machines/:id/cabinet` 的账本；「刷新机台状态」调 `POST …/cabinet/refresh`，平台向 IO 发 JSON-RPC `cabinet.getSnapshot`（5 秒超时），回答按普通快照处理并返回。这是平台第一个发给 IO 的 RPC，`MachineRelay` 按请求 `id` 匹配回答。
 
-**投币上限**（`coinCap`，直连机台的设置，「刷卡 · HINATA IO」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
+**投币上限**（`coin.cap`，直连机台的设置，「投币」里的「机台投币上限」）：平台投币前读设备状态 `cabinet`，机台里的币 ≥ 上限就拒绝（`COIN_CABINET_FULL`，「达到机台投币上限」），防止先存很多币再结账。放行的投币占用一个 2 秒的设备锁，让下一次投币判断时账本已经反映了这一次，期间的投币按冷却拒绝。没设上限、IO 没上报账本或链路不在线时，按原来的投币冷却处理。扫码页投币、刷卡后自动投币、Bot 和店员的投币都走这一处（`coinGate`）。
 
-**自动投币**（`coinAfterSwipe`，后台设置项叫「自动投币」）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。开了自动投币，扫码页照样显示「投币」按钮，玩家也可以手动投币（冷却和上限照常）。 这枚币在操作记录和播报里叫「自动投币」（`payload.cause: "card"`），和有人投的币分开。
+**自动投币**（`coin.afterSwipe`，「投币」里的「自动投币」）：只对直连 IO 且设了投币上限的机台开放，外部中继保存时一律关掉。游戏取走一张卡（IO 的 `event.cardConsumed`，读卡器上的实体卡和平台送的卡都算）时，`MachineRelay` 用和闲置判断相同的条件判断：卡的主人是本店玩家，且正在为这台机台的计费方案计费。满足条件，并且 `coinGate` 放行（账本读得到，没到上限），就以这位玩家的名义投一币；读不到账本时不按冷却兜底，直接不投。扫码刷卡的响应里不带投币结果，客户端也拿不到这个开关。开了自动投币，扫码页照样显示「投币」按钮，玩家也可以手动投币（冷却和上限照常）。 这枚币在操作记录和播报里叫「自动投币」（`payload.cause: "card"`），和有人投的币分开。
 
 #### 扫码刷卡的结果
 

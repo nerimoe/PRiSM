@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   AirVent,
+  Coins,
   CreditCard,
   DoorOpen,
   Info,
@@ -135,12 +136,14 @@ export function ResourceEditor({
   const [keys, setKeys] = useState<CabinetKeyDraft[]>(
     () => (value?.keys ?? []).map((one) => ({ id: one.id, name: one.name, key: keyTextFromVk(one.key) })),
   );
-  const [coinKeyId, setCoinKeyId] = useState<string | null>(value?.coinKeyId ?? null);
+  const [coinKeyId, setCoinKeyId] = useState<string | null>(value?.coin?.keyId ?? value?.coinKeyId ?? null);
   const coinChosen = !!coinKeyId && keys.some((one) => one.id === coinKeyId);
   const [coinAfterSwipe, setCoinAfterSwipe] = useState(
-    value?.coinAfterSwipe ?? false,
+    value?.coin?.afterSwipe ?? value?.coinAfterSwipe ?? false,
   );
-  const [coinCap, setCoinCap] = useState(value?.coinCap ? String(value.coinCap) : "");
+  const [coinCap, setCoinCap] = useState(
+    (value?.coin?.cap ?? value?.coinCap) ? String(value?.coin?.cap ?? value?.coinCap) : "",
+  );
 
   const [lockId, setLockId] = useState(
     value?.ttlockLockId ? String(value.ttlockLockId) : "",
@@ -212,6 +215,10 @@ export function ResourceEditor({
     }
     if (id === "hinata_io" && !embedded && !hinataUrl.trim())
       return t("请填写 HINATA IO 地址");
+    if (id === "coin") {
+      if (!caps.hinata_io) return t("用按键投币需要先添加「刷卡 · HINATA IO」");
+      if (!coinChosen) return t("请选择投币按键");
+    }
     if (id === "door" && !(Number(lockId) > 0)) return t("请填写门锁 ID");
     if (id === "bot") {
       for (const [key, text] of Object.entries(bot.replyTemplates ?? {})) {
@@ -234,6 +241,9 @@ export function ResourceEditor({
     if (id === "climate" && ac.connection === NEW_CONNECTION && !ac.url.trim())
       // Usually the same Home Assistant as the power switch.
       setAc({ ...ac, connection: power.connection, url: power.url });
+    // A coin presses the IO's key named 投币 when there is one, otherwise its first key.
+    if (id === "coin" && !coinChosen)
+      setCoinKeyId((keys.find((one) => one.name.trim() === "投币") ?? keys[0])?.id ?? null);
     setCaps((current) => ({ ...current, [id]: true }));
     setPane(id);
   };
@@ -442,21 +452,16 @@ export function ResourceEditor({
               : {}),
             homeAssistant: caps.power ? haBody(power) : null,
             climate: caps.climate ? haBody(ac) : null,
-            ...(caps.hinata_io ? { coinMethod } : {}),
-            ...(caps.hinata_io
+            ...(caps.hinata_io ? { keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: one.key })) } : {}),
+            // Coin is its own capability; the limit and the coin after a swipe need a direct IO.
+            coin: caps.coin
               ? {
-                  keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: one.key })),
-                  coinKeyId: canCoin && coinChosen ? coinKeyId : null,
+                  method: coinMethod,
+                  keyId: coinChosen ? coinKeyId : null,
+                  cap: embedded && Number(coinCap) > 0 ? Number(coinCap) : null,
+                  afterSwipe: embedded && Number(coinCap) > 0 && coinAfterSwipe,
                 }
-              : {}),
-            coinAfterSwipe:
-              caps.hinata_io &&
-              embedded &&
-              canCoin &&
-              coinChosen &&
-              Number(coinCap) > 0 &&
-              coinAfterSwipe,
-            ...(caps.hinata_io && embedded ? { coinCap: Number(coinCap) > 0 ? Number(coinCap) : null } : {}),
+              : null,
             ttlockLockId: caps.door ? Number(lockId) : null,
           }),
         });
@@ -713,65 +718,6 @@ export function ResourceEditor({
                 </Field>
               </div>
             )}
-            <div className="grid gap-3 border-t border-ink/10 pt-4">
-              <div className="grid gap-3 sm:grid-cols-2">
-                {/* How a coin goes in. The cooldown, limit and coin events below hold whichever it is. */}
-                <Field label="投币方式">
-                  <select
-                    className={input}
-                    disabled={!canCoin}
-                    value={coinMethod}
-                    onChange={(e) => setCoinMethod(e.target.value as "key")}
-                  >
-                    <option value="key">{t("IO 模拟按键")}</option>
-                  </select>
-                </Field>
-                <Field label="投币按键">
-                  <select
-                    className={input}
-                    disabled={!canCoin}
-                    value={coinChosen ? coinKeyId! : ""}
-                    onChange={(e) => setCoinKeyId(e.target.value || null)}
-                  >
-                    <option value="">{t("不启用投币")}</option>
-                    {keys.filter((one) => one.name.trim()).map((one) => (
-                      <option key={one.id} value={one.id}>{one.name}</option>
-                    ))}
-                  </select>
-                </Field>
-                {embedded && (
-                  <label className="flex items-end gap-2 pb-3 text-sm">
-                    <input
-                      type="checkbox"
-                      disabled={!canCoin || !coinChosen || !(Number(coinCap) > 0)}
-                      checked={coinAfterSwipe}
-                      onChange={(e) => setCoinAfterSwipe(e.target.checked)}
-                    />
-                    {t("自动投币")}
-                  </label>
-                )}
-              </div>
-              {embedded && (
-                <Field label="机台投币上限">
-                  <input
-                    className={input}
-                    type="number"
-                    min="1"
-                    max="99"
-                    placeholder={t("不限制")}
-                    disabled={!canCoin || !coinChosen}
-                    value={coinCap}
-                    onChange={(e) => setCoinCap(e.target.value)}
-                  />
-                </Field>
-              )}
-              {embedded && (
-                <Hint>{t("机台内的币达到上限后，平台不再投币。需要 IO 1.2.4 及以上；读不到币数时按投币冷却处理，自动投币不生效。")}</Hint>
-              )}
-              {!canCoin && (
-                <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>
-              )}
-            </div>
             {/* Named keys: buttons in this cabinet's admin, never on a player's page. */}
             <div className="grid gap-2 border-t border-ink/10 pt-4">
               <div className="flex items-baseline justify-between gap-2">
@@ -800,7 +746,7 @@ export function ResourceEditor({
                             value={one.name}
                             onChange={(e) => set({ name: e.target.value })}
                           />
-                          {one.id === coinKeyId && <span className="text-xs text-ink/50">{t("用作投币按键")}</span>}
+                          {caps.coin && one.id === coinKeyId && <span className="text-xs text-ink/50">{t("用作投币按键")}</span>}
                         </div>
                         <div className="grid gap-1">
                           <input
@@ -844,6 +790,73 @@ export function ResourceEditor({
               )}
               <Hint>
                 {t("按键显示在后台这台资源的操作面板里，玩家页面不显示。键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码。")}
+              </Hint>
+            </div>
+          </div>
+        </CapabilityPane>
+      )}
+      {pane === "coin" && caps.coin && (
+        <CapabilityPane title="投币" problem={incomplete("coin")} remove={() => remove("coin")}>
+          {/* How a coin goes in, and what holds every coin whichever way: the cooldown, the limit, coin events and billing. */}
+          <div className="grid gap-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label="投币方式">
+                <select
+                  className={input}
+                  value={coinMethod}
+                  onChange={(e) => setCoinMethod(e.target.value as "key")}
+                >
+                  <option value="key">{t("HINATA IO 按键")}</option>
+                </select>
+              </Field>
+              <Field label="投币按键">
+                <select
+                  className={input}
+                  disabled={!caps.hinata_io}
+                  value={coinChosen ? coinKeyId! : ""}
+                  onChange={(e) => setCoinKeyId(e.target.value || null)}
+                >
+                  <option value="">{t("请选择")}</option>
+                  {keys.filter((one) => one.name.trim()).map((one) => (
+                    <option key={one.id} value={one.id}>{`${one.name} · ${one.key || "?"}`}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            {caps.hinata_io ? (
+              <Hint>{t("投币时由 HINATA IO 按下这个键。按键在「刷卡 · HINATA IO」里添加和修改。")}</Hint>
+            ) : (
+              <Hint>{t("用按键投币需要先添加「刷卡 · HINATA IO」。")}</Hint>
+            )}
+            {!canCoin && caps.hinata_io && (
+              <Hint>{t("外部中继要先填连接密码，才能投币。")}</Hint>
+            )}
+            <div className="grid gap-3 border-t border-ink/10 pt-4">
+              <Field label="机台投币上限">
+                <input
+                  className={input}
+                  type="number"
+                  min="1"
+                  max="99"
+                  placeholder={t("不限制")}
+                  disabled={!embedded}
+                  value={embedded ? coinCap : ""}
+                  onChange={(e) => setCoinCap(e.target.value)}
+                />
+              </Field>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  disabled={!embedded || !(Number(coinCap) > 0)}
+                  checked={embedded && Number(coinCap) > 0 && coinAfterSwipe}
+                  onChange={(e) => setCoinAfterSwipe(e.target.checked)}
+                />
+                {t("自动投币：游戏取走玩家的卡后自动投一枚币")}
+              </label>
+              <Hint>
+                {embedded
+                  ? t("机台内的币达到上限后，平台不再投币，自动投币也停在上限。需要直连的 HINATA IO 1.2.4 及以上；读不到币数时按投币冷却处理，自动投币不生效。")
+                  : t("投币上限和自动投币要读机台的账本和刷卡回报，只有直连的 HINATA IO 能用。")}
               </Hint>
             </div>
           </div>
@@ -1058,13 +1071,14 @@ const defaultBotSettings: BotSettings = {
   idleReminderMinutes: 5,
 };
 
-const capabilityList = ["power", "climate", "hinata_io", "door", "mahjong", "bot"] as const satisfies readonly CapabilityId[];
+const capabilityList = ["power", "climate", "hinata_io", "coin", "door", "mahjong", "bot"] as const satisfies readonly CapabilityId[];
 
 /** `seats`: the capability holds its occupants itself, so the occupancy time does not apply. */
 const capabilityMeta: Record<CapabilityId, { icon: LucideIcon; label: string; description: string; seats?: true }> = {
   power: { icon: Power, label: "电源控制", description: "通过 Home Assistant 读取并开关电源。" },
   climate: { icon: AirVent, label: "空调", description: "通过 Home Assistant 控制空调。" },
-  hinata_io: { icon: CreditCard, label: "刷卡 · HINATA IO", description: "刷卡、投币，记录谁在玩。" },
+  hinata_io: { icon: CreditCard, label: "刷卡 · HINATA IO", description: "刷卡、按键，记录谁在玩。" },
+  coin: { icon: Coins, label: "投币", description: "怎么投币，投币上限和自动投币。" },
   door: { icon: DoorOpen, label: "开门密码", description: "通过 TTLock 生成一次性开门密码。" },
   mahjong: { icon: Ungroup, label: "麻将桌", description: "按座位开桌计费。", seats: true },
   bot: { icon: Bot, label: "店铺 Bot", description: "Koishi 等聊天机器人。" },

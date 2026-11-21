@@ -47,8 +47,14 @@ function device(bound: Partial<Record<CapabilityId, Partial<BoundCapability>>>, 
   return { id: "m1", shopId: "shop", publicId: "pub", name: "Cabinet", aliases: [], enabled, kind: "machine", capacity: 1, occupancyMinutes: 15, capabilities };
 }
 
-const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) =>
-  device({ hinata_io: { config: { transport: "external", coinKey: 32, coinAfterSwipe: false, ...config }, secretNames: new Set(secrets) } });
+/** A cabinet with a HINATA IO whose key 投币 its coin presses; `coinKey: 0` leaves the coin out. */
+const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) => {
+  const { coinKey, coinKeyId: _chosen, ...io } = config;
+  return device({
+    hinata_io: { config: { transport: "external", keys: [{ id: "coin", name: "投币", key: 32 }], ...io }, secretNames: new Set(secrets) },
+    ...(coinKey === 0 ? {} : { coin: { config: { method: "key", keyId: "coin", cap: null, afterSwipe: false } } }),
+  });
+};
 const powerDevice = () => device({ power: { secretNames: new Set(["binding"]) } });
 
 function busWith(input: {
@@ -204,7 +210,7 @@ describe("device bus: perform", () => {
     const service = { id: "service", name: "服务", key: 112 };
     const noCoin = ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0, keys: [service], coinKeyId: null }, []);
     // Without a named key there is nothing to press.
-    await expect(bus.perform({ device: ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0 }, []), action: "key.press", actor: player }))
+    await expect(bus.perform({ device: ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0, keys: [] }, []), action: "key.press", actor: player }))
       .rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
     await expect(bus.perform({ device: noCoin, action: "coin", actor: player })).rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
     const staff = { type: "staff" as const, staffId: "user:s1" };
@@ -216,7 +222,7 @@ describe("device bus: perform", () => {
 
   it("refuses a disabled device", async () => {
     const { bus } = busWith({ runners: { coin: async () => ({ outcome: "ok" }) } });
-    const disabled = device({ hinata_io: { config: { transport: "external", coinKey: 32 }, secretNames: new Set(["url", "password"]) } }, false);
+    const disabled = { ...ioDevice(), enabled: false };
     await expect(bus.perform({ device: disabled, action: "coin", actor: player }))
       .rejects.toMatchObject({ code: "DEVICE_DISABLED" });
   });

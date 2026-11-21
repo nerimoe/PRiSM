@@ -238,7 +238,7 @@ describe("reading and acting on the page", () => {
     const tried = sqlite.query(
       "SELECT kind, capability, origin, via, player_id IS NOT NULL AS by_player, json_extract(payload_json,'$.code') AS code FROM device_events WHERE name='coin.refused'",
     ).all();
-    expect(tried).toEqual([{ kind: "signal", capability: "hinata_io", origin: "platform", via: "page", by_player: 1, code: "COIN_CABINET_FULL" }]);
+    expect(tried).toEqual([{ kind: "signal", capability: "coin", origin: "platform", via: "page", by_player: 1, code: "COIN_CABINET_FULL" }]);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM device_operations WHERE action='coin'").get()).toEqual({ n: 0 });
     sqlite.close();
   });

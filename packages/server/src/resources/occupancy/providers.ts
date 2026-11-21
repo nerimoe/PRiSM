@@ -10,7 +10,7 @@
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { ActionName, CapabilityId } from "../capabilities/catalog.js";
-import { hinataOccupancy } from "../capabilities/hinata-io-occupancy.js";
+import { coinOccupancy, hinataOccupancy } from "../capabilities/hinata-io-occupancy.js";
 import { mahjongOccupancy } from "../capabilities/mahjong-occupancy.js";
 import type { OccupancyObservation } from "./rules.js";
 
@@ -37,7 +37,7 @@ export type OccupancyProvider = {
   held?(db: D1DatabaseLike, shopId: string): Promise<HeldOccupant[]>;
 };
 
-const providers: readonly OccupancyProvider[] = [hinataOccupancy, mahjongOccupancy];
+const providers: readonly OccupancyProvider[] = [hinataOccupancy, coinOccupancy, mahjongOccupancy];
 
 /** The provider that decides who occupies a resource with these capabilities, or null. */
 export function occupancyProviderFor(capabilities: Iterable<CapabilityId>): OccupancyProvider | null {

@@ -4,7 +4,7 @@
  * passed the catalog's schema.
  */
 import type { D1BoundStatementLike, D1DatabaseLike } from "@prism/adapter-d1";
-import { capabilitySpec, type CapabilityId } from "./catalog.js";
+import { capabilitySpec, legacyCoin, type CapabilityId } from "./catalog.js";
 
 /** A capability exactly as stored: secrets are still encrypted. */
 export type StoredCapability = {
@@ -48,6 +48,13 @@ export async function storedCapabilities(
       ),
     );
     stored.set(spec.id, { config: parseObject(row.config_json), secrets, credentialHash: row.credential_hash });
+  }
+  // An IO stored with its coin in it is edited as the IO and a coin of its own.
+  const io = stored.get("hinata_io");
+  const moved = io ? legacyCoin(io.config) : null;
+  if (io && moved) {
+    stored.set("hinata_io", { ...io, config: moved.io });
+    if (moved.coin && !stored.has("coin")) stored.set("coin", { config: moved.coin, secrets: {}, credentialHash: null });
   }
   return stored;
 }

@@ -24,7 +24,7 @@ export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRef
   }
 });
 
-export type CapabilityId = "power" | "climate" | "hinata_io" | "door" | "mahjong" | "bot";
+export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "mahjong" | "bot";
 
 /** What a player or staff member asks a device to do. Names are the public action names. */
 export type ActionName =
@@ -68,6 +68,9 @@ export type SignalSpec = {
 
 export type StateSpec = { authority: "owned" | "external" };
 
+/** Another capability bound to the same resource, as `available` sees it. */
+export type BoundView = { config: unknown; secretNames: ReadonlySet<string> };
+
 export type CapabilitySpec<Config> = {
   id: CapabilityId;
   /** Value of `executorKind` in compatibility views and Bot responses. */
@@ -80,8 +83,12 @@ export type CapabilitySpec<Config> = {
   actions: Partial<Record<ActionName, ActionSpec>>;
   signals: Record<string, SignalSpec>;
   state: Record<string, StateSpec>;
-  /** Whether an action is usable with this configuration (e.g. coin needs a key). */
-  available(action: ActionName, config: Config, secrets: ReadonlySet<string>): boolean;
+  /**
+   * Whether an action is usable with this configuration (e.g. coin needs a key).
+   * `others` are the resource's other bound capabilities, for one that works
+   * through another (a coin pressed by the HINATA IO).
+   */
+  available(action: ActionName, config: Config, secrets: ReadonlySet<string>, others: ReadonlyMap<CapabilityId, BoundView>): boolean;
 };
 
 /**
@@ -111,31 +118,35 @@ export type CabinetKey = z.infer<typeof cabinetKey>;
 
 const hinataConfig = z.object({
   transport: z.enum(["external", "embedded"]).default("external"),
-  /**
-   * How a coin goes into the cabinet. `key`: the IO presses `coinKey` as the
-   * cabinet's coin button. Other ways (a Home Assistant relay pulsing the coin
-   * line) are further values here; whichever it is, a coin keeps its cooldown,
-   * limit, events and billing (`coinRunner`).
-   */
-  coinMethod: z.enum(["key"]).default("key"),
-  /** The shop's named keys, shown as buttons in the admin. */
+  /** The shop's named keys, shown as buttons in the admin; the coin may press one of them. */
   keys: z.array(cabinetKey).max(16).default([]),
-  /** Which of `keys` is the coin button; `coinKey` is its code, kept with it when saved. */
-  coinKeyId: z.string().nullable().default(null),
-  /** The coin button's key code; 0 when there is none. Written from `coinKeyId` when saved. */
-  coinKey: z.number().int().min(0).max(65535).default(32),
-  coinAfterSwipe: z.boolean().default(false),
-  /**
-   * The most credits a coin through the platform may leave on the cabinet;
-   * null for no limit. Read from the cabinet's own books, so it only applies
-   * to an IO that reports them (`cabinetMonitor=1`); without them the coin
-   * cooldown applies as before.
-   */
-  coinCap: z.number().int().min(1).max(99).nullable().default(null),
   /** Durable Object name for the embedded relay. Stable across token rotation. */
   channel: z.string().min(1).optional(),
 });
 export type HinataConfig = z.infer<typeof hinataConfig>;
+
+/**
+ * How a resource takes a coin, and what holds every coin whichever way it goes
+ * in: the cooldown, the limit, the coin events and billing all belong here.
+ */
+const coinConfig = z.object({
+  /**
+   * How a coin goes in. `key`: the resource's HINATA IO presses one of its
+   * named keys (`keyId`). Other ways (a Home Assistant relay pulsing the coin
+   * line) are further values here.
+   */
+  method: z.enum(["key"]).default("key"),
+  keyId: z.string().nullable().default(null),
+  /**
+   * The most credits a coin through the platform may leave on the cabinet;
+   * null for no limit. Read from the books a directly connected HINATA IO
+   * reports (`cabinetMonitor=1`); without them the coin cooldown applies.
+   */
+  cap: z.number().int().min(1).max(99).nullable().default(null),
+  /** A coin for the player whose card the game just took (direct IO with a limit only). */
+  afterSwipe: z.boolean().default(false),
+});
+export type CoinConfig = z.infer<typeof coinConfig>;
 
 const doorConfig = z.object({ lockId: z.number().int().positive() });
 export type DoorConfig = z.infer<typeof doorConfig>;
@@ -193,18 +204,31 @@ export const climate: CapabilitySpec<HaEntityConfig> = {
 };
 
 /**
- * The keys a cabinet's admin shows. A configuration saved before keys could be
- * named has only its coin key, which reads as one key called 投币.
+ * A HINATA IO stored before coin was a capability of its own (it has
+ * `coinKey`: migration 0056 moves it, but a backup or an older row may still
+ * hold one): the IO as it now reads, and the coin it had, if any. Null for an
+ * IO stored as it is now.
  */
-export function cabinetKeys(config: Pick<HinataConfig, "coinKey"> & Partial<Pick<HinataConfig, "keys">>): CabinetKey[] {
-  if (config.keys?.length) return config.keys;
-  return config.coinKey > 0 ? [{ id: "coin", name: "投币", key: config.coinKey }] : [];
+export function legacyCoin(ioConfig: Record<string, unknown>): { io: Record<string, unknown>; coin: CoinConfig | null } | null {
+  if (!("coinKey" in ioConfig)) return null;
+  const { coinKey, coinKeyId, coinMethod: _method, coinCap, coinAfterSwipe, ...io } = ioConfig;
+  const code = typeof coinKey === "number" ? coinKey : 0;
+  const named = Array.isArray(io.keys) ? (io.keys as CabinetKey[]) : [];
+  const keys = named.length || code <= 0 ? named : [{ id: "coin", name: "投币", key: code }];
+  if (code <= 0) return { io: { ...io, keys }, coin: null };
+  const keyId = typeof coinKeyId === "string" ? coinKeyId : keys.find((key) => key.key === code)?.id ?? null;
+  return {
+    io: { ...io, keys },
+    coin: { method: "key", keyId, cap: typeof coinCap === "number" ? coinCap : null, afterSwipe: coinAfterSwipe === true },
+  };
 }
 
-/** Which named key is the coin button, by the same reading. */
-export function coinKeyIdOf(config: Pick<HinataConfig, "coinKey"> & Partial<Pick<HinataConfig, "keys" | "coinKeyId">>): string | null {
-  if (config.keys?.length) return config.coinKeyId ?? null;
-  return config.coinKey > 0 ? "coin" : null;
+/** Whether a HINATA IO can be told to press a key: connected, and an external relay holding its password. */
+function ioCanPress(config: HinataConfig, secrets: ReadonlySet<string>): boolean {
+  const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
+  // An external relay rejects a plaintext key press; the embedded relay
+  // authenticates the connection instead and needs no password.
+  return connected && (config.transport === "embedded" || secrets.has("password"));
 }
 
 export const hinataIo: CapabilitySpec<HinataConfig> = {
@@ -217,7 +241,6 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     // A game waiting for a card polls its reader continuously, so a card not
     // taken within this means it is busy elsewhere; the IO drops it after 3 s.
     "aime.scan": { countsAsPlay: true, requiresBilling: true, awaits: { signal: "card.consumed", timeoutMs: 4500 } },
-    coin: { countsAsPlay: true, requiresBilling: true },
     // Staff pressing any key on the cabinet, for service menus and tests: not a
     // coin, so no cooldown or limit, no coin event and no play.
     "key.press": { countsAsPlay: false, staffOnly: true },
@@ -243,14 +266,31 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
   available(action, config, secrets) {
     const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
     if (!connected) return false;
-    // An external relay rejects a plaintext key press; the embedded relay
-    // authenticates the connection instead and needs no password.
-    const canPress = config.transport === "embedded" || secrets.has("password");
-    if (action === "key.press") return canPress && cabinetKeys(config).length > 0;
-    if (action !== "coin") return true;
-    // A configuration saved before there was a choice coins by key.
-    switch (config.coinMethod ?? "key") {
-      case "key": return config.coinKey > 0 && canPress;
+    if (action === "key.press") return ioCanPress(config, secrets) && config.keys.length > 0;
+    return true;
+  },
+};
+
+export const coin: CapabilitySpec<CoinConfig> = {
+  id: "coin",
+  legacyExecutor: "hinata_io",
+  legacyTargetKind: "game_machine",
+  config: coinConfig,
+  secrets: [],
+  actions: {
+    coin: { countsAsPlay: true, requiresBilling: true },
+  },
+  signals: {},
+  state: {},
+  available(action, config, _secrets, others) {
+    if (action !== "coin") return false;
+    switch (config.method) {
+      case "key": {
+        const io = others.get("hinata_io");
+        if (!io || !config.keyId) return false;
+        const ioConfig = io.config as HinataConfig;
+        return ioCanPress(ioConfig, io.secretNames) && ioConfig.keys.some((key) => key.id === config.keyId);
+      }
     }
   },
 };
@@ -361,7 +401,7 @@ export const bot: CapabilitySpec<BotConfig> = {
   available: () => false,
 };
 
-export const capabilities = { power, climate, hinata_io: hinataIo, door, mahjong, bot } as const;
+export const capabilities = { power, climate, hinata_io: hinataIo, coin, door, mahjong, bot } as const;
 
 export function capabilitySpec(id: string): CapabilitySpec<unknown> | null {
   return (capabilities as Record<string, CapabilitySpec<unknown>>)[id] ?? null;

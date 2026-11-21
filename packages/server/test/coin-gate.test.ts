@@ -10,11 +10,10 @@ function cabinet(coinCap: number | null): Resource {
   return {
     id: "m1", shopId: SHOP, publicId: "pub", name: "舞萌", aliases: [], enabled: true, kind: "machine",
     capacity: 1, occupancyMinutes: 15,
-    capabilities: new Map([["hinata_io", {
-      capability: "hinata_io",
-      config: { transport: "embedded", channel: "m_test", coinKey: 32, coinAfterSwipe: false, coinCap },
-      secretNames: new Set<string>(),
-    } as any]]),
+    capabilities: new Map([
+      ["hinata_io", { capability: "hinata_io", config: { transport: "embedded", channel: "m_test", keys: [{ id: "coin", name: "投币", key: 32 }] }, secretNames: new Set<string>() } as any],
+      ["coin", { capability: "coin", config: { method: "key", keyId: "coin", cap: coinCap, afterSwipe: false }, secretNames: new Set<string>() } as any],
+    ]),
   };
 }
 

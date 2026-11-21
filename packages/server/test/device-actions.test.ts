@@ -10,6 +10,10 @@ import { createDeviceActionService } from "../src/resources/capabilities/actions
 import { listDeviceStates } from "../src/resources/capabilities/legacy-views.js";
 import { createD1DatabaseFromSqlite, platformSchema } from "../src/local-server.js";
 
+/** A cabinet's IO key 投币, and the coin that presses it. */
+const COIN_KEYS = [{ id: "coin", name: "投币", key: 32 }];
+const COIN = { method: "key", keyId: "coin", cap: null, afterSwipe: false };
+
 const KEY = "unit-test-encryption-key";
 const SHOP = "shop-1";
 const NOW = new Date("2026-10-17T10:00:00.000Z");
@@ -83,7 +87,7 @@ async function fixture(options: { activeSession?: boolean; identities?: PlayerId
 describe("device action service", () => {
   it("refuses a player action that needs an entry when the player has none", async () => {
     const { service, machine } = await fixture();
-    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
+    await machine("m1", "舞萌", { hinata_io: { config: { keys: COIN_KEYS }, secrets: { url: "https://io.test/m1", password: "pw" } }, coin: { config: COIN, secrets: {} } });
     await expect(service.requestDeviceAction({
       actor: { type: "player", playerId: "p1" },
       target: { kind: "game_machine", ref: "舞萌" },
@@ -93,14 +97,14 @@ describe("device action service", () => {
 
   it("records a request that was turned away as an event of the device, and of none when it named none", async () => {
     const { service, machine, sqlite, operations } = await fixture();
-    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
+    await machine("m1", "舞萌", { hinata_io: { config: { keys: COIN_KEYS }, secrets: { url: "https://io.test/m1", password: "pw" } }, coin: { config: COIN, secrets: {} } });
     const coin = { actor: { type: "player" as const, playerId: "p1" }, type: "coin" as const, via: { channel: "bot" as const, resourceId: "bot-1" } };
     await expect(service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "舞萌" } })).rejects.toThrow();
     await expect(service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "没有这台" } })).rejects.toThrow();
     expect(sqlite.query("SELECT device_id, capability, kind, name, origin, player_id, via, via_resource_id, payload_json FROM device_events ORDER BY rowid").all()).toEqual([
-      { device_id: "m1", capability: "hinata_io", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
+      { device_id: "m1", capability: "coin", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
         payload_json: JSON.stringify({ code: "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION" }) },
-      { device_id: null, capability: "hinata_io", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
+      { device_id: null, capability: "coin", kind: "signal", name: "coin.refused", origin: "platform", player_id: "p1", via: "bot", via_resource_id: "bot-1",
         payload_json: JSON.stringify({ code: "DEVICE_NOT_FOUND" }) },
     ]);
     // Nothing was asked of the hardware.
@@ -109,8 +113,8 @@ describe("device action service", () => {
 
   it("records which bot a request came through, on the request and its result, and nothing in the payload", async () => {
     const { service, machine, sqlite } = await fixture({ activeSession: true });
-    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
-    await machine("m2", "中二", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m2", password: "pw" } } });
+    await machine("m1", "舞萌", { hinata_io: { config: { keys: COIN_KEYS }, secrets: { url: "https://io.test/m1", password: "pw" } }, coin: { config: COIN, secrets: {} } });
+    await machine("m2", "中二", { hinata_io: { config: { keys: COIN_KEYS }, secrets: { url: "https://io.test/m2", password: "pw" } }, coin: { config: COIN, secrets: {} } });
     const coin = { actor: { type: "staff" as const, staffId: "s1" }, type: "coin" as const };
     await service.requestDeviceAction({ ...coin, target: { kind: "game_machine", ref: "舞萌" }, via: { channel: "bot", resourceId: "bot-1" } });
     // A caller that does not say came through the API.
@@ -125,7 +129,7 @@ describe("device action service", () => {
 
   it("applies the coin cooldown to a player's earlier coin", async () => {
     const { service, machine, io } = await fixture({ activeSession: true });
-    await machine("m1", "舞萌", { hinata_io: { config: { coinKey: 32 }, secrets: { url: "https://io.test/m1", password: "pw" } } });
+    await machine("m1", "舞萌", { hinata_io: { config: { keys: COIN_KEYS }, secrets: { url: "https://io.test/m1", password: "pw" } }, coin: { config: COIN, secrets: {} } });
     const request = { actor: { type: "player" as const, playerId: "p1" }, target: { kind: "game_machine" as const, ref: "舞萌" }, type: "coin" as const };
     const first = await service.requestDeviceAction(request);
     expect(first).toMatchObject({ type: "coin", status: "acked", executorKind: "hinata_io", targetKind: "game_machine" });
@@ -210,6 +214,7 @@ describe("legacy device registries", () => {
     expect(await loadResources(db, SHOP, undefined)).toEqual([]);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM app_settings").get()).toEqual({ n: 1 });
     const adopted = await loadResources(db, SHOP, KEY);
-    expect(adopted.map((device) => [device.name, [...device.capabilities.keys()]])).toEqual([["IO", ["hinata_io"]]]);
+    // Its coin key becomes the IO's key 投币, which a coin of its own presses.
+    expect(adopted.map((device) => [device.name, [...device.capabilities.keys()]])).toEqual([["IO", ["coin", "hinata_io"]]]);
   });
 });

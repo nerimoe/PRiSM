@@ -10,8 +10,12 @@ import { adoptLegacyRegistries } from "./capabilities/legacy-registries.js";
 import {
   capabilities,
   capabilitySpec,
+  legacyCoin,
   type ActionName,
+  type BoundView,
+  type CabinetKey,
   type CapabilityId,
+  type CoinConfig,
   type DoorConfig,
   type HinataConfig,
   type MahjongConfig,
@@ -112,8 +116,21 @@ async function assemble(db: D1DatabaseLike, shopId: string, rows: ResourceRow[])
       .bind(shopId, JSON.stringify(rows.map((row) => row.id)))
       .all<CapabilityRow>()
   ).results;
+  // An IO stored with its coin in it reads as the IO and a coin of its own (before the schema drops the coin's fields).
+  const rowsRead = capabilityRows.flatMap((row) => {
+    if (row.capability !== "hinata_io") return [row];
+    let raw: unknown;
+    try { raw = JSON.parse(row.config_json); } catch { return [row]; }
+    const moved = raw && typeof raw === "object" ? legacyCoin(raw as Record<string, unknown>) : null;
+    if (!moved) return [row];
+    const io = { ...row, config_json: JSON.stringify(moved.io) };
+    const hasCoin = capabilityRows.some((other) => other.device_id === row.device_id && other.capability === "coin");
+    return moved.coin && !hasCoin
+      ? [io, { ...row, capability: "coin", config_json: JSON.stringify(moved.coin), secret_json: "{}", credential_hash: null }]
+      : [io];
+  });
   const byDevice = new Map<string, Map<CapabilityId, BoundCapability>>();
-  for (const row of capabilityRows) {
+  for (const row of rowsRead) {
     const bound = bind(row);
     if (!bound) continue;
     const map = byDevice.get(row.device_id) ?? new Map<CapabilityId, BoundCapability>();
@@ -186,10 +203,11 @@ export function can(device: Resource, action: ActionName): boolean {
   for (const [id, bound] of device.capabilities) {
     const spec = capabilities[id];
     if (!(action in spec.actions)) continue;
-    return (spec.available as (a: ActionName, c: unknown, s: ReadonlySet<string>) => boolean)(
+    return (spec.available as (a: ActionName, c: unknown, s: ReadonlySet<string>, o: ReadonlyMap<CapabilityId, BoundView>) => boolean)(
       action,
       bound.config,
       bound.secretNames,
+      device.capabilities,
     );
   }
   return false;
@@ -197,6 +215,17 @@ export function can(device: Resource, action: ActionName): boolean {
 
 export function hinataConfigOf(device: Resource): HinataConfig | null {
   return (device.capabilities.get("hinata_io")?.config as HinataConfig | undefined) ?? null;
+}
+
+export function coinConfigOf(device: Resource): CoinConfig | null {
+  return (device.capabilities.get("coin")?.config as CoinConfig | undefined) ?? null;
+}
+
+/** The key a coin presses on this resource's HINATA IO, when it coins by key. */
+export function coinKeyOf(device: Resource): CabinetKey | null {
+  const coin = coinConfigOf(device);
+  if (coin?.method !== "key" || !coin.keyId) return null;
+  return hinataConfigOf(device)?.keys.find((key) => key.id === coin.keyId) ?? null;
 }
 
 export function doorConfigOf(device: Resource): DoorConfig | null {
