@@ -66,7 +66,6 @@ export type TenantShop = {
 
 export type PrismAppDependencies = {
   authenticatedPrincipal?: StaffPrincipal | { role: "user"; userId: string };
-  versionInfo?: { version: string; revision?: string };
   repositories: SqlRepositories;
   playerQueries: PlayerQueries;
   staffQueries: StaffQueries;
@@ -134,6 +133,7 @@ export type Env = {
   PRISM_DEPLOY_PHASE?: "maintenance" | "verify" | "live";
   PRISM_DEPLOY_TOKEN_HASH?: string;
   PRISM_DEPLOY_REVISION?: string;
+  PRISM_WORKER_NAME?: string;
   ASSETS?: Fetcher;
   PRISM_SQLITE_PATH?: string;
 };
@@ -143,6 +143,8 @@ export type Variables = {
   sessionId: string | null;
   shop?: TenantShop;
   deps?: PrismAppDependencies;
+  /** Where this request stands for the facts its services publish, and whom they told. */
+  factOrigin?: import("./events/shop-facts.js").FactOrigin;
   responseTimeZone?: string;
 };
 

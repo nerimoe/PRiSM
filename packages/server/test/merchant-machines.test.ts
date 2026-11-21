@@ -53,6 +53,7 @@ function fixture() {
     CREATE TABLE machine_login_events(id TEXT,machine_id TEXT);
     CREATE TABLE player_operations(id TEXT,device_id TEXT);
     CREATE TABLE machine_tickets(machine_id TEXT,token_hash TEXT);
+    CREATE TABLE mahjong_seats(shop_id TEXT,machine_id TEXT,player_id TEXT);
   `);
   sqlite.run("CREATE TABLE players(shop_id TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(shop_id,id))");
   for(const statement of deviceEventSchema)sqlite.run(statement);
@@ -69,6 +70,66 @@ function fixture() {
 }
 
 describe("pre-fork merchant machine lifecycle",()=>{
+  it("returns a cursor and coin details so all stored history can be read across pages", async () => {
+    const { app, env, sqlite } = fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet')");
+    const payload = { coins: 2, previousCredit: 4, credit: 6 };
+    for (const id of ["a", "b", "c"]) {
+      sqlite.run(`INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,payload_json,occurred_at)
+        VALUES ('shop-1',?,'cab','hinata_io','signal','cabinet.coin','device',?,'2026-10-29T16:08:00.000Z')`, [id, JSON.stringify(payload)]);
+    }
+    const get = async (query: string) => (await (await app.fetch(new Request(
+      `https://prism.test/api/v1/merchant/machines/cab/events?limit=2${query}`,
+    ), env)).json()) as { events: { id: string; payload: unknown }[]; nextCursor: string | null };
+    const first = await get("");
+    expect(first.events.map((e) => e.id)).toEqual(["c", "b"]);
+    expect(first.events[0]!.payload).toEqual(payload);
+    expect(first.nextCursor).toBe("b");
+    const last = await get(`&before=${first.nextCursor}`);
+    expect(last.events.map((e) => e.id)).toEqual(["a"]);
+    expect(last.nextCursor).toBeNull();
+    sqlite.close();
+  });
+
+  it("lists a resource's history as what happened to it and what came through it, naming the other resource", async () => {
+    const { app, env, sqlite } = fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name) VALUES ('shop-1','cab','cab','Cabinet'),('shop-1','bot','bot','前台 Bot')");
+    const insert = (id: string, device: string, kind: string, name: string, via: string | null, viaResource: string | null, at: string) =>
+      sqlite.run(
+        `INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,payload_json,occurred_at,via,via_resource_id)
+         VALUES ('shop-1',?,?,'hinata_io',?,?,?,'platform','{}',?,?,?)`,
+        [id, device, kind, name, kind === "signal" ? null : "op-1", at, via, viaResource],
+      );
+    insert("said", "bot", "signal", "bot.command", "bot", "bot", "2026-10-29T16:00:01.000Z");
+    insert("asked", "cab", "request", "coin", "bot", "bot", "2026-10-29T16:00:02.000Z");
+    insert("page", "cab", "request", "coin", "page", null, "2026-10-29T16:00:03.000Z");
+    insert("old", "cab", "request", "coin", null, null, "2026-10-29T16:00:04.000Z");
+    type Listed = { id: string; device: { id: string; name: string } | null; via: { channel: string; resource: { id: string; name: string } | null } | null };
+    const events = async (id: string, query = "") => ((await (await app.fetch(new Request(
+      `https://prism.test/api/v1/merchant/machines/${id}/events${query}`,
+    ), env)).json()) as { events: Listed[]; nextCursor: string | null });
+
+    // The bot: the command said to it once, and the coin it asked another resource for.
+    const bot = await events("bot");
+    expect(bot.events.map((e) => [e.id, e.device, e.via])).toEqual([
+      ["asked", { id: "cab", name: "Cabinet" }, { channel: "bot", resource: null }],
+      ["said", null, { channel: "bot", resource: null }],
+    ]);
+    // The cabinet: everything that happened to it, saying which came through the bot.
+    const cab = await events("cab");
+    expect(cab.events.map((e) => [e.id, e.device, e.via])).toEqual([
+      ["old", null, null],
+      ["page", null, { channel: "page", resource: null }],
+      ["asked", null, { channel: "bot", resource: { id: "bot", name: "前台 Bot" } }],
+    ]);
+    // Paging runs across both halves.
+    const first = await events("bot", "?limit=1");
+    expect([first.events.map((e) => e.id), first.nextCursor]).toEqual([["asked"], "asked"]);
+    const rest = await events("bot", `?limit=1&before=${first.nextCursor}`);
+    expect([rest.events.map((e) => e.id), rest.nextCursor]).toEqual([["said"], null]);
+    sqlite.close();
+  });
+
   it("returns operation history in the resource's shop zone, including midnight and daylight saving", async () => {
     const { app, env, sqlite } = fixture();
     const api = new Hono<AppBindings>();
@@ -131,11 +192,12 @@ describe("pre-fork merchant machine lifecycle",()=>{
     expect(created.status).toBe(201);
     const {machine}=await created.json() as {machine:Record<string,unknown>&{id:string}};
     expect(machine).toMatchObject({
-      hasHinata:true,hinataUrl:"https://relay.example/io",hasPassword:true,coinKey:40,coinAfterSwipe:true,
+      // An external relay never reports a card being taken, so no coin follows one.
+      hasHinata:true,hinataUrl:"https://relay.example/io",hasPassword:true,coinKey:40,coinAfterSwipe:false,
       homeAssistant:{url:"https://ha.example",entityId:"switch.cabinet"},ttlockLockId:77,relayConnection:"external",
     });
     const rows=()=>sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];
-    expect(rows().map(r=>r.capability)).toEqual(["door","hinata_io","power"]);
+    expect(rows().map(r=>r.capability)).toEqual(["coin","door","hinata_io","power"]);
     // Secrets are stored encrypted, never in the clear.
     expect(JSON.stringify(rows())).not.toContain("secret-pass");
     expect(JSON.stringify(rows())).not.toContain("ha-token");
@@ -154,6 +216,32 @@ describe("pre-fork merchant machine lifecycle",()=>{
     expect(unbound.status).toBe(200);
     expect(rows()).toEqual([]);
   });
+  it("keeps a cabinet's named keys, reads an older coin key as one called 投币, and takes the coin key from the one chosen",async()=>{
+    const {app,env}=fixture();
+    const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{
+      method,headers:{"content-type":"application/json"},body:JSON.stringify(body),
+    }),env);
+    const created=await send("POST","/machines",{shopId:"shop-1",name:"Cabinet",coinKey:40,hinataUrl:"https://relay.example/io",hinataPassword:"secret-pass"});
+    const {machine}=await created.json() as {machine:Record<string,unknown>&{id:string}};
+    expect(machine).toMatchObject({keys:[{id:"coin",name:"投币",key:40}],coinKeyId:"coin",coinKey:40});
+
+    const saved=await send("PATCH",`/machines/${machine.id}`,{
+      hinataUrl:"https://relay.example/io",keys:[{id:"coin",name:"投币",key:40},{name:"服务",key:"F1"},{name:"测试",key:"Enter"}],coinKeyId:"coin",
+    });
+    expect(saved.status).toBe(200);
+    const after=(await saved.json() as {machine:{keys:{id:string;name:string;key:number}[];coinKeyId:string|null;coinKey:number}}).machine;
+    expect(after.keys.map(k=>[k.name,k.key])).toEqual([["投币",40],["服务",112],["测试",13]]);
+    expect(after).toMatchObject({coinKeyId:"coin",coinKey:40});
+
+    // Dropping the coin key leaves the cabinet without a coin, its other keys kept.
+    const service=after.keys[1]!;
+    const noCoin=await send("PATCH",`/machines/${machine.id}`,{hinataUrl:"https://relay.example/io",keys:[service],coinKeyId:"coin"});
+    expect((await noCoin.json() as {machine:Record<string,unknown>}).machine).toMatchObject({keys:[service],coinKeyId:null,coinKey:0});
+
+    const unreadable=await send("PATCH",`/machines/${machine.id}`,{hinataUrl:"https://relay.example/io",keys:[{name:"坏",key:"!!"}]});
+    expect(unreadable.status).toBe(400);
+  });
+
   it("binds an air conditioner as its own capability and reuses the power token for the same Home Assistant",async()=>{
     const {app,env,sqlite}=fixture();
     const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{

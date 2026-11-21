@@ -64,9 +64,8 @@ const bot = (over: Partial<Resource> = {}) => machine({
   id: "bot", hasBotToken: true, botLastUsedAt: "2026-10-20T00:00:00Z",
   bot: {
     playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false,
-    doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false, announceChannelIds: [],
-    idleReminderMinutes: 5, announceIdle: false, announcePower: false, announceStarts: false,
-    announceCards: false, announceCoins: false,
+    doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false, announceGroups: [],
+    idleReminderMinutes: 5,
   },
   ...over,
 });

@@ -37,6 +37,7 @@ import {
   type StartPlayerSessionCommand,
 } from "@prism/application";
 import { createResourceBilling } from "../resources/activation.js";
+import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
 import { createRoster } from "../resources/roster.js";
 import { resourcePlanUsers } from "../resources/repository.js";
@@ -48,6 +49,7 @@ import {
 } from "@prism/core";
 import type { AppBindings, Env, PrismAppDependencies, TenantShop } from "../bindings.js";
 import { jsonError } from "../http.js";
+import { scopedReads } from "../read-scope.js";
 import { sha256Hex, toBase64Url } from "../crypto.js";
 import { createDeviceActionService, coinCooldownMs } from "../resources/capabilities/actions.js";
 import { listDeviceStates, listMachineConnections } from "../resources/capabilities/legacy-views.js";
@@ -661,7 +663,7 @@ export function getOrCreateShopDependencies(
   // `env` is stable per deployment, so it is not part of the cache key beyond
   // the encryption key that already distinguishes local from hosted runtimes.
   if (cached?.settings === settings && cached.encryptionKey === encryptionKey) return cached.deps;
-  const deps = createShopDependencies({ db, shop, encryptionKey, env });
+  const deps = createShopDependencies({ db: scopedReads(db), shop, encryptionKey, env });
   byShop.set(shop.id, { settings, encryptionKey, deps });
   return deps;
 }
@@ -693,20 +695,56 @@ export async function setTenantFromShop(
   c: Context<AppBindings>,
   shopRow: TenantShop,
 ): Promise<void> {
+  const shop = tenantShop(shopRow);
+  c.set("shop", shop);
+  c.set("responseTimeZone", shop.time_zone);
+  // The same services for every caller, each publishing what it did from where
+  // this request stands (`events/shop-facts.ts`).
+  const origin = requestOrigin(c, originChannel(c.req.path));
+  c.set("factOrigin", origin);
+  c.set("deps", shopServices(c, shop, origin));
+}
+
+/** Where a request stands for the facts its services publish: its door, its client, its `waitUntil`. */
+export function requestOrigin(c: Context<AppBindings>, channel: FactOrigin["via"]["channel"]): FactOrigin {
+  return {
+    via: { channel, resourceId: null },
+    defer: (work) => {
+      try { c.executionCtx.waitUntil(work); }
+      catch { void work; }
+    },
+    clientId: c.req.header("x-prism-client-id") ?? null,
+  };
+}
+
+/** The shop's services as a request standing at `origin` reaches them. */
+export function shopServices(c: Context<AppBindings>, shop: TenantShop, origin: FactOrigin): PrismAppDependencies {
+  return withOrigin(
+    getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env),
+    { db: c.env.DB, env: c.env, shopId: shop.id },
+    origin,
+  );
+}
+
+/**
+ * Which door a shop request came in by: the scanned page and the player's own
+ * pages, the merchant board and the cashier, or a token on the HTTP API.
+ */
+function originChannel(path: string): FactOrigin["via"]["channel"] {
+  const channel = path.match(/^\/api\/v1\/shops\/[^/]+\/([^/]+)/)?.[1];
+  if (channel === "player") return "page";
+  if (channel === "integration") return "api";
+  return "merchant";
+}
+
+/** A shop row as tenant requests see it: one location check switch for all three. */
+export function tenantShop(shopRow: TenantShop): TenantShop {
   const enabled = +(!!(
     shopRow.checkin_geo ||
     shopRow.checkout_geo ||
     shopRow.machine_geo
   ));
-  const shop: TenantShop = {
-    ...shopRow,
-    checkin_geo: enabled,
-    checkout_geo: enabled,
-    machine_geo: enabled,
-  };
-  c.set("shop", shop);
-  c.set("responseTimeZone", shop.time_zone);
-  c.set("deps", getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env));
+  return { ...shopRow, checkin_geo: enabled, checkout_geo: enabled, machine_geo: enabled };
 }
 
 /** The shop row every tenant request reads, by code or ID. */
@@ -714,7 +752,12 @@ export async function loadTenantShop(
   c: Context<AppBindings>,
   shopCode: string,
 ): Promise<TenantShop | null> {
-  return c.env.DB.prepare(
+  return readTenantShop(c.env.DB, shopCode);
+}
+
+/** `loadTenantShop` without a request: the shop hub runs a bot's commands. */
+export async function readTenantShop(db: D1DatabaseLike, shopCode: string): Promise<TenantShop | null> {
+  return db.prepare(
     `SELECT s.id, s.public_id, s.name, s.latitude, s.longitude, s.radius_meters,
       COALESCE(b.auto_register, 0) AS auto_register,
       COALESCE(b.identity_binding_required, 1) AS identity_binding_required,

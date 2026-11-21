@@ -4,12 +4,13 @@ import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
+import { vkFromKeyText } from "@prism/core";
 import { machineRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
-import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
+import { loadResource, loadResources, can, coinConfigOf, coinKeyOf, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
-import { capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
+import { announceGroupSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CabinetKey, type CoinConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
 import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
@@ -103,7 +104,8 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
   const ha = await describeHa(c, device, "power");
   const climate = await describeHa(c, device, "climate");
   const embedded = hinata?.transport === "embedded";
-  const coinKey = hinata?.coinKey ?? 32;
+  const coin = coinConfigOf(device);
+  const coinKey = coinKeyOf(device);
   const botConfig = device.capabilities.get("bot")?.config as BotConfig | undefined;
   const botToken = botConfig?.tokenId ? await c.env.DB.prepare(
     "SELECT last_used_at FROM api_tokens WHERE shop_id=? AND id=? AND role='integration' AND status='active'",
@@ -138,9 +140,17 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     hasBotToken: !!botToken,
     botLastUsedAt: botToken?.last_used_at ?? null,
     botOnline: null as boolean | null,
-    coinKey,
-    coinEnabled: coinKey > 0,
-    coinAfterSwipe: !!hinata?.coinAfterSwipe,
+    // The HINATA IO's named keys, pressed from the admin.
+    keys: hinata?.keys ?? [],
+    // Coin is a capability of its own: how it goes in and what holds it. The
+    // flat fields below say the same for older clients.
+    coin: coin ? { method: coin.method, keyId: coin.keyId, cap: coin.cap, afterSwipe: coin.afterSwipe } : null,
+    coinMethod: coin?.method ?? "key",
+    coinKeyId: coin?.keyId ?? null,
+    coinKey: coinKey?.key ?? 0,
+    coinEnabled: can(device, "coin"),
+    coinAfterSwipe: !!coin?.afterSwipe,
+    coinCap: coin?.cap ?? null,
     relayConnection: embedded ? "embedded" : "external",
     // The token itself is only ever returned once, at mint time. What the board
     // needs afterwards is whether one exists and where the device should point.
@@ -182,10 +192,49 @@ async function relayStatus(
   return status;
 }
 
+/** What a direct IO last reported, kept short for the board. Null for an IO that never reported it. */
+export type IoSummary = { version: string | null; readers: number | null; credit: number | null };
+
+/**
+ * What every direct-connected IO in the shop last reported, in one read: its
+ * version, how many readers it has, and the credits on its cabinet. The
+ * operations panel reads the details (reader firmware, coin counters) itself.
+ */
+async function ioSummaries(c: C, devices: readonly Resource[]): Promise<Map<string, IoSummary>> {
+  const summaries = new Map<string, IoSummary>();
+  const embedded = devices.filter((device) => hinataConfigOf(device)?.transport === "embedded");
+  const shopId = embedded[0]?.shopId;
+  if (!shopId) return summaries;
+  const rows = (await c.env.DB.prepare(
+    `SELECT device_id, key, value_json FROM device_state
+     WHERE shop_id = ? AND capability = 'hinata_io' AND key IN ('version','readers','cabinet')
+       AND device_id IN (SELECT value FROM json_each(?))`,
+  ).bind(shopId, JSON.stringify(embedded.map((device) => device.id)))
+    .all<{ device_id: string; key: string; value_json: string }>()).results;
+  for (const device of embedded) summaries.set(device.id, { version: null, readers: null, credit: null });
+  for (const row of rows) {
+    const summary = summaries.get(row.device_id)!;
+    let value: unknown;
+    try {
+      value = JSON.parse(row.value_json);
+    } catch {
+      continue;
+    }
+    if (row.key === "version" && typeof value === "string") summary.version = value;
+    if (row.key === "readers" && Array.isArray(value)) summary.readers = value.length;
+    if (row.key === "cabinet" && value && typeof value === "object") {
+      const credit = (value as { players?: Array<{ credit?: unknown }> }).players?.[0]?.credit;
+      if (typeof credit === "number") summary.credit = credit;
+    }
+  }
+  return summaries;
+}
+
 async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicId: string, canConfigure: boolean) {
-  const [status, bindings, bots] = await Promise.all([
+  const [status, bindings, bots, io] = await Promise.all([
     relayStatus(c, devices), billingBindings(c, devices),
     devices.some((device) => device.capabilities.has("bot")) ? connectedBots(c.env, devices[0]!.shopId) : null,
+    ioSummaries(c, devices),
   ]);
   return Promise.all(devices.map(async (device) => {
     const presented = await presentResource(c, device, shopPublicId, canConfigure);
@@ -202,6 +251,8 @@ async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicI
       relayOnline: live ? live.online : null,
       relayE2ee: live ? live.e2ee : null,
       botOnline: device.capabilities.has("bot") && bots !== null ? bots.includes(device.id) : null,
+      // What a direct IO last said; null for any other device. Shown as last reported while it is offline.
+      io: io.get(device.id) ?? null,
     };
   }));
 }
@@ -252,12 +303,39 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c,user,machine.shop_id);
   await shopTimes(c, machine.shop_id);
-  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200);
+  const limit = Math.floor(Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200));
+  const before = c.req.query("before");
+  if (before && before.length > 200) jsonError(400, "无效的记录游标", "INVALID_CURSOR");
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
-    .listEvents({ deviceId: c.req.param("id"), limit });
+    .listEvents({ deviceId: c.req.param("id"), limit: limit + 1, before });
+  const page = events.slice(0, limit);
+  // The other resources these events name: the device something done through
+  // this one happened to, and the resource (a bot) something came through.
+  const others = [...new Set(page.flatMap((event) => [event.deviceId, event.via?.resourceId ?? null])
+    .filter((id): id is string => !!id && id !== c.req.param("id")))];
+  const names = new Map(others.length
+    ? (await c.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+        .bind(machine.shop_id, JSON.stringify(others)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name])
+    : []);
+  const named = (id: string | null | undefined) =>
+    id && id !== c.req.param("id") ? { id, name: names.get(id) ?? null } : null;
+  // Whom each event was about: the player who asked, or the one staff acted for.
+  const playerOf = (event: (typeof page)[number]) =>
+    event.playerId ?? (typeof event.payload.forPlayerId === "string" ? event.payload.forPlayerId : null);
+  const playerIds = [...new Set(page.map(playerOf).filter((id): id is string => !!id))];
+  const players = new Map(playerIds.length
+    ? (await c.env.DB.prepare("SELECT id, display_name FROM players WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
+        .bind(machine.shop_id, JSON.stringify(playerIds)).all<{ id: string; display_name: string | null }>()).results.map((row) => [row.id, row.display_name])
+    : []);
   return c.json({
-    events: events.map((event) => ({
+    nextCursor: events.length > limit ? page.at(-1)!.id : null,
+    events: page.map((event) => ({
       id: event.id,
+      // Null when the event happened to this resource itself.
+      device: named(event.deviceId),
+      player: playerOf(event) ? { id: playerOf(event)!, name: players.get(playerOf(event)!) ?? null } : null,
+      // Where it came into the platform; `resource` when through another of the shop's resources.
+      via: event.via ? { channel: event.via.channel, resource: named(event.via.resourceId) } : null,
       capability: event.capability,
       kind: event.kind,
       name: event.name,
@@ -268,6 +346,48 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
       payload: event.payload,
     })),
   });
+});
+
+/**
+ * A cabinet's books as last reported by its IO (`cabinetMonitor=1`): credits on
+ * the machine and the coin counters. `cabinet` is null for a device whose IO
+ * has never reported them.
+ */
+merchantResourceRouter.get("/machines/:id/cabinet", async (c) => {
+  const user = requireUser(c);
+  const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
+    .bind(c.req.param("id")).first<{ shop_id: string }>();
+  if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
+  await assertResourceShop(c, user, machine.shop_id);
+  const rows = (await c.env.DB.prepare(
+    "SELECT key, value_json, changed_at FROM device_state WHERE shop_id=? AND device_id=? AND capability='hinata_io' AND key IN ('cabinet','readers','version','link')",
+  ).bind(machine.shop_id, c.req.param("id")).all<{ key: string; value_json: string; changed_at: string }>()).results;
+  const row = (key: string) => rows.find((item) => item.key === key);
+  const value = (key: string) => { const found = row(key); return found ? JSON.parse(found.value_json) : null; };
+  return c.json({
+    cabinet: value("cabinet"), changedAt: row("cabinet")?.changed_at ?? null,
+    // Null for an IO that predates reporting them. While it is offline these are what it last said.
+    io: { version: value("version"), readers: value("readers"), online: value("link") === "online" },
+  });
+});
+
+/** Ask a direct-connected IO to read its cabinet's books now, for when the board seems out of date. */
+merchantResourceRouter.post("/machines/:id/cabinet/refresh", async (c) => {
+  const user = requireUser(c);
+  const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
+    .bind(c.req.param("id")).first<{ shop_id: string }>();
+  if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
+  await assertResourceShop(c, user, machine.shop_id);
+  const device = await loadResource(c.env.DB, machine.shop_id, c.req.param("id"));
+  const hinata = device ? hinataConfigOf(device) : null;
+  const relay = machineRelayNamespace(c.env);
+  if (!hinata || hinata.transport !== "embedded" || !hinata.channel || !relay)
+    jsonError(409, "只有直连本平台的机台能读取机台状态", "DEVICE_ACTION_UNSUPPORTED");
+  const read = await relay.getByName(hinata.channel).readCabinet();
+  // Not DEVICE_UNAVAILABLE, whose fixed wording would hide the reason from the operator asking.
+  if (!read.ok) jsonError(409, read.error, "CABINET_READ_FAILED");
+  const { revision: _revision, readAtMs, ...cabinet } = read.cabinet;
+  return c.json({ cabinet, readAt: new Date(readAtMs).toISOString() });
 });
 
 /** Resource event and occupancy times use the shop's display zone. */
@@ -302,6 +422,7 @@ merchantResourceRouter.get("/machines/occupancy", async (c) => {
         startedAt: occupant.since.toISOString(),
         lastSeenAt: occupant.lastSeenAt.toISOString(),
         expiresAt: occupant.expiresAt?.toISOString() ?? null,
+        billing: occupant.billing,
       })),
     })),
   });
@@ -415,8 +536,33 @@ const machineInput=z.object({
   homeAssistant:homeAssistantInput.optional(),
   climate:climateInput.optional(),
   ttlockLockId:z.number().int().positive().nullable().optional(),
-  coinKey:z.number().int().min(0).max(65535).default(32),
-  coinAfterSwipe:z.boolean().default(false),
+  /**
+   * The HINATA IO's named keys, replacing the list. `key` is what staff typed
+   * (a letter, F1–F24, Enter, a code); a new key has no `id` and gets one.
+   */
+  keys:z.array(z.object({
+    id:z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+    name:z.string().trim().min(1,"请填写按键名称").max(20,"按键名称最多 20 个字"),
+    key:z.union([z.string().max(12),z.number().int()]),
+  })).max(16,"最多 16 个按键").optional(),
+  /**
+   * The resource's coin (`CoinConfig`), or null to take it away. `keyId`
+   * names one of the IO's keys. `cap` and `afterSwipe` need a directly
+   * connected IO, which reports the cabinet's books and the cards it takes.
+   */
+  coin:z.object({
+    method:z.enum(["key"]).default("key"),
+    keyId:z.string().max(40).nullable().default(null),
+    cap:z.number().int().min(1).max(99).nullable().default(null),
+    afterSwipe:z.boolean().default(false),
+  }).nullable().optional(),
+  // The coin as older clients send it: a key code (0 for none), its limit and
+  // whether a swipe coins. Read only when `coin` is not given.
+  coinKey:z.number().int().min(0).max(65535).optional(),
+  coinKeyId:z.string().max(40).nullable().optional(),
+  coinMethod:z.enum(["key"]).optional(),
+  coinAfterSwipe:z.boolean().optional(),
+  coinCap:z.number().int().min(1).max(99).nullable().optional(),
   // Choosing `embedded` points the device at this platform instead of an
   // external relay. Existing devices stay on `external`, so nothing changes
   // until a store opts in per machine.
@@ -426,6 +572,7 @@ const machineInput=z.object({
   // A shop bot: its settings, or null to remove the bot (its token is revoked).
   // A bot is issued its token when it is created; `rotateBotToken` issues a new one.
   bot:z.object({
+    replyTemplates:botReplyTemplatesSchema.optional(),
     playerCommands:z.enum(["all","readonly"]).optional(),
     readOnlyNotice:z.string().max(200).optional(),
     staffCommands:z.boolean().optional(),
@@ -433,13 +580,8 @@ const machineInput=z.object({
     doorResourceId:z.string().min(1).nullable().optional(),
     receiptsToStaff:z.boolean().optional(),
     doorPasswordOnEntry:z.boolean().optional(),
-    announceChannelIds:z.array(z.string().trim().min(1).max(80)).max(20).optional(),
     idleReminderMinutes:z.number().int().min(0).max(120).optional(),
-    announceIdle:z.boolean().optional(),
-    announcePower:z.boolean().optional(),
-    announceStarts:z.boolean().optional(),
-    announceCards:z.boolean().optional(),
-    announceCoins:z.boolean().optional(),
+    announceGroups:z.array(announceGroupSchema).max(10).optional(),
   }).strict().nullable().optional(),
   rotateBotToken:z.boolean().optional(),
   // Billing: the group whose default plan the resource bills (null or
@@ -455,6 +597,8 @@ const machineInput=z.object({
   mahjong:z.object({
     // A table bills one plan; what it stacks on is that plan's `requires`.
     pricingConfigIds:z.array(z.string().min(1)).max(1,"麻将桌只能选择一个计费方案"),
+    // When the game plan starts: once the table is full (players wait until then), or as each sits down.
+    startWhen:z.enum(["full","seated"]).optional(),
   }).nullable().optional(),
 });
 const patchInput=machineInput.partial();
@@ -471,7 +615,10 @@ async function validateMahjong(c:C,shopId:string,current:Resource|null,body:Mach
     if(ids.some(id=>!valid.has(id)))jsonError(400,"请选择有效的麻将计费规则","MAHJONG_PRICING_INVALID");
   }
   const before=current?mahjongConfigOf(current):null;
-  if(current&&JSON.stringify(body.mahjong)!==JSON.stringify(before)){
+  // A client that does not say when the game starts keeps what was set.
+  const after=body.mahjong?{pricingConfigIds:ids,startWhen:body.mahjong.startWhen??before?.startWhen??"full"}:null;
+  const was=before?{pricingConfigIds:before.pricingConfigIds,startWhen:before.startWhen??"full"}:null;
+  if(current&&JSON.stringify(after)!==JSON.stringify(was)){
     const seated=await c.env.DB.prepare(
       "SELECT 1 FROM mahjong_seats WHERE machine_id=? LIMIT 1",
     ).bind(current.id).first();
@@ -554,7 +701,10 @@ async function nextCapabilities(
     next.set("door",{config:{lockId:body.ttlockLockId},secrets:{},credentialHash:null});
 
   if(body.mahjong===null)next.delete("mahjong");
-  else if(body.mahjong)next.set("mahjong",{config:body.mahjong,secrets:{},credentialHash:null});
+  else if(body.mahjong)next.set("mahjong",{config:{
+    ...body.mahjong,
+    startWhen:body.mahjong.startWhen??(stored.get("mahjong")?.config.startWhen as string|undefined)??"full",
+  },secrets:{},credentialHash:null});
 
   const io=stored.get("hinata_io");
   const before=io?.config as Partial<HinataConfig>|undefined;
@@ -566,7 +716,36 @@ async function nextCapabilities(
     if(body.hinataPassword)secrets.password=await seal(body.hinataPassword);else delete secrets.password;
   }
   const transport=body.relayConnection??before?.transport??"external";
-  const coinKey=body.coinKey??before?.coinKey??32;
+  // The named keys, as saved now or as they were.
+  let keys:CabinetKey[]=before?.keys??[];
+  if(body.keys){
+    keys=body.keys.map((one)=>{
+      const code=typeof one.key==="number"?one.key:vkFromKeyText(one.key);
+      if(code===null||code<1||code>65535)jsonError(400,`无法识别「${one.name}」的按键`,"INVALID_KEY");
+      return {id:one.id??randomToken(8),name:one.name,key:code};
+    });
+    if(new Set(keys.map((one)=>one.id)).size!==keys.length)jsonError(400,"按键重复","DUPLICATE_KEY");
+  }
+  // The coin, as saved now (or in the older flat fields) or as it was.
+  const coinBefore=stored.get("coin")?.config as CoinConfig|undefined;
+  let coin:CoinConfig|null|undefined=body.coin===null?null:body.coin??undefined;
+  if(coin===undefined&&body.coinKey!==undefined){
+    if(body.coinKey===0)coin=null;
+    else{
+      // An older client names the coin by its code: it is the key of that code, added as 投币 if there is none.
+      const keyId=body.coinKeyId??keys.find((one)=>one.key===body.coinKey)?.id??"coin";
+      if(!keys.some((one)=>one.id===keyId))keys=[...keys,{id:keyId,name:"投币",key:body.coinKey}];
+      coin={method:body.coinMethod??"key",keyId,cap:body.coinCap??coinBefore?.cap??null,afterSwipe:body.coinAfterSwipe??coinBefore?.afterSwipe??false};
+    }
+  }
+  if(coin===undefined&&coinBefore&&(body.coinCap!==undefined||body.coinAfterSwipe!==undefined||body.coinKeyId!==undefined)){
+    // An older client changing only the limit, the coin after a swipe or the chosen key.
+    coin={...coinBefore,
+      ...(body.coinCap!==undefined?{cap:body.coinCap}:{}),
+      ...(body.coinAfterSwipe!==undefined?{afterSwipe:body.coinAfterSwipe}:{}),
+      ...(body.coinKeyId!==undefined?{keyId:body.coinKeyId}:{})};
+  }
+  if(coin===undefined)coin=coinBefore??null;
   let relayToken:string|null=null;
   if(transport==="embedded"){
     // E2EE and the embedded relay are mutually exclusive: this platform sends
@@ -585,15 +764,22 @@ async function nextCapabilities(
     // The channel is independent of the token so rotating the key does not
     // orphan a connected device.
     const channel=before?.channel??`m_${randomToken(16)}`;
-    const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,channel},secrets,credentialHash});
+    next.set("hinata_io",{config:{transport,keys,channel},secrets,credentialHash});
   }else if(secrets.url){
-    const coinAfterSwipe=coinKey>0&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    if(coinAfterSwipe&&!secrets.password)
-      jsonError(400,"自动投币需要 HINATA IO 连接密码","DEVICE_CONFIGURATION_REQUIRED");
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe},secrets,credentialHash:null});
+    next.set("hinata_io",{config:{transport,keys},secrets,credentialHash:null});
   }else{
     next.delete("hinata_io");
+  }
+  // A coin by key presses one of the IO's keys: it goes with the IO, and a key the list lost is no key.
+  if(coin&&coin.method==="key"&&!next.has("hinata_io"))coin=null;
+  else if(coin&&coin.method==="key"&&!keys.some((one)=>one.id===coin!.keyId))coin={...coin,keyId:null};
+  if(coin){
+    // Only a direct IO reports the cabinet's books and the cards it takes; a coin after a card stops at the limit.
+    const direct=next.get("hinata_io")?.config.transport==="embedded";
+    const cap=direct?coin.cap:null;
+    next.set("coin",{config:{...coin,cap,afterSwipe:direct&&cap!=null&&!!coin.keyId&&coin.afterSwipe},secrets:{},credentialHash:null});
+  }else{
+    next.delete("coin");
   }
   return {next,relayToken,connections};
 }
@@ -747,9 +933,11 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
   const used=await c.env.DB.prepare(
     `SELECT 1 FROM machine_login_events WHERE machine_id=?
      UNION ALL SELECT 1 FROM player_operations WHERE device_id=?
-     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=? LIMIT 1`,
-  ).bind(id,id,machine.shop_id,id).first();
-  if(used)jsonError(409,"机台已有操作记录，请改为停用","MACHINE_HAS_HISTORY");
+     UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=?
+     UNION ALL SELECT 1 FROM resource_occupancies WHERE shop_id=? AND resource_id=?
+     UNION ALL SELECT 1 FROM mahjong_seats WHERE shop_id=? AND machine_id=? LIMIT 1`,
+  ).bind(id,id,machine.shop_id,id,machine.shop_id,id,machine.shop_id,id).first();
+  if(used)jsonError(409,"资源已有使用记录，请改为停用","MACHINE_HAS_HISTORY");
   const botToken=await c.env.DB.prepare(
     "SELECT json_extract(config_json,'$.tokenId') AS tokenId FROM device_capabilities WHERE shop_id=? AND device_id=? AND capability='bot'",
   ).bind(machine.shop_id,id).first<{tokenId:string|null}>();
@@ -764,5 +952,7 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
     c.env.DB.prepare("DELETE FROM device_state WHERE shop_id=? AND device_id=?").bind(machine.shop_id,id),
     c.env.DB.prepare("DELETE FROM machines WHERE id=? AND shop_id=?").bind(id,machine.shop_id),
   ]);
+  notifyBotsChangedAfter(c,machine.shop_id);
+  afterHaChange(c,machine.shop_id);
   return c.json({ok:true});
 });

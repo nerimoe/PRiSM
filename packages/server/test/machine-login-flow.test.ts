@@ -125,15 +125,23 @@ describe("pre-fork authenticated Aime machine login",()=>{
 });
 
 describe("direct-connect card login result",()=>{
-  async function embedded(login:string){
+  async function embedded(login:"read"|"not_read"){
     const ctx=await fixture();
     ctx.sqlite.run(
       `UPDATE device_capabilities SET config_json='{"transport":"embedded","channel":"m_test","coinKey":32,"coinAfterSwipe":true}',secret_json='{}'
        WHERE device_id='machine-id' AND capability='hinata_io'`,
     );
+    // The player has an account at the shop, so the swipe binds the card to them here.
+    ctx.sqlite.run("PRAGMA foreign_keys=OFF");
+    ctx.sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop-id','p-one','One','active','2026-01-01')");
+    ctx.sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop-id','player-one','p-one','2026-01-01')");
     const cards:Array<Record<string,unknown>>=[],presses:unknown[]=[];
     (ctx.env as any).MACHINE_RELAY={getByName:()=>({
-      async sendCard(input:Record<string,unknown>){cards.push(input);return {ok:true,login};},
+      // The relay answers with the card report it waited for, or null.
+      async sendCard(input:Record<string,unknown>){
+        cards.push(input);
+        return {ok:true,awaited:login==="read"?{name:"card.consumed",payload:{}}:null};
+      },
       async sendKeyPress(input:unknown){presses.push(input);return {ok:true};},
     })};
     const res=await ctx.app.fetch(new Request("https://prism.test/api/v1/machines/login",{
@@ -141,28 +149,30 @@ describe("direct-connect card login result",()=>{
       body:JSON.stringify({ticket:ctx.ticket,cardId:"card-one"}),
     }),ctx.env);
     const reply=(await res.json()) as {data:{card:string;coin?:{status:string;reason?:string}}};
+    const bound=ctx.sqlite.query("SELECT device_id,player_id,via,payload_json FROM device_events WHERE name='card.bound'").all();
+    const logged=JSON.stringify(ctx.sqlite.query("SELECT payload_json FROM device_events").all());
     ctx.sqlite.close();
-    return {res,reply:reply.data,cards,presses};
+    return {res,reply:reply.data,cards,presses,bound,logged};
   }
 
   it("waits for the game to take the card, not for its reader light",async()=>{
-    const {res,reply,cards,presses}=await embedded("read");
+    const {res,reply,cards,presses,bound,logged}=await embedded("read");
     expect(res.status).toBe(200);
+    // The shop now knows whose card it is, which is not the player adding a card; nothing logged its number.
+    expect(bound).toEqual([]);
+    expect(logged).not.toMatch(/\d{20}/);
     expect(reply.card).toBe("read");
-    // The row shows both outcomes; neither interrupts.
-    expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([
-      ["CARD_SENT","inline","已刷卡"],["COIN_SENT","inline","已投币"],
-    ]);
-    expect(cards[0]?.wait).toEqual({readMs:4500});
-    // Coins follow a card the game took.
-    expect(reply.coin?.status).toBe("sent");
-    expect(presses).toHaveLength(1);
+    expect((reply as any).notices.map((n:any)=>[n.code,n.display,n.body])).toEqual([["CARD_SENT","inline","已刷卡"]]);
+    expect(cards[0]?.wait).toEqual({signal:"card.consumed",timeoutMs:4500});
+    // A coin after the card is the relay's, on the game's report of taking it.
+    expect(reply.coin).toBeUndefined();
+    expect(presses).toEqual([]);
   });
 
   it("does not insert coins for a card the game never took",async()=>{
     const {reply,presses}=await embedded("not_read");
     expect(reply.card).toBe("not_read");
-    expect(reply.coin).toMatchObject({status:"skipped",reason:"CARD_NOT_READ"});
+    expect((reply as any).notices.map((n:any)=>n.code)).toEqual(["CARD_NOT_READ"]);
     expect(presses).toEqual([]);
   });
 });

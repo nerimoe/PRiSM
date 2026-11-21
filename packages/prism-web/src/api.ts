@@ -1,5 +1,6 @@
 import { activeLocale, rememberPlayerText } from "./i18n";
 import { PlayerReadCache, subscribeRead } from "./player-read-cache";
+import { pageReport } from "./ui/page-report";
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -25,7 +26,6 @@ export type Card = {
 };
 
 export type PublicResource = {
-  coinAfterSwipe: boolean;
   /** A card can be added at this cabinet's reader. */
   cardCapture?: boolean;
   kind: "machine" | "door";
@@ -87,8 +87,28 @@ export type Shop = {
  * asked for and its outcome (paired by `operationId`), `signal` is something
  * the machine reported, `change` is a state that moved.
  */
+/**
+ * One thing a bot listens for: when any of `events` happens, having come from
+ * one of `sources` (anywhere, when empty), it is said at every destination in
+ * `to` (a group or a person, as the bot addresses it) and, with `staff`, to
+ * each staff member privately.
+ */
+export type { AnnouncementGroup } from "@prism/core";
+
+export type DeviceEventChannel = "page" | "merchant" | "bot" | "api" | "relay" | "ha" | "system";
+
 export type DeviceEvent = {
   id: string;
+  /** The resource it happened to, when that is not the one whose history this is. */
+  device?: { id: string; name: string | null } | null;
+  /** Whom it was about: the player who asked, or the one staff acted for. */
+  player?: { id: string; name: string | null } | null;
+  /**
+   * Where it came into the platform; `resource` names the shop's own resource
+   * it came through (a bot), when that is not the one whose history this is.
+   * Null for an event recorded before events said so.
+   */
+  via?: { channel: DeviceEventChannel; resource: { id: string; name: string | null } | null } | null;
   capability: string;
   kind: "request" | "result" | "signal" | "change";
   /** Action, signal or state name, e.g. `power.on`, `card.consumed`, `link`. */
@@ -106,7 +126,8 @@ export type ResourceOccupancyView = {
   capacity: number;
   /** The capability that decides who is on it, e.g. `hinata_io` or `mahjong`. */
   source: string;
-  occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null }>;
+  /** `billing`: the player has a bill running at the shop; a seat can be held before one starts. */
+  occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null; billing?: boolean }>;
 };
 
 /** One stay on a resource, newest first in the history. */
@@ -122,7 +143,8 @@ export type OccupancyHistoryEntry = {
 };
 
 export type Resource = {
-  mahjong?: { capacity: number; pricingConfigIds: string[] } | null;
+  /** `startWhen`: the game plan starts once the table is full (`full`, the default) or as each player sits down (`seated`). */
+  mahjong?: { capacity: number; pricingConfigIds: string[]; startWhen?: "full" | "seated" } | null;
   /** How many people can use it at once; 0 for one nobody occupies. A mahjong table's is its size. */
   capacity?: number;
   /** How long someone counts as on it after the last sign of them; also its idle time. */
@@ -130,6 +152,10 @@ export type Resource = {
   /** Actions this device can perform now, tagged with their capability. */
   actions?: { name: string; capability: string }[];
   coinAfterSwipe: boolean;
+  /** Most credits a platform coin may leave on the cabinet (direct connection); null for no limit. */
+  coinCap?: number | null;
+  /** What a direct IO last reported: version, reader count, credits on the cabinet. Null for any other device. */
+  io?: { version: string | null; readers: number | null; credit: number | null } | null;
   hasHinata: boolean;
   kind: "machine" | "door";
   hinataUrl: string | null;
@@ -138,6 +164,16 @@ export type Resource = {
   /** A Home Assistant `climate.*` entity, such as an air conditioner. */
   climate?: { connectionId?: string | null; url: string; entityId: string } | null;
   ttlockLockId: number | null;
+  /** The HINATA IO's named keys, shown as buttons in the admin; the coin may press one of them. */
+  keys?: { id: string; name: string; key: number }[];
+  /**
+   * The resource's coin, a capability of its own: how it goes in (`key`: the
+   * IO presses `keyId`), the limit and the coin after a swipe. Null when the
+   * resource takes no coin. The flat `coin*` fields say the same for older code.
+   */
+  coin?: { method: "key"; keyId: string | null; cap: number | null; afterSwipe: boolean } | null;
+  coinMethod?: "key";
+  coinKeyId?: string | null;
   coinKey: number;
   coinEnabled?: boolean;
   id: string;
@@ -174,6 +210,7 @@ export type Resource = {
 
 /** What a shop bot offers players and staff; everything else it is told comes from the platform. */
 export type BotSettings = {
+  replyTemplates?: Record<string, string>;
   playerCommands: "all" | "readonly";
   readOnlyNotice: string;
   staffCommands: boolean;
@@ -182,15 +219,10 @@ export type BotSettings = {
   receiptsToStaff: boolean;
   /** `login`/`入场` also hands out the door code. */
   doorPasswordOnEntry: boolean;
-  /** Channels the bot says everything in: idle warnings and what happens at the shop. */
-  announceChannelIds: string[];
+  /** Everything the bot announces, where and in which words, one group at a time; with none it announces nothing. */
+  announceGroups: import("@prism/core").AnnouncementGroup[];
+  /** Minutes before an idle power-off its warning is said; 0 for never. */
   idleReminderMinutes: number;
-  /** Which news is told, each on its own. */
-  announceIdle: boolean;
-  announcePower: boolean;
-  announceStarts: boolean;
-  announceCards: boolean;
-  announceCoins: boolean;
 };
 
 /** A set of resources that bill the same default plan. The default group is the shop's own. */
@@ -325,17 +357,27 @@ async function fetchApi<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const send = () => fetch(path, {
-    ...options,
-    cache: "no-store",
-    credentials: "include",
-    headers: {
-      "content-type": "application/json",
-      // Player-facing text comes back in this language.
-      "accept-language": activeLocale(),
-      ...options.headers,
-    },
-  });
+  const send = async () => {
+    const startedAt = performance.now();
+    try {
+      const answer = await fetch(path, {
+        ...options,
+        cache: "no-store",
+        credentials: "include",
+        headers: {
+          "content-type": "application/json",
+          // Player-facing text comes back in this language.
+          "accept-language": activeLocale(),
+          ...options.headers,
+        },
+      });
+      pageReport.request(options.method ?? "GET", performance.now() - startedAt, true);
+      return answer;
+    } catch (error) {
+      if (!options.signal?.aborted) pageReport.request(options.method ?? "GET", performance.now() - startedAt, false);
+      throw error;
+    }
+  };
   let response: Response;
   try { response = await send(); }
   catch (error) {
@@ -410,6 +452,11 @@ export const Api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  cancelCardCapture: (captureId: string, ticket: string) =>
+    api<{ ok: boolean }>(
+      `/api/v1/devices/session/cards/capture/${encodeURIComponent(captureId)}?ticket=${encodeURIComponent(ticket)}`,
+      { method: "DELETE" },
+    ),
   cardCaptureResult: (captureId: string, ticket: string) =>
     api<{ status: "waiting" | "expired" | "added" | "bound" | "exists" | "taken" | "unsupported"; cardType?: string }>(
       `/api/v1/devices/session/cards/capture/${encodeURIComponent(captureId)}?ticket=${encodeURIComponent(ticket)}`,
@@ -560,7 +607,7 @@ export const Api = {
       body: JSON.stringify(input),
     }),
   deleteResource: (id: string) =>
-    api<{ ok: true }>(`/api/v1/merchant/machines/${id}`, { method: "DELETE" }),
+    api<{ ok: true }>(`/api/v1/merchant/machines/${encodeURIComponent(id)}`, { method: "DELETE" }),
   shopMembers: (shopId: string) =>
     api<{ members: ShopMember[] }>(
       `/api/v1/merchant/shop-members?shopId=${encodeURIComponent(shopId)}`,

@@ -1,7 +1,12 @@
 import type { Env } from "../bindings.js";
 import { sha256Hex } from "../crypto.js";
-import type { CardLoginResult, CardWaitLimits, HaWatch } from "../durable-objects/machine-relay.js";
+import type { HaWatch } from "../durable-objects/machine-relay.js";
+import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
+import type { CabinetSnapshot } from "../hardware/aimeio-relay.js";
 import { machineRelayPath } from "./relay-path.js";
+import { logger } from "../log.js";
+
+const log = logger("machine-relay");
 
 export type RelayGatewayResult =
   | { kind: "not-relay" }
@@ -64,7 +69,7 @@ export async function relayGateway(
  * resolving a channel requires the token itself.
  */
 function rejected(reason: string): Response {
-  console.log(JSON.stringify({ event: "machine_relay_rejected", reason }));
+  log.warn(`refused a machine connection: ${reason}`, { event: "machine_relay_rejected", reason });
   return new Response("Unauthorized", {
     status: 401,
     headers: { "WWW-Authenticate": "Bearer" },
@@ -83,15 +88,17 @@ export type MachineRelayNamespace = {
       source?: string;
       disposable?: boolean;
       duration?: number;
-      wait?: CardWaitLimits;
-    }): Promise<{ ok: boolean; error?: string; login?: CardLoginResult }>;
+      wait?: AwaitSpec;
+    }): Promise<{ ok: boolean; error?: string; awaited?: Awaited }>;
     sendKeyPress(input: { key: number; messageId: string; expiresAt: number; count?: number }):
       Promise<{ ok: boolean; error?: string }>;
     watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }>;
+    readCabinet(): Promise<{ ok: true; cabinet: CabinetSnapshot } | { ok: false; error: string }>;
     startCardCapture(input: {
       id: string; shopId: string; userId: string; playerId: string; expiresAt: number;
     }): Promise<{ ok: boolean; error?: string }>;
     cardCaptureResult(id: string, userId: string): Promise<{ status: string; cardType?: string }>;
+    cancelCardCapture(id: string, userId: string): Promise<void>;
     getCapabilities(): Promise<{
       online: boolean;
       e2ee: boolean;

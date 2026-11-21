@@ -150,6 +150,8 @@ export type PlayerIdentity = {
   provider: string;
   subject: string;
   createdAt: Date;
+  /** What this identity's platform calls the player, as it last said. */
+  displayName?: string | null;
 };
 
 export type PlayerRepository = {
@@ -164,6 +166,8 @@ export type PlayerIdentityRepository = {
   delete(playerId: string, provider: string, subject: string): Promise<void>;
   findPlayerByIdentity(provider: string, subject: string): Promise<Player | null>;
   listByPlayerId(playerId: string): Promise<PlayerIdentity[]>;
+  /** Keep what a platform calls the player on this identity. */
+  setName?(provider: string, subject: string, name: string): Promise<void>;
 };
 
 export type PlayerSessionRepository = {
@@ -267,8 +271,6 @@ export type DeviceRecord = {
     failure: string | null;
     settledAt: Date;
   };
-  /** Only an operation aimed at `deviceId` can be confirmed by it. */
-  confirm?: { operationId: string; deviceId: string; confirmedAt: Date };
   /**
    * Without `event` the state is only stored: a view that changes too often to
    * be worth a log row, such as an air conditioner's room temperature.
@@ -277,8 +279,16 @@ export type DeviceRecord = {
 };
 
 export type DeviceEventRepository = {
-  record(input: DeviceRecord): Promise<void>;
-  listEvents(input: { deviceId: string; limit: number }): Promise<DeviceEvent[]>;
+  /**
+   * Returns the events that were written, in the order given. A `change` whose
+   * state did not move is not among them: it never happened.
+   */
+  record(input: DeviceRecord): Promise<DeviceEvent[]>;
+  /**
+   * A resource's history, newest first: the events that happened to it and the
+   * events that came through it (`via.resourceId`), each listed once.
+   */
+  listEvents(input: { deviceId: string; limit: number; before?: string }): Promise<DeviceEvent[]>;
   getOperation(id: string): Promise<DeviceOperation | null>;
   listOperationsByPlayer(playerId: string): Promise<DeviceOperation[]>;
   listRecentOperations(limit: number): Promise<DeviceOperation[]>;

@@ -1081,6 +1081,7 @@ async function listReportCheckouts(
     from?: Date;
     to?: Date;
     checkoutId?: string;
+    playerId?: string;
     limit: number;
     offset?: number;
     archive?: import("@prism/application").ReportArchiveFilter;
@@ -1115,13 +1116,15 @@ async function listReportCheckouts(
     LEFT JOIN sessions s ON s.shop_id=st.shop_id AND s.id=st.session_id AND s.player_id=c.player_id
     LEFT JOIN checkout_report_states a ON a.shop_id=c.shop_id AND a.checkout_id=c.id
     LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
-    WHERE c.shop_id=${shop} AND ${query.checkoutId ? "c.id=?" : "c.settled_at>=? AND c.settled_at<?"}
+    WHERE c.shop_id=${shop} AND ${query.checkoutId ? "c.id=?" : query.playerId ? "c.player_id=?" : "c.settled_at>=? AND c.settled_at<?"}
       ${archive === "all" ? "" : `AND COALESCE(a.archived,0)=${archive === "archived" ? 1 : 0}`}
     GROUP BY c.id ORDER BY c.settled_at DESC,c.id DESC LIMIT ? OFFSET ?`,
     [
       ...(query.checkoutId
         ? [query.checkoutId]
-        : [query.from!.toISOString(), query.to!.toISOString()]),
+        : query.playerId
+          ? [query.playerId]
+          : [query.from!.toISOString(), query.to!.toISOString()]),
       query.limit,
       query.offset ?? 0,
     ],

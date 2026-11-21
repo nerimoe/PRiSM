@@ -30,6 +30,9 @@ import {
   toBusinessItemOrderView,
   toBillingChangeView,
 } from "./views.js";
+import { logger } from "../../log.js";
+
+const log = logger("player");
 
 export async function hasPlatformBinding(
   c: Context<AppBindings>,
@@ -129,6 +132,10 @@ export async function requireShopPlayer(
 
 export const playerRouter = new Hono<AppBindings>();
 
+/** The install a request comes from, as the app names itself (`x-prism-client-id`); anything else is none. */
+const clientIdOf = (value: string | undefined): string | null =>
+  value && /^[A-Za-z0-9-]{1,100}$/.test(value) ? value : null;
+
 // The ActivityKit client uses these store-scoped endpoints. They must be routed
 // before normal player commands; they were previously handled by billing.ts's wildcard.
 playerRouter.get("/live-activity/bill", async (c) => {
@@ -136,7 +143,7 @@ playerRouter.get("/live-activity/bill", async (c) => {
   const player = await requireShopPlayer(c, shop);
   return handleLiveActivityRoute(c, shop, player, "live-activity/bill", undefined);
 });
-for (const action of ["register", "unregister"] as const) {
+for (const action of ["register", "unregister", "start-failed"] as const) {
   playerRouter.post(`/live-activity/${action}`, async (c) => {
     const shop = getShop(c);
     const player = await requireShopPlayer(c, shop);
@@ -313,7 +320,7 @@ async function openDoor(
   playerId: string,
   operationId: string,
 ): Promise<{ temporaryPassword: string; expiresAt: string } | null> {
-  const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id });
+  const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId: shop.id, via: { channel: "page", resourceId: null } });
   const done = await bus.perform({
     device,
     action: "door.open",
@@ -450,7 +457,7 @@ async function handleLiveActivityRoute(
       }
     }
     const snapshot = await activityBill(c.env, shop.id, player.id);
-    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
+    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => log.error(`could not refresh player ${player.id}'s Live Activity bill`, { shopId: shop.id, playerId: player.id, error }));
     try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextBill: snapshot?.nextBill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
   }
@@ -492,13 +499,14 @@ async function handleLiveActivityRoute(
     // activities even when they use different attacker-supplied activity IDs.
     await c.env.DB.prepare(
       `INSERT INTO live_activity_tokens
-        (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at)
-       SELECT ?,?,?,?,?,?,?,?,?,?,?
+        (id, shop_id, user_id, activity_id, token, environment, bundle_id, session_id, attributes_json, created_at, updated_at, client_id)
+       SELECT ?,?,?,?,?,?,?,?,?,?,?,?
        WHERE EXISTS(SELECT 1 FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND activity_id=?)
           OR (SELECT COUNT(*) FROM live_activity_tokens WHERE shop_id=? AND user_id=?) < 4
        ON CONFLICT(shop_id, user_id, activity_id) DO UPDATE SET
          token=excluded.token, environment=excluded.environment, bundle_id=excluded.bundle_id,
-         session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at`,
+         session_id=excluded.session_id, attributes_json=excluded.attributes_json, updated_at=excluded.updated_at,
+         client_id=excluded.client_id`,
     )
       .bind(
         crypto.randomUUID(),
@@ -513,6 +521,8 @@ async function handleLiveActivityRoute(
         attributes,
         now,
         now,
+        // Which install shows it: the phone that entered is pushed a start only when it shows none.
+        clientIdOf(c.req.header("x-prism-client-id")),
         shop.id,
         user.id,
         input.activityId,
@@ -540,6 +550,19 @@ async function handleLiveActivityRoute(
     )
       .bind(shop.id, user.id, parsed.data.activityId)
       .run();
+    return c.json({ ok: true });
+  }
+
+  if (path === "live-activity/start-failed") {
+    // iOS refused to start the visit's activity on the phone: kept in the logs, where
+    // nothing else on the server could see why a phone shows no visit.
+    await enforceRateLimits(c, [{ key: `live-activity:mutation:${user.id}`, limit: 5 }]);
+    const parsed = z.object({ sessionId: z.string().max(200).nullish(), error: z.string().max(500) }).safeParse(body);
+    if (!parsed.success) jsonError(400, "实时活动失败报告参数无效");
+    log.warn(`the app could not start a Live Activity: ${parsed.data.error}`, {
+      event: "live_activity_start_failed", shopId: shop.id, session: parsed.data.sessionId ?? null,
+      client: clientIdOf(c.req.header("x-prism-client-id")), reason: parsed.data.error,
+    });
     return c.json({ ok: true });
   }
 

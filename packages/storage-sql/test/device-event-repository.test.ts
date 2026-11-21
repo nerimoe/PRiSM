@@ -66,7 +66,6 @@ function operation(overrides: Partial<DeviceOperation> = {}): DeviceOperation {
     payload: {},
     requestedAt: new Date("2026-02-01T10:00:00.000Z"),
     settledAt: null,
-    confirmedAt: null,
     ...overrides,
   };
 }
@@ -80,6 +79,22 @@ const powerState = (value: string) => ({
 });
 
 describe("device event repository", () => {
+  it("pages tied timestamps without skipping events or accepting another device/shop's cursor", async () => {
+    const { db, repo } = fixture();
+    const at = new Date("2026-02-01T10:00:00.000Z");
+    await repo.record({ events: ["a", "b", "c"].map((id) => event({ id, occurredAt: at })) });
+    await repo.record({ events: [event({ id: "other-device", deviceId: "m2", occurredAt: at })] });
+    const otherShop = createDeviceEventRepository({ ...executorFor(db), shopId: "other" });
+    await otherShop.record({ events: [event({ id: "other-shop", occurredAt: at })] });
+    const first = await repo.listEvents({ deviceId: "m1", limit: 2 });
+    expect(first.map((e) => e.id)).toEqual(["c", "b"]);
+    await repo.record({ events: [event({ id: "newer", occurredAt: new Date(at.getTime() + 1000) })] });
+    expect((await repo.listEvents({ deviceId: "m1", limit: 2, before: first.at(-1)!.id })).map((e) => e.id)).toEqual(["a"]);
+    for (const before of ["missing", "other-device", "other-shop"]) {
+      expect(await repo.listEvents({ deviceId: "m1", limit: 2, before })).toEqual([]);
+    }
+  });
+
   it("records a change only when the value actually changes", async () => {
     const { repo } = fixture();
     await repo.record({ events: [], states: [{ write: powerState("on"), event: event({ payload: { from: null, to: "on" } }) }] });
@@ -117,17 +132,6 @@ describe("device event repository", () => {
     expect(await repo.getOperation("op1")).toMatchObject({ status: "succeeded", failure: null });
   });
 
-  it("confirms an operation only the first time, and only from its own device", async () => {
-    const { repo } = fixture();
-    await repo.record({ events: [], operation: operation({ id: "scan", action: "aime.scan", capability: "hinata_io" }) });
-    const first = new Date("2026-02-01T10:00:04.000Z");
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m2", confirmedAt: new Date("2026-02-01T10:00:02.000Z") } });
-    expect((await repo.getOperation("scan"))!.confirmedAt).toBeNull();
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m1", confirmedAt: first } });
-    await repo.record({ events: [], confirm: { operationId: "scan", deviceId: "m1", confirmedAt: new Date("2026-02-01T10:09:00.000Z") } });
-    expect((await repo.getOperation("scan"))!.confirmedAt).toEqual(first);
-  });
-
   it("writes nothing when a batch part fails", async () => {
     const { repo } = fixture();
     await repo.record({ events: [event({ id: "dup" })] });
@@ -142,5 +146,34 @@ describe("device event repository", () => {
     await repo.record({ events: [], operation: operation({ id: "b", requestedAt: new Date("2026-02-02T00:00:00.000Z") }) });
     await repo.record({ events: [], operation: operation({ id: "a", requestedAt: new Date("2026-02-01T00:00:00.000Z") }) });
     expect((await repo.listOperationsByPlayer("p1")).map((o) => o.id)).toEqual(["a", "b"]);
+  });
+
+  it("keeps where an event came from, and says nothing for one that never said", async () => {
+    const { repo } = fixture();
+    await repo.record({ events: [
+      event({ id: "old" }),
+      event({ id: "said", kind: "request", name: "power.on", via: { channel: "bot", resourceId: "bot-1" } }),
+      event({ id: "page", kind: "request", name: "coin", via: { channel: "page", resourceId: null } }),
+    ] });
+    const via = new Map((await repo.listEvents({ deviceId: "m1", limit: 10 })).map((e) => [e.id, e.via]));
+    expect(via.get("old")).toBeNull();
+    expect(via.get("said")).toEqual({ channel: "bot", resourceId: "bot-1" });
+    expect(via.get("page")).toEqual({ channel: "page", resourceId: null });
+  });
+
+  it("returns the events it wrote, without a change whose state did not move", async () => {
+    const { repo } = fixture();
+    const first = event({ id: "c1", payload: { to: "on" } });
+    expect((await repo.record({ events: [], states: [{ write: powerState("on"), event: first }] })).map((e) => e.id))
+      .toEqual(["c1"]);
+    const signal = event({ id: "s1", kind: "signal", name: "card.consumed", capability: "hinata_io" });
+    const written = await repo.record({
+      events: [signal],
+      states: [
+        { write: powerState("on"), event: event({ id: "c2", payload: { to: "on" } }) },
+        { write: { ...powerState("cool"), capability: "climate", key: "climate" }, event: event({ id: "c3", capability: "climate", name: "climate" }) },
+      ],
+    });
+    expect(written.map((e) => e.id)).toEqual(["s1", "c3"]);
   });
 });

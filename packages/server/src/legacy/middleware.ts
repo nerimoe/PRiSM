@@ -1,5 +1,8 @@
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../bindings.js";
+import { logger, loggedPath } from "../log.js";
+
+const log = logger("legacy-api");
 
 /**
  * Maps a legacy endpoint URL path to the modern multi-tenant replacement path.
@@ -71,9 +74,9 @@ export const legacyDeprecationMiddleware: MiddlewareHandler<AppBindings> = async
   );
   headers.set("Deprecation", "true");
 
-  console.warn(
-    `[DEPRECATED API] ${c.req.method} ${c.req.path} invoked by ${c.req.header("user-agent") ?? "unknown"} -> replacement: ${replacement}`,
-  );
+  log.warn(`deprecated ${c.req.method} ${loggedPath(c.req.path)} called; use ${replacement}`, {
+    event: "deprecated_api", userAgent: c.req.header("user-agent") ?? null, replacement,
+  });
 
   c.res = new Response(c.res.body, {
     status: c.res.status,

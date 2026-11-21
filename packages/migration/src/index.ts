@@ -1139,7 +1139,6 @@ function toCoinDeviceOperation(record: PrismNeoCoinRecord): MigratedDeviceOperat
     payload: { count: record.count, legacyCoinRecordId: record.id },
     requestedAt: record.createAt,
     settledAt: record.createAt,
-    confirmedAt: null,
   };
 }
 

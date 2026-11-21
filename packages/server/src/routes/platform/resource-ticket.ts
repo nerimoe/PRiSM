@@ -26,6 +26,8 @@ export type ScannedResource = {
   enabled: number;
   /** 1 when the resource resolves to a plan. */
   billed: number;
+  /** 1 for a bot, which is managed as a resource but is not scanned. */
+  is_bot: number;
   machine_geo: number;
   latitude: number;
   longitude: number;
@@ -37,12 +39,13 @@ const machineSelect = `SELECT machines.*, shops.name AS shop_name,
     ELSE '/api/v1/shops/' || shops.public_id || '/hero?v=' || COALESCE(shops.hero_hash,'original') END AS shop_hero_url,
   shops.latitude, shops.longitude, shops.radius_meters, shops.public_id AS shop_public_id,
   (COALESCE(b.machine_geo,0) OR COALESCE(b.checkin_geo,0) OR COALESCE(b.checkout_geo,0)) AS machine_geo,
-  ${resourceBilledSql("machines")} AS billed
+  ${resourceBilledSql("machines")} AS billed,
+  EXISTS(SELECT 1 FROM device_capabilities bot WHERE bot.shop_id=machines.shop_id AND bot.device_id=machines.id AND bot.capability='bot') AS is_bot
   FROM machines JOIN shops ON shops.id=machines.shop_id
   LEFT JOIN shop_billing_settings b ON b.shop_id=shops.id`;
 
 /** A resource of a shop by its id, in the shape the scan routes use. */
-export async function loadScannedResource(c: Context<AppBindings>, shopId: string, id: string): Promise<ScannedResource | null> {
+export async function loadScannedResource(c: Pick<Context<AppBindings>, "env">, shopId: string, id: string): Promise<ScannedResource | null> {
   return c.env.DB.prepare(`${machineSelect} WHERE machines.shop_id=? AND machines.id=?`)
     .bind(shopId, id).first<ScannedResource>();
 }
@@ -94,9 +97,7 @@ export async function resolveResourceTicket(c: Context<AppBindings>, ticket: str
   }
   if (machine.enabled !== 1) jsonError(404, "机台不可用", "MACHINE_NOT_FOUND");
   // A bot is managed as a resource but is not something players scan.
-  const bot = await c.env.DB.prepare("SELECT 1 FROM device_capabilities WHERE shop_id=? AND device_id=? AND capability='bot'")
-    .bind(machine.shop_id, machine.id).first();
-  if (bot) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
+  if (machine.is_bot) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
   return machine;
 }
 
@@ -107,14 +108,14 @@ export async function publicResource(c: Context<AppBindings>, m: ScannedResource
     : { power: false, climate: false, card: false, coin: false, door: false, mahjong: false };
   const io = device ? hinataConfigOf(device) : null;
   return {
-    publicId: m.public_id, name: m.name, kind: m.kind, coinAfterSwipe: !!io?.coinAfterSwipe,
+    publicId: m.public_id, name: m.name, kind: m.kind,
     capabilities,
     // Using it needs its plan running for the player; a free resource needs nothing.
     billed: !!m.billed,
     // Only a cabinet connected directly reports the cards on its reader.
     cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,
     // Native apps render the full device flow only for a plain card cabinet.
-    webOnly: !!io?.coinAfterSwipe || !!m.billed || !capabilities.card ||
+    webOnly: !!m.billed || !capabilities.card ||
       capabilities.door || capabilities.power || capabilities.climate,
     shop: {
       name: m.shop_name, publicId: m.shop_public_id,

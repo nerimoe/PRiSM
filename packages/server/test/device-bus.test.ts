@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { DeviceEvent, DeviceEventRepository, DeviceOperation, DeviceRecord, DeviceStateValue } from "@prism/core";
+import { deviceEventType } from "@prism/core";
+import type { DeviceEvent, DeviceEventRepository, DeviceEventVia, DeviceOperation, DeviceRecord, DeviceStateValue } from "@prism/core";
 import { createDeviceBus, type ActionRunner, type StateReader } from "../src/resources/capabilities/bus.js";
 import type { BoundCapability, Resource } from "../src/resources/resource.js";
 import type { CapabilityId } from "../src/resources/capabilities/catalog.js";
@@ -11,6 +12,7 @@ function memoryRepository() {
   const state = new Map<string, { value: unknown; changedAt: Date }>();
   const repo: DeviceEventRepository = {
     async record(input: DeviceRecord) {
+      const before = events.length;
       events.push(...input.events);
       if (input.operation) operations.set(input.operation.id, input.operation);
       if (input.settle) {
@@ -19,10 +21,6 @@ function memoryRepository() {
           operations.set(op.id, { ...op, status: input.settle.status, failure: input.settle.failure, settledAt: input.settle.settledAt });
         }
       }
-      if (input.confirm) {
-        const op = operations.get(input.confirm.operationId);
-        if (op && !op.confirmedAt) operations.set(op.id, { ...op, confirmedAt: input.confirm.confirmedAt });
-      }
       for (const { write, event } of input.states ?? []) {
         const key = `${write.deviceId}/${write.capability}/${write.key}`;
         const previous = state.get(key);
@@ -30,6 +28,7 @@ function memoryRepository() {
         if (event) events.push(event);
         state.set(key, { value: write.value, changedAt: event?.occurredAt ?? write.at ?? new Date(0) });
       }
+      return events.slice(before);
     },
     async listEvents() { return [...events].reverse(); },
     async getOperation(id) { return operations.get(id) ?? null; },
@@ -48,11 +47,22 @@ function device(bound: Partial<Record<CapabilityId, Partial<BoundCapability>>>, 
   return { id: "m1", shopId: "shop", publicId: "pub", name: "Cabinet", aliases: [], enabled, kind: "machine", capacity: 1, occupancyMinutes: 15, capabilities };
 }
 
-const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) =>
-  device({ hinata_io: { config: { transport: "external", coinKey: 32, coinAfterSwipe: false, ...config }, secretNames: new Set(secrets) } });
+/** A cabinet with a HINATA IO whose key 投币 its coin presses; `coinKey: 0` leaves the coin out. */
+const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) => {
+  const { coinKey, coinKeyId: _chosen, ...io } = config;
+  return device({
+    hinata_io: { config: { transport: "external", keys: [{ id: "coin", name: "投币", key: 32 }], ...io }, secretNames: new Set(secrets) },
+    ...(coinKey === 0 ? {} : { coin: { config: { method: "key", keyId: "coin", cap: null, afterSwipe: false } } }),
+  });
+};
 const powerDevice = () => device({ power: { secretNames: new Set(["binding"]) } });
 
-function busWith(input: { runners?: Record<string, ActionRunner>; readers?: Record<string, StateReader> } = {}) {
+function busWith(input: {
+  runners?: Record<string, ActionRunner>;
+  readers?: Record<string, StateReader>;
+  via?: DeviceEventVia;
+  published?: (events: readonly DeviceEvent[]) => Promise<void>;
+} = {}) {
   const memory = memoryRepository();
   let tick = 0;
   let next = 0;
@@ -62,6 +72,8 @@ function busWith(input: { runners?: Record<string, ActionRunner>; readers?: Reco
     id: () => `id${next++}`,
     runners: input.runners ?? {},
     readers: input.readers ?? {},
+    ...(input.via ? { via: input.via } : {}),
+    ...(input.published ? { published: input.published } : {}),
   });
   return { bus, ...memory };
 }
@@ -85,6 +97,15 @@ describe("device bus: perform", () => {
     expect(events.map((e) => `${e.kind}:${e.name}`)).toEqual(["request:coin", "result:coin"]);
     expect(operation).toMatchObject({ status: "succeeded", countsAsPlay: true, playerId: "p1" });
     expect(operations.get("op")!.status).toBe("succeeded");
+  });
+
+  it("keeps why the platform asked by itself on the request and its result", async () => {
+    const { bus, events } = busWith({ runners: { coin: async () => ({ outcome: "ok" }) } });
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, operationId: "op", cause: "card" });
+    expect(events.map((e) => [e.kind, e.payload.cause])).toEqual([["request", "card"], ["result", "card"]]);
+    // Someone asking says no cause.
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, operationId: "op2" });
+    expect(events.slice(2).map((e) => e.payload.cause)).toEqual([undefined, undefined]);
   });
 
   it("keeps an unknown outcome pending, the way billing has always counted it", async () => {
@@ -183,27 +204,58 @@ describe("device bus: perform", () => {
     expect(operation.status).toBe("succeeded");
   });
 
+  it("presses a named key on a cabinet that has no coin key, as a key press and not a coin", async () => {
+    const pressed: Array<Record<string, unknown>> = [];
+    const { bus, events } = busWith({ runners: { "key.press": async ({ payload }) => { pressed.push(payload); return { outcome: "ok" }; } } });
+    const service = { id: "service", name: "服务", key: 112 };
+    const noCoin = ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0, keys: [service], coinKeyId: null }, []);
+    // Without a named key there is nothing to press.
+    await expect(bus.perform({ device: ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0, keys: [] }, []), action: "key.press", actor: player }))
+      .rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
+    await expect(bus.perform({ device: noCoin, action: "coin", actor: player })).rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
+    const staff = { type: "staff" as const, staffId: "user:s1" };
+    const { operation } = await bus.perform({ device: noCoin, action: "key.press", actor: staff, payload: { key: 112 } });
+    expect(operation.status).toBe("succeeded");
+    expect(pressed).toEqual([expect.objectContaining({ key: 112 })]);
+    expect(events.map(deviceEventType).every((type) => type.startsWith("key.press"))).toBe(true);
+  });
+
   it("refuses a disabled device", async () => {
     const { bus } = busWith({ runners: { coin: async () => ({ outcome: "ok" }) } });
-    const disabled = device({ hinata_io: { config: { transport: "external", coinKey: 32 }, secretNames: new Set(["url", "password"]) } }, false);
+    const disabled = { ...ioDevice(), enabled: false };
     await expect(bus.perform({ device: disabled, action: "coin", actor: player }))
       .rejects.toMatchObject({ code: "DEVICE_DISABLED" });
   });
 });
 
 describe("device bus: signals and state", () => {
-  it("confirms the operation a card report names", async () => {
-    const { bus, operations } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
+  it("records a card report as its own event and leaves the request as it was", async () => {
+    const { bus, operations, events } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
     await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, operationId: "scan" });
+    const before = operations.get("scan");
     await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed", operationId: "scan" });
-    expect(operations.get("scan")!.confirmedAt).not.toBeNull();
+    expect(operations.get("scan")).toEqual(before);
+    expect(events.at(-1)).toMatchObject({ kind: "signal", name: "card.consumed", operationId: "scan", origin: "device" });
   });
 
-  it("does not let an unrelated signal confirm anything", async () => {
-    const { bus, operations } = busWith({ runners: { "aime.scan": async () => ({ outcome: "ok" }) } });
-    await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, operationId: "scan" });
-    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.state", operationId: "scan" });
-    expect(operations.get("scan")!.confirmedAt).toBeNull();
+  it("hands the runner what the action awaits only when the caller waits", async () => {
+    const seen: unknown[] = [];
+    const { bus } = busWith({
+      runners: {
+        "aime.scan": async ({ awaits }) => {
+          seen.push(awaits ?? null);
+          return { outcome: "ok", ...(awaits ? { awaited: { name: awaits.signal, payload: {} } } : {}) };
+        },
+        coin: async ({ awaits }) => (seen.push(awaits ?? null), { outcome: "ok" }),
+      },
+    });
+    const waited = await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player, wait: true });
+    const plain = await bus.perform({ device: ioDevice(), action: "aime.scan", actor: player });
+    // Coin declares nothing to wait for, so asking to wait changes nothing.
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player, wait: true });
+    expect(seen).toEqual([{ signal: "card.consumed", timeoutMs: 4500 }, null, null]);
+    expect(waited.awaited).toEqual({ name: "card.consumed", payload: {} });
+    expect(plain.awaited).toBeUndefined();
   });
 
   it("drops per-frame telemetry instead of storing it", async () => {
@@ -230,5 +282,56 @@ describe("device bus: signals and state", () => {
     const { bus, events } = busWith({ readers: { "power.power": async () => null } });
     expect(await bus.observe(powerDevice(), "power", "power")).toBeNull();
     expect(events).toEqual([]);
+  });
+});
+
+describe("device bus: where events come from and who hears them", () => {
+  it("stamps every event with the way the bus was given, and a request with its own", async () => {
+    const { bus, events } = busWith({
+      runners: { "power.on": async () => ({ outcome: "ok" }) },
+      via: { channel: "page", resourceId: null },
+    });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player, via: { channel: "bot", resourceId: "bot-1" } });
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    expect(events.map((e) => [e.kind, e.via?.channel, e.via?.resourceId ?? null])).toEqual([
+      ["request", "page", null], ["result", "page", null],
+      ["request", "bot", "bot-1"], ["result", "bot", "bot-1"],
+      ["change", "page", null],
+    ]);
+  });
+
+  it("says nothing about where an event came from when nobody told it", async () => {
+    const { bus, events } = busWith();
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed" });
+    expect(events[0]!.via).toBeNull();
+  });
+
+  it("publishes each event once it is written, by its one name, and not a change that did not happen", async () => {
+    const heard: string[] = [];
+    const { bus } = busWith({
+      runners: { "power.on": async () => ({ outcome: "ok" }), coin: async () => ({ outcome: "failed", message: "设备未连接" }) },
+      published: async (events) => { heard.push(...events.map(deviceEventType)); },
+    });
+    await bus.perform({ device: powerDevice(), action: "power.on", actor: player });
+    await bus.perform({ device: ioDevice(), action: "coin", actor: player });
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "card.consumed" });
+    // A per-frame signal is not stored, so there is nothing to hear.
+    await bus.signal({ device: { id: "m1" }, capability: "hinata_io", name: "led.set" });
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    await bus.reportMany([{ device: { id: "m1" }, capability: "power", key: "power", value: "on" }]);
+    await bus.setOwned({ device: { id: "m1" }, capability: "hinata_io", key: "link", value: "online" });
+    expect(heard).toEqual([
+      "power.on.requested", "power.on.sent",
+      "coin.requested", "coin.failed",
+      "card.consumed",
+      "power.changed",
+      "hinata_io.link.changed",
+    ]);
+  });
+
+  it("names a request nobody answered", () => {
+    expect(deviceEventType({ kind: "result", name: "aime.scan", capability: "hinata_io", payload: { outcome: "unknown" } }))
+      .toBe("aime.scan.unanswered");
   });
 });

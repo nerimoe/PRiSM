@@ -55,7 +55,7 @@ packages/server/
   - `HTTPException`: 遵循标准 Hono 异常响应。
 - **路由分发树**：
   - `/health`, `/api/v1/health`: 系统健康检查。
-  - `/version`, `/api/v1/version`: 部署版本与 Git 修订号。
+  - `/version`, `/api/v1/version`: Worker 名称与构建所用的 Git 提交号。
   - `/api/v1/auth`, `/api/v1/passkeys`, `/api/v1/user`, `/api/v1/account`: 平台认证与账号。
   - `/api/v1/merchant/shops`, `/api/v1/shops`: 平台级商户店铺管理。
   - `/api/v1/shops/:shopCode`: 多租户店铺业务核心（玩家、店员、收银、机台、计费、资产）。

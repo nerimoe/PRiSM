@@ -1,309 +1,352 @@
 import { describe, expect, it } from "bun:test";
-import { parseIdleSettings, planIdle, RETRY_OFF_MS, type IdleDevice, type IdleInputs } from "../src/resources/capabilities/idle-power.js";
+import {
+  applyIdleEvent, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake, parseIdleSettings,
+  RETRY_OFF_MS, setIdleEmpty, settleIdleOff,
+  type IdleTimers,
+} from "../src/resources/capabilities/idle-power.js";
 
 const MIN = 60_000;
-const NOW = 1_800_000_000_000;
+const T = 1_000_000_000;
+const LEAD = 3 * MIN;
 
-const device = (over: Partial<IdleDevice> = {}): IdleDevice => ({
-  // Occupancy supplies its expiry; an unoccupied cabinet waits 10 minutes to shut down.
-  id: "m1", name: "舞萌", hasPower: true, hasClimate: false, hasUsage: false, power: "on", climate: null,
-  powerTarget: null, climateTarget: null, lastClimateAutoOff: null,
-  lastActivity: null, busyUntil: null, poweredOnAt: NOW - 5 * MIN, lastAutoOff: null, ...over,
+const rules = (value: unknown = { device: { enabled: true, minutes: 10, whileOccupied: "off" } }) => parseIdleSettings(value);
+const machine = (id: string, power = true) => ({ key: `k:${id}`, ids: [id], power });
+/** Timers of a shop with a bill open, unless said empty. */
+const timers = (): IdleTimers => emptyIdleTimers();
+const offKeys = (due: ReturnType<typeof dueIdle>) => due.off.map((one) => one.key);
+
+describe("idle settings", () => {
+  it("keeps both rules off until the shop turns them on", () => {
+    const settings = parseIdleSettings(undefined);
+    expect(settings.shopEmpty.enabled).toBe(false);
+    expect(settings.device.enabled).toBe(false);
+    expect(settings.device.whileOccupied).toBe("mark");
+    expect(settings.keepMinutes).toBe(45);
+  });
+
+  it("reads the device rule of shops that set an idle time before it had a switch", () => {
+    expect(parseIdleSettings({ device: { defaultMinutes: 20 } }).device).toMatchObject({ enabled: true, minutes: 20 });
+    expect(parseIdleSettings({ device: { whileOccupied: "remind" } }).device.whileOccupied).toBe("off");
+  });
 });
-const inputs = (over: Omit<Partial<IdleInputs>, "settings"> & { settings?: unknown } = {}): IdleInputs => ({
-  now: NOW, activeEntries: 0, emptySince: null, emptyHandled: null, devices: [device()],
-  reminderLeadMs: null, reminded: {}, ...over, settings: parseIdleSettings(over.settings ?? {}),
+
+describe("a device's idle timer", () => {
+  it("starts when the device is switched on and switches it off when it runs out", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    expect(nextIdleWake(state, settings, T, null)).toBe(T + 10 * MIN);
+    expect(idleScheduleOf(state, settings, T)).toEqual({ m1: T + 10 * MIN });
+    expect(dueIdle(state, settings, T + 10 * MIN - 1, null)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(offKeys(dueIdle(state, settings, T + 10 * MIN, null))).toEqual(["k:m1"]);
+  });
+
+  it("ends when the device is switched off", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "off", key: "k:m1" }, T + MIN);
+    expect(state.entries).toEqual({});
+    expect(nextIdleWake(state, rules(), T + MIN, null)).toBeNull();
+  });
+
+  it("starts again at a coin or an authorised card, and from the end of the stay one began", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 6 * MIN);
+    expect(nextIdleWake(state, settings, T + 6 * MIN, null)).toBe(T + 16 * MIN);
+    // A stay that lasts to T+40: the timer starts there.
+    applyIdleEvent(state, { kind: "activity", ...machine("m1"), at: T + 40 * MIN }, T + 10 * MIN);
+    expect(nextIdleWake(state, settings, T + 10 * MIN, null)).toBe(T + 50 * MIN);
+    // A coin during the stay does not shorten it.
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 12 * MIN);
+    expect(nextIdleWake(state, settings, T + 12 * MIN, null)).toBe(T + 50 * MIN);
+  });
+
+  it("is held by keep for a time of its own, which a coin does not shorten", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    // Kept at T+5 for 45 minutes: far past the 10 minutes its idle time gives.
+    applyIdleEvent(state, { kind: "activity", ...machine("m1"), until: T + 50 * MIN }, T + 5 * MIN);
+    expect(idleScheduleOf(state, settings, T + 5 * MIN)).toEqual({ m1: T + 50 * MIN });
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 20 * MIN);
+    expect(idleScheduleOf(state, settings, T + 20 * MIN)).toEqual({ m1: T + 50 * MIN });
+    // It is warned about and switched off like any other.
+    expect(dueIdle(state, settings, T + 47 * MIN, LEAD).warn).toEqual([{ reason: "device_idle", keys: ["k:m1"], at: T + 50 * MIN }]);
+    expect(offKeys(dueIdle(state, settings, T + 50 * MIN, LEAD))).toEqual(["k:m1"]);
+    // Use after the kept time has passed counts from then, as ever.
+    const later = timers();
+    applyIdleEvent(later, { kind: "activity", ...machine("m1"), until: T + 45 * MIN }, T);
+    applyIdleEvent(later, { kind: "activity", ...machine("m1") }, T + 60 * MIN);
+    expect(idleScheduleOf(later, settings, T + 60 * MIN)).toEqual({ m1: T + 70 * MIN });
+  });
+
+  it("has a timer for a device nobody saw switch on once it is used", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T);
+    expect(offKeys(dueIdle(state, rules(), T + 10 * MIN, null))).toEqual(["k:m1"]);
+  });
+
+  it("warns first and switches off a lead later", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    expect(nextIdleWake(state, settings, T, LEAD)).toBe(T + 7 * MIN);
+    expect(dueIdle(state, settings, T + 7 * MIN - 1, LEAD).warn).toEqual([]);
+    expect(dueIdle(state, settings, T + 7 * MIN, LEAD)).toEqual({
+      warn: [{ reason: "device_idle", keys: ["k:m1"], at: T + 10 * MIN }], off: [], shopOff: false,
+    });
+    // Said once.
+    expect(dueIdle(state, settings, T + 8 * MIN, LEAD).warn).toEqual([]);
+    expect(nextIdleWake(state, settings, T + 8 * MIN, LEAD)).toBe(T + 10 * MIN);
+    expect(offKeys(dueIdle(state, settings, T + 10 * MIN, LEAD))).toEqual(["k:m1"]);
+  });
+
+  it("gives a full lead when the warning comes late", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    // Nothing woke the hub until after the time had passed.
+    expect(dueIdle(state, settings, T + 30 * MIN, LEAD).warn).toEqual([{ reason: "device_idle", keys: ["k:m1"], at: T + 33 * MIN }]);
+    expect(dueIdle(state, settings, T + 32 * MIN, LEAD).off).toEqual([]);
+    expect(offKeys(dueIdle(state, settings, T + 33 * MIN, LEAD))).toEqual(["k:m1"]);
+  });
+
+  it("takes the warning back when the device is used after it", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    dueIdle(state, settings, T + 8 * MIN, LEAD);
+    applyIdleEvent(state, { kind: "activity", ...machine("m1") }, T + 9 * MIN);
+    expect(dueIdle(state, settings, T + 10 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(nextIdleWake(state, settings, T + 10 * MIN, LEAD)).toBe(T + 16 * MIN);
+  });
+
+  it("only marks a device that runs out while players are in, when the owner says so", () => {
+    const state = timers();
+    const settings = rules({ device: { enabled: true, minutes: 10, whileOccupied: "mark" } });
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    expect(idleScheduleOf(state, settings, T)).toEqual({});
+    expect(dueIdle(state, settings, T + 10 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(state.entries["k:m1"]!.marked).toBe(true);
+    expect(nextIdleWake(state, settings, T + 10 * MIN, LEAD)).toBeNull();
+    // The last bill closes: with nobody in, the device rule switches it off, after its warning.
+    setIdleEmpty(state, true, T + 20 * MIN);
+    expect(dueIdle(state, settings, T + 20 * MIN, LEAD).warn).toEqual([{ reason: "device_idle", keys: ["k:m1"], at: T + 23 * MIN }]);
+    expect(offKeys(dueIdle(state, settings, T + 23 * MIN, LEAD))).toEqual(["k:m1"]);
+  });
+
+  it("never times an excluded device, and none while the rule is off", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    const excluded = rules({ device: { enabled: true, minutes: 10, whileOccupied: "off" }, devices: { m1: { exclude: true } } });
+    expect(nextIdleWake(state, excluded, T, null)).toBeNull();
+    expect(dueIdle(state, excluded, T + 60 * MIN, null).off).toEqual([]);
+    expect(idleBusy(state, excluded)).toBe(false);
+    expect(nextIdleWake(state, rules({}), T, null)).toBeNull();
+  });
+
+  it("keeps one timer for every resource on the same switch", () => {
+    const state = timers();
+    const settings = rules();
+    const shared = { key: "power:x", ids: ["m1", "m2"], power: true };
+    applyIdleEvent(state, { kind: "on", ...shared }, T);
+    applyIdleEvent(state, { kind: "activity", ...shared }, T + 5 * MIN);
+    expect(idleScheduleOf(state, settings, T + 5 * MIN)).toEqual({ m1: T + 15 * MIN, m2: T + 15 * MIN });
+    expect(dueIdle(state, settings, T + 15 * MIN, null).off).toEqual([{ reason: "device_idle", key: "power:x" }]);
+  });
 });
 
-describe("idle power planning", () => {
-  const shared = (over: Partial<IdleDevice> = {}) => [
-    device({ powerTarget: "ha-1|switch.shared", poweredOnAt: NOW - 60 * MIN }),
-    device({ id: "m2", name: "中二", powerTarget: "ha-1|switch.shared", poweredOnAt: NOW - 60 * MIN, ...over }),
-  ];
-  const offSettings = { device: { enabled: true, minutes: 10, whileOccupied: "off" } };
-
-  it("uses the latest shared resource's free time for one warning and a common deadline", () => {
-    const devices = shared({ lastActivity: NOW - 5 * MIN });
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
-    expect(plan).toMatchObject({ powerOff: [], powerOffAt: { m1: NOW + 5 * MIN, m2: NOW + 5 * MIN }, nextWake: NOW + 5 * MIN });
-    expect(plan.remind).toEqual([{ key: "device:m1", reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 5 * MIN }]);
-    const due = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN }));
-    expect(due.powerOff).toEqual(["m1", "m2"]);
+describe("seats", () => {
+  it("hold a table's timer until the last one is left", () => {
+    const state = timers();
+    const settings = rules();
+    const table = machine("t1");
+    applyIdleEvent(state, { kind: "on", ...table }, T);
+    applyIdleEvent(state, { kind: "held", ...table, held: true }, T + MIN);
+    expect(nextIdleWake(state, settings, T + MIN, null)).toBeNull();
+    expect(dueIdle(state, settings, T + 5 * 60 * MIN, null).off).toEqual([]);
+    applyIdleEvent(state, { kind: "held", ...table, held: false }, T + 5 * 60 * MIN);
+    expect(nextIdleWake(state, settings, T + 5 * 60 * MIN, null)).toBe(T + 5 * 60 * MIN + 10 * MIN);
   });
 
-  for (const activeEntries of [0, 1]) it(`protects every shared resource while one is occupied, active entries=${activeEntries}`, () => {
-    const plan = planIdle(inputs({
-      settings: { ...offSettings, shopEmpty: { enabled: true, minutes: 15 } }, activeEntries,
-      emptySince: NOW - 60 * MIN, devices: shared({ busyUntil: Infinity }), reminderLeadMs: 5 * MIN,
-    }));
-    expect(plan).toMatchObject({ powerOff: [], remind: [], powerOffAt: {}, nextWake: null });
-    expect(plan.emptyHandled).toBeNull();
+  it("left on a table that had no timer start none", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "held", ...machine("t1"), held: false }, T);
+    expect(state.entries).toEqual({});
+  });
+});
+
+describe("a power-off", () => {
+  it("that failed is sent again later, without another warning", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    dueIdle(state, settings, T + 10 * MIN, null);
+    settleIdleOff(state, "k:m1", false, T + 10 * MIN);
+    expect(nextIdleWake(state, settings, T + 10 * MIN, LEAD)).toBe(T + 10 * MIN + RETRY_OFF_MS);
+    expect(dueIdle(state, settings, T + 11 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(dueIdle(state, settings, T + 10 * MIN + RETRY_OFF_MS, LEAD)).toEqual({
+      warn: [], off: [{ reason: "device_idle", key: "k:m1" }], shopOff: false,
+    });
   });
 
-  for (const activeEntries of [0, 1]) it(`an excluded resource protects its whole supply, active entries=${activeEntries}`, () => {
-    const plan = planIdle(inputs({
-      settings: { ...offSettings, shopEmpty: { enabled: true }, devices: { m2: { exclude: true } } },
-      activeEntries, emptySince: NOW - 60 * MIN, devices: shared(), reminderLeadMs: 5 * MIN,
-    }));
-    expect(plan).toMatchObject({ powerOff: [], remind: [], powerOffAt: {} });
+  it("that was accepted ends the timer of a device nothing reports", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    settleIdleOff(state, "k:m1", true, T + 10 * MIN);
+    expect(state.entries).toEqual({});
+    expect(state.climateDue).toBe(true);
   });
 
-  it("does not combine equal entity ids belonging to different HA connections", () => {
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1,
-      devices: shared({ powerTarget: "ha-2|switch.shared", busyUntil: Infinity }) }));
-    expect(plan.powerOff).toEqual(["m1"]);
-  });
-
-  it("shares the retry window across resources on one supply", () => {
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: shared({ lastAutoOff: NOW - MIN }) }));
-    expect(plan).toMatchObject({ powerOff: [], nextWake: NOW - MIN + RETRY_OFF_MS });
-  });
-
-  it("defers the empty-shop shutdown and its warning until the shared supply is free", () => {
-    const devices = shared({ busyUntil: NOW + 4 * MIN });
-    const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const plan = planIdle(inputs({ settings, emptySince: NOW - 60 * MIN, devices, reminderLeadMs: 5 * MIN }));
-    expect(plan).toMatchObject({ powerOff: [], powerOffAt: { m1: NOW + 4 * MIN, m2: NOW + 4 * MIN }, nextWake: NOW + 4 * MIN, emptyHandled: null });
-    expect(plan.remind).toEqual([expect.objectContaining({ reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 4 * MIN })]);
-    expect(planIdle(inputs({ settings, emptySince: NOW - 60 * MIN, devices, now: NOW + 4 * MIN })).powerOff).toEqual(["m1", "m2"]);
-  });
-
-  it("warns and switches off shared air conditioners from the cabinets' idle deadline", () => {
-    const devices = ["m1", "m2"].map((id) => device({ id, hasPower: false, hasClimate: true, power: null,
-      climate: "cool", climateTarget: "ha-1|climate.shared" }));
-    devices.push(device({ id: "game", poweredOnAt: NOW - 5 * MIN }));
-    const settings = { ...offSettings, devices: { game: { exclude: true } } };
-    const plan = planIdle(inputs({ settings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
-    expect(plan).toMatchObject({ powerOff: [], climateOff: [], powerOffAt: { m1: NOW + 5 * MIN, m2: NOW + 5 * MIN } });
-    expect(plan.remind).toEqual([{ key: "climate:m1", reason: "device_idle", deviceIds: ["m1", "m2"], at: NOW + 5 * MIN }]);
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["m1", "m2"]);
-    devices[1]!.lastClimateAutoOff = NOW;
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
-  });
-
-  it("uses the cabinet's idle condition for climate instead of a separate AC clock", () => {
-    const devices = [device({ hasClimate: true, climate: "heat", poweredOnAt: NOW - 60 * MIN })];
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices }));
-    expect(plan).toMatchObject({ powerOff: ["m1"], climateOff: ["m1"] });
-  });
-
-  const airConditioner = () => device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool" });
-
-  it("waits for the empty-shop rule when there are no cabinets to observe", () => {
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [airConditioner()] })).climateOff).toEqual([]);
-  });
-
-  it("can switch unknown climate off once per observed stretch of cabinet idleness", () => {
-    const ac = { ...airConditioner(), climate: null };
-    const cabinet = device({ poweredOnAt: NOW - 60 * MIN });
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet] })).climateOff).toEqual(["ac"]);
-    ac.lastClimateAutoOff = NOW - 5 * MIN;
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet] })).climateOff).toEqual([]);
-    cabinet.lastActivity = NOW;
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [ac, cabinet], now: NOW + 10 * MIN })).climateOff).toEqual(["ac"]);
-  });
-
-  it("keeps climate running until the last cabinet becomes idle, even if that cabinet is excluded from power-off", () => {
-    const devices = [airConditioner(), ...shared({ lastActivity: NOW - 5 * MIN })];
-    const settings = { ...offSettings, devices: { m2: { exclude: true } } };
-    const plan = planIdle(inputs({ settings, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
-    expect(plan).toMatchObject({ powerOff: [], climateOff: [], powerOffAt: { ac: NOW + 5 * MIN }, nextWake: NOW + 5 * MIN });
-    expect(plan.remind).toEqual([expect.objectContaining({ deviceIds: ["ac"], at: NOW + 5 * MIN })]);
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["ac"]);
-    devices[2]!.lastActivity = NOW;
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual([]);
-  });
-
-  for (const other of [
-    device({ busyUntil: Infinity }),
-    device({ power: null, poweredOnAt: null }),
-    device({ hasPower: false, hasUsage: true, power: null, busyUntil: Infinity }),
-  ]) it(`does not shut climate off when usage cannot end yet: ${JSON.stringify(other)}`, () => {
-    const plan = planIdle(inputs({ settings: offSettings, activeEntries: 1, devices: [airConditioner(), other], reminderLeadMs: 5 * MIN }));
-    expect(plan.climateOff).toEqual([]);
-    expect(plan.powerOffAt.ac).toBeUndefined();
-    expect(plan.remind.flatMap((r) => r.deviceIds)).not.toContain("ac");
-  });
-
-  it("uses a cabinet without a power binding as part of the all-idle deadline", () => {
-    const devices = [airConditioner(), device({ hasPower: false, hasUsage: true, power: null, lastActivity: NOW - 5 * MIN })];
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices })).powerOffAt.ac).toBe(NOW + 5 * MIN);
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices, now: NOW + 5 * MIN })).climateOff).toEqual(["ac"]);
-  });
-
-  it("counts powered-off cabinets as idle and keeps the keep-on policy for climate", () => {
-    const devices = [airConditioner(), device({ power: "off" })];
-    expect(planIdle(inputs({ settings: offSettings, activeEntries: 1, devices })).climateOff).toEqual(["ac"]);
-    expect(planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "mark" } }, activeEntries: 1, devices })).climateOff).toEqual([]);
-  });
-
-  it("allows the empty-shop climate rule even before other cabinets are idle", () => {
-    const plan = planIdle(inputs({ settings: { shopEmpty: { enabled: true, minutes: 15 } }, emptySince: NOW - 20 * MIN,
-      devices: [airConditioner(), device({ lastActivity: NOW, busyUntil: NOW + MIN })] }));
-    expect(plan.climateOff).toEqual(["ac"]);
-    expect(plan.powerOff).toEqual([]);
-  });
-
-  it("does nothing until the shop turns a rule on", () => {
-    const plan = planIdle(inputs({ emptySince: NOW - 60 * MIN }));
-    expect(plan).toMatchObject({ powerOff: [], climateOff: [], nextWake: null });
-  });
-
-  it("switches everything off, air conditioners included, once the shop has been empty long enough", () => {
-    const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const devices = [device({ poweredOnAt: NOW - 40 * MIN }), device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: "cool", }), device({ id: "off", power: "off" })];
-    const early = planIdle(inputs({ settings, devices, emptySince: NOW - 10 * MIN }));
-    expect(early.powerOff).toEqual([]);
-    expect(early.nextWake).toBe(NOW + 5 * MIN);
-    const due = planIdle(inputs({ settings, devices, emptySince: NOW - 15 * MIN }));
-    expect(due.powerOff).toEqual(["m1"]);
-    expect(due.climateOff).toEqual(["ac"]);
-    // It runs once per empty period.
-    expect(planIdle(inputs({ settings, devices, emptySince: NOW - 15 * MIN, emptyHandled: due.emptyHandled })).powerOff).toEqual([]);
-  });
-
-  it("never touches an excluded device", () => {
-    const settings = { shopEmpty: { enabled: true, minutes: 1 }, device: { enabled: true, whileOccupied: "off" }, devices: { m1: { exclude: true } } };
-    const plan = planIdle(inputs({ settings, emptySince: NOW - 60 * MIN }));
-    expect(plan.powerOff).toEqual([]);
-  });
-
-  it("counts idle time from the later of the last activity and switching on", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    const fresh = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 40 * MIN, lastActivity: NOW })] }));
-    expect(fresh.powerOff).toEqual([]);
-    expect(fresh.nextWake).toBe(NOW + 10 * MIN);
-    const stale = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 40 * MIN, lastActivity: NOW - 31 * MIN })] }));
-    expect(stale.powerOff).toEqual(["m1"]);
-  });
-
-  it("follows the owner's choice while players are in", () => {
-    const idle = [device({ poweredOnAt: NOW - 60 * MIN })];
-    for (const [whileOccupied, off] of [["mark", []], ["remind", ["m1"]], ["off", ["m1"]]] as const) {
-      const plan = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied } }, activeEntries: 2, devices: idle }));
-      expect(plan.powerOff).toEqual([...off]);
+  it("is repeated a few times for a device that still reports itself on", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1"), seen: true }, T);
+    let now = T + 10 * MIN;
+    let sent = 0;
+    while (state.entries["k:m1"] && sent < 10) {
+      expect(offKeys(dueIdle(state, settings, now, null))).toEqual(["k:m1"]);
+      settleIdleOff(state, "k:m1", true, now);
+      sent += 1;
+      now += RETRY_OFF_MS;
     }
+    expect(sent).toBe(3);
+    // Its report ends the timer at once.
+    applyIdleEvent(state, { kind: "on", ...machine("m2"), seen: true }, T);
+    settleIdleOff(state, "k:m2", true, T + 10 * MIN);
+    applyIdleEvent(state, { kind: "off", key: "k:m2" }, T + 10 * MIN + 1000);
+    expect(state.entries).toEqual({});
+  });
+});
+
+describe("the shop-empty timer", () => {
+  const shopRule = (device: unknown = { enabled: false }) => rules({ shopEmpty: { enabled: true, minutes: 15 }, device });
+
+  it("starts when the last bill closes, warns, and switches off everything still on", () => {
+    const state = timers();
+    const settings = shopRule();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("m2") }, T);
+    expect(nextIdleWake(state, settings, T, LEAD)).toBeNull();
+    setIdleEmpty(state, true, T + MIN);
+    expect(nextIdleWake(state, settings, T + MIN, LEAD)).toBe(T + 13 * MIN);
+    expect(idleScheduleOf(state, settings, T + MIN)).toEqual({ m1: T + 16 * MIN, m2: T + 16 * MIN });
+    expect(dueIdle(state, settings, T + 13 * MIN, LEAD)).toEqual({
+      warn: [{ reason: "shop_empty", keys: ["k:m1", "k:m2"], at: T + 16 * MIN }], off: [], shopOff: false,
+    });
+    const due = dueIdle(state, settings, T + 16 * MIN, LEAD);
+    expect(due.shopOff).toBe(true);
+    expect(due.off).toEqual([{ reason: "shop_empty", key: "k:m1" }, { reason: "shop_empty", key: "k:m2" }]);
+    // Once per empty stretch.
+    for (const key of ["k:m1", "k:m2"]) settleIdleOff(state, key, true, T + 16 * MIN);
+    expect(dueIdle(state, settings, T + 60 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(nextIdleWake(state, settings, T + 60 * MIN, LEAD)).toBeNull();
   });
 
-  it("switches an idle device off when the shop is empty and the shop rule is off", () => {
-    const plan = planIdle(inputs({ settings: { device: { enabled: true } }, devices: [device({ poweredOnAt: NOW - 60 * MIN })] }));
-    expect(plan.powerOff).toEqual(["m1"]);
+  it("is called off when someone enters", () => {
+    const state = timers();
+    const settings = shopRule();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    setIdleEmpty(state, true, T);
+    dueIdle(state, settings, T + 13 * MIN, LEAD);
+    setIdleEmpty(state, false, T + 14 * MIN);
+    expect(dueIdle(state, settings, T + 60 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    // The next empty stretch has a timer of its own.
+    setIdleEmpty(state, true, T + 2 * 60 * MIN);
+    expect(nextIdleWake(state, settings, T + 2 * 60 * MIN, null)).toBe(T + 2 * 60 * MIN + 15 * MIN);
   });
 
-  it("waits the configured idle time and leaves out a device never switched off", () => {
-    const settings = { device: { enabled: true, minutes: 1, whileOccupied: "off" }, devices: { m1: { exclude: true } } };
-    const plan = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 60 * MIN }), device({ id: "m2", poweredOnAt: NOW - MIN })] }));
-    expect(plan.powerOff).toEqual(["m2"]);
+  it("still runs out with nothing on, for the air conditioners", () => {
+    const state = timers();
+    setIdleEmpty(state, true, T);
+    expect(dueIdle(state, shopRule(), T + 15 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: true });
   });
 
-  it("never switches a device off while someone occupies it", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    const stale = { poweredOnAt: NOW - 60 * MIN, lastActivity: NOW - 40 * MIN };
-    // An occupant whose stay runs on keeps it busy until then.
-    const held = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ ...stale, busyUntil: NOW + 3 * MIN })] }));
-    // Occupancy ends in 3 minutes; publish the countdown then and shut down 10 minutes later.
-    expect(held).toMatchObject({ powerOff: [], nextWake: NOW + 3 * MIN });
-    // A seat has no expiry.
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices: [device({ ...stale, busyUntil: Infinity })] })).powerOff).toEqual([]);
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices: [device(stale)] })).powerOff).toEqual(["m1"]);
+  it("leaves taken seats and excluded devices on", () => {
+    const state = timers();
+    const settings = rules({ shopEmpty: { enabled: true, minutes: 15 }, devices: { m3: { exclude: true } } });
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("t1") }, T);
+    applyIdleEvent(state, { kind: "held", ...machine("t1"), held: true }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("m3") }, T);
+    setIdleEmpty(state, true, T);
+    expect(offKeys(dueIdle(state, settings, T + 15 * MIN, null))).toEqual(["k:m1"]);
   });
 
-  it("says when a device will be switched off once its countdown has started", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    // Idle since switching on 5 minutes ago: off in 5.
-    const free = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 5 * MIN })] }));
-    expect(free.powerOffAt).toEqual({ m1: NOW + 5 * MIN });
-    // Still busy: the countdown has not started.
-    expect(planIdle(inputs({ settings, activeEntries: 1, devices: [device({ busyUntil: NOW + 15 * MIN })] })).powerOffAt).toEqual({});
-    // Kept on by policy while players are in: no shutdown countdown.
-    const marked = planIdle(inputs({ settings: { device: { enabled: true } }, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 5 * MIN })] }));
-    expect(marked.powerOffAt).toEqual({});
-    // An empty shop switches everything off on its own deadline.
-    const empty = planIdle(inputs({ settings: { shopEmpty: { enabled: true, minutes: 15 } }, devices: [device({ poweredOnAt: NOW - 40 * MIN })], emptySince: NOW - 10 * MIN }));
-    expect(empty.powerOffAt).toEqual({ m1: NOW + 5 * MIN });
+  it("leaves a kept device on, to its own timer once the shop's has run out", () => {
+    const state = timers();
+    const settings = shopRule();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("m2") }, T);
+    setIdleEmpty(state, true, T);
+    applyIdleEvent(state, { kind: "activity", ...machine("m2"), until: T + 45 * MIN }, T);
+    expect(idleScheduleOf(state, settings, T)).toEqual({ m1: T + 15 * MIN });
+    expect(dueIdle(state, settings, T + 12 * MIN, LEAD).warn).toEqual([{ reason: "shop_empty", keys: ["k:m1"], at: T + 15 * MIN }]);
+    expect(offKeys(dueIdle(state, settings, T + 15 * MIN, LEAD))).toEqual(["k:m1"]);
+    settleIdleOff(state, "k:m1", true, T + 15 * MIN);
+    expect(idleScheduleOf(state, settings, T + 15 * MIN)).toEqual({ m2: T + 45 * MIN });
+    expect(offKeys(dueIdle(state, settings, T + 45 * MIN, null))).toEqual(["k:m2"]);
   });
 
-  it("reads a device idle time from before idle times moved onto resources as the rule being on", () => {
-    expect(parseIdleSettings({ device: { defaultMinutes: 20, whileOccupied: "remind" } }).device).toEqual({ enabled: true, minutes: 20, whileOccupied: "off" });
-    expect(parseIdleSettings({ device: { enabled: true, minutes: 10, whileOccupied: "remind" } }).device).toEqual({ enabled: true, minutes: 10, whileOccupied: "off" });
-    expect(parseIdleSettings({ device: { defaultMinutes: 0 } }).device.enabled).toBe(false);
+  it("leaves a device switched on afterwards to a timer of its own", () => {
+    const state = timers();
+    setIdleEmpty(state, true, T);
+    dueIdle(state, shopRule(), T + 15 * MIN, null);
+    // The device rule is off: the shop rule's own wait applies.
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T + 60 * MIN);
+    expect(nextIdleWake(state, shopRule(), T + 60 * MIN, null)).toBe(T + 75 * MIN);
+    expect(offKeys(dueIdle(state, shopRule(), T + 75 * MIN, null))).toEqual(["k:m1"]);
+    // With the device rule on, that rule's.
+    applyIdleEvent(state, { kind: "on", ...machine("m2") }, T + 60 * MIN);
+    const both = shopRule({ enabled: true, minutes: 10, whileOccupied: "mark" });
+    expect(idleScheduleOf(state, both, T + 60 * MIN)).toMatchObject({ m2: T + 70 * MIN });
   });
 
-  it("resets the shutdown wait on activity without creating occupancy", () => {
-    const plan = planIdle(inputs({ settings: { device: { enabled: true } }, activeEntries: 1, devices: [device({ lastActivity: NOW - MIN })] }));
-    expect(plan.powerOff).toEqual([]);
-    expect(plan.nextWake).toBe(NOW + 9 * MIN);
+  it("times the devices instead of the device rule while it has not run out", () => {
+    const state = timers();
+    const settings = shopRule({ enabled: true, minutes: 10, whileOccupied: "off" });
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    setIdleEmpty(state, true, T + MIN);
+    expect(dueIdle(state, settings, T + 12 * MIN, null).off).toEqual([]);
+    expect(offKeys(dueIdle(state, settings, T + 16 * MIN, null))).toEqual(["k:m1"]);
+  });
+});
+
+describe("the air conditioners", () => {
+  it("go off once an idle power-off leaves nothing on", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    applyIdleEvent(state, { kind: "on", ...machine("m2") }, T + 5 * MIN);
+    dueIdle(state, settings, T + 10 * MIN, null);
+    settleIdleOff(state, "k:m1", true, T + 10 * MIN);
+    expect(state.climateDue && !idleBusy(state, settings)).toBe(false);
+    dueIdle(state, settings, T + 15 * MIN, null);
+    settleIdleOff(state, "k:m2", true, T + 15 * MIN);
+    expect(state.climateDue && !idleBusy(state, settings)).toBe(true);
   });
 
-  it("does not retry a failed automatic power-off right away", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    const plan = planIdle(inputs({ settings, activeEntries: 1, devices: [device({ poweredOnAt: NOW - 60 * MIN, lastAutoOff: NOW - MIN })] }));
-    expect(plan.powerOff).toEqual([]);
-    expect(plan.nextWake).toBe(NOW - MIN + RETRY_OFF_MS);
+  it("wait for a cabinet without a switch, whose timer only counts", () => {
+    const state = timers();
+    const settings = rules();
+    applyIdleEvent(state, { kind: "activity", ...machine("c1", false) }, T);
+    expect(idleBusy(state, settings)).toBe(true);
+    expect(idleScheduleOf(state, settings, T)).toEqual({});
+    expect(dueIdle(state, settings, T + 10 * MIN, LEAD)).toEqual({ warn: [], off: [], shopOff: false });
+    expect(state.entries).toEqual({});
+    expect(state.climateDue).toBe(true);
   });
+});
 
-  it("switches a device off without knowing its state, as an unknown one may be on", () => {
-    const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const devices = [
-      device({ power: null, poweredOnAt: null }),
-      device({ id: "ac", hasPower: false, hasClimate: true, power: null, climate: null }),
-      device({ id: "known-off", power: "off" }),
-    ];
-    const due = planIdle(inputs({ settings, devices, emptySince: NOW - 15 * MIN }));
-    expect(due.powerOff).toEqual(["m1"]);
-    expect(due.climateOff).toEqual(["ac"]);
-  });
-
-  it("judges a device of unknown state only by its own activity, and switches it off once per stretch of idleness", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    const blind = (over: Partial<IdleDevice>) => planIdle(inputs({ settings, activeEntries: 1, devices: [device({ power: null, poweredOnAt: null, ...over })] }));
-    // No activity at all: nothing to count from.
-    expect(blind({}).powerOff).toEqual([]);
-    expect(blind({ lastActivity: NOW })).toMatchObject({ powerOff: [], nextWake: NOW + 10 * MIN });
-    expect(blind({ lastActivity: NOW - 31 * MIN }).powerOff).toEqual(["m1"]);
-    // Already switched off since that activity: nothing shows whether it took, so it is left alone.
-    const handled = blind({ lastActivity: NOW - 31 * MIN, lastAutoOff: NOW - 11 * MIN });
-    expect(handled.powerOff).toEqual([]);
-    // Fresh activity after the last switch-off starts a new stretch.
-    expect(blind({ lastActivity: NOW - 31 * MIN, lastAutoOff: NOW - 40 * MIN }).powerOff).toEqual(["m1"]);
-  });
-
-  it("reminds the bot once, its lead time before the power-off", () => {
-    const settings = { shopEmpty: { enabled: true, minutes: 15 } };
-    const devices = [device({ poweredOnAt: NOW - 40 * MIN })];
-    const before = planIdle(inputs({ settings, devices, emptySince: NOW - 5 * MIN, reminderLeadMs: 5 * MIN }));
-    expect(before.remind).toEqual([]);
-    expect(before.nextWake).toBe(NOW + 5 * MIN);
-    const due = planIdle(inputs({ settings, devices, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN }));
-    expect(due.remind).toEqual([{ key: `empty:${NOW - 11 * MIN}`, reason: "shop_empty", deviceIds: ["m1"], at: NOW + 4 * MIN }]);
-    const again = planIdle(inputs({ settings, devices, emptySince: NOW - 11 * MIN, reminderLeadMs: 5 * MIN, reminded: { [due.remind[0]!.key]: due.remind[0]!.at } }));
-    expect(again.remind).toEqual([]);
-  });
-
-  it("only warns about devices whose rule will switch them off, including old reminder settings", () => {
-    const devices = [device({ poweredOnAt: NOW - 8 * MIN })];
-    const mark = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "mark" } }, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
-    expect(mark.remind).toEqual([]);
-    const remind = planIdle(inputs({ settings: { device: { enabled: true, whileOccupied: "remind" } }, activeEntries: 1, devices, reminderLeadMs: 5 * MIN }));
-    expect(remind.remind.map((r) => r.reason)).toEqual(["device_idle"]);
-    expect(remind.powerOffAt).toEqual({ m1: NOW + 2 * MIN });
-    const deadline = remind.remind[0]!.at;
-    const due = planIdle(inputs({
-      settings: { device: { enabled: true, whileOccupied: "remind" } }, activeEntries: 1, devices,
-      now: deadline, reminderLeadMs: 5 * MIN, reminded: { "device:m1": deadline },
-    }));
-    expect(due.powerOff).toEqual(["m1"]);
-    expect(due.remind).toEqual([]);
-  });
-
-  it("moves both the warning and power-off deadline when a device is kept on after a warning", () => {
-    const settings = { device: { enabled: true, whileOccupied: "off" } };
-    const warned = { "device:m1": NOW + 2 * MIN };
-    const devices = [device({ poweredOnAt: NOW - 8 * MIN, lastActivity: NOW })];
-    const kept = planIdle(inputs({ settings, activeEntries: 1, devices, reminded: warned, reminderLeadMs: 5 * MIN }));
-    expect(kept).toMatchObject({ powerOff: [], remind: [], nextWake: NOW + 5 * MIN });
-    const later = planIdle(inputs({ settings, activeEntries: 1, devices, reminded: warned, reminderLeadMs: 5 * MIN, now: NOW + 5 * MIN }));
-    expect(later.remind).toEqual([{ key: "device:m1", reason: "device_idle", deviceIds: ["m1"], at: NOW + 10 * MIN }]);
-    expect(later.nextWake).toBe(NOW + 10 * MIN);
+describe("editing the rules", () => {
+  it("judges marked devices again", () => {
+    const state = timers();
+    applyIdleEvent(state, { kind: "on", ...machine("m1") }, T);
+    dueIdle(state, rules({ device: { enabled: true, minutes: 10, whileOccupied: "mark" } }), T + 10 * MIN, null);
+    expect(state.entries["k:m1"]!.marked).toBe(true);
+    idleSettingsChanged(state);
+    expect(offKeys(dueIdle(state, rules(), T + 11 * MIN, null))).toEqual(["k:m1"]);
   });
 });

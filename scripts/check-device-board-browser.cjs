@@ -51,12 +51,33 @@ const until = async (condition, what) => {
  * and the live devices' values, then what Home Assistant says of the other one (on), and the test
  * sends it whatever frames it wants to push. An action answers with what the device shows after it.
  */
-async function openBoard(browser, { watchedIo, viewport, clock = false, silentHub = false, role = "user" }) {
+async function openBoard(browser, { watchedIo, viewport, clock = false, silentHub = false, role = "user", mahjong = false }) {
   const context = await browser.newContext({ viewport, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
   await context.addInitScript(() => sessionStorage.setItem("prism.active-shop", "demo"));
   const page = await context.newPage();
   if (clock) await page.clock.install();
-  const exceptions = [], calls = [], sockets = [], received = [], puts = [];
+  const exceptions = [], calls = [], sockets = [], received = [], puts = [], actions = [];
+  let seats = [], failHistoryPage = false;
+  const historyEvent = (id, name, payload, extra = {}) => ({
+    id, name, payload, capability: "hinata_io", kind: "signal", origin: "device",
+    operationId: null, parentOperationId: null, at: "2026-11-10T10:00:00.000+08:00", ...extra,
+  });
+  const history = [
+    historyEvent("coin", "cabinet.coin", {coins:2,previousCredit:4,credit:6}),
+    historyEvent("credit", "cabinet.credit", {credits:3,previousCredit:6,credit:9}),
+    historyEvent("spent", "cabinet.consumed", {credits:1,previousCredit:9,credit:8}),
+    historyEvent("reset", "cabinet.reset", {previousCredit:8,credit:0,previousTotalCoin:220,totalCoin:0}),
+    historyEvent("failed", "coin", {outcome:"failed",message:"机台未在线"}, {kind:"result",origin:"platform",operationId:"failed-op"}),
+    // A request says where it came from, naming the bot it came through.
+    historyEvent("via-bot", "power.on", {}, {kind:"request",origin:"platform",operationId:"bot-op",capability:"power",
+      via:{channel:"bot",resource:{id:"bot",name:"前台 Bot"}}}),
+    // What came through this resource: a command said to it, and what it asked of another resource.
+    historyEvent("said", "bot.command", {command:"coin",args:["机台B"],from:{provider:"onebot",subject:"10001",name:"一号"},
+      target:{provider:"onebot",subject:"10002"},channel:"onebot:42",outcome:"refused",code:"BOT_READ_ONLY"},
+      {capability:"bot",via:{channel:"bot",resource:null}}),
+    historyEvent("through", "power.off", {}, {kind:"request",origin:"platform",operationId:"other-op",capability:"power",
+      device:{id:"other",name:"机台B"},via:{channel:"page",resource:null}}),
+  ];
   page.on("pageerror", (error) => exceptions.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") exceptions.push(message.text()); });
   // Each device sits on its own Home Assistant connection here, so a device going
@@ -68,6 +89,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   const connections = watchedIo ? ["ha_cab", "ha_io"] : ["ha_cab"];
   // What a read of the shop answers: the backend's view at the time, which the scenario moves along.
   let shopRead = { cab: snapshot.cab, io: watchedIo ? snapshot.io : { watching: false, power: "on" } };
+  let listedMachines = [...machines, ...(mahjong ? [{...base,id:"table",publicId:"table",name:"麻将桌",capacity:4,mahjong:{pricingConfigIds:["game"]}}] : [])], deletionBlocked = false;
   await page.routeWebSocket(/\/api\/v1\/merchant\/machines\/ws/, (ws) => {
     sockets.push({ ws, url: ws.url() });
     ws.onMessage((message) => received.push(String(message)));
@@ -79,7 +101,16 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     const request = route.request(), url = new URL(request.url()), p = url.pathname;
     if (request.method() !== "GET") {
       calls.push(`${request.method()} ${p}`);
+      if (request.method() === "DELETE" && p === "/api/v1/merchant/machines/cab") {
+        if (deletionBlocked) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { code: "MACHINE_HAS_HISTORY", message: "资源已有使用记录，请改为停用" } }) });
+        listedMachines = listedMachines.filter((machine) => machine.id !== "cab");
+      }
       if (request.method() === "PUT") puts.push({ path: p, query: url.search.slice(1), body: JSON.parse(request.postData() || "null") });
+      if (p === "/api/v1/merchant/machines/table/actions") {
+        const action = JSON.parse(request.postData()); actions.push(action);
+        seats = action.action === "mahjong.seat" ? [{playerId:action.playerId,name:"未入场玩家",playing:false}] : [];
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({data:{mahjong:{capacity:4,seats}}})});
+      }
       // What each device shows after an action: the cabinet came on, the other one stayed off.
       const answers = {
         "/api/v1/merchant/machines/cab/actions": { device: { power: "on", climate: view } },
@@ -88,26 +119,53 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
       return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: answers[p] ?? {} }) });
     }
     calls.push(p + url.search);
+    if (p === "/api/v1/merchant/machines/cab/events" && url.searchParams.has("before") && failHistoryPage) {
+      return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:{code:"READ_FAILED",message:"记录读取暂时失败"}})});
+    }
     let data = {};
     if (p === "/api/v1/me") data = { user: { id: "owner", username: "owner", displayName: "owner", role, hasShops: true } };
     else if (p === "/api/v1/merchant/shops") data = { shops: [shop] };
-    else if (p === "/api/v1/merchant/machines") data = { machines };
+    else if (p === "/api/v1/merchant/machines") data = { machines: listedMachines };
     else if (p === "/api/v1/merchant/resource-groups") data = { resourceGroups: [{ id: "default", name: "默认资源组", enabled: true, isDefault: true, defaultPricingConfigId: null, resourceCount: 0 }] };
     else if (p === "/api/v1/merchant/machines/occupancy") data = { resources: [] };
     else if (p === "/api/v1/merchant/machines/states") data = { states: shopRead };
+    else if (p === "/api/v1/merchant/machines/cab/events") data = url.searchParams.has("before") ? {
+      events: [historyEvent("failed-request", "coin", {}, {kind:"request",origin:"platform",operationId:"failed-op"}),
+        historyEvent("legacy", "cabinet.coin", {coins:1,credit:4})], nextCursor:null,
+    } : { events:history, nextCursor:"failed" };
+    else if (/\/machines\/[^/]+\/occupancy$/.test(p)) data = {entries:[]};
     else if (p === "/api/v1/merchant/device-bindings") data = { bindings: [] };
     else if (p === "/api/v1/merchant/ha-connections") data = { connections: [] };
+    else if (p === "/api/v1/merchant/idle-power") data = { settings: { devices: {}, shopEmpty: { enabled: false, minutes: 30 }, device: { enabled: false, minutes: 30, whileOccupied: "off" } } };
+    else if (p === "/api/v1/shops/demo/staff/settings") data = { settings: { ttLockConnection: null } };
+    else if (p === "/api/v1/shops/demo/staff/pricing-configs") data = { pricingConfigs: [] };
     else if (p === "/api/v1/shops/demo") data = { shop, membership: { playerId: "p", identityBound: true }, entryPricing: [] };
     else if (p === "/api/v1/shops/demo/staff/me") data = { staff: { id: "s", displayName: "店员", role: "owner", canWrite: true } };
+    else if (p === "/api/v1/merchant/machines/table/mahjong") data = {mahjong:{capacity:4,seats}};
+    else if (p === "/api/v1/shops/demo/staff/players") data = {players:[{id:"waiting",displayName:"未入场玩家",status:"active",activeSessionId:null},{id:"disabled",displayName:"停用玩家",status:"disabled"}]};
     else if (p === "/api/v1/shops/demo/staff/live-players") data = { players: [], billingSnapshot: null };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data }) });
   });
   await page.goto(`${origin}/merchant/demo/devices`);
   await page.getByText("机台A", { exact: true }).waitFor();
-  return { page, context, calls, exceptions, sockets, received, puts, setShopRead: (next) => { shopRead = next; } };
+  return { page, context, calls, exceptions, sockets, received, puts, actions, setFailHistoryPage: (value) => { failHistoryPage = value; }, setShopRead: (next) => { shopRead = next; }, setDeletionBlocked: (value) => { deletionBlocked = value; } };
 }
 
 const card = (page, name) => page.locator("article", { has: page.getByRole("heading", { name, exact: true }) });
+/**
+ * A tile says power and air conditioner as icons; each one's label is what it shows, then whether
+ * it is followed live. A power-only device says it on its round icon instead of a capsule.
+ */
+const status = (scope, name) => scope.getByRole("img", { name });
+const LIVE = /· 实时$/;
+const NOT_LIVE = /· 非实时$/;
+const UNKNOWN = "电源状态未知";
+/** Edit sits behind the tile's ⋯; the tile itself opens its operations. */
+async function edit(page, name) {
+  await card(page, name).getByRole("button", { name: `更多 ${name}`, exact: true }).click();
+  await card(page, name).getByRole("button", { name: "编辑", exact: true }).click();
+}
+const operateButton = (page, name) => card(page, name).getByRole("button", { name: `${name} · 操作`, exact: true });
 const stateReads = (calls) => calls.filter((call) => call.startsWith("/api/v1/merchant/machines/states"));
 const deviceReads = (calls, id) => calls.filter((call) => call.startsWith(`/api/v1/merchant/machines/${id}/state`));
 const push = (board, frame) => board.sockets[0].ws.send(JSON.stringify(frame));
@@ -116,7 +174,7 @@ const ASK = "/api/v1/merchant/machines/states?shopId=shop";
 
 /** Open a device's operate panel and press one of its buttons. */
 async function operate(page, name, button) {
-  await card(page, name).getByRole("button", { name: "操作", exact: true }).click();
+  await operateButton(page, name).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: button, exact: true }).click();
   return dialog;
@@ -130,21 +188,81 @@ async function operate(page, name, button) {
     for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 900 }]) {
       const label = viewport.width < 600 ? "mobile" : "desktop";
 
+      const records = await openBoard(browser, { watchedIo: false, viewport });
+      await card(records.page, "机台A").getByRole("button", {name:"更多 机台A",exact:true}).click();
+      await card(records.page, "机台A").getByRole("button", {name:"操作记录",exact:true}).click();
+      const historyPanel = records.page.getByRole("dialog");
+      await historyPanel.getByText("投入 2 枚 · 本次读数：4 → 6 币",{exact:true}).waitFor();
+      await historyPanel.getByText("增加 3 币 · 本次读数：6 → 9 币",{exact:true}).waitFor();
+      await historyPanel.getByText("消耗 1 币 · 本次读数：9 → 8 币",{exact:true}).waitFor();
+      await historyPanel.getByText("本次读数：8 → 0 币 · 累计投币：220 → 0 枚",{exact:true}).waitFor();
+      await historyPanel.getByText("机台未在线",{exact:true}).waitFor();
+      await historyPanel.getByText("来自：Bot 前台 Bot",{exact:true}).waitFor();
+      await historyPanel.getByText("/coin 机台B",{exact:true}).waitFor();
+      await historyPanel.getByText("一号 代 10002",{exact:true}).waitFor();
+      await historyPanel.getByText("已拒绝",{exact:true}).waitFor();
+      await historyPanel.getByText("设备：机台B · 来自：扫码页",{exact:true}).waitFor();
+      records.setFailHistoryPage(true);
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).click();
+      await historyPanel.getByRole("alert").filter({hasText:"记录读取暂时失败"}).waitFor();
+      assert.equal(await historyPanel.getByText("增加 3 币 · 本次读数：6 → 9 币",{exact:true}).count(),1,"A failed page preserves earlier entries");
+      records.setFailHistoryPage(false);
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).click();
+      await historyPanel.getByText("投入 1 枚 · 机内剩余 4 币",{exact:true}).waitFor();
+      assert.equal(await historyPanel.getByRole("button",{name:"加载更多",exact:true}).count(),0);
+      assert.equal(await historyPanel.getByText(/^→\s*投币$/).count(),1,"Request/result pair across pages becomes one row");
+      assert.equal(await historyPanel.getByText("机台未在线",{exact:true}).count(),1);
+      await records.page.screenshot({path:`${output}/device-history-${label}.png`,fullPage:true});
+      assert.equal(await records.page.evaluate(() => document.documentElement.scrollWidth > innerWidth),false);
+      await historyPanel.getByRole("button",{name:"刷新记录",exact:true}).click();
+      await historyPanel.getByRole("button",{name:"加载更多",exact:true}).waitFor();
+      assert.equal(await historyPanel.getByText("投入 1 枚 · 机内剩余 4 币",{exact:true}).count(),0,"Refresh replaces the loaded pages");
+      assert.deepEqual(records.exceptions.filter((error) => !error.includes("503 (Service Unavailable)")),[]);
+      await records.context.close();
+      console.log(`PASS ${label} device history: coin details, where a request came from, bot commands, old records, pagination retry, cross-page action pairing, refresh`);
+
+      const deletion = await openBoard(browser, { watchedIo: false, viewport });
+      await edit(deletion.page, "机台A");
+      const editor = deletion.page.getByRole("dialog");
+      await editor.getByLabel("资源名称", { exact: true }).fill("");
+      await editor.getByRole("button", { name: "删除资源", exact: true }).click();
+      await editor.getByText("确定删除资源「机台A」？", { exact: true }).waitFor();
+      assert.equal(deletion.calls.filter((call) => call.startsWith("DELETE ")).length, 0);
+      await editor.getByRole("button", { name: "取消", exact: true }).click();
+      assert.equal(await editor.getByLabel("资源名称", { exact: true }).inputValue(), "", "Cancel preserves unsaved edits");
+      deletion.setDeletionBlocked(true);
+      await editor.getByRole("button", { name: "删除资源", exact: true }).click();
+      await editor.getByRole("button", { name: "确认删除资源", exact: true }).click();
+      await editor.getByRole("alert").filter({ hasText: "资源已有使用记录，请改为停用" }).waitFor();
+      assert.equal(await card(deletion.page, "机台A").count(), 1);
+      await editor.getByRole("button", { name: "取消", exact: true }).click();
+      deletion.setDeletionBlocked(false);
+      await editor.getByRole("button", { name: "删除资源", exact: true }).click();
+      await editor.getByRole("button", { name: "确认删除资源", exact: true }).click();
+      await editor.waitFor({ state: "hidden" });
+      await card(deletion.page, "机台A").waitFor({ state: "hidden" });
+      assert.equal(await card(deletion.page, "机台B").count(), 1);
+      assert.equal(deletion.calls.filter((call) => call === "DELETE /api/v1/merchant/machines/cab").length, 2);
+      assert.equal(deletion.calls.some((call) => call === "PATCH /api/v1/merchant/machines/cab"), false, "Deletion never saves incomplete settings");
+      assert.deepEqual(deletion.exceptions.filter((error) => !error.includes("409 (Conflict)")), []);
+      await deletion.context.close();
+      console.log(`PASS ${label} resource deletion: explicit confirmation, cancel preserves edits, history refusal, list refresh`);
+
       // One device is live and one has no state of its own.
       const mixed = await openBoard(browser, { watchedIo: false, viewport });
       const { page, calls } = mixed;
       const cab = card(page, "机台A"), io = card(page, "机台B"), door = card(page, "大门");
-      await cab.getByText("实时", { exact: true }).waitFor();
-      assert.equal(await cab.getByText("已关机").count(), 1, "A live device shows what the hub sent");
-      assert.equal(await cab.getByText(/空调：/).count(), 1);
-      assert.equal(await door.getByText(/实时/).count(), 0, "A device without power or air conditioner has no tag");
-      assert.equal(await card(page, "机台B").getByText("非实时", { exact: true }).count(), 1);
+      await status(cab, LIVE).first().waitFor();
+      assert.equal(await status(cab, "已关机").count(), 1, "A live device shows what the hub sent");
+      assert.equal(await status(cab, /^空调 /).count(), 1);
+      assert.equal(await status(door, /实时/).count(), 0, "A device without power or air conditioner has no tag");
+      assert.equal(await status(io, NOT_LIVE).count(), 1);
       const refresh = page.getByRole("button", { name: "刷新设备状态" });
       assert.equal(await refresh.count(), 1, "One refresh for the shop, not one per card");
 
       // The other device's value is what the hub then said Home Assistant answered. The board asks nothing.
-      await io.getByText("已开机").waitFor();
-      assert.equal(await page.getByText("电源状态未知").count(), 0, "A value is never unknown for being old");
+      await status(io, "已开机").waitFor();
+      assert.equal(await status(page, UNKNOWN).count(), 0, "A value is never unknown for being old");
       await pause(300);
       assert.deepEqual(stateReads(calls), [], "The board reads nothing over HTTP while the hub speaks");
       assert.equal(deviceReads(calls, "cab").length + deviceReads(calls, "io").length, 0, "No request per card");
@@ -156,9 +274,9 @@ async function operate(page, name, button) {
 
       // The hub pushes a change: it shows at once, with no read.
       push(mixed, { type: "state", deviceId: "cab", power: "on" });
-      await cab.getByText("已开机").waitFor();
+      await status(cab, "已开机").waitFor();
       push(mixed, { type: "state", deviceId: "cab", climate: { ...view, currentTemperature: 29 } });
-      await cab.getByText(/室温 29°/).waitFor();
+      await status(cab, /室温 29°/).waitFor();
       assert.deepEqual(stateReads(calls), [], "Pushed changes are not read");
 
       // An action answers with what the device shows now, live or not; nothing is read afterwards.
@@ -171,9 +289,9 @@ async function operate(page, name, button) {
       dialog = await operate(page, "机台B", "开机");
       await until(() => calls.includes("POST /api/v1/merchant/machines/io/actions"), "the action");
       // The answer says it is still off: that is what the card shows, not what was asked for.
-      await io.getByText("已关机").waitFor();
-      assert.equal(await io.getByText("非实时", { exact: true }).count(), 1);
-      assert.equal(await page.getByText("电源状态未知").count(), 0);
+      await status(io, "已关机").waitFor();
+      assert.equal(await status(io, NOT_LIVE).count(), 1);
+      assert.equal(await status(page, UNKNOWN).count(), 0);
       await pause(300);
       assert.deepEqual(stateReads(calls), [], "An action reads nothing afterwards");
       assert.equal(deviceReads(calls, "cab").length + deviceReads(calls, "io").length, 0, "An action reads no device afterwards");
@@ -183,10 +301,11 @@ async function operate(page, name, button) {
       mixed.setShopRead({ cab: { watching: true, power: "on", climate: view }, io: { watching: false, power: "on" } });
       assert.equal(await refresh.isEnabled(), true);
       await refresh.click();
-      await io.getByText("已开机").waitFor();
-      assert.equal(await io.getByText("非实时", { exact: true }).count(), 1);
-      assert.equal(await cab.getByText("实时", { exact: true }).count(), 1);
-      assert.equal(await cab.getByText("已开机").count(), 1);
+      await status(io, "已开机").waitFor();
+      assert.equal(await status(io, NOT_LIVE).count(), 1);
+      // Power and air conditioner each say they are live.
+      assert.equal(await status(cab, LIVE).count(), 2);
+      assert.equal(await status(cab, "已开机").count(), 1);
       assert.deepEqual(stateReads(calls), [ASK], "The refresh is one read of the shop");
       assert.equal(await refresh.isEnabled(), true, "There is always something to refresh");
       await page.screenshot({ path: `${output}/device-board-refreshed-${label}.png`, fullPage: true });
@@ -194,13 +313,13 @@ async function operate(page, name, button) {
       // Which devices are live changes: the hub sends the labels, keeps each card's last value, then
       // says what Home Assistant answered for the one that stopped being live. The board reads nothing.
       push(mixed, { type: "states", states: { cab: unlabelled, io: { watching: true, power: "off" } }, liveConnections: ["ha_io"] });
-      await cab.getByText("非实时", { exact: true }).waitFor();
-      await io.getByText("实时", { exact: true }).waitFor();
-      assert.equal(await cab.getByText("已开机").count(), 1, "A label alone does not change a value");
+      await status(cab, NOT_LIVE).first().waitFor();
+      await status(io, LIVE).waitFor();
+      assert.equal(await status(cab, "已开机").count(), 1, "A label alone does not change a value");
       push(mixed, { type: "states", states: { cab: { watching: false, power: "off", climate: view } } });
-      await cab.getByText("已关机").waitFor();
-      assert.equal(await page.getByText("电源状态未知").count(), 0);
-      assert.equal(await io.getByText("已关机").count(), 1);
+      await status(cab, "已关机").waitFor();
+      assert.equal(await status(page, UNKNOWN).count(), 0);
+      assert.equal(await status(io, "已关机").count(), 1);
       await pause(300);
       assert.deepEqual(stateReads(calls), [ASK], "A device that stopped being live is not read by the board");
       await page.screenshot({ path: `${output}/device-board-switched-${label}.png`, fullPage: true });
@@ -209,8 +328,8 @@ async function operate(page, name, button) {
 
       // Every device is live: the board still reads nothing on its own, and the refresh is still there.
       const watched = await openBoard(browser, { watchedIo: true, viewport });
-      await card(watched.page, "机台B").getByText("实时", { exact: true }).waitFor();
-      assert.equal(await card(watched.page, "机台B").getByText("非实时").count(), 0);
+      await status(card(watched.page, "机台B"), LIVE).waitFor();
+      assert.equal(await status(card(watched.page, "机台B"), NOT_LIVE).count(), 0);
       assert.equal(await watched.page.getByRole("button", { name: "刷新设备状态" }).isEnabled(), true);
       await pause(300);
       assert.deepEqual(stateReads(watched.calls), [], "Nothing is read when the hub says everything");
@@ -285,9 +404,9 @@ async function operate(page, name, button) {
     await silent.page.clock.fastForward(4_000);
     await until(() => stateReads(silent.calls).length === 1, "the fallback read");
     assert.deepEqual(stateReads(silent.calls), [ASK]);
-    await card(silent.page, "机台A").getByText("实时", { exact: true }).waitFor();
-    await card(silent.page, "机台B").getByText("非实时", { exact: true }).waitFor();
-    await card(silent.page, "机台B").getByText("已开机").waitFor();
+    await status(card(silent.page, "机台A"), LIVE).first().waitFor();
+    await status(card(silent.page, "机台B"), NOT_LIVE).waitFor();
+    await status(card(silent.page, "机台B"), "已开机").waitFor();
     assert.deepEqual(silent.exceptions, []);
     await silent.context.close();
     console.log("PASS a silent hub: one HTTP read as the fallback");
@@ -296,7 +415,7 @@ async function operate(page, name, button) {
     // shop again, which is how a live device catches up on what it missed.
     const dropped = await openBoard(browser, { watchedIo: false, viewport: { width: 1280, height: 900 }, clock: true });
     await until(() => dropped.sockets.length === 1, "the board's WebSocket");
-    await card(dropped.page, "机台B").getByText("已开机").waitFor();
+    await status(card(dropped.page, "机台B"), "已开机").waitFor();
     const reads = stateReads(dropped.calls).length;
     // A keep-alive goes out while it is open.
     await dropped.page.clock.fastForward(31_000);
@@ -308,10 +427,28 @@ async function operate(page, name, button) {
     assert.equal(stateReads(dropped.calls).length, reads, "Nothing is read while the connection is down; the hub resends when it is back");
     // What the hub says when it is back shows.
     dropped.sockets[1].ws.send(JSON.stringify({ type: "states", states: { cab: { watching: true, power: "on", climate: view }, io: unlabelled } }));
-    await card(dropped.page, "机台A").getByText("已开机").waitFor();
+    await status(card(dropped.page, "机台A"), "已开机").waitFor();
     assert.deepEqual(dropped.exceptions, []);
     await dropped.context.close();
     console.log("PASS keep-alive, reconnect after a drop, and the hub's resend catching the board up without any read");
+    const seating = await openBoard(browser, {watchedIo:false,mahjong:true,viewport:{width:1280,height:900}});
+    await operateButton(seating.page,"麻将桌").click();
+    const panel = seating.page.getByRole("dialog");
+    const chooser = panel.getByRole("combobox",{name:"选择玩家"});
+    await chooser.selectOption("waiting");
+    assert.equal(await chooser.locator("option[value=disabled]").count(),0);
+    await panel.getByRole("button",{name:"上桌",exact:true}).click();
+    await panel.getByRole("button",{name:"下桌",exact:true}).waitFor();
+    assert.equal(seating.actions[0].playerId,"waiting");
+    assert.equal(seating.actions[0].action,"mahjong.seat");
+    await panel.getByRole("button",{name:"下桌",exact:true}).click();
+    await panel.getByText("空位",{exact:true}).waitFor();
+    assert.equal(seating.actions[1].action,"mahjong.unseat");
+    assert.equal(seating.actions[1].playerId,"waiting");
+    assert.deepEqual(seating.exceptions,[]);
+    await seating.page.screenshot({path:`${output}/mahjong-staff-seating.png`,fullPage:true});
+    await seating.context.close();
+    console.log("PASS staff can select an active player who has not entered, then seat and unseat them");
   } finally {
     await browser.close();
   }

@@ -316,15 +316,12 @@ describe("Platform & System Routes", () => {
     it("GET /version and /api/v1/version return version info", async () => {
       const res1 = await app.request("https://prism.test/version", {}, env);
       expect(res1.status).toBe(200);
-      const data1 = await res1.json() as { service: string; version: string; revision: string };
-      expect(data1.service).toBe("prism-api");
-      expect(data1.version).toBe("1.0.0");
-      expect(data1.revision).toBe("rev-test-123");
+      expect(await res1.json() as unknown).toEqual({ worker: "local", revision: "rev-test-123" });
 
       const res2 = await app.request("https://prism.test/api/v1/version", {}, env);
       expect(res2.status).toBe(200);
-      const data2 = await res2.json() as { service: string };
-      expect(data2.service).toBe("prism-api");
+      const named = await app.request("https://prism.test/api/v1/version", {}, { ...env, PRISM_WORKER_NAME: "prism-test" });
+      expect(await named.json() as unknown).toEqual({ worker: "prism-test", revision: "rev-test-123" });
     });
   });
 

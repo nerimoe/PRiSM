@@ -8,7 +8,8 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
 import { IDLE_SETTINGS_KEY, idleSettingsSchema, parseIdleSettings, type IdleSettings } from "../../resources/capabilities/idle-power.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
+import { publishShopFacts } from "../../events/shop-facts.js";
+import { requestOrigin } from "../../middleware/tenant.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { assertResourceShop, canConfigureResource } from "./merchant-resources.js";
@@ -40,8 +41,8 @@ async function write(c: C, shopId: string, settings: IdleSettings) {
     `INSERT INTO app_settings(shop_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(shop_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
   ).bind(shopId, IDLE_SETTINGS_KEY, JSON.stringify(settings), new Date().toISOString()).run();
-  // New rules apply right away rather than at the next activity.
-  touchShopHubAfter(c, shopId);
+  // The hub keeps the rules its timers run by: told they changed, it reads them again and starts over.
+  await publishShopFacts({ db: c.env.DB, env: c.env, shopId }, requestOrigin(c, "merchant"), [{ name: "idle.settings.changed" }]);
 }
 
 merchantIdleRouter.get("/idle-power", async (c) => {
@@ -52,7 +53,9 @@ merchantIdleRouter.get("/idle-power", async (c) => {
 /** The shop-wide rules. Which devices are never switched off is kept unless sent. */
 merchantIdleRouter.put("/idle-power", async (c) => {
   const shopId = await shopOf(c, true);
-  const body = z.object({ shopEmpty: z.unknown().optional(), device: z.unknown().optional(), devices: z.unknown().optional() })
+  const body = z.object({
+    shopEmpty: z.unknown().optional(), device: z.unknown().optional(), keepMinutes: z.unknown().optional(), devices: z.unknown().optional(),
+  })
     .parse(await c.req.json());
   const current = await read(c, shopId);
   const next = idleSettingsSchema.parse({

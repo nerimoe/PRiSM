@@ -21,7 +21,7 @@ export function clearRateLimitMemory(): void {
 }
 
 export async function enforceRateLimits(
-  c: Context<AppBindings>,
+  c: Pick<Context<AppBindings>, "env">,
   rules: LimitRule[],
 ): Promise<void> {
   const now = Date.now();

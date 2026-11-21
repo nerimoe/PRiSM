@@ -1,53 +1,30 @@
 /**
- * The shop hub's idle check: read what `planIdle` needs from storage and the
- * watched states, then carry the plan out through the device bus as the system.
+ * What the shop hub's idle timers (`resources/capabilities/idle-power.ts`)
+ * need from the shop: which switch a resource is on, whether a bill is open,
+ * which seats are taken, and the power-off itself, made through the device bus
+ * as the system.
+ *
+ * None of it is read on a schedule. A signal names a resource and the hub
+ * looks up its switch; the rest is read when the event it belongs to arrives
+ * (a bill closing, a seat changing, the rules being edited).
  */
+import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { Env } from "../bindings.js";
-import { capabilities } from "../resources/capabilities/catalog.js";
 import { loadResource } from "../resources/resource.js";
-import {
-  IDLE_SETTINGS_KEY,
-  parseIdleSettings,
-  planIdle,
-  idleGroups,
-  type IdleDevice,
-  type Reminder,
-} from "../resources/capabilities/idle-power.js";
+import { IDLE_SETTINGS_KEY, parseIdleSettings, type IdleReason, type IdleSettings } from "../resources/capabilities/idle-power.js";
 import { readShopLiveStates } from "../resources/capabilities/device-state.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
+import type { HubCalls } from "./shop-hub-client.js";
 import { heldProviders } from "../resources/occupancy/providers.js";
-import { createOccupancy } from "../resources/occupancy/service.js";
+import { logger } from "../log.js";
 
-/** What the hub remembers between checks. */
-export type IdleMemory = {
-  emptySince: number | null;
-  emptyHandled: number | null;
-  reminded: Record<string, number>;
-  lastAutoOff: Record<string, number>;
-  wakeAt: number | null;
-  /** When the last check expected each device to be switched off; see `IdlePlan.powerOffAt`. */
-  powerOffAt?: Record<string, number>;
-};
+const log = logger("idle-power");
 
-export const emptyIdleMemory = (): IdleMemory => ({ emptySince: null, emptyHandled: null, reminded: {}, lastAutoOff: {}, wakeAt: null, powerOffAt: {} });
+/** A warning for the bot, with device names so it can be said as is. */
+export type IdleNotice = { reason: IdleReason; at: number; devices: Array<{ id: string; name: string }> };
 
-/** A reminder for the bot, with device names so it can be shown as is. */
-export type IdleNotice = Omit<Reminder, "deviceIds" | "key"> & { devices: Array<{ id: string; name: string }> };
-
-/**
- * Platform activity resets the shutdown wait; occupancy supplies its own expiry.
- * Switching a device off does not extend either.
- */
-const HOLD_ACTIONS = Object.values(capabilities)
-  .flatMap((spec) => Object.entries(spec.actions))
-  .filter(([name, spec]) => spec?.countsAsPlay && name !== "power.off")
-  .map(([name]) => name);
-/** Only recent activity can matter; idle times are at most a day. */
-const LOOKBACK_MS = 24 * 60 * 60_000;
-const IDLE_CAPABILITIES = Object.values(capabilities).filter((spec) =>
-  spec.id === "climate" || Object.values(spec.actions).some((action) => action?.countsAsPlay)
-  || heldProviders.some((provider) => provider.capability === spec.id),
-).map((spec) => spec.id);
+/** The switch a resource is on: its key among the timers, and every resource on it. */
+export type IdleGroup = { key: string; ids: string[]; power: boolean };
 
 const parse = (value: string | null) => {
   try {
@@ -57,166 +34,122 @@ const parse = (value: string | null) => {
   }
 };
 
-export async function runIdleCheck(input: {
-  env: Env;
-  shopId: string;
-  now: number;
-  memory: IdleMemory;
-  /** Home Assistant connections whose stored state is current; for the others a device's power is unknown. */
-  eventConnections: ReadonlySet<string>;
-  reminderLeadMs: number | null;
-}): Promise<{ memory: IdleMemory; notices: IdleNotice[]; poweredOff: string[] }> {
-  const { env, shopId, now } = input;
-  const db = env.DB;
-  const settings = parseIdleSettings(
-    parse(
-      (await db.prepare("SELECT value_json FROM app_settings WHERE shop_id = ? AND key = ?").bind(shopId, IDLE_SETTINGS_KEY)
-        .first<{ value_json: string }>())?.value_json ?? null,
-    ),
-  );
-  if (!settings.shopEmpty.enabled && !settings.device.enabled)
-    return { memory: { ...emptyIdleMemory(), lastAutoOff: input.memory.lastAutoOff }, notices: [], poweredOff: [] };
-  // Settle held seats before reading their last usage, including seats just vacated.
-  const occupancy = await createOccupancy({ db, shopId, now: () => new Date(now) }).current();
-  const [visits, capabilityRows, activityRows] = await Promise.all([
-    db.prepare(
-      `SELECT (SELECT COUNT(*) FROM sessions WHERE shop_id = ? AND status = 'active') AS active,
-              (SELECT MAX(ended_at) FROM sessions WHERE shop_id = ? AND status = 'closed') AS last_end`,
-    ).bind(shopId, shopId).first<{ active: number; last_end: string | null }>(),
-    db.prepare(
-      `SELECT m.id, m.name, c.capability, c.config_json
-       FROM machines m
-       JOIN device_capabilities c ON c.shop_id = m.shop_id AND c.device_id = m.id
-       WHERE m.shop_id = ? AND m.enabled = 1 AND c.capability IN (SELECT value FROM json_each(?)) ORDER BY m.id, c.capability`,
-    ).bind(shopId, JSON.stringify(IDLE_CAPABILITIES))
-      .all<{ id: string; name: string; capability: string; config_json: string }>(),
-    db.prepare(
-      `SELECT device_id, MAX(at) AS at, MAX(occupied_until) AS occupied_until FROM (
-         SELECT device_id, occurred_at AS at, NULL AS occupied_until FROM device_events
-         WHERE shop_id = ? AND occurred_at >= ?
-           AND kind = 'request' AND name IN (SELECT value FROM json_each(?)) AND (player_id IS NOT NULL OR staff_id IS NOT NULL)
-         UNION ALL
-         SELECT resource_id, last_seen_at, COALESCE(ended_at, expires_at) FROM resource_occupancies
-         WHERE shop_id = ? AND COALESCE(ended_at, expires_at, last_seen_at) >= ? AND (ended_at IS NOT NULL OR expires_at <= ?)
-       ) GROUP BY device_id`,
-    ).bind(shopId, new Date(now - LOOKBACK_MS).toISOString(), JSON.stringify(HOLD_ACTIONS),
-      shopId, new Date(now - LOOKBACK_MS).toISOString(), new Date(now).toISOString())
-      .all<{ device_id: string; at: string; occupied_until: string | null }>(),
-  ]);
+export async function loadIdleSettings(db: D1DatabaseLike, shopId: string): Promise<IdleSettings> {
+  const row = await db.prepare("SELECT value_json FROM app_settings WHERE shop_id = ? AND key = ?")
+    .bind(shopId, IDLE_SETTINGS_KEY).first<{ value_json: string }>();
+  return parseIdleSettings(parse(row?.value_json ?? null));
+}
 
-  const devices = new Map<string, IdleDevice>();
-  const device = (id: string, name: string) => {
-    let entry = devices.get(id);
-    if (!entry) {
-      entry = {
-        id, name, hasPower: false, hasClimate: false, hasUsage: false, power: null, climate: null,
-        powerTarget: null, climateTarget: null,
-        lastActivity: null, busyUntil: null, poweredOnAt: null, lastAutoOff: input.memory.lastAutoOff[id] ?? null,
-        lastClimateAutoOff: input.memory.lastAutoOff[`climate:${id}`] ?? null,
-      };
-      devices.set(id, entry);
-    }
-    return entry;
-  };
-  // Power and climate are known only for a live device, judged as every other
-  // reader judges it; elsewhere they are unknown, and the idle rules switch off
-  // without knowing.
-  const bound = new Map<string, { id: string; capabilities: Map<string, { config: Record<string, unknown> }> }>();
-  for (const row of capabilityRows.results) {
-    const entry = device(row.id, row.name);
-    if (row.capability !== "power" && row.capability !== "climate") { entry.hasUsage = true; continue; }
-    if (row.capability === "power") entry.hasPower = true;
-    else entry.hasClimate = true;
-    const target = bound.get(row.id) ?? { id: row.id, capabilities: new Map() };
-    const config = (parse(row.config_json) as Record<string, unknown> | null) ?? {};
-    target.capabilities.set(row.capability, { config });
-    const binding = typeof config.connectionId === "string" && typeof config.entityId === "string"
-      ? JSON.stringify([config.connectionId, config.entityId]) : null;
-    if (row.capability === "power") entry.powerTarget = binding;
-    else entry.climateTarget = binding;
-    bound.set(row.id, target);
-  }
-  const live = await readShopLiveStates(db, shopId, [...bound.values()], { liveConnections: input.eventConnections });
-  for (const [id, state] of Object.entries(live.states)) {
-    const entry = devices.get(id);
-    if (!entry || !state.watching) continue;
-    if (entry.hasPower) {
-      entry.power = state.power;
-      if (state.power === "on") entry.poweredOnAt = live.powerChangedAt[id] ?? null;
-    }
-    if (entry.hasClimate && state.climate) entry.climate = state.climate.mode;
-  }
-  for (const row of activityRows.results) {
-    const entry = devices.get(row.device_id);
-    if (entry) {
-      entry.lastActivity = Date.parse(row.at);
-      if (row.occupied_until) entry.busyUntil = Date.parse(row.occupied_until);
-    }
-  }
-  for (const resource of occupancy) {
-    const entry = devices.get(resource.resourceId);
-    if (!entry || !resource.occupants.length) continue;
-    entry.busyUntil = resource.occupants.some((occupant) => occupant.expiresAt === null)
-      ? Infinity
-      : Math.max(entry.busyUntil ?? 0, ...resource.occupants.map((occupant) => occupant.expiresAt!.getTime()));
-    entry.lastActivity = Math.max(entry.lastActivity ?? 0, ...resource.occupants.map((occupant) => occupant.lastSeenAt.getTime()));
-  }
+type BindingRow = { id: string; name: string; occupancy_minutes: number | null; capability: string | null; config_json: string | null };
 
-  const lastEnd = visits?.last_end ? Date.parse(visits.last_end) : null;
-  const active = visits?.active ?? 0;
-  const plan = planIdle({
-    now,
-    settings,
-    activeEntries: active,
-    emptySince: active === 0 ? (input.memory.emptySince ?? lastEnd ?? now) : null,
-    emptyHandled: input.memory.emptyHandled,
-    devices: [...devices.values()],
-    reminderLeadMs: input.reminderLeadMs,
-    reminded: input.memory.reminded,
-  });
+/** The Home Assistant entity a capability is bound to, as one string; null when it is not fully bound. */
+const bindingOf = (config: Record<string, unknown>) =>
+  typeof config.connectionId === "string" && typeof config.entityId === "string"
+    ? JSON.stringify([config.connectionId, config.entityId]) : null;
 
-  // The hub is told about an IO this switches off itself, so it does not call back into its own object.
-  const bus = createRuntimeBus({ db, env, shopId, notifyHub: false });
-  const memory: IdleMemory = {
-    emptySince: plan.emptySince,
-    emptyHandled: plan.emptyHandled,
-    reminded: Object.fromEntries(Object.entries(input.memory.reminded).filter(([, at]) => at > now)),
-    lastAutoOff: { ...input.memory.lastAutoOff },
-    wakeAt: plan.nextWake,
-    powerOffAt: plan.powerOffAt,
-  };
-  const act = async (id: string, action: "power.off" | "climate.off") => {
-    const target = await loadResource(db, shopId, id);
-    if (!target) return false;
-    try {
-      return (await bus.perform({ device: target, action, actor: { type: "system" } })).operation.status === "succeeded";
-    } catch (error) {
-      console.error("Idle power-off failed", { shopId, id, action, error });
-      return false;
-    }
-  };
-  const poweredOff: string[] = [];
-  for (const group of idleGroups([...devices.values()])) {
-    const planned = group.capability === "power" ? plan.powerOff : plan.climateOff;
-    if (!group.devices.some((device) => planned.includes(device.id))) continue;
-    for (const device of group.devices) memory.lastAutoOff[group.capability === "power" ? device.id : `climate:${device.id}`] = now;
-    // Shared bindings get one command; its retry window applies to every member.
-    if (await act(group.devices[0]!.id, group.capability === "power" ? "power.off" : "climate.off")) {
-      if (group.capability === "power") poweredOff.push(...group.devices.map((device) => device.id));
-    } else memory.emptyHandled = input.memory.emptyHandled;
+async function bindings(db: D1DatabaseLike, shopId: string, capability: "power" | "climate") {
+  const rows = await db.prepare(
+    `SELECT m.id, m.name, m.occupancy_minutes, c.capability, c.config_json
+     FROM machines m
+     LEFT JOIN device_capabilities c ON c.shop_id = m.shop_id AND c.device_id = m.id AND c.capability = ?
+     WHERE m.shop_id = ? AND m.enabled = 1 ORDER BY m.id`,
+  ).bind(capability, shopId).all<BindingRow>();
+  return rows.results.map((row) => ({
+    id: row.id,
+    name: row.name,
+    stayMs: (row.occupancy_minutes ?? 0) * 60_000,
+    bound: row.capability !== null,
+    config: (parse(row.config_json) as Record<string, unknown> | null) ?? {},
+  }));
+}
+
+/**
+ * Every enabled resource's switch. Resources bound to the same Home Assistant
+ * entity share one: a coin at any of them keeps all of them on. A resource
+ * without a power binding is its own, with nothing to switch.
+ */
+export async function idleGroups(db: D1DatabaseLike, shopId: string): Promise<{
+  groups: Map<string, IdleGroup>;
+  names: Map<string, string>;
+  /** How long a player's stay on each resource lasts once seen, in ms. */
+  stays: Map<string, number>;
+}> {
+  const rows = await bindings(db, shopId, "power");
+  const byKey = new Map<string, IdleGroup>();
+  const groups = new Map<string, IdleGroup>();
+  for (const row of rows) {
+    const target = row.bound ? bindingOf(row.config) : null;
+    const key = target ? `power:${target}` : `device:${row.id}`;
+    const group = byKey.get(key) ?? { key, ids: [], power: row.bound };
+    group.ids.push(row.id);
+    byKey.set(key, group);
+    groups.set(row.id, group);
   }
-  const notices = plan.remind.map((reminder) => {
-    memory.reminded[reminder.key] = reminder.at;
-    return {
-      reason: reminder.reason,
-      at: reminder.at,
-      devices: reminder.deviceIds.map((id) => ({ id, name: devices.get(id)?.name ?? id })),
-    };
-  });
-  if (plan.powerOff.length || plan.climateOff.length) {
-    // Check again once the retry window has passed, in case one did not take.
-    const retry = now + 10 * 60_000;
-    memory.wakeAt = memory.wakeAt === null ? retry : Math.min(memory.wakeAt, retry);
+  return { groups, names: new Map(rows.map((row) => [row.id, row.name])), stays: new Map(rows.map((row) => [row.id, row.stayMs])) };
+}
+
+/** Whether no bill is open at the shop. */
+export async function shopIsEmpty(db: D1DatabaseLike, shopId: string): Promise<boolean> {
+  const row = await db.prepare("SELECT COUNT(*) AS n FROM sessions WHERE shop_id = ? AND status = 'active'")
+    .bind(shopId).first<{ n: number }>();
+  return (row?.n ?? 0) === 0;
+}
+
+/** The resources whose seats are taken. */
+export async function heldResources(db: D1DatabaseLike, shopId: string): Promise<Set<string>> {
+  const held = await Promise.all(heldProviders.map((provider) => provider.held!(db, shopId)));
+  return new Set(held.flat().map((occupant) => occupant.resourceId));
+}
+
+/**
+ * The devices Home Assistant currently reports switched on, and since when.
+ * Read once when the timers are started over (the rules were edited, or the
+ * hub has none yet); after that the watcher's reports say it.
+ */
+export async function devicesSeenOn(
+  db: D1DatabaseLike,
+  shopId: string,
+  liveConnections: ReadonlySet<string>,
+): Promise<Array<{ id: string; at: number | null }>> {
+  const bound = (await bindings(db, shopId, "power")).filter((row) => row.bound)
+    .map((row) => ({ id: row.id, capabilities: new Map([["power", { config: row.config }]]) }));
+  const live = await readShopLiveStates(db, shopId, bound as never, { liveConnections });
+  return Object.entries(live.states)
+    .filter(([, state]) => state.watching && state.power === "on")
+    .map(([id]) => ({ id, at: live.powerChangedAt[id] ?? null }));
+}
+
+/** One resource per air conditioner that is not known to be off, leaving out the excluded. */
+export async function climatesToSwitchOff(db: D1DatabaseLike, shopId: string, settings: IdleSettings): Promise<string[]> {
+  const rows = (await bindings(db, shopId, "climate")).filter((row) => row.bound && !settings.devices[row.id]?.exclude);
+  if (!rows.length) return [];
+  const stored = await db.prepare(
+    "SELECT device_id, value_json FROM device_state WHERE shop_id = ? AND capability = 'climate' AND key = 'climate'",
+  ).bind(shopId).all<{ device_id: string; value_json: string }>();
+  const mode = new Map(stored.results.map((row) => [row.device_id, (parse(row.value_json) as { mode?: unknown } | null)?.mode]));
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (mode.get(row.id) === "off") return false;
+    const target = bindingOf(row.config) ?? row.id;
+    if (seen.has(target)) return false;
+    seen.add(target);
+    return true;
+  }).map((row) => row.id);
+}
+
+/**
+ * Switch a resource off as the system. True when the hardware took it. What
+ * follows from it (the bots told, the watch released) is the listeners', who
+ * reach `hub` directly.
+ */
+export async function switchOff(env: Env, shopId: string, id: string, action: "power.off" | "climate.off", hub: HubCalls): Promise<boolean> {
+  const target = await loadResource(env.DB, shopId, id);
+  if (!target) return false;
+  const bus = createRuntimeBus({ db: env.DB, env, shopId, hub, via: { channel: "system", resourceId: null } });
+  try {
+    return (await bus.perform({ device: target, action, actor: { type: "system" } })).operation.status === "succeeded";
+  } catch (error) {
+    log.error("idle power-off failed", { shopId, id, action, error });
+    return false;
   }
-  return { memory, notices, poweredOff };
 }

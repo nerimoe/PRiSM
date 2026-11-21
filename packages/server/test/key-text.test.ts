@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { vkFromKeyText } from "../src/resources/capabilities/key-text.js";
+import { keyTextFromVk, vkFromKeyText } from "@prism/core";
 
 describe("coin key text", () => {
   it("maps a typed key to its Virtual-Key code", () => {
@@ -21,4 +21,19 @@ describe("coin key text", () => {
     expect(vkFromKeyText("!")).toBeNull();
     expect(vkFromKeyText("99999")).toBeNull();
   });
+});
+
+it("reads function keys, where service menus and test switches often are", () => {
+  expect(vkFromKeyText("F1")).toBe(112);
+  expect(vkFromKeyText("f12")).toBe(123);
+  expect(vkFromKeyText("F24")).toBe(135);
+  expect(vkFromKeyText("F25")).toBeNull();
+});
+
+it("reads a stored code back as the key staff would type, and every such text maps to the same code", () => {
+  for (const code of [65, 53, 112, 125, 135, 32, 13, 186])
+    expect(vkFromKeyText(keyTextFromVk(code))).toBe(code);
+  expect(keyTextFromVk(125)).toBe("F14");
+  expect(keyTextFromVk(32)).toBe("Space");
+  expect(keyTextFromVk(300)).toBe("300");
 });

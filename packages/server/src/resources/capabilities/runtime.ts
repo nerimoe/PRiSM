@@ -3,29 +3,26 @@
  * wires them to the readers in `device-state.ts`. Runners only talk to
  * hardware; recording what happened is the bus's job.
  */
-import { createOccupancy } from "../occupancy/service.js";
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { createD1Executor } from "@prism/adapter-d1";
 import { normalizeTTLockConnectionConfig } from "@prism/application";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import type { DeviceEventVia } from "@prism/core";
+import { createEventDispatcher } from "../../events/dispatcher.js";
+import { eventSubscribers, type EventContext } from "../../events/subscribers.js";
+import type { EventSubscriber } from "../../events/dispatcher.js";
 import type { Env } from "../../bindings.js";
 import { callHomeAssistantPower, callHomeAssistantService } from "../../hardware/home-assistant.js";
 import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardware/hinata.js";
 import { TTLockClient } from "../../hardware/ttlock.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
-import { doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
-import { deviceRead, machinePoweredOff } from "../../durable-objects/shop-hub-client.js";
-import { announceShopEvent, eventPlayer } from "../shop-events.js";
+import { coinConfigOf, coinKeyOf, doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
+import { deviceRead, type HubCalls } from "../../durable-objects/shop-hub-client.js";
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
 const KEY_PRESS_TTL_MS = 30_000;
 const HA_TIMEOUT_MS = 10_000;
-/**
- * A game waiting for a card polls its reader continuously, so an unread card
- * means it is busy elsewhere; the IO drops the card after 3 s.
- */
-const CARD_LOGIN_WAIT = { readMs: 4500 };
 
 export type DeviceRuntime = {
   db: D1DatabaseLike;
@@ -35,10 +32,17 @@ export type DeviceRuntime = {
   now?: () => Date;
   id?: () => string;
   /**
-   * Tell the shop hub when an action switches a HINATA IO off, so it stops
-   * waiting for that IO. The hub's own idle power-off sets this to false.
+   * The shop hub, for a bus it makes for itself (its idle rule, its watchers'
+   * reports, a bot's command): listeners call it directly (`EventContext.hub`),
+   * and what an action leaves the device in is the hub's own to know.
    */
-  notifyHub?: boolean;
+  hub?: HubCalls;
+  /** Listeners of the caller's own, heard after the platform's (`events/subscribers.ts`). */
+  subscribers?: readonly EventSubscriber<EventContext>[];
+  /** Where what this bus records came from: the page, board, bot or channel that made it. */
+  via?: DeviceEventVia;
+  /** A request's `waitUntil`: what only reacts to an event runs after the answer. */
+  defer?: (work: Promise<unknown>) => void;
 };
 
 /**
@@ -100,22 +104,21 @@ function relayOutcome(result: { ok: boolean; status: number; error?: string }): 
 }
 
 function cardRunner(runtime: DeviceRuntime): ActionRunner {
-  return async ({ device, operationId, payload }) => {
+  return async ({ device, operationId, payload, awaits }) => {
     const accessCode = typeof payload.accessCode === "string" ? payload.accessCode : "";
     if (!accessCode) return { outcome: "failed", message: "缺少卡号" };
     const config = hinataConfigOf(device)!;
-    // `source` carries the operation id so the machine's card report can be
-    // tied back to this request.
+    // `source` carries the operation id, which the machine's card reports echo.
     if (config.transport === "embedded") {
       const relay = machineRelayNamespace(runtime.env);
       if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
       const sent = await relay.getByName(config.channel).sendCard({
         accessCode,
         source: operationId,
-        ...(payload.awaitLogin === true ? { wait: CARD_LOGIN_WAIT } : {}),
+        ...(awaits ? { wait: awaits } : {}),
       });
       if (!sent.ok) return { outcome: "failed", message: sent.error ?? "机台未在线" };
-      return { outcome: "ok", ...(sent.login ? { result: { login: sent.login } } : {}) };
+      return { outcome: "ok", ...(sent.awaited !== undefined ? { awaited: sent.awaited } : {}) };
     }
     const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
     if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
@@ -126,31 +129,51 @@ function cardRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
+/** The IO presses a key on the cabinet, `count` times: what both a coin by key and a staff key press are. */
+async function pressKey(runtime: DeviceRuntime, device: Parameters<ActionRunner>[0]["device"], operationId: string, key: number, count: number): Promise<RunOutcome> {
+  const config = hinataConfigOf(device)!;
+  if (config.transport === "embedded") {
+    const relay = machineRelayNamespace(runtime.env);
+    if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
+    const sent = await relay.getByName(config.channel).sendKeyPress({
+      key,
+      count,
+      messageId: operationId,
+      expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
+    });
+    return sent.ok ? { outcome: "ok" } : { outcome: "failed", message: sent.error ?? "机台未在线" };
+  }
+  const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
+  if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
+  const password = await readSecret(runtime.db, device, "hinata_io", "password", runtime.env.URL_ENCRYPTION_KEY);
+  return relayOutcome(await sendHinataCoin(normalizeHinataUrl(url), key, password, operationId, {
+    count,
+    fetcher: runtime.fetcher,
+  }));
+}
+
+const countOf = (payload: Record<string, unknown>) => typeof payload.count === "number" ? payload.count : 1;
+
+/** A coin, the way this resource takes one (its `coin` capability). Never a key of the caller's choosing. */
 function coinRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, operationId, payload }) => {
-    const config = hinataConfigOf(device)!;
-    const count = typeof payload.count === "number" ? payload.count : 1;
-    // Staff may press a key of their choosing; otherwise the device's
-    // configured coin key is used.
-    const key = typeof payload.key === "number" ? payload.key : config.coinKey;
-    if (config.transport === "embedded") {
-      const relay = machineRelayNamespace(runtime.env);
-      if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
-      const sent = await relay.getByName(config.channel).sendKeyPress({
-        key,
-        count,
-        messageId: operationId,
-        expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
-      });
-      return sent.ok ? { outcome: "ok" } : { outcome: "failed", message: sent.error ?? "机台未在线" };
+    const coin = coinConfigOf(device);
+    switch (coin?.method) {
+      case "key": {
+        const key = coinKeyOf(device);
+        if (!key) return { outcome: "failed", message: "投币按键不存在" };
+        return pressKey(runtime, device, operationId, key.key, countOf(payload));
+      }
+      default: return { outcome: "failed", message: "没有设置投币方式" };
     }
-    const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
-    if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
-    const password = await readSecret(runtime.db, device, "hinata_io", "password", runtime.env.URL_ENCRYPTION_KEY);
-    return relayOutcome(await sendHinataCoin(normalizeHinataUrl(url), key, password, operationId, {
-      count,
-      fetcher: runtime.fetcher,
-    }));
+  };
+}
+
+/** Staff pressing a key they name (`key.press`). */
+function keyRunner(runtime: DeviceRuntime): ActionRunner {
+  return async ({ device, operationId, payload }) => {
+    if (typeof payload.key !== "number") return { outcome: "failed", message: "缺少按键码" };
+    return pressKey(runtime, device, operationId, payload.key, countOf(payload));
   };
 }
 
@@ -183,23 +206,6 @@ function doorRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
-/** What a successful platform action tells the shop's bots, if anything. */
-async function announceAction(runtime: DeviceRuntime, input: PerformInput, playerId: string | null, started: boolean) {
-  // Power is announced only when the HA watcher confirms the actual change.
-  if (input.action === "power.on" || input.action === "power.off") return;
-  const viaBot = typeof input.payload?.viaBot === "string" ? input.payload.viaBot : null;
-  const place = { resourceId: input.device.id, resourceName: input.device.name, ...(viaBot ? { botId: viaBot } : {}) };
-  const player = () => eventPlayer(runtime.db, runtime.shopId, playerId);
-  if (input.action === "aime.scan") {
-    await announceShopEvent(runtime.env, runtime.shopId, { kind: "card", ...place, player: await player(), started });
-  } else if (input.action === "coin") {
-    await announceShopEvent(runtime.env, runtime.shopId, { kind: "coin", ...place, player: await player(), started });
-  } else if (started) {
-    const who = await player();
-    if (who) await announceShopEvent(runtime.env, runtime.shopId, { kind: "occupancy", ...place, player: who });
-  }
-}
-
 export function createRuntimeBus(runtime: DeviceRuntime) {
   const runners: Record<string, ActionRunner> = {
     "power.on": powerRunner(runtime, "turn_on"),
@@ -215,6 +221,7 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       typeof p.fanMode === "string" && p.fanMode ? { fan_mode: p.fanMode } : null),
     "aime.scan": cardRunner(runtime),
     coin: coinRunner(runtime),
+    "key.press": keyRunner(runtime),
     "door.open": doorRunner(runtime),
   };
   const bus = createDeviceBus({
@@ -222,6 +229,20 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     now: runtime.now ?? (() => new Date()),
     id: runtime.id ?? (() => crypto.randomUUID()),
     runners,
+    ...(runtime.via ? { via: runtime.via } : {}),
+    // Who occupies the resource now, what the bots announce and what the hub
+    // is told all follow from the events, in `events/subscribers.ts`.
+    published: createEventDispatcher({
+      subscribers: [...eventSubscribers, ...(runtime.subscribers ?? [])],
+      context: {
+        db: runtime.db,
+        env: runtime.env,
+        shopId: runtime.shopId,
+        ...(runtime.now ? { now: runtime.now } : {}),
+        ...(runtime.hub ? { hub: runtime.hub } : {}),
+      },
+      ...(runtime.defer ? { defer: runtime.defer } : {}),
+    }),
     readers: {
       "power.power": (device) => readPower(runtime, device),
       "climate.climate": async (device) => {
@@ -230,32 +251,14 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       },
     },
   });
-  const occupancy = createOccupancy({ db: runtime.db, shopId: runtime.shopId, ...(runtime.now ? { now: runtime.now } : {}) });
   return {
     ...bus,
     async perform(input: PerformInput): Promise<PerformResult & { device?: DeviceView }> {
       const result = await bus.perform(input);
-      if (result.operation.status === "succeeded") {
-        // Who a swipe or a coin was for may now occupy the resource. Losing
-        // that must not fail the action the player already got.
-        const playerId = input.actor.type === "player" ? input.actor.playerId : input.forPlayerId ?? null;
-        const observed = await occupancy.observe({ resourceId: input.device.id, event: { kind: "action", action: input.action, playerId } })
-          .catch((error) => {
-            console.error("Occupancy update failed", { shopId: runtime.shopId, deviceId: input.device.id, error });
-            return { started: null };
-          });
-        if (runtime.notifyHub !== false) await announceAction(runtime, input, playerId, !!observed.started);
-      }
-      // The command was accepted, which is all this can know: Home Assistant
-      // answers the same whether or not the machine actually went dark. The hub
-      // starts an observation and waits for the state to confirm it.
-      if (runtime.notifyHub !== false && input.action === "power.off" && result.operation.status === "succeeded") {
-        await machinePoweredOff(runtime.env, runtime.shopId, input.device.id);
-      }
       // What a power or climate action left the device in, read back the same
       // way as any read, so the caller can show it. A device that is not live has
       // nobody else to tell its pages and the boards, so the hub is handed it.
-      if (runtime.notifyHub !== false && result.operation.status === "succeeded") {
+      if (!runtime.hub && result.operation.status === "succeeded") {
         const after = await readAfterAction(runtime, input.device, input.action, input.payload).catch(() => null);
         if (after) {
           const device = deviceView(input.device, after);

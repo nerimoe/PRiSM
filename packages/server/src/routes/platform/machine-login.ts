@@ -1,14 +1,12 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
+import { runPlayerOperation } from "../shops/player-operation.js";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { Session } from "@prism/core";
 import type { AppBindings, TenantShop } from "../../bindings.js";
-import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
-import type { CardLoginResult } from "../../durable-objects/machine-relay.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
 import { notice, requestLocale } from "../../notices.js";
-import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
+import { can, loadResource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readPower } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
@@ -20,6 +18,9 @@ import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { reconnectImportedAccount } from "../shops/data/shop-data-accounts.js";
 import { findLegacyShopByCode } from "../../legacy/tenant-resolver.js";
 import { resolveResourceTicket } from "./resource-ticket.js";
+import { logger } from "../../log.js";
+
+const log = logger("machine-login");
 
 export const machineLoginRouter = new Hono<AppBindings>();
 type C = Context<AppBindings, any, any>;
@@ -28,9 +29,7 @@ type C = Context<AppBindings, any, any>;
  * What the player is told about a card: taken by the game, never taken, or —
  * through a relay that reports nothing — just sent.
  */
-type CardOutcome = CardLoginResult | "sent";
-const isCardLoginResult = (value: unknown): value is CardLoginResult =>
-  value === "read" || value === "not_read";
+type CardOutcome = "read" | "not_read" | "sent";
 
 const machineLoginSchema = z.object({
   cardId: z.string().min(1, "请选择卡片"),
@@ -39,9 +38,11 @@ const machineLoginSchema = z.object({
   accuracy: z.number().min(0).max(10_000).optional(),
   ticket: z.string().min(1, "缺少会话凭证"),
   clientTimestamp: z.string().optional(),
+  /** Sent again after a lost answer, this swipes once and gets the first answer back. */
+  operationId: z.string().uuid().optional(),
 });
 
-export async function assertNotBanned(c: C, entries: Array<[string, string]>) {
+export async function assertNotBanned(c: Pick<C, "env">, entries: Array<[string, string]>) {
   for (const [subjectType, subjectValue] of entries) {
     const found = await c.env.DB.prepare(
       "SELECT id FROM bans WHERE subject_type=? AND subject_value=? AND (expires_at IS NULL OR expires_at>?)",
@@ -125,23 +126,6 @@ async function recordLoginEvent(c:C,event:{
   ).run();
 }
 
-export async function claimCoin(c:C,shopId:string,machineId:string,id:string) {
-  const configured=await c.env.DB.prepare(
-    "SELECT json_extract(value_json,'$.coinCooldownMs') AS cooldown FROM app_settings WHERE shop_id=? AND key='venue.operations'",
-  ).bind(shopId).first<{cooldown:number|null}>();
-  const raw=configured?.cooldown;
-  const cooldown=typeof raw==="number"&&Number.isInteger(raw)&&raw>=0?raw:60000;
-  const now=Date.now();
-  const claim=await c.env.DB.prepare(
-    `INSERT INTO operation_locks(shop_id,scope,resource_id,lock_id,expires_at,acquired_at)
-     VALUES (?,'device.coin',?,?,?,?)
-     ON CONFLICT(shop_id,scope,resource_id) DO UPDATE SET
-       lock_id=excluded.lock_id,expires_at=excluded.expires_at,acquired_at=excluded.acquired_at
-     WHERE operation_locks.expires_at<=excluded.acquired_at RETURNING lock_id`,
-  ).bind(shopId,machineId,id,new Date(now+cooldown).toISOString(),new Date(now).toISOString()).first();
-  return !!claim;
-}
-
 async function handleLogin(c:C,routePublicId?:string) {
   const user=requireUser(c);
   const body=machineLoginSchema.parse(await c.req.json());
@@ -170,11 +154,12 @@ async function handleLogin(c:C,routePublicId?:string) {
   // Only an explicit "off" blocks: an unreadable switch must not lock players out.
   if(device.capabilities.has("power")&&await readPower(runtime,device)==="off")
     jsonError(409,"请先开机","DEVICE_POWER_OFF");
+  const swipe=async()=>{
   const operationId=crypto.randomUUID(),now=nowIso();
   await c.env.DB.prepare(
     "INSERT INTO player_operations (shop_id,user_id,id,kind,status,created_at,device_id) VALUES (?,?,?,'aime.scan','pending',?,?)",
   ).bind(shop.id,user.id,operationId,now,machine.id).run();
-  const bus=createRuntimeBus(runtime);
+  const bus=createRuntimeBus({...runtime,via:{channel:"page",resourceId:null}});
   const actor=playerId?{type:"player" as const,playerId}:{type:"staff" as const,staffId:`user:${user.id}`};
   // Swiping a card through a shop's page binds it to the player there, so the
   // shop's readers know whose card it is. A shop without billing knows the
@@ -183,71 +168,43 @@ async function handleLogin(c:C,routePublicId?:string) {
     "SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
   ).bind(shop.id,user.id).first<{player_id:string}>())?.player_id??null;
   // The card number reaches the machine only; the log keeps the card id. A
-  // direct-connect machine also reports whether the game took the card and how
-  // its reader answered; through a relay all we learn is that it was sent.
+  // direct-connect machine reports when the game took the card, which this
+  // waits for; through a relay all we learn is that it was sent.
   const scan=await bus.perform({
-    device,action:"aime.scan",actor,operationId,
-    payload:{cardId:card.id},transient:{accessCode:card.access_code,awaitLogin:true},
+    device,action:"aime.scan",actor,operationId,wait:true,
+    payload:{cardId:card.id},transient:{accessCode:card.access_code},
     ...(!playerId&&cardPlayerId?{forPlayerId:cardPlayerId}:{}),
   });
   if(scan.operation.status==="succeeded"&&cardPlayerId&&c.env.URL_ENCRYPTION_KEY) {
+    // The shop learning whose card this is, not the player adding one: no event.
     await createCardStore(c.env.DB,shop.id,c.env.URL_ENCRYPTION_KEY)
       .bind({playerId:cardPlayerId,card:{type:card.card_type,accessCode:card.access_code},source:"scan"})
-      .catch(error=>console.error("Card binding failed",error));
+      .catch(error=>log.error(`could not bind the scanned ${card.card_type} card to player ${cardPlayerId}`, { shopId: shop.id, playerId: cardPlayerId, cardType: card.card_type, error }));
   }
   const sent=scan.operation.status==="succeeded";
   const status=sent?"completed":scan.operation.status==="pending"?"unknown":"failed";
-  const login=scan.result.login;
-  const cardResult:CardOutcome|undefined=sent?(isCardLoginResult(login)?login:"sent"):undefined;
+  const cardResult:CardOutcome|undefined=!sent?undefined:scan.awaited===undefined?"sent":scan.awaited?"read":"not_read";
   await recordLoginEvent(c,{
     userId:user.id,cardId:card.id,machineId:machine.id,ip,
     lat:body.lat??null,lng:body.lng??null,accuracy:body.accuracy??null,
     result:sent?"sent":"failed",responseCode:scan.httpStatus,errorMessage:scan.operation.failure,
   });
-  const response:{
-    operationId:string;status:string;card?:CardOutcome;
-    coin?:{status:"sent"|"skipped"|"failed"|"unknown";operationId:string;reason?:string}
-  }={operationId,status,...(cardResult?{card:cardResult}:{})};
+  const response:{operationId:string;status:string;card?:CardOutcome}={operationId,status,...(cardResult?{card:cardResult}:{})};
   await c.env.DB.prepare(
     "UPDATE player_operations SET status=?,result_json=? WHERE shop_id=? AND user_id=? AND id=?",
   ).bind(status,JSON.stringify(response),shop.id,user.id,operationId).run();
-  if(sent&&playerId) {
-    const sync=refreshActivityBill(c.env,shop.id,playerId,false,true)
-      .catch(error=>console.error("Machine login live bill sync failed",error));
-    try{c.executionCtx.waitUntil(sync);}catch{void sync;}
-  }
   if(!sent)jsonError(502,
     status==="unknown"?"设备离线或连接地址不正确，请联系店员":"设备连接失败，请联系店员检查配置",
     "DEVICE_UNAVAILABLE",response);
-  if(hinataConfigOf(device)?.coinAfterSwipe&&can(device,"coin")) {
-    const coinId=crypto.randomUUID();
-    response.coin={operationId:coinId,status:"unknown"};
-    try {
-      // Coins for a game that never took the card are lost.
-      if(cardResult==="not_read")response.coin={operationId:coinId,status:"skipped",reason:"CARD_NOT_READ"};
-      else if(!await claimCoin(c,shop.id,machine.id,coinId))response.coin={
-        operationId:coinId,status:"skipped",reason:"COIN_COOLDOWN",
-      };
-      else {
-        const coin=await bus.perform({device,action:"coin",actor,operationId:coinId,parentOperationId:operationId});
-        response.coin.status=coin.operation.status==="succeeded"?"sent":coin.operation.status==="pending"?"unknown":"failed";
-      }
-    }catch{response.coin.status="unknown";}
-    await c.env.DB.prepare(
-      "UPDATE player_operations SET result_json=? WHERE shop_id=? AND user_id=? AND id=?",
-    ).bind(JSON.stringify(response),shop.id,user.id,operationId).run();
-  }
-  touchShopHubAfter(c,shop.id);
-  // What the card row shows: the card's outcome, then the coin's.
+  // What the card row shows. A coin after the card, if any, follows the game
+  // taking it (the relay's card report), not this answer.
   const locale=requestLocale(c.req.header("accept-language"));
-  const notices=[
-    ...(cardResult?[notice({not_read:"CARD_NOT_READ",read:"CARD_SENT",sent:"CARD_SENT"}[cardResult],locale)]:[]),
-    ...(response.coin?.status==="sent"?[notice("COIN_SENT",locale)]
-      :response.coin?.status==="skipped"&&response.coin.reason==="COIN_COOLDOWN"?[notice("COIN_SKIPPED",locale)]
-      :response.coin?.status==="failed"?[notice("COIN_FAILED",locale)]
-      :response.coin?.status==="unknown"?[notice("COIN_UNKNOWN",locale)]:[]),
-  ];
+  const notices=cardResult?[notice({not_read:"CARD_NOT_READ",read:"CARD_SENT",sent:"CARD_SENT"}[cardResult],locale)]:[];
   return c.json({ok:true,...response,notices});
+  };
+  return body.operationId
+    ?runPlayerOperation(c,shop.id,`swipe/${machine.id}`,{operationId:body.operationId,cardId:body.cardId,ticket:body.ticket},swipe)
+    :swipe();
 }
 
 machineLoginRouter.post("/login",c=>handleLogin(c));

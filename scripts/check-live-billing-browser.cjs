@@ -50,6 +50,7 @@ function data(unitPrice, broken) {
         inputs.players = inputs.players.filter(player => player.playerId === playerId);
         body = { playerId, billingSnapshot: inputs };
       }
+      else if (pathname.endsWith('/checkouts')) body = { records: [], page: { hasMore: false } };
       else if (pathname.endsWith('/checkout/preview')) body = { settlementPreview: { total: 777 }, chargeItems: [], adjustments: [], wallet: { balanceBefore: 9999, balanceAfter: 9222 } };
       else body = {};
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: body }) });
@@ -64,7 +65,7 @@ function data(unitPrice, broken) {
     await panel.locator('dl dd').filter({ hasText: '2,790.00' }).first().waitFor({ timeout: 45000 });
     assert.equal(await page.getByRole('button', { name: /^Player / }).count(), 16);
     await page.getByRole('button', { name: /^Player 14 / }).getByText('2,790.00').first().waitFor();
-    assert.equal(requests.filter(req => req.path.includes('checkout') || req.url.includes('playerId=')).length, 0);
+    assert.equal(requests.filter(req => req.path.includes('/checkout/') || req.url.includes('playerId=')).length, 0);
     await page.getByRole('button', { name: /^Player 15 / }).click();
     await panel.getByRole('alert').waitFor();
     assert.match(await panel.getByRole('alert').textContent(), /账单预估失败/);

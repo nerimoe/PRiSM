@@ -41,7 +41,10 @@ Account start-token registration is different from activity-token registration:
 `POST /api/v1/me/live-activity/start-token` registers a device's remote launch
 token, whereas `POST /api/v1/shops/:shopCode/player/live-activity/register`
 registers a particular running activity for update and end pushes.
-Both are necessary.
+Both are necessary. A start token registered again under another client id of the
+same account replaces that client's row (the same app on the same phone,
+reinstalled), and a start token not registered for 30 days is no longer pushed
+and is removed when the account is next started an activity.
 
 ## Transactional and safety boundaries
 

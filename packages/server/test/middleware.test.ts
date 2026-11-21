@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { Hono } from "hono";
 import { sqliteSchema } from "@prism/storage-sql";
 import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adapter-d1";
-import type { AppBindings, Env } from "../src/bindings.js";
+import type { AppBindings, Env, PrismAppDependencies } from "../src/bindings.js";
 import {
   tenantMiddleware,
   getShop,
@@ -310,7 +310,14 @@ describe("Middleware Test Suite", () => {
 
       expect(firstDeps).toBeDefined();
       expect(secondDeps).toBeDefined();
-      expect(firstDeps).toBe(secondDeps);
+      // Each request sees the services from where it stands (`events/shop-facts.ts`),
+      // but they are the same services underneath: nothing is rebuilt.
+      const shared = (deps: unknown) => {
+        const { repositories, pricingSessions, playerQueries, staffQueries } = deps as PrismAppDependencies;
+        return [repositories, pricingSessions, playerQueries, staffQueries];
+      };
+      const [first, second] = [shared(firstDeps), shared(secondDeps)];
+      first.forEach((service, index) => expect(service).toBe(second[index]!));
     });
   });
 

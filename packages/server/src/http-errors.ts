@@ -2,6 +2,9 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { PrismDomainError } from "@prism/core";
+import { logger, loggedPath } from "./log.js";
+
+const log = logger("http");
 
 const NOT_FOUND = new Set([
   "CHECKOUT_NOT_FOUND",
@@ -40,6 +43,6 @@ export function errorResponse(c: Context<any>, err: unknown, scope: string): Res
       422,
     );
   }
-  console.error(`[${scope}] unhandled error:`, err);
+  log.error(`unhandled error in ${scope}: ${c.req.method} ${loggedPath(c.req.path)}`, { scope, error: err });
   return c.json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } }, 500);
 }

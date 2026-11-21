@@ -21,6 +21,7 @@ import { owner, targetState, snapshotSql, snapshotBindings, snapshotKey } from "
 import {
   fullHeaderSchema,
   fullTables,
+  importColumns,
   schemasFor,
   uploadBytes,
   validateRows,
@@ -510,10 +511,14 @@ function v2DeviceStatements(db: D1Database, shopId: string, jobId: string, merge
   const capabilities = [
     capability("power", "'{}'", `json_object('binding',${machine("ha_binding_json")})`,
       `COALESCE(${machine("ha_binding_json")},'')!=''`),
+    // The old cabinet's coin key becomes the IO's one named key, which its coin presses.
     capability("hinata_io",
-      `json_object('transport','external','coinKey',${machine("coin_key")},'coinAfterSwipe',json(CASE WHEN ${machine("coin_after_swipe")}=1 THEN 'true' ELSE 'false' END))`,
+      `json_object('transport','external','keys',json(CASE WHEN COALESCE(${machine("coin_key")},0)>0 THEN json_array(json_object('id','coin','name','投币','key',${machine("coin_key")})) ELSE '[]' END))`,
       `json_patch('{}',json_object('url',${machine("hinata_url")},'password',${machine("hinata_password")}))`,
       `COALESCE(${machine("hinata_url")},'')!=''`),
+    // An external relay never says the game took a card, so an old coin after a swipe has nothing to follow.
+    capability("coin", `json_object('method','key','keyId','coin','cap',NULL,'afterSwipe',json('false'))`, "'{}'",
+      `COALESCE(${machine("hinata_url")},'')!='' AND COALESCE(${machine("coin_key")},0)>0`),
     capability("door", `json_object('lockId',${machine("ttlock_lock_id")})`, "'{}'", `${machine("ttlock_lock_id")} IS NOT NULL`),
     capability("mahjong", machine("mahjong_config_json"), "'{}'", `json_valid(${machine("mahjong_config_json")})`),
   ];
@@ -674,12 +679,11 @@ async function applyJob(
     ? v2DeviceStatements(db, shop.id, job.id, header.scope === "configuration")
     : null;
   if (v2Devices) statements.push(...v2Devices.capabilities);
-  const schemas = schemasFor(header.version);
   for (const table of tables) {
     if (table === "machines" || table === "account_links" || !rowsCount[table]) continue;
     // v2 history tables are converted with the machines above; their devices must exist first.
     if (table === "device_commands" || table === "device_states" || table === "machine_connections") continue;
-    const cols = schemas[table].columns.map((c) => c.name),
+    const cols = importColumns(table, header.version),
       expressions = cols.map((col) => `json_extract(payload_json,'$.${col}')`);
     let filter = "";
     if (table === "player_identities") filter = " AND json_extract(payload_json,'$.provider')!='web-account'";
@@ -694,10 +698,12 @@ async function applyJob(
         : table === "device_capabilities" || table === "device_operations" || table === "device_events" || table === "device_state"
           ? "device_id"
           : null;
-    if (deviceCol)
-      expressions[cols.indexOf(deviceCol)] =
-        `COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id
-      AND d.source_id=json_extract(payload_json,'$.${deviceCol}')),json_extract(payload_json,'$.${deviceCol}'))`;
+    // The resource an event came through (a bot) is renumbered like the device it happened on.
+    for (const col of [deviceCol, ...(table === "device_events" ? ["via_resource_id"] : [])])
+      if (col && cols.includes(col))
+        expressions[cols.indexOf(col)] =
+          `COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id
+      AND d.source_id=json_extract(payload_json,'$.${col}')),json_extract(payload_json,'$.${col}'))`;
     if (table === "sessions")
       expressions[cols.indexOf("metadata_json")] =
         `CASE WHEN EXISTS(SELECT 1 FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId'))
@@ -814,7 +820,7 @@ async function applyJob(
   statements.push(...missingFrontDeskStatements(db, shop.id));
   if (header.settings.billingEnabled === false) statements.push(...freeShopStatements(db, shop.id));
   if (rowsCount.account_links) {
-    const cols = schemas.account_links.columns.map((c) => c.name);
+    const cols = schemasFor(header.version).account_links.columns.map((c) => c.name);
     statements.push(
       db
         .prepare(

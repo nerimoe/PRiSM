@@ -58,6 +58,15 @@ export async function ensureBotResource(
   return { id, name: token.label || "Bot", enabled: true, config };
 }
 
+/** What the shop calls its money: its paid currency first. */
+export async function shopCurrencyName(db: D1DatabaseLike, shopId: string): Promise<string> {
+  const row = await db.prepare(
+    `SELECT name FROM asset_definitions WHERE shop_id = ? AND type = 'currency' AND status = 'active'
+     ORDER BY CASE WHEN code IN ('paid', 'currency.paid') THEN 0 ELSE 1 END, code LIMIT 1`,
+  ).bind(shopId).first<{ name: string }>();
+  return row?.name ?? "余额";
+}
+
 /** Everything a bot is told: its settings plus what the platform knows. */
 export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: BotResource) {
   const [staff, currency, tables, doors, own] = await Promise.all([
@@ -72,10 +81,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
            WHERE a.shop_id = ? AND s.status = 'active'))
        ORDER BY b.provider, b.subject`,
     ).bind(shopId, shopId, shopId).all<{ provider: string; subject: string }>(),
-    db.prepare(
-      `SELECT name FROM asset_definitions WHERE shop_id = ? AND type = 'currency' AND status = 'active'
-       ORDER BY CASE WHEN code IN ('paid', 'currency.paid') THEN 0 ELSE 1 END, code LIMIT 1`,
-    ).bind(shopId).first<{ name: string }>(),
+    shopCurrencyName(db, shopId),
     db.prepare(
       `SELECT m.id, m.name, m.aliases_json, m.capacity
        FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
@@ -89,7 +95,8 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
       `SELECT ${resourceBilledSql("m")} AS billed FROM machines m WHERE m.shop_id = ? AND m.id = ?`,
     ).bind(shopId, bot.id).first<{ billed: number }>(),
   ]);
-  const { tokenId: _token, doorResourceId, ...settings } = bot.config;
+  const { tokenId: _token, doorResourceId, ...stored } = bot.config;
+  const settings = stored;
   // The chosen door, or the only door the shop has.
   const door = doors.results.find((row) => row.id === doorResourceId) ?? (doors.results.length === 1 ? doors.results[0] : null);
   return {
@@ -99,7 +106,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     // resource group's. It keeps the old shop-wide switch's name so released
     // plugins still read it; the shop itself no longer has one.
     billingEnabled: !!own?.billed,
-    currencyName: currency?.name ?? "余额",
+    currencyName: currency,
     staff: staff.results,
     door: door ? { id: door.id, name: door.name } : null,
     mahjongTables: tables.results.map((row) => ({

@@ -3,15 +3,17 @@
  *
  * A player opens a short window on a cabinet's page, then puts their card on
  * that cabinet's reader. The first card the reader reports in the window, other
- * than one the platform itself sent, is added to the player's PRiSM account
- * and bound to them at the shop. Only a cabinet connected directly (whose IO
- * reports cards back) can do this.
+ * than one the platform itself sent, is held and the page told. It is added to the
+ * player's PRiSM account and bound to them at the shop only when the page then asks
+ * for it, so a card put down after the player left goes nowhere. A page stops asking
+ * once it has been hidden. Only a cabinet connected directly (whose IO reports cards
+ * back) can do this.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { createCardStore, type ReportedCard } from "./cards.js";
 
 /** How long a reader waits for the card. */
-export const CARD_CAPTURE_MS = 60_000;
+export const CARD_CAPTURE_MS = 15_000;
 
 export type CardCapture = {
   id: string;
@@ -20,6 +22,8 @@ export type CardCapture = {
   playerId: string;
   expiresAt: number;
   result?: CardCaptureResult;
+  /** The card the reader reported, until its player asks for it. Null for a kind that cannot be added. */
+  card?: ReportedCard | null;
 };
 
 /**
@@ -35,11 +39,14 @@ export async function bindReaderCard(
   key: string | undefined,
   capture: CardCapture,
   card: ReportedCard | null,
+  /** Told when a card is newly bound to the player here; never given its number. */
+  bound?: (card: { type: string }) => Promise<void>,
 ): Promise<CardCaptureResult> {
   if (!card) return { status: "unsupported" };
   const cards = createCardStore(db, capture.shopId, key);
-  const bound = await cards.bind({ playerId: capture.playerId, card, source: "reader" });
-  if (bound === "taken") return { status: "taken", cardType: card.type };
+  const binding = await cards.bind({ playerId: capture.playerId, card, source: "reader" });
+  if (binding === "taken") return { status: "taken", cardType: card.type };
+  if (binding === "bound" && bound) await bound({ type: card.type });
   const account = await db.prepare("SELECT id FROM cards WHERE user_id = ? AND access_code = ?")
     .bind(capture.userId, card.accessCode).first<{ id: string }>();
   if (!account) {
@@ -47,5 +54,5 @@ export async function bindReaderCard(
       "INSERT INTO cards(id, user_id, label, card_type, access_code, source) VALUES (?, ?, ?, ?, ?, 'reader')",
     ).bind(crypto.randomUUID(), capture.userId, "读卡器添加", card.type, card.accessCode).run();
   }
-  return { status: account ? (bound === "exists" ? "exists" : "bound") : "added", cardType: card.type };
+  return { status: account ? (binding === "exists" ? "exists" : "bound") : "added", cardType: card.type };
 }

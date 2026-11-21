@@ -26,8 +26,7 @@ const base = {
   bot: {
     playerCommands: "all", readOnlyNotice: "请扫码", staffCommands: true, powerOffStaffOnly: false,
     doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
-    announceChannelIds: [], idleReminderMinutes: 5, announceIdle: false, announcePower: false,
-    announceStarts: false, announceCards: false, announceCoins: false,
+    announceGroups: [], idleReminderMinutes: 5,
   },
 };
 const machines = [
@@ -86,14 +85,16 @@ async function openEditor(botMachines = machines) {
 }
 
 async function openResource(page, expect = "接入凭据") {
-  // The resource row's own 编辑 button opens the editor; its side nav has one
+  // The tile's own 编辑, behind its ⋯, opens the editor; its side nav has one
   // entry per capability, and the bot is the last.
-  // The card for this bot, not the group header's own 编辑.
+  // The tile for this bot, not the group header's own 编辑.
   const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "店铺 Bot" }) });
-  await card.getByRole("button", { name: "编辑" }).click();
+  await card.getByRole("button", { name: "更多 店铺 Bot", exact: true }).click();
+  await card.getByRole("button", { name: "编辑", exact: true }).click();
   const nav = page.getByRole("navigation", { name: "资源设置" });
   await nav.waitFor();
   await nav.getByRole("button", { name: "店铺 Bot" }).click();
+  await page.getByRole("navigation", { name: "Bot 设置" }).getByRole("button", { name: "接入凭据", exact: true }).click();
   await page.getByText(expect, { exact: false }).first().waitFor();
 }
 
@@ -113,6 +114,55 @@ async function walkThreeSteps(page, openLabel, confirmLabel, acceptLabel) {
 const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里。";
 
 (async () => {
+  // Settings stay in their own group, and switching groups keeps the whole draft.
+  {
+    const { browser, page, patches, exceptions } = await openEditor();
+    try {
+      await openResource(page);
+      const nav = page.getByRole("navigation", { name: "Bot 设置" });
+      await nav.getByRole("button", { name: "使用权限", exact: true }).click();
+      assert.equal(await page.getByRole("button", { name: "轮换 Bot 凭据", exact: true }).isVisible(), false);
+      await page.getByRole("radio", { name: "只读", exact: true }).check();
+      await page.getByLabel("只读提示", { exact: true }).fill("请扫码操作");
+      await nav.getByRole("button", { name: "播报", exact: true }).click();
+      // A bot announces by groups: who hears it, and for each event whether, from where and in which words.
+      await page.getByRole("button", { name: "新建播报组", exact: true }).click();
+      await page.getByLabel("发到", { exact: true }).fill("onebot:42\nonebot:private:10001");
+      await page.getByRole("navigation", { name: "事件", exact: true }).getByRole("button", { name: "刷卡", exact: true }).click();
+      const card = page.getByRole("region", { name: "刷卡", exact: true });
+      await card.getByRole("checkbox", { name: "播报", exact: true }).check();
+      await card.getByRole("button", { name: "编辑文案", exact: true }).click();
+      await card.getByLabel("文案", { exact: true }).fill("{device} 收到 {coins}");
+      await nav.getByRole("button", { name: "命令回复", exact: true }).click();
+      const replies = page.getByRole("region", { name: "命令回复", exact: true });
+      await replies.getByLabel("回复内容", { exact: true }).fill("绑定成功，欢迎光临");
+      await nav.getByRole("button", { name: "使用权限", exact: true }).click();
+      assert.equal(await page.getByLabel("只读提示", { exact: true }).inputValue(), "请扫码操作");
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      // Words naming something the event does not know keep the settings from saving, and show where.
+      await card.getByRole("alert").waitFor();
+      assert.equal(await nav.getByRole("button", { name: "播报", exact: true }).getAttribute("aria-pressed"), "true");
+      assert.equal(patches.length, 0, "invalid hidden templates prevent saving");
+      await card.getByLabel("文案", { exact: true }).fill("{player} 在 {device} 刷卡");
+      await nav.getByRole("button", { name: "命令回复", exact: true }).click();
+      assert.equal(await replies.getByLabel("回复内容", { exact: true }).inputValue(), "绑定成功，欢迎光临");
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await until(() => patches.length > 0, "saving settings across groups");
+      assert.equal(patches[0].body.bot.playerCommands, "readonly");
+      assert.equal(patches[0].body.bot.readOnlyNotice, "请扫码操作");
+      const [group] = patches[0].body.bot.announceGroups;
+      assert.equal(patches[0].body.bot.announceGroups.length, 1);
+      assert.deepEqual({ ...group, id: undefined }, {
+        id: undefined, name: "播报组 1", to: ["onebot:42", "onebot:private:10001"],
+        events: { "card.consumed": { on: true, sources: [] } },
+        templates: { "announce.card.consumed.message": "{player} 在 {device} 刷卡" },
+      });
+      // The bot's own words are only its answers to commands.
+      assert.deepEqual(patches[0].body.bot.replyTemplates, { "bind.success": "绑定成功，欢迎光临" });
+      assert.deepEqual(exceptions, []);
+    } finally { await browser.close(); }
+  }
+
   // 1. The bot credential.
   {
     const { browser, page, patches, exceptions } = await openEditor();
@@ -167,7 +217,8 @@ const ACCEPT = "我知道旧令牌取不回来，也知道该把它换到哪里�
     const { browser, page, patches, exceptions } = await openEditor();
     try {
       const card = page.locator("article").filter({ has: page.getByRole("heading", { name: "店铺 Bot" }) });
-      await card.getByRole("button", { name: "编辑" }).click();
+      await card.getByRole("button", { name: "更多 店铺 Bot", exact: true }).click();
+      await card.getByRole("button", { name: "编辑", exact: true }).click();
       const nav = page.getByRole("navigation", { name: "资源设置" });
       await nav.waitFor();
       await nav.getByRole("button", { name: "刷卡 · HINATA IO" }).click();

@@ -47,14 +47,15 @@ legacyIntegrationRouter.post(
   async (c) => {
     const deps = getShopDeps(c);
     const body = await c.req.json<any>();
-    // The action remembers which bot asked, so that bot does not announce it
-    // again after answering the command itself (resources/shop-events.ts).
+    // The request says which bot it came through: it belongs to that bot's
+    // history, and that bot does not announce it again after answering the
+    // command itself (resources/shop-events.ts).
     const shop = getShop(c);
     const bot = await ensureBotResource(c.env.DB, shop.id, await integrationToken(c, shop));
     const request = botRequest(c, body);
     const action = await deps.integrationCommands.requestDeviceActionByIdentity({
       ...request,
-      action: { ...request.action, payload: { ...(request.action?.payload ?? {}), viaBot: bot.id } },
+      via: { channel: "bot", resourceId: bot.id },
     });
     return c.json({
       action: toDeviceCommandView(action),

@@ -24,7 +24,6 @@ const machine = (over: Partial<Resource> = {}): Resource => ({
   ttlockLockId: null,
   mahjong: null,
   coinKey: 32,
-  coinEnabled: true,
   coinAfterSwipe: false,
   relayConnection: "external",
   ...over,
@@ -52,6 +51,7 @@ describe("device capability view", () => {
       power: false,
       climate: false,
       hinata_io: false,
+      coin: false,
       door: false,
       mahjong: false,
       bot: false,
@@ -63,9 +63,10 @@ describe("device capability view", () => {
           ttlockLockId: 42,
           mahjong: { capacity: 4, pricingConfigIds: [] },
           relayConnection: "embedded",
+          coin: { method: "key", keyId: "coin", cap: null, afterSwipe: false },
         }),
       ),
-    ).toEqual({ power: true, climate: false, hinata_io: true, door: true, mahjong: true, bot: false });
+    ).toEqual({ power: true, climate: false, hinata_io: true, coin: true, door: true, mahjong: true, bot: false });
   });
 
   it("treats a direct connection as HINATA IO even without an external URL", () => {
@@ -74,7 +75,9 @@ describe("device capability view", () => {
     expect(isDirectConnect(direct)).toBe(true);
   });
 
-  it("gates coin on a key and, for external relays, a password", () => {
+  it("takes the server's word on coin, and reads an older response from the key and, for external relays, a password", () => {
+    expect(canOperateCoin(machine({ hasHinata: true, hasPassword: false, coinEnabled: true }))).toBe(true);
+    expect(canOperateCoin(machine({ relayConnection: "embedded", coinEnabled: false }))).toBe(false);
     const external = machine({ hasHinata: true, hasPassword: false, coinKey: 32 });
     expect(canOperateCoin(external)).toBe(false);
     expect(canOperateCoin({ ...external, hasPassword: true })).toBe(true);

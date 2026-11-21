@@ -29,6 +29,10 @@ describe("player notices", () => {
     expect(notice("PRESENT_GRANT_LIMIT_REACHED", "en")).toMatchObject({ body: "You have reached this gift's per-player limit.", actions: [] });
   });
 
+  it("tells an operator why the cabinet could not be read", () => {
+    expect(errorNotice({ code: "CABINET_READ_FAILED", message: "这台 IO 没有开启 cabinetMonitor", status: 409 }, "zh").body).toBe("这台 IO 没有开启 cabinetMonitor");
+  });
+
   it("offers a retry only where trying again can help", () => {
     const device = errorNotice({ code: "DEVICE_UNAVAILABLE", message: "设备连接失败", status: 502 }, "en");
     expect(device.actions.map((action) => action.kind)).toEqual(["dismiss", "retry"]);

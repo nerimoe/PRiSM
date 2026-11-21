@@ -116,6 +116,7 @@ function mock(request, role, unknown, mutations) {
       revenueTotal: 0, sessionCount: 0, assetGrantTotal: 0, coinCommandCount: 0,
     }};
     if (action === "reports/checkouts") return { records: [], page: { hasMore: false } };
+    if (action === "players/p/checkouts") return { records: [], page: { hasMore: false } };
     if (action === "players/p/assets") return { holdings: [], ledgerEntries: [] };
     if (action === "players/p/sessions/history") return { sessions: [] };
   }

@@ -1,25 +1,30 @@
+import { keyTextFromVk } from "@prism/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
   AirVent,
-  ChevronRight,
+  Bot,
+  Coins,
+  Cpu,
   CreditCard,
   DoorOpen,
   Gamepad2,
+  History,
+  LayoutGrid,
+  Lock,
+  MoreHorizontal,
   Pencil,
   Plus,
   Power,
   Printer,
   QrCode,
   RefreshCw,
-  Ungroup,
-  Bot,
-  Users,
   Timer,
+  Ungroup,
 } from "lucide-react";
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
-import { ClimateControls, climateModeName, climateSummary, type ClimateState } from "../ClimateControls";
+import { ClimateControls, climateModeIcon, climateModeName, climateSummary } from "../ClimateControls";
 import { useI18n } from "../../i18n";
 import { billTime } from "../bill-time";
 import {
@@ -34,10 +39,9 @@ import {
   useCopy,
   useMerchant,
   useResource,
-  type LivePlayer,
+  type Player,
 } from "./shared";
 import {
-  canOperateCoin,
   capabilityOrder,
   deviceActionGroups,
   deviceActions,
@@ -62,20 +66,19 @@ import {
 import { HaWatchersPanel } from "./HaWatchers";
 import { useBoardLive } from "./use-board-live";
 import { useAuth } from "../AuthContext";
+import { stayLength, tileView, type Tone } from "./resource-tile";
 
 type Filter = "all" | CapabilityId | "unconfigured";
 
-/** Capability pills get one icon and one accent each, so a card reads at a glance. */
-const capabilityChips: Record<
-  CapabilityId,
-  { icon: typeof Power; label: string }
-> = {
-  power: { icon: Power, label: "电源" },
-  climate: { icon: AirVent, label: "空调" },
-  hinata_io: { icon: CreditCard, label: "刷卡" },
-  door: { icon: DoorOpen, label: "门锁" },
-  mahjong: { icon: Ungroup, label: "麻将桌" },
-  bot: { icon: Bot, label: "Bot" },
+/** The type filter's label for each capability. */
+const capabilityLabels: Record<CapabilityId, string> = {
+  power: "电源",
+  climate: "空调",
+  hinata_io: "刷卡",
+  coin: "投币",
+  door: "门锁",
+  mahjong: "麻将桌",
+  bot: "Bot",
 };
 
 /**
@@ -319,7 +322,7 @@ export function ResourcesPage() {
         {(
           [
             ["all", "全部"],
-            ...capabilityOrder.map((id) => [id, capabilityChips[id].label] as const),
+            ...capabilityOrder.map((id) => [id, capabilityLabels[id]] as const),
             ["unconfigured", "未配置"],
           ] as [Filter, string][]
         ).filter(([key]) => key === "all" || counts[key]).map(([key, label]) => (
@@ -378,7 +381,7 @@ export function ResourcesPage() {
                   )}
                 </header>
                 {resources.length ? (
-                  <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                     {resources.map((device) => (
                       <ResourceCard
                         key={device.id}
@@ -434,7 +437,7 @@ export function ResourcesPage() {
           title={"id" in editing ? "编辑资源" : "添加资源"}
           close={() => setEditing(null)}
           dismissDisabled={editorLocked}
-          wide
+          xl
         >
           <ResourceEditor
             value={"id" in editing ? editing : undefined}
@@ -519,31 +522,98 @@ function ResourceQR({ device }: { device: Resource }) {
   );
 }
 
-/** The idle power-off ahead: the time it happens and how long until then. */
-function IdleCountdown({ at }: { at: string }) {
-  const { t } = useI18n();
-  const { timeZone } = useMerchant();
+/** Minutes are enough for a stay or a countdown; the tiles re-render on this. */
+function useMinuteClock() {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 15_000);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(timer);
   }, []);
-  const minutes = Math.max(0, Math.ceil((Date.parse(at) - now) / 60_000));
-  const time = billTime(at, timeZone || undefined).time;
+  return now;
+}
+
+const toneClass: Record<Tone, string> = {
+  on: "bg-mint/15 text-mint",
+  off: "bg-ink/[0.06] text-ink/35",
+  bad: "bg-coral/15 text-coral",
+  unsure: "text-ink/35 ring-1 ring-inset ring-ink/20",
+};
+
+/** One small status capsule; a value that is not live keeps its colour but loses its fill. */
+function StatusPill({ tone, live = true, label, children }: { tone: Tone; live?: boolean; label: string; children: React.ReactNode }) {
+  const hollow = !live && tone !== "unsure";
   return (
-    <span className="flex items-center gap-1.5 tabular-nums text-amber-600" title={t("闲置自动关机")}>
-      <Timer size={13} aria-hidden="true" />
-      {minutes > 0
-        ? t("{time} 自动关机（{minutes} 分钟后）", { time, minutes })
-        : t("{time} 自动关机", { time })}
+    <span
+      className={`inline-flex h-6 min-w-6 items-center justify-center gap-1 rounded-full px-1.5 text-xs font-semibold tabular-nums ${
+        hollow ? `${tone === "on" ? "text-mint ring-mint/45" : "text-ink/35 ring-ink/20"} ring-1 ring-inset` : toneClass[tone]
+      }`}
+      role="img"
+      title={label}
+      aria-label={label}
+    >
+      {children}
     </span>
   );
 }
 
+/** Records and edit, behind the tile's ⋯. The QR code is the way in for players, so it stays out. */
+function TileMenu({ name, canWrite, onHistory, onEdit }: {
+  name: string;
+  canWrite: boolean;
+  onHistory: () => void;
+  onEdit: () => void;
+}) {
+  const { t } = useI18n();
+  const menu = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event instanceof PointerEvent && event.target instanceof Node && menu.current?.contains(event.target)) return;
+      if (menu.current) menu.current.open = false;
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+  const item = "flex w-full items-center gap-2 whitespace-nowrap rounded-md px-3 py-2 text-left text-sm hover:bg-ink/5";
+  const pick = (action: () => void) => () => {
+    if (menu.current) menu.current.open = false;
+    action();
+  };
+  return (
+    <details ref={menu} className="relative z-10" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary
+        role="button"
+        className="focus-ring grid size-8 cursor-pointer list-none place-items-center rounded-lg text-ink/40 hover:bg-ink/5 hover:text-ink [&::-webkit-details-marker]:hidden"
+        aria-label={`${t("更多")} ${name}`}
+      >
+        <MoreHorizontal size={16} aria-hidden="true" />
+      </summary>
+      <div className="absolute bottom-full right-0 mb-1 grid min-w-36 rounded-xl border border-ink/10 bg-panel p-1 shadow-soft">
+        <button type="button" className={item} onClick={pick(onHistory)}>
+          <History size={15} aria-hidden="true" />
+          {t("操作记录")}
+        </button>
+        {canWrite && (
+          <button type="button" className={item} onClick={pick(onEdit)}>
+            <Pencil size={15} aria-hidden="true" />
+            {t("编辑")}
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /**
- * A card states what the device is for, what it can do, and its live power
- * state. Secondary actions live behind an overflow menu: three equal-weight
- * buttons used to overflow the card as soon as the labels grew.
+ * A resource as a tile. It is lit while its power is on; the round icon says what it is, the
+ * capsules on the right say power, air conditioner and IO, the pills are who is on it, and the
+ * bottom row holds credits and the idle power-off. Clicking the tile opens its operations.
  */
 function ResourceCard({
   device,
@@ -575,234 +645,157 @@ function ResourceCard({
   onEdit: () => void;
 }) {
   const { t } = useI18n();
+  const { timeZone } = useMerchant();
+  const now = useMinuteClock();
   const caps = resourceCapabilities(device);
   const enabled = !!device.enabled;
   const configured = Object.values(caps).some(Boolean);
-  const actions = deviceActions(device);
-  // Seating a player is a mahjong operation even though the catalog lists no
-  // device action for that capability.
-  const hasControls = actions.length > 0 || !!caps.mahjong;
-  // The capability chips carry the device's purpose, so the card has no
-  // separate subtitle saying the same thing again.
-  const chips = capabilityOrder.filter((id) => caps[id]);
+  // Seating a player is a mahjong operation even though the catalog lists no device action for it.
+  const hasControls = deviceActions(device).length > 0 || !!caps.mahjong;
+  const view = tileView(device, state, occupancy, powerOffAt, stateFailed);
+  const TypeIcon = caps.bot ? Bot : caps.mahjong ? LayoutGrid : caps.hinata_io ? Gamepad2 : caps.door ? Lock : caps.power ? Power : caps.climate ? AirVent : QrCode;
+  const open = canWrite && hasControls && enabled ? onAct : onHistory;
+  const first = view.seats?.occupants[0];
+  const stay = first ? stayLength(first.startedAt, now) : null;
+  const ClimateIcon = (view.climate?.mode && climateModeIcon(view.climate.mode)) || AirVent;
+  // A value the backend has not said yet is being read; one it said as null is unknown.
+  const powerLabel = view.power?.tone === "on" ? t("已开机") : view.power?.tone === "off" ? t("已关机")
+    : !stateFailed && state?.power === undefined ? t("读取电源状态…") : t("电源状态未知");
+  // Whether a value is followed live is drawn (hollow when not); it is said here, once the board has read it.
+  const liveTag = (live: boolean) => (state ? ` · ${t(live ? "实时" : "非实时")}` : "");
+  const powerName = view.power ? `${t("电源")} ${powerLabel}${liveTag(view.power.live)}` : "";
+  // A power-only device's round icon already says on or off; its capsule would only repeat it.
+  const powerPill = !!view.power && (TypeIcon !== Power || !view.power.live || view.power.tone === "unsure");
+  const ioLabel = view.io?.tone === "on" ? t("机台在线") : view.io?.tone === "off" ? t("机台离线") : t("连接未知");
   return (
     <article
-      className={`flex flex-col rounded-xl border border-ink/10 bg-panel ${
-        enabled ? "" : "opacity-60"
-      }`}
+      className={`relative flex min-h-44 min-w-0 flex-col gap-2.5 rounded-2xl p-3.5 transition-colors ${
+        view.lit ? "bg-panel shadow-soft ring-1 ring-ink/5 dark:bg-surface" : "bg-ink/[0.035] dark:bg-panel"
+      } ${enabled ? "" : "opacity-45"}`}
     >
-      <div className="flex items-center gap-3 px-5 py-4">
+      {/* The whole tile opens its operations; the links and the menu sit above this. */}
+      <button
+        type="button"
+        className="focus-ring absolute inset-0 rounded-2xl"
+        aria-label={`${device.name} · ${t(canWrite && hasControls && enabled ? "操作" : "操作记录")}`}
+        onClick={open}
+      />
+      <div className="pointer-events-none relative flex items-start justify-between gap-2">
         <span
-          className={`grid size-11 shrink-0 place-items-center rounded-xl ${
-            caps.door && !configured
-              ? "bg-ink/5 text-ink/40"
-              : "bg-mint/10 text-mint"
+          className={`grid size-10 shrink-0 place-items-center rounded-full ${
+            view.tone === "bad" ? "bg-coral text-white" : view.tone === "on" ? "bg-mint text-white" : "bg-ink/[0.08] text-ink/50"
           }`}
+          {...(view.power && !powerPill ? { role: "img", title: powerName, "aria-label": powerName } : { "aria-hidden": true })}
         >
-          {caps.bot ? <Bot size={22} /> : caps.door ? <DoorOpen size={22} /> : <Gamepad2 size={22} />}
+          <TypeIcon size={19} aria-hidden="true" />
         </span>
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate font-semibold">{device.name}</h3>
-          {!enabled && (
-            <p className="mt-1 text-xs text-ink/50">{t("已停用")}</p>
+        <span className="flex flex-wrap justify-end gap-1">
+          {view.power && powerPill && (
+            <StatusPill tone={view.power.tone} live={view.power.live} label={powerName}>
+              <Power size={13} aria-hidden="true" />
+            </StatusPill>
           )}
-        </div>
-      </div>
-      {chips.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2 px-5 text-xs text-ink/70">
-          {chips.map((id) => {
-            const chip = capabilityChips[id];
-            const Icon = chip.icon;
-            return (
-              <span
-                key={id}
-                className="inline-flex items-center gap-1.5 rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/70"
-              >
-                <Icon size={13} />
-                {t(chip.label)}
-                {id === "hinata_io" && isDirectConnect(device) && (
-                  <span className="text-mint">{t("直连")}</span>
-                )}
-              </span>
-            );
-          })}
-          {caps.hinata_io && canOperateCoin(device) && device.coinAfterSwipe && (
-            <span className="inline-flex items-center rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/60">
-              {t("刷卡后投币")}
-            </span>
+          {view.climate && (
+            <StatusPill tone={view.climate.tone} live={view.climate.live} label={`${t("空调")} ${!stateFailed && state?.climate === undefined ? t("读取空调状态…") : climateSummary(state?.climate ?? null, t)}${liveTag(view.climate.live)}`}>
+              <ClimateIcon size={13} aria-hidden="true" />
+              {view.climate.temperature !== null && `${view.climate.temperature}°`}
+            </StatusPill>
           )}
-          {caps.door && device.ttlockLockId && (
-            <span className="inline-flex items-center rounded-md bg-ink/5 px-2 py-1 text-xs text-ink/60">
-              TTLock · {device.ttlockLockId}
-            </span>
-          )}
-        </div>
-      )}
-      {occupancy && (
-        <div className="mb-4 flex min-w-0 flex-wrap items-center gap-1.5 px-5 text-xs">
-          <span className="flex shrink-0 items-center gap-1 tabular-nums text-ink/60" title={t("占用")}>
-            <Users size={13} aria-hidden="true" />
-            {occupancy.occupants.length}/{occupancy.capacity}
-          </span>
-          {occupancy.occupants.length ? (
-            occupancy.occupants.map((occupant) => (
-              <Link
-                key={occupant.playerId}
-                className="focus-ring max-w-[10rem] truncate rounded-md bg-mint/10 px-2 py-1 font-medium text-mint hover:bg-mint/20"
-                to={playerHref(occupant.playerId)}
-              >
-                {occupant.displayName ?? occupant.playerId}
-              </Link>
-            ))
-          ) : null}
-        </div>
-      )}
-      {!configured && canWrite && (
-        <div className="px-5 pt-3">
-          <button type="button" className={`${primary} min-h-9 px-3 py-1`} onClick={onEdit}>
-            {t("配置能力")}
-          </button>
-        </div>
-      )}
-      {(caps.power || caps.climate || isDirectConnect(device) || caps.bot) && (
-        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 px-5 text-xs">
-          {(caps.power || caps.climate) && (
-            <LiveStatus state={state} failed={stateFailed} power={caps.power} climate={caps.climate} />
-          )}
-          {powerOffAt && ((caps.power && state?.power !== "off") || (caps.climate && state?.climate?.mode !== "off")) && <IdleCountdown at={powerOffAt} />}
-          {[
-            ...(isDirectConnect(device) ? [{ kind: "io", online: device.relayOnline, up: "机台在线", down: "机台离线" }] : []),
-            ...(caps.bot ? [{ kind: "bot", online: device.botOnline, up: "Bot 在线", down: "Bot 离线" }] : []),
-          ].map(({ kind, online, up, down }) => (
-            <span key={kind} className="flex items-center gap-1.5 text-ink/60">
-              <span
-                className={
-                  online === true
-                    ? "text-mint"
-                    : online === false
-                      ? "text-coral"
-                      : "text-ink/35"
-                }
-                aria-hidden="true"
-              >
-                ●
-              </span>
-              {t(
-                online === true
-                  ? up
-                  : online === false
-                    ? down
-                    : "连接未知",
+          {view.io && (
+            <StatusPill
+              tone={view.io.tone}
+              label={view.io.tone === "on" && view.io.readers !== null ? `${ioLabel} · ${t("读卡器 {count}", { count: view.io.readers })}` : ioLabel}
+            >
+              <Cpu size={13} aria-hidden="true" />
+              {view.io.tone === "on" && view.io.readers !== null && (
+                <>
+                  <span className="mx-0.5 h-3 w-px bg-current opacity-30" aria-hidden="true" />
+                  {view.io.readers > 0 ? (
+                    Array.from({ length: view.io.readers }, (_, index) => <CreditCard key={index} size={13} aria-hidden="true" />)
+                  ) : (
+                    <span className="flex items-center gap-0.5 text-coral">
+                      <CreditCard size={13} aria-hidden="true" />0
+                    </span>
+                  )}
+                </>
               )}
-            </span>
+            </StatusPill>
+          )}
+        </span>
+      </div>
+      <div className="pointer-events-none relative min-w-0">
+        <h3 className={`truncate text-[15px] font-semibold leading-5 ${view.lit ? "" : "text-ink/70"}`}>{device.name}</h3>
+        <p className="min-h-4 text-xs leading-4 tabular-nums text-ink/50">
+          {!enabled
+            ? t("已停用")
+            : stay
+              ? stay.hours
+                ? t("{hours} 时 {minutes} 分", stay)
+                : t("{minutes} 分", stay)
+              : ""}
+        </p>
+      </div>
+      {view.seats && (
+        <div className="relative flex flex-wrap gap-1.5">
+          {view.seats.occupants.map((occupant) => (
+            <Link
+              key={occupant.playerId}
+              className={`focus-ring inline-flex h-6 max-w-[7.5rem] items-center truncate rounded-full px-2.5 text-xs font-medium text-mint ${
+                occupant.billing === false ? "ring-1 ring-inset ring-mint/45 hover:bg-mint/10" : "bg-mint/15 hover:bg-mint/25"
+              }`}
+              to={playerHref(occupant.playerId)}
+              title={occupant.billing === false ? t("未计费") : undefined}
+            >
+              {occupant.displayName ?? occupant.playerId}
+            </Link>
+          ))}
+          {Array.from({ length: Math.max(0, view.seats.capacity - view.seats.occupants.length) }, (_, index) => (
+            <span key={index} className="pointer-events-none h-6 w-10 rounded-full border-[1.5px] border-dashed border-ink/15" aria-hidden="true" />
           ))}
         </div>
       )}
-      <footer className="mt-auto flex items-center justify-between gap-2 border-t border-ink/10 px-4 py-2">
-        {canWrite && hasControls && (
-          <button
-            type="button"
-            className={`${primary} min-h-9 flex-1 px-3 py-1 text-xs`}
-            disabled={!enabled}
-            onClick={onAct}
-          >
-            {t("操作")}
-          </button>
-        )}
-        {canWrite && (
-          <button
-            type="button"
-            className={`${button} min-h-9 ${hasControls ? "" : "flex-1"} px-3 py-1 text-xs`}
-            onClick={onEdit}
-          >
-            <Pencil size={14} />
-            {t("编辑")}
-          </button>
-        )}
-        <button
-          type="button"
-          className={`${buttonQuiet} min-h-9 px-2 text-xs`}
-          onClick={onHistory}
-        >
-          {t("操作记录")}
-          <ChevronRight size={15} className="text-ink/35" />
+      {!configured && canWrite && (
+        <button type="button" className={`${primary} relative z-10 min-h-8 justify-self-start px-3 py-1 text-xs`} onClick={onEdit}>
+          {t("配置能力")}
         </button>
-        {/* A bot is not something players scan. */}
-        {!device.bot && (
-          <button
-            type="button"
-            className={`${buttonQuiet} grid size-9 shrink-0 place-items-center px-0`}
-            aria-label={`${t("资源二维码")} ${device.name}`}
-            onClick={onQR}
+      )}
+      <div className="relative mt-auto flex min-h-8 items-center gap-2.5 text-[13px] tabular-nums">
+        {view.coins && (
+          <span
+            className={`pointer-events-none flex shrink-0 items-center gap-1.5 whitespace-nowrap font-semibold ${view.coins.old ? "text-ink/35" : ""}`}
+            title={t("机内币数")}
           >
-            <QrCode size={16} />
-          </button>
+            <Coins size={15} className={view.coins.old ? "" : "text-amber-500"} aria-hidden="true" />
+            {view.coins.value}
+            {view.coins.cap !== null && <span className="font-normal text-ink/40">/ {view.coins.cap}</span>}
+          </span>
         )}
-      </footer>
+        {view.powerOffAt && (
+          <span className="pointer-events-none flex shrink-0 items-center gap-1 whitespace-nowrap font-semibold text-amber-600 dark:text-amber-400" title={t("闲置自动关机")}>
+            <Timer size={14} aria-hidden="true" />
+            {billTime(view.powerOffAt, timeZone || undefined).time}
+          </span>
+        )}
+        <span className="relative z-10 ml-auto flex items-center gap-0.5">
+          {/* A bot is not something players scan. */}
+          {!device.bot && (
+            <button
+              type="button"
+              className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium text-ink/70 ring-1 ring-inset ring-ink/15 hover:bg-ink/5 hover:text-ink"
+              aria-label={`${t("资源二维码")} ${device.name}`}
+              onClick={onQR}
+            >
+              <QrCode size={15} aria-hidden="true" />
+              {t("二维码")}
+            </button>
+          )}
+          <TileMenu name={device.name} canWrite={canWrite} onHistory={onHistory} onEdit={onEdit} />
+        </span>
+      </div>
     </article>
   );
 }
 
-/**
- * A device's power and air conditioner as the board knows them, with the 实时 /
- * 非实时 label the backend gave it. A value the backend has not said yet is being
- * read; one it said as null is unknown.
- */
-function LiveStatus({
-  state,
-  failed,
-  power: hasPower,
-  climate: hasClimate,
-}: {
-  state: BoardState | null;
-  failed: boolean;
-  power: boolean;
-  climate: boolean;
-}) {
-  const { t } = useI18n();
-  const powerWaiting = !failed && state?.power === undefined;
-  const climateWaiting = !failed && state?.climate === undefined;
-  const power = failed ? "unknown" : powerWaiting ? "loading" : state?.power ?? "unknown";
-  const running = !!state?.climate && state.climate.mode !== "off";
-  return (
-    <>
-      {state && (
-        <span
-          className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
-            state.watching ? "bg-mint/10 text-mint" : "bg-ink/5 text-ink/55"
-          }`}
-        >
-          {t(state.watching ? "实时" : "非实时")}
-        </span>
-      )}
-      {hasPower && (
-        <span className={`flex items-center gap-1.5 ${power === "on" ? "text-mint" : "text-ink/50"}`}>
-          <span
-            className={`size-1.5 rounded-full ${power === "on" ? "bg-mint" : "bg-ink/30"}`}
-            aria-hidden="true"
-          />
-          {t(
-            power === "on"
-              ? "已开机"
-              : power === "off"
-                ? "已关机"
-                : power === "loading"
-                  ? "读取电源状态…"
-                  : "电源状态未知",
-          )}
-        </span>
-      )}
-      {hasClimate && (
-        <span className={`flex items-center gap-1.5 ${running ? "text-mint" : "text-ink/50"}`}>
-          <AirVent size={13} aria-hidden="true" />
-          {climateWaiting
-            ? t("读取空调状态…")
-            : t("空调：{mode}", { mode: climateSummary(state?.climate ?? null, t) })}
-        </span>
-      )}
-    </>
-  );
-}
 /**
  * Pair each request with its result so an action is one line. A result whose
  * request fell outside the loaded page is shown on its own.
@@ -835,7 +828,28 @@ function changeLabel(event: DeviceEvent, t: (message: string, values?: Record<st
   return event.name;
 }
 
+/**
+ * Where a request came from, for the channels a person or a rule stands behind.
+ * A machine's own reports (`relay`, `ha`) already say so by their direction.
+ */
+const viaLabels: Partial<Record<NonNullable<DeviceEvent["via"]>["channel"], string>> = {
+  page: "扫码页",
+  merchant: "商户后台",
+  bot: "Bot",
+  api: "接口",
+  system: "平台规则",
+};
+
+const commandOutcomes: Record<string, string> = { answered: "已回复", refused: "已拒绝", failed: "出错" };
+
+/** Who said a command to a bot, as the chat named them. */
+function chatName(value: unknown): string {
+  const who = (value ?? {}) as { name?: unknown; subject?: unknown };
+  return typeof who.name === "string" && who.name ? who.name : typeof who.subject === "string" ? who.subject : "";
+}
+
 const actionLabels: Record<string, string> = {
+  checkout: "结账",
   "power.on": "开机",
   "power.off": "关机",
   "power.keep": "延迟关机",
@@ -845,12 +859,129 @@ const actionLabels: Record<string, string> = {
   "climate.set_temperature": "设定温度",
   "climate.set_fan_mode": "调整风速",
   coin: "投币",
+  "key.press": "按键",
   "door.open": "获取开门密码",
   "aime.scan": "刷卡",
   "card.state": "读卡状态变化",
   "card.consumed": "卡片已送入游戏",
   "led.set": "灯光",
+  "cabinet.coin": "机台投币",
+  "cabinet.credit": "机内加币",
+  "cabinet.consumed": "机内扣币",
+  "cabinet.reset": "投币计数清零",
+  "reader.connected": "读卡器插入",
+  "reader.disconnected": "读卡器拔出",
+  // What happened at the shop without a device doing anything (capability `shop`).
+  "session.started": "入场",
+  "session.stopped": "停止计费",
+  "checkout.settled": "结账",
+  "checkout.refused": "结账失败",
+  "wallet.adjusted": "调整余额",
+  "assets.adjusted": "调整资产",
+  "gift.redeemed": "兑换礼物",
+  "card.bound": "添加卡片",
+  "occupancy.started": "上机",
+  "seat.changed": "上下桌",
 };
+
+/** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */
+const refusalReasons: Record<string, string> = {
+  DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION: "玩家未入场",
+  COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中",
+  COIN_COOLDOWN: "投币冷却中",
+  COIN_CABINET_FULL: "达到机台投币上限",
+  COIN_VIA_SWIPE: "请通过刷卡投币",
+  DEVICE_POWER_OFF: "设备未开机",
+  DEVICE_NOT_FOUND: "没有这个设备",
+  DEVICE_DISABLED: "资源已停用",
+  DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
+  SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
+  INSUFFICIENT_BALANCE: "余额不足",
+};
+
+type Books = {
+  players: Array<{ credit: number; remain: number }>;
+  bookkeeping: { totalCoin: number };
+} | { error: string };
+
+/**
+ * What the cabinet's own books say (an IO the platform has asked to report them), with a way
+ * to have the IO read them again when they look out of date.
+ */
+function CabinetBooks({ deviceId }: { deviceId: string }) {
+  const { t } = useI18n();
+  const [books, setBooks] = useState<Books | null | undefined>(undefined);
+  const [io, setIo] = useState<IoFacts | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<{ cabinet: Books | null; io?: IoFacts }>(`/api/v1/merchant/machines/${deviceId}/cabinet`)
+      .then((r) => {
+        setBooks(r.cabinet);
+        setIo(r.io ?? null);
+      })
+      .catch(() => setBooks(null));
+  }, [deviceId]);
+  async function refresh() {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api<{ cabinet: Books }>(`/api/v1/merchant/machines/${deviceId}/cabinet/refresh`, { method: "POST" });
+      setBooks(r.cabinet);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t("读取失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  const summary =
+    books === undefined ? t("读取中…")
+    : books === null ? t("未上报币数（游戏没有 sysfile.dat，或 IO 版本太旧）")
+    : "error" in books ? t("币数读取失败：{error}", { error: books.error })
+    : t("当前 {credit} 币 · 累计投币 {coins}", {
+        credit: books.players[0]?.credit ?? 0,
+        coins: books.bookkeeping.totalCoin,
+      });
+  return (
+    <div className="grid gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-ink/70">{summary}</span>
+        <button type="button" className={button} disabled={busy} onClick={() => void refresh()}>
+          {t("刷新机台状态")}
+        </button>
+        {error && <span className="text-xs text-red-600">{error}</span>}
+      </div>
+      {io && <IoStatus io={io} />}
+    </div>
+  );
+}
+
+type IoReader = { chipId: string | null; firmwareTimestamp: number | null; commitHash: string | null };
+type IoFacts = { version: string | null; readers: IoReader[] | null; online: boolean };
+
+/** A reader's firmware version: `timestamp-commithash`. */
+const firmwareText = (reader: Pick<IoReader, "firmwareTimestamp" | "commitHash">) =>
+  [reader.firmwareTimestamp, reader.commitHash].filter(Boolean).join("-") || "—";
+
+/** What the IO says it is and has connected; while offline, what it last said. */
+function IoStatus({ io }: { io: IoFacts }) {
+  const { t } = useI18n();
+  if (io.version === null && io.readers === null)
+    return <p className="text-xs text-ink/55">{t("这个 IO 没有上报版本和读卡器，需要更新 IO")}</p>;
+  return (
+    <div className="grid gap-1 text-xs text-ink/70">
+      <p>
+        {t("IO 版本")} {io.version ?? "—"}
+        {!io.online && ` · ${t("离线，显示最后上报的信息")}`}
+      </p>
+      {io.readers?.length ? io.readers.map((reader, index) => (
+        <p key={reader.chipId ?? index} className="tabular-nums">
+          {t("读卡器固件")} {firmwareText(reader)}
+        </p>
+      )) : <p>{t("没有连接读卡器")}</p>}
+    </div>
+  );
+}
 
 type MahjongSeat = { playerId: string; name: string; playing: boolean };
 type MahjongTable = { capacity: number; seats: MahjongSeat[] };
@@ -862,6 +993,7 @@ const capabilityMeta: Record<
   power: { icon: Power, title: "电源控制" },
   climate: { icon: AirVent, title: "空调" },
   hinata_io: { icon: CreditCard, title: "刷卡 · HINATA IO" },
+  coin: { icon: Coins, title: "投币" },
   door: { icon: DoorOpen, title: "开门密码" },
   mahjong: { icon: Ungroup, title: "麻将桌" },
   bot: { icon: Bot, title: "Bot" },
@@ -891,12 +1023,11 @@ function ResourceActions({
   const { t } = useI18n();
   const caps = resourceCapabilities(device);
   const groups = deviceActionGroups(device);
-  const players = useResource<{ players: LivePlayer[] }>(
-    caps.mahjong ? "live-players" : null,
+  const players = useResource<{ players: Player[] }>(
+    caps.mahjong ? "players" : null,
   );
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [cardNumber, setCardNumber] = useState("");
-  const [coinKey, setCoinKey] = useState("");
   const power = state?.power ?? null;
   const climate = state?.climate ?? null;
   const [table, setTable] = useState<MahjongTable | null>(null);
@@ -948,9 +1079,9 @@ function ResourceActions({
       setBusy("");
     }
   }
-  // Seating needs an entry, so only players who are in the shop are offered.
-  const playerOptions = (players.data?.players ?? []).map((player) => ({
-    id: player.playerId,
+  // Staff may confirm billing and seat any active player registered at this shop.
+  const playerOptions = (players.data?.players ?? []).filter(player => player.status === "active").map((player) => ({
+    id: player.id,
     name: player.displayName,
   }));
   const seated = new Set(table?.seats.map((seat) => seat.playerId));
@@ -1025,9 +1156,9 @@ function ResourceActions({
                 />
               )}
               {id === "hinata_io" && actionNames.includes("aime.scan") && (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
                   <input
-                    className={`${input} min-h-9 w-56 font-mono`}
+                    className={`${input} min-h-9 min-w-0 flex-1 font-mono`}
                     inputMode="numeric"
                     maxLength={20}
                     placeholder={t("20 位卡号")}
@@ -1042,7 +1173,7 @@ function ResourceActions({
                   />
                   <button
                     type="button"
-                    className={button}
+                    className={`${button} min-h-9 shrink-0`}
                     disabled={
                       !device.enabled || cardNumber.length !== 20 || !!busy
                     }
@@ -1052,31 +1183,45 @@ function ResourceActions({
                   </button>
                 </div>
               )}
-              {id === "hinata_io" && actionNames.includes("coin") && (
+              {/* A coin, the cabinet's own way; staff are not held to the cooldown. */}
+              {id === "coin" && actionNames.includes("coin") && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    className={`${input} min-h-9 w-40`}
-                    placeholder={t("按键")}
-                    aria-label={t("投币按键")}
-                    value={coinKey}
-                    disabled={!device.enabled}
-                    onChange={(e) => setCoinKey(e.target.value)}
-                  />
                   <button
                     type="button"
-                    className={button}
+                    className={`${button} min-h-9`}
                     disabled={!device.enabled || !!busy}
-                    onClick={() =>
-                      void send(
-                        "coin",
-                        coinKey.trim() ? { key: coinKey } : undefined,
-                      )
-                    }
+                    onClick={() => void send("coin")}
                   >
                     {t("投币")}
                   </button>
                 </div>
               )}
+              {/* The shop's named keys, for service menus and tests: not coins, and never on a player's page.
+                  The coin key is the 投币 button above, with its cooldown and limit, so it is not here again. */}
+              {id === "hinata_io" && actionNames.includes("key.press") && (() => {
+                const pressable = (device.keys ?? []).filter((one) => one.id !== device.coinKeyId);
+                if (!pressable.length) return null;
+                return (
+                  <div className="grid gap-1.5">
+                    <span className="text-xs text-ink/55">{t("按键")}</span>
+                    <div className="flex flex-wrap gap-2">
+                      {pressable.map((one) => (
+                        <button
+                          key={one.id}
+                          type="button"
+                          className={`${button} min-h-9 px-3`}
+                          disabled={!device.enabled || !!busy}
+                          onClick={() => void send("key.press", { keyId: one.id })}
+                        >
+                          <span>{one.name}</span>
+                          <kbd className="rounded border border-ink/15 bg-ink/[0.04] px-1.5 font-mono text-[11px] font-normal text-ink/60">{keyTextFromVk(one.key)}</kbd>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+              {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}
               {id === "mahjong" && (
                 <>
                   <div className="grid gap-1">
@@ -1219,16 +1364,31 @@ function OccupancyHistory({ device, playerHref }: { device: Resource; playerHref
 function ResourceHistory({ device }: { device: Resource }) {
   const { t } = useI18n();
   const [events, setEvents] = useState<DeviceEvent[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const load = useCallback(
-    () =>
-      api<{ events: DeviceEvent[] }>(
-        `/api/v1/merchant/machines/${device.id}/events`,
-      ).then((r) => setEvents(r.events)),
-    [device.id],
+    async (before?: string) => {
+      setBusy(true);
+      setError("");
+      try {
+        const r = await api<{ events: DeviceEvent[]; nextCursor: string | null }>(
+          `/api/v1/merchant/machines/${device.id}/events${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+        );
+        setEvents((previous) => before ? [...(previous ?? []), ...r.events] : r.events);
+        setNextCursor(r.nextCursor);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : t("读取失败"));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [device.id, t],
   );
   useEffect(() => {
-    load().catch((e) => setError(e.message));
+    setEvents(null);
+    setNextCursor(null);
+    void load();
   }, [load]);
   return (
     <div className="grid gap-4">
@@ -1241,6 +1401,44 @@ function ResourceHistory({ device }: { device: Resource }) {
           {timeline(events).map(({ event: e, result }) => {
             const inbound = e.kind === "signal";
             const outcome = result ? String(result.payload.outcome) : null;
+            const detail: string[] = [];
+            if (e.kind === "signal" && e.name.startsWith("cabinet.")) {
+              const { coins, credits, credit, previousCredit, previousTotalCoin, totalCoin } = e.payload;
+              if (e.name === "cabinet.coin" && typeof coins === "number") detail.push(t("投入 {coins} 枚", { coins }));
+              if (e.name === "cabinet.credit" && typeof credits === "number") detail.push(t("增加 {credits} 币", { credits }));
+              if (e.name === "cabinet.consumed" && typeof credits === "number") detail.push(t("消耗 {credits} 币", { credits }));
+              if (typeof credit === "number") detail.push(typeof previousCredit === "number"
+                ? t("本次读数：{before} → {after} 币", { before: previousCredit, after: credit })
+                : t("机内剩余 {credit} 币", { credit }));
+              if (e.name === "cabinet.reset" && typeof previousTotalCoin === "number" && typeof totalCoin === "number") {
+                detail.push(t("累计投币：{before} → {after} 枚", { before: previousTotalCoin, after: totalCoin }));
+              }
+            }
+            if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
+            // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
+            if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
+            if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("自动投币"));
+            if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
+            const command = e.name === "bot.command" ? e.payload : null;
+            // A request turned away before it reached the device, and what happened at the shop itself.
+            const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;
+            const ours = e.kind === "signal" && e.origin === "platform";
+            if (e.player && !command) detail.unshift(t("玩家：{name}", { name: e.player.name ?? e.player.id }));
+            if (refusedAction) {
+              const code = String(e.payload.code ?? "");
+              const message = typeof e.payload.message === "string" ? e.payload.message : "";
+              detail.push(refusalReasons[code] ? t(refusalReasons[code]) : message || code);
+            }
+            if (command) {
+              const from = chatName(command.from);
+              const target = chatName(command.target);
+              if (from) detail.push(target ? t("{from} 代 {target}", { from, target }) : from);
+            } else {
+              // Something done through this resource happened to another one.
+              if (e.device) detail.push(t("设备：{name}", { name: e.device.name ?? e.device.id }));
+              const source = e.via && e.kind !== "change" ? viaLabels[e.via.channel] : undefined;
+              if (source) detail.push(t("来自：{source}", { source: e.via!.resource?.name ? `${t(source)} ${e.via!.resource.name}` : t(source) }));
+            }
             return (
               <div
                 className="flex justify-between gap-3 py-3 text-sm"
@@ -1251,7 +1449,7 @@ function ResourceHistory({ device }: { device: Resource }) {
                     {/* Direction is the difference between "we asked" and
                         "the machine reported", which is what makes a card event
                         worth logging at all. */}
-                    {e.kind !== "change" && (
+                    {e.kind !== "change" && !command && !ours && (
                       <span
                         className={inbound ? "text-mint" : "text-ink/45"}
                         title={inbound ? t("机台回报") : t("平台下发")}
@@ -1259,16 +1457,27 @@ function ResourceHistory({ device }: { device: Resource }) {
                         {inbound ? "←" : "→"}
                       </span>
                     )}
-                    {e.kind === "change"
+                    {command
+                      ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
+                      : refusedAction
+                      ? t("{action}被拒绝", { action: t(actionLabels[refusedAction] ?? refusedAction) })
+                      : e.kind === "change"
                       ? changeLabel(e, t)
                       : e.name === "card.login"
                         ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
                         : t(actionLabels[e.name] ?? e.name)}
                   </span>
+                  {detail.length > 0 && <p className="mt-1 text-xs text-ink/70">{detail.join(" · ")}</p>}
                   <p className="mt-1 text-xs text-ink/50">{date(e.at)}</p>
                 </div>
                 <span className="text-xs text-ink/55">
-                  {e.kind === "signal"
+                  {command
+                    ? t(commandOutcomes[String(command.outcome)] ?? "已回复")
+                    : refusedAction
+                    ? t("已拒绝")
+                    : ours
+                    ? t("已完成")
+                    : e.kind === "signal"
                     ? t("机台回报")
                     : e.kind === "change"
                       ? t(e.origin === "observer" ? "检测到" : "机台回报")
@@ -1283,6 +1492,17 @@ function ResourceHistory({ device }: { device: Resource }) {
           })}
         </div>
       )}
+      {events && error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      <div className="flex gap-2">
+        <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load()}>
+          {t("刷新记录")}
+        </button>
+        {nextCursor && (
+          <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load(nextCursor)}>
+            {t(busy ? "读取中…" : "加载更多")}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

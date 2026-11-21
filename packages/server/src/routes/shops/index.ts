@@ -1,5 +1,5 @@
 import { errorResponse } from "../../http-errors.js";
-import { touchShopHubAfter } from "../../durable-objects/shop-hub-client.js";
+import { publishShopFacts } from "../../events/shop-facts.js";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -26,12 +26,7 @@ import { identityConversionRouter } from "./identity-conversion.js";
 import { shopDataRouter } from "./data/index.js";
 import { legacyStaffRouter } from "../../legacy/handlers/staff.js";
 import { legacyIntegrationRouter } from "../../legacy/handlers/integration.js";
-import { refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
-import { liveActivityConfig } from "../../durable-objects/live-activity-push.js";
 import { shopBillsSql } from "../../resources/billed-sql.js";
-import {
-  extractSessionIds, playerIdsFromPayload, pushSessionEvent, sessionEventForPath,
-} from "./live-activity-events.js";
 
 export * from "./player.js";
 export * from "./staff.js";
@@ -93,74 +88,6 @@ export const shopRouter = new Hono<AppBindings>();
 
 // Tenant resolution & dependency container injection
 shopRouter.use("*", tenantMiddleware);
-
-// Restore the pre-consolidation event bridge at the tenant boundary. All player,
-// staff, cashier and integration mutations pass here, so new commands cannot silently
-// forget to wake the Live Activity. Send APNs after the response is committed.
-// Entries, checkouts and device commands can start or end an idle countdown.
-shopRouter.use("*", async (c, next) => {
-  await next();
-  if (!c.res.ok || c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
-  const shop = c.get("shop");
-  if (shop) touchShopHubAfter(c, shop.id);
-});
-
-shopRouter.use("*", async (c, next) => {
-  await next();
-  if (!c.res.ok || !liveActivityConfig(c.env) || c.res.headers.get("x-prism-operation-replayed") === "true" ||
-      c.req.method === "GET" || !c.req.path.startsWith("/api/v1/shops/")) return;
-  const match = c.req.path.match(/^\/api\/v1\/shops\/[^/]+\/(player|staff|integration|cashier|assets|pricing)(?:\/(.*))?$/);
-  if (!match) return;
-  const [, channel, path = ""] = match;
-  if (!channel || path.startsWith("live-activity/") || path.endsWith("/preview") ||
-      path === "lookup" || /^players\/by-identity\/(resolve|wallet|assets|history)$/.test(path)) return;
-
-  const work = (async () => {
-    const responseBody = await c.res.clone().json().catch(() => null) as Record<string, unknown> | null;
-    if (!responseBody) return;
-    const payload = (responseBody.data && typeof responseBody.data === "object"
-      ? responseBody.data : responseBody) as Record<string, unknown>;
-    const event = sessionEventForPath(path);
-    const playerIds = new Set(playerIdsFromPayload(payload));
-    const explicitId = path.match(/^(?:players|profiles)\/([^/]+)\//)?.[1];
-    if (explicitId && explicitId !== "by-identity") playerIds.add(decodeURIComponent(explicitId));
-
-    const shop = getShop(c);
-    // Shared discount/asset definitions can change every registered player's bill.
-    if (payload.assetDefinition || payload.pricingEffect || payload.pricingConfig) {
-      const affected = await c.env.DB.prepare(
-        `SELECT DISTINCT a.player_id AS playerId FROM live_activity_tokens t
-         JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
-         WHERE t.shop_id=? AND t.session_id IS NOT NULL`,
-      ).bind(shop.id).all<{ playerId: string }>();
-      for (const row of affected.results) playerIds.add(row.playerId);
-    }
-    if (channel === "player" && !playerIds.size) {
-      const user = c.get("user");
-      if (user) {
-        const membership = await c.env.DB.prepare(
-          "SELECT player_id AS playerId FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
-        ).bind(shop.id, user.id).first<{ playerId: string }>();
-        if (membership) playerIds.add(membership.playerId);
-      }
-    }
-    if (!playerIds.size) return;
-    const sessionIds = event ? extractSessionIds(payload, event) : [];
-    const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
-    await Promise.all([...playerIds].map(async (playerId) => {
-      if (event && sessionIds.length) {
-        await pushSessionEvent(c, { shopId: shop.id, playerId, sessionIds, event, initiatorClientId });
-      } else {
-        await refreshActivityBill(c.env, shop.id, playerId, false, true);
-      }
-    }));
-  })().catch((error) => {
-    console.error("Live Activity event dispatch failed", error);
-  });
-  try { c.executionCtx.waitUntil(work); }
-  catch { void work; }
-});
-
 
 // Centralized error mapping for direct domain errors
 shopRouter.onError((err, c) => errorResponse(c, err, "shopRouter"));
@@ -354,6 +281,10 @@ shopRouter.put("/settings", async (c) => {
           new Date().toISOString(),
         ),
       ]);
+
+      // Every page shows the shop's settings.
+      const origin = c.get("factOrigin");
+      if (origin) await publishShopFacts({ db: c.env.DB, env: c.env, shopId: initialShop.id }, origin, [{ name: "shop.changed", payload: { what: "settings" } }]);
 
       return c.json({
         ...body,

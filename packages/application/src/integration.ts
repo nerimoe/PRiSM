@@ -2,6 +2,7 @@ import type {
   DeviceCommand,
   Cents,
   DeviceCommandType,
+  DeviceEventVia,
   DeviceReferenceTarget,
   ExternalIdentity,
   Player,
@@ -11,6 +12,8 @@ import type {
   SessionRepository,
 } from "@prism/core";
 import {
+  chatName,
+  isPlaceholderPlayerName,
   normalizeExternalIdentity,
   parseIdentityKey,
   PrismDomainError,
@@ -55,6 +58,8 @@ export type IntegrationDeviceActionInput = IntegrationIdentityInput & {
     type: DeviceCommandType;
     payload?: Record<string, unknown>;
   };
+  /** Where the request came into the platform, such as the bot it was said to. */
+  via?: DeviceEventVia;
 };
 
 export type IntegrationAssetAdjustmentInput = IntegrationIdentityInput & {
@@ -132,10 +137,17 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
   async function resolveOrRegister(input: IntegrationIdentityInput): Promise<Player> {
     const identity = identityFromInput(input);
     const existing = await dependencies.playerIdentities.findPlayerByIdentity(identity.provider, identity.subject);
+    const said = chatName(input.displayName);
     if (existing) {
-      if (input.displayName && existing.displayName !== input.displayName) {
-        existing.displayName = input.displayName;
-        await dependencies.players.save(existing);
+      // Each platform's name stays on its own identity, so a player bound on two
+      // platforms is not renamed back and forth. Their own name is filled from it
+      // only while it is still a stand-in.
+      if (said) {
+        await dependencies.playerIdentities.setName?.(identity.provider, identity.subject, said);
+        if (said !== existing.displayName && isPlaceholderPlayerName(existing.displayName, identity)) {
+          existing.displayName = said;
+          await dependencies.players.save(existing);
+        }
       }
       return existing;
     }
@@ -160,6 +172,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
       subject: identity.subject,
       createdAt: player.createdAt,
     });
+    if (said) await dependencies.playerIdentities.setName?.(identity.provider, identity.subject, said);
     return player;
   }
 
@@ -280,6 +293,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
           target: input.target,
           type: input.action.type,
           payload: input.action.payload,
+          ...(input.via ? { via: input.via } : {}),
         });
       }
       const player = await resolveOrRegister(input);
@@ -291,6 +305,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
         target: input.target,
         type: input.action.type,
         payload: input.action.payload,
+        ...(input.via ? { via: input.via } : {}),
       });
     },
 

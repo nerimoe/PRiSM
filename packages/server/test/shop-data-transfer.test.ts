@@ -98,7 +98,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       format:string;version:number;scope:string;tables:{players:Array<{id:string}>};
     };
     expect(backup.format).toBe("prism-shop-data");
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(6);
     expect(backup.scope).toBe("business");
     expect(backup.tables.players.some(player=>player.id==="player-v2")).toBe(true);
 
@@ -135,7 +135,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(6);
     const {tables,...header}=backup;
     const post=async(url:string,payload:unknown)=>{
       return app.fetch(new Request(url,{
@@ -204,6 +204,84 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.close();
   });
 
+  it("restores a v4 business backup whose operations still record when they were confirmed",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    sqlite.run(
+      `INSERT INTO device_operations(shop_id,id,device_id,capability,action,status,counts_as_play,payload_json,requested_at)
+       VALUES ('source','old-scan',NULL,'hinata_io','aime.scan','succeeded',1,'{}','2026-01-01T00:00:00.000Z')`,
+    );
+    const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
+    const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
+    // What a v4 export of the same shop looked like: one more column per operation.
+    backup.version=4;
+    backup.tables.device_operations=backup.tables.device_operations!.map((row)=>({...row,confirmed_at:"2026-01-01T00:00:02.000Z"}));
+    expect(backup.tables.device_operations).toHaveLength(1);
+    const {tables,...header}=backup;
+    const destination="https://prism.test/api/v1/shops/destination/data";
+    const post=(url:string,payload:unknown)=>app.fetch(new Request(url,{
+      method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload),
+    }),env);
+    const {jobId}=((await (await post(`${destination}/imports`,header)).json()) as {data:{jobId:string}}).data;
+    let part=0;
+    for(const [table,rows] of Object.entries(tables)){
+      if(!rows.length)continue;
+      expect((await post(`${destination}/imports/${jobId}/parts`,{table,part,rows})).status).toBe(200);
+      part++;
+    }
+    const counts=Object.fromEntries(Object.entries(tables).map(([table,rows])=>[table,rows.length]));
+    const preview=((await (await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part})).json()) as {
+      data:{canImport:boolean;errors:string[];fingerprint:string};
+    }).data;
+    expect(preview.errors).toEqual([]);
+    const applied=await post(`${destination}/imports/${jobId}/apply`,{fingerprint:preview.fingerprint,operationId:crypto.randomUUID()});
+    expect(applied.status).toBe(200);
+    expect(sqlite.query("SELECT action,status FROM device_operations WHERE shop_id='destination' AND id='old-scan'").get())
+      .toEqual({action:"aime.scan",status:"succeeded"});
+    sqlite.close();
+  });
+
+  it("carries where an event came from, and restores a v5 backup that never said",async()=>{
+    const restore=async(asV5:boolean)=>{
+      const {sqlite,env,app,headers}=await transferFixture();
+      sqlite.run(
+        `INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,payload_json,occurred_at,via,via_resource_id)
+         VALUES ('source','bot-asked',NULL,'power','request','power.on','op-1','platform','{}','2026-01-01T00:00:00.000Z','bot','bot-1')`,
+      );
+      const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
+      const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
+      expect(backup.tables.device_events).toEqual([expect.objectContaining({id:"bot-asked",via:"bot",via_resource_id:"bot-1"})]);
+      if(asV5){
+        // What a v5 export of the same shop looked like: events without the two columns.
+        backup.version=5;
+        backup.tables.device_events=backup.tables.device_events!.map(({via:_via,via_resource_id:_resource,...row})=>row);
+      }
+      const {tables,...header}=backup;
+      const destination="https://prism.test/api/v1/shops/destination/data";
+      const post=(url:string,payload:unknown)=>app.fetch(new Request(url,{
+        method:"POST",headers:{...headers,"content-type":"application/json"},body:JSON.stringify(payload),
+      }),env);
+      const {jobId}=((await (await post(`${destination}/imports`,header)).json()) as {data:{jobId:string}}).data;
+      let part=0;
+      for(const [table,rows] of Object.entries(tables)){
+        if(!rows.length)continue;
+        expect((await post(`${destination}/imports/${jobId}/parts`,{table,part,rows})).status).toBe(200);
+        part++;
+      }
+      const counts=Object.fromEntries(Object.entries(tables).map(([table,rows])=>[table,rows.length]));
+      const preview=((await (await post(`${destination}/imports/${jobId}/preview`,{counts,parts:part})).json()) as {
+        data:{canImport:boolean;errors:string[];fingerprint:string};
+      }).data;
+      expect(preview.errors).toEqual([]);
+      const applied=await post(`${destination}/imports/${jobId}/apply`,{fingerprint:preview.fingerprint,operationId:crypto.randomUUID()});
+      expect(applied.status).toBe(200);
+      const row=sqlite.query("SELECT via,via_resource_id FROM device_events WHERE shop_id='destination' AND id='bot-asked'").get();
+      sqlite.close();
+      return row;
+    };
+    expect(await restore(false)).toEqual({via:"bot",via_resource_id:"bot-1"});
+    expect(await restore(true)).toEqual({via:null,via_resource_id:null});
+  });
+
   it("round-trips a full configuration backup with the original settings and shop profile",async()=>{
     const {sqlite,env,app,headers}=await transferFixture();
     const source="https://prism.test/api/v1/shops/source/data";
@@ -219,7 +297,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(4);
+    expect(backup.version).toBe(6);
     expect(backup.scope).toBe("configuration");
     const {tables,...header}=backup;
     const created=await call(`${dest}/imports`,header);
@@ -529,9 +607,11 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     await restore(app,env,headers,"destination",v2);
 
     const capabilities=sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities WHERE shop_id='destination' ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];
-    expect(capabilities.map(row=>row.capability)).toEqual(["hinata_io","power"]);
-    const io=capabilities[0]!;
-    expect(JSON.parse(io.config_json)).toEqual({transport:"external",coinKey:40,coinAfterSwipe:true});
+    // The old coin key becomes the IO's key 投币, which a coin of its own presses; an external relay has no coin after a swipe.
+    expect(capabilities.map(row=>row.capability)).toEqual(["coin","hinata_io","power"]);
+    expect(JSON.parse(capabilities[0]!.config_json)).toEqual({method:"key",keyId:"coin",cap:null,afterSwipe:false});
+    const io=capabilities[1]!;
+    expect(JSON.parse(io.config_json)).toEqual({transport:"external",keys:[{id:"coin",name:"投币",key:40}]});
     const secrets=JSON.parse(io.secret_json) as Record<string,string>;
     expect(await decryptSecret(secrets.url!,KEY)).toBe("https://relay.example/old");
     expect(await decryptSecret(secrets.password!,KEY)).toBe("pw");

@@ -114,6 +114,16 @@ describe("occupancy from a cabinet's events", () => {
     expect(history[0]!.endedAt!.getTime()).toBe(history[0]!.lastSeenAt.getTime() + 15 * MIN);
   });
 
+  it("says which occupants have a bill running at the shop", async () => {
+    const { sqlite, db } = database();
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES ('shop','s2','p2','2026-01-01','active','[]')");
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES ('shop','s1','p1','2026-01-01','closed','[]')");
+    const occupancy = createOccupancy({ db, shopId: "shop" });
+    await occupancy.observe({ resourceId: "cab", event: { kind: "action", action: "coin", playerId: "p1" } });
+    await occupancy.observe({ resourceId: "cab", event: { kind: "action", action: "coin", playerId: "p2" } });
+    expect((await occupancy.current())[0]!.occupants.map((o) => [o.playerId, o.billing])).toEqual([["p1", false], ["p2", true]]);
+  });
+
   it("ignores switching a cabinet on and anything done without a player", async () => {
     const { db } = database();
     const occupancy = createOccupancy({ db, shopId: "shop" });
@@ -169,7 +179,7 @@ describe("a cabinet's card reports", () => {
         method,
         params: { interface: "aimeio", unit_no: 0, backend: "Hinata", card: { source: "HINATA(1)", card: { type: "aime", id: "", accessCode } } },
       }));
-    return { sqlite, db, relay, report };
+    return { sqlite, db, relay, report, agent };
   }
 
   it("logs whose card it was instead of its number, has its owner occupy the cabinet, and ignores an unknown card", async () => {
@@ -182,8 +192,13 @@ describe("a cabinet's card reports", () => {
     // A card nobody bound here tells nothing.
     await report("event.cardConsumed", CARD_C);
 
-    const logged = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE kind='signal'").all() as { player_id: string | null; payload_json: string }[];
+    const logged = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE kind='signal' AND capability='hinata_io'").all() as { player_id: string | null; payload_json: string }[];
     expect(logged.map((row) => row.player_id)).toEqual(["p1", null]);
+    // The owner starting on the cabinet is kept as a fact of its own, pointing at the card it came of.
+    const started = sqlite.query("SELECT device_id, player_id, payload_json FROM device_events WHERE name='occupancy.started'").all() as Array<Record<string, string>>;
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ device_id: "cab", player_id: "p1" });
+    expect(JSON.parse(started[0]!.payload_json!)).toMatchObject({ causeType: "card.consumed" });
     expect(logged.map((row) => row.payload_json).join()).not.toContain(CARD_A);
     expect(logged.map((row) => row.payload_json).join()).not.toContain(CARD_C);
     expect(JSON.parse(logged[0]!.payload_json).card).toEqual({ source: "HINATA(1)", type: "aime" });
@@ -191,6 +206,34 @@ describe("a cabinet's card reports", () => {
     const [cab] = await createOccupancy({ db, shopId: "shop" }).current();
     expect(cab!.occupants.map((occupant) => [occupant.playerId, occupant.displayName])).toEqual([["p1", "Alice"]]);
   });
+
+  for (const scenario of ["coins", "unbilled", "no-limit", "full", "no-books", "not-set"] as const) {
+    it(`coins after a card the game took only for a player billing here, below a limit read from the books: ${scenario}`, async () => {
+      const { sqlite, db, report, agent } = await relayFixture();
+      sqlite.run("UPDATE resource_groups SET default_pricing_config_id='arcade' WHERE shop_id='shop' AND id='default'");
+      if (scenario !== "unbilled") sqlite.run(`INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json)
+        VALUES ('shop','billing','p1','2026-01-01','active','["arcade"]')`);
+      sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='cab' AND capability='hinata_io'", [JSON.stringify({
+        transport: "embedded", channel: "chan", coinKey: 32, coinAfterSwipe: scenario !== "not-set",
+        coinCap: scenario === "no-limit" ? null : 2,
+      })]);
+      const put = (key: string, value: unknown) => sqlite.run(
+        `INSERT OR REPLACE INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at)
+         VALUES ('shop','cab','hinata_io',?,?,'observed','2026-01-01T00:00:00.000Z')`, [key, JSON.stringify(value)]);
+      put("link", "online");
+      if (scenario !== "no-books") put("cabinet", { players: [{ credit: scenario === "full" ? 2 : 0, remain: 0 }], bookkeeping: {} });
+      await createCardStore(db, "shop", KEY).bind({ playerId: "p1", card: { type: "aime", accessCode: CARD_A }, source: "scan" });
+      await report("event.cardConsumed", CARD_A);
+      const presses = agent.sent.filter((message) => message.includes("KEY_PRESS"));
+      expect(presses).toHaveLength(scenario === "coins" ? 1 : 0);
+      if (scenario === "coins") {
+        expect(JSON.parse(presses[0]!).body).toMatchObject({ key: 32, count: 1 });
+        expect(sqlite.query("SELECT action, player_id, status FROM device_operations WHERE action='coin'").all())
+          .toEqual([{ action: "coin", player_id: "p1", status: "succeeded" }]);
+      }
+      sqlite.close();
+    });
+  }
 
   for (const scenario of ["unbilled", "wrong-plan", "closed", "other-shop", "free", "disabled-group", "override", "valid-group", "valid-override"] as const) {
     it(`requires the card owner's active billing for the resource's effective plan: ${scenario}`, async () => {
@@ -222,17 +265,70 @@ describe("a cabinet's card reports", () => {
     });
   }
 
-  it("adds the next card put on the reader to the player who opened the window", async () => {
+  it("says so when the card on the reader is of a kind that cannot be added", async () => {
+    const { sqlite, relay } = await relayFixture();
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    await (relay as any).capture(null);
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "unsupported" });
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds no card when nobody comes for it, as when the page was closed", async () => {
+    const { sqlite, relay, report } = await relayFixture();
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
+    const now = Date.now();
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: now + 1000 });
+    await report("event.cardStateChanged", CARD_B);
+    const later = Date.now;
+    Date.now = () => now + 2000;
+    try {
+      expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "expired" });
+    } finally {
+      Date.now = later;
+    }
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds no card once the player who opened the window has cancelled it", async () => {
     const { sqlite, relay, report } = await relayFixture();
     sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
     await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    // Only they can.
+    await relay.cancelCardCapture("cap", "someone-else");
+    await relay.cancelCardCapture("older", "user-2");
     expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "waiting" });
+    await relay.cancelCardCapture("cap", "user-2");
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "expired" });
     await report("event.cardStateChanged", CARD_B);
-    // Nobody else can read the outcome; its owner reads it once.
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+  });
+
+  it("adds the next card put on the reader to the player who opened the window", async () => {
+    const { sqlite, relay, report } = await relayFixture();
+    const told: unknown[][] = [];
+    (relay as any).env.SHOP_HUB = { getByName: () => new Proxy({}, {
+      get: (_, name) => async (...args: unknown[]) => { if (name === "cardRead") told.push(args); },
+    }) };
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('user-2','user',?,?)", [new Date().toISOString(), new Date().toISOString()]);
+    await relay.startCardCapture({ id: "cap", shopId: "shop", userId: "user-2", playerId: "p2", expiresAt: Date.now() + MIN });
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "waiting" });
+    expect(told).toEqual([]);
+    await report("event.cardStateChanged", CARD_B);
+    // Their page is told, and nothing is added until it asks.
+    expect(told.length).toBe(1);
+    expect(told[0]![0]).toBe("user-2");
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+    // Nobody else can read the outcome; its owner can ask again if the answer was lost.
     expect(await relay.cardCaptureResult("cap", "someone-else")).toEqual({ status: "expired" });
+    expect(sqlite.query("SELECT user_id FROM cards").all()).toEqual([]);
+    expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "added", cardType: "aime" });
     expect(await relay.cardCaptureResult("cap", "user-2")).toEqual({ status: "added", cardType: "aime" });
     expect(sqlite.query("SELECT user_id, card_type, access_code FROM cards").all())
       .toEqual([{ user_id: "user-2", card_type: "aime", access_code: CARD_B }]);
     expect(sqlite.query("SELECT player_id, source FROM player_cards").all()).toEqual([{ player_id: "p2", source: "reader" }]);
+    // Bound once, on the player's page, at this cabinet, and the record never holds the number.
+    const bound = sqlite.query("SELECT device_id, capability, player_id, via, payload_json FROM device_events WHERE name = 'card.bound'").all() as Array<Record<string, string>>;
+    expect(bound).toEqual([{ device_id: "cab", capability: "shop", player_id: "p2", via: "page", payload_json: JSON.stringify({ type: "aime" }) }]);
+    expect(JSON.stringify(sqlite.query("SELECT payload_json FROM device_events").all())).not.toContain(CARD_B);
   });
 });

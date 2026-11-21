@@ -209,6 +209,31 @@ function createTestEnvironment(): {
       expires_at TEXT,
       created_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS page_reports (
+    id TEXT PRIMARY KEY,
+    reported_at TEXT NOT NULL,
+    shop_id TEXT NOT NULL,
+    client TEXT NOT NULL,
+    asn INTEGER,
+    as_organization TEXT,
+    country TEXT,
+    colo TEXT,
+    open_ms INTEGER,
+    open_failed INTEGER NOT NULL DEFAULT 0,
+    document_ms INTEGER,
+    document_connect_ms INTEGER,
+    api_connect_ms INTEGER,
+    reads INTEGER NOT NULL DEFAULT 0,
+    read_failures INTEGER NOT NULL DEFAULT 0,
+    read_ms INTEGER NOT NULL DEFAULT 0,
+    read_max_ms INTEGER NOT NULL DEFAULT 0,
+    actions INTEGER NOT NULL DEFAULT 0,
+    action_failures INTEGER NOT NULL DEFAULT 0,
+    action_ms INTEGER NOT NULL DEFAULT 0,
+    action_max_ms INTEGER NOT NULL DEFAULT 0,
+    socket_connect_ms INTEGER,
+    socket_drops INTEGER NOT NULL DEFAULT 0
+  );
     CREATE TABLE IF NOT EXISTS machine_tickets (
       id TEXT PRIMARY KEY,
       machine_id TEXT NOT NULL,
@@ -331,8 +356,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
 
       const r1 = await testApp.request("https://prism.test/version", {}, env);
       expect(r1.status).toBe(200);
-      const b1 = (await r1.json()) as { service: string; revision: string };
-      expect(b1.service).toBe("prism-api");
+      const b1 = (await r1.json()) as { worker: string; revision: string };
+      expect(b1.worker).toBe("local");
       expect(b1.revision).toBe("rev-2026-10-08-test");
 
       const r2 = await testApp.request(
@@ -341,8 +366,8 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         env,
       );
       expect(r2.status).toBe(200);
-      const b2 = (await r2.json()) as { data: { service: string } };
-      expect(b2.data.service).toBe("prism-api");
+      const b2 = (await r2.json()) as { data: { revision: string } };
+      expect(b2.data.revision).toBe("rev-2026-10-08-test");
     });
 
     it("dispatches platform auth and shop routes correctly", async () => {

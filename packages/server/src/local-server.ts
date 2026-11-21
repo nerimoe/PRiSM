@@ -176,6 +176,31 @@ export const platformSchema = [
     updated_at TEXT NOT NULL,
     PRIMARY KEY (shop_id, id)
   )`,
+  `CREATE TABLE IF NOT EXISTS page_reports (
+    id TEXT PRIMARY KEY,
+    reported_at TEXT NOT NULL,
+    shop_id TEXT NOT NULL,
+    client TEXT NOT NULL,
+    asn INTEGER,
+    as_organization TEXT,
+    country TEXT,
+    colo TEXT,
+    open_ms INTEGER,
+    open_failed INTEGER NOT NULL DEFAULT 0,
+    document_ms INTEGER,
+    document_connect_ms INTEGER,
+    api_connect_ms INTEGER,
+    reads INTEGER NOT NULL DEFAULT 0,
+    read_failures INTEGER NOT NULL DEFAULT 0,
+    read_ms INTEGER NOT NULL DEFAULT 0,
+    read_max_ms INTEGER NOT NULL DEFAULT 0,
+    actions INTEGER NOT NULL DEFAULT 0,
+    action_failures INTEGER NOT NULL DEFAULT 0,
+    action_ms INTEGER NOT NULL DEFAULT 0,
+    action_max_ms INTEGER NOT NULL DEFAULT 0,
+    socket_connect_ms INTEGER,
+    socket_drops INTEGER NOT NULL DEFAULT 0
+  )`,
   `CREATE TABLE IF NOT EXISTS machine_tickets (
     id TEXT PRIMARY KEY,
     machine_id TEXT NOT NULL,
@@ -362,6 +387,10 @@ export function initializeLocalDatabase(
       .get(column);
     if (!exists) db.run(`ALTER TABLE machines ADD COLUMN ${column} ${type}`);
   }
+
+  // What each chat platform calls a player (migration 0057).
+  const identityNamed = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('player_identities') WHERE name = 'display_name'").get();
+  if (!identityNamed) db.run("ALTER TABLE player_identities ADD COLUMN display_name TEXT");
 
   db.run("PRAGMA foreign_keys = ON;");
 

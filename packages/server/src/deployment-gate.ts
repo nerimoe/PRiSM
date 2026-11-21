@@ -11,13 +11,41 @@ import {
 } from "@prism/storage-sql";
 import type { Env } from "./bindings.js";
 import { sha256 } from "./crypto.js";
+import { shopHub } from "./durable-objects/shop-hub-client.js";
 import {
   migrateShopLocationTimeZones,
   shopLocationTimeZoneMigrationId,
 } from "./migrations/shop-time-zone-migration.js";
+import { logger } from "./log.js";
+
+const log = logger("deploy");
 
 export const deploymentGateTable = "prism_deployment_gate";
 export const deploymentControlPath = "/__prism_deploy";
+
+/**
+ * Deployments take turns (`scripts/deploy-queue.ts`). Each run that wants to
+ * deploy has a row; the one deploying keeps it fresh, the last that finished
+ * stays as `done`. Written by the deploy script through Wrangler, never by the
+ * Worker, and never fenced: runs must take turns while the shop is in
+ * maintenance too. `notice_hash` lets the run holding the turn ask whichever
+ * Worker is live, the previous release included, to tell the shops.
+ */
+export const deployQueueTable = "prism_deploy_queue";
+export const deployQueueSchema = `CREATE TABLE IF NOT EXISTS prism_deploy_queue (
+  revision TEXT PRIMARY KEY,
+  committed_at INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('waiting','deploying','done')),
+  notice_hash TEXT,
+  heartbeat_at INTEGER NOT NULL
+)`;
+/** A run that has not said anything for this long is gone. */
+export const DEPLOY_QUEUE_STALE_MS = 3 * 60_000;
+
+/** What the shops' bots are told about a deployment: ahead of it, and once it is over. */
+export type MaintenanceNotice =
+  | { stage: "ahead"; minutes: number; expectedMinutes: number }
+  | { stage: "done" };
 export const deploymentGateSchema = `CREATE TABLE IF NOT EXISTS prism_deployment_gate (
   id TEXT PRIMARY KEY CHECK(id='global'), owner_hash TEXT NOT NULL,
   maintenance INTEGER NOT NULL CHECK(maintenance IN (0,1)),
@@ -27,6 +55,7 @@ export const deploymentGateSchema = `CREATE TABLE IF NOT EXISTS prism_deployment
 
 const excluded = new Set([
   deploymentGateTable,
+  deployQueueTable,
   "d1_migrations",
   "prism_data_migrations",
 ]);
@@ -182,6 +211,44 @@ async function tableNames(db: D1DatabaseLike): Promise<string[]> {
   return rows.results.map((row) => row.name);
 }
 
+/** Whether `owner` is the token of the deploy run holding the turn now. */
+async function holdsDeployTurn(db: D1DatabaseLike, owner: string): Promise<boolean> {
+  try {
+    return !!(await db.prepare(
+      "SELECT 1 FROM prism_deploy_queue WHERE notice_hash = ? AND state = 'deploying' AND heartbeat_at >= ?",
+    ).bind(owner, Date.now() - DEPLOY_QUEUE_STALE_MS).first());
+  } catch {
+    // No queue yet: nobody holds a turn.
+    return false;
+  }
+}
+
+/** Tell every shop's bots, through its hub, that a deployment is ahead or over. */
+async function maintenanceNotice(input: Record<string, unknown>, env: Env): Promise<Response> {
+  const ok = (data: Record<string, unknown>, status = 200) =>
+    Response.json({ ...data, revision: env.PRISM_DEPLOY_REVISION, phase: env.PRISM_DEPLOY_PHASE }, { status, headers: { "cache-control": "no-store" } });
+  const minutes = Number(input.minutes);
+  const expectedMinutes = Number(input.expectedMinutes);
+  const notice: MaintenanceNotice | null = input.stage === "done"
+    ? { stage: "done" }
+    : input.stage === "ahead" && Number.isInteger(minutes) && minutes >= 0 && minutes <= 60 && Number.isInteger(expectedMinutes) && expectedMinutes > 0 && expectedMinutes <= 60
+      ? { stage: "ahead", minutes, expectedMinutes }
+      : null;
+  if (!notice) return ok({ error: "Invalid notice" }, 400);
+  const shops = (await env.DB.prepare("SELECT id FROM shops").bind().all<{ id: string }>()).results;
+  let told = 0;
+  // A shop whose hub cannot be reached misses it; the deployment goes on.
+  await Promise.all(shops.map(async ({ id }) => {
+    try {
+      await shopHub(env, id)?.maintenance(notice);
+      told += 1;
+    } catch (error) {
+      log.error("maintenance notice failed", { event: "maintenance_notice_failed", shopId: id, error });
+    }
+  }));
+  return ok({ ok: true, shops: shops.length, told });
+}
+
 export async function deploymentControl(
   request: Request,
   env: Env,
@@ -194,16 +261,19 @@ export async function deploymentControl(
     .get("authorization")
     ?.match(/^Bearer ([A-Za-z0-9_-]{40,200})$/)?.[1];
   const owner = token && (await sha256(token));
-  if (
-    request.method !== "POST" ||
-    !owner ||
-    owner !== env.PRISM_DEPLOY_TOKEN_HASH
-  ) {
-    return Response.json(
-      { error: "Not found" },
-      { status: 404, headers: { "cache-control": "no-store" } },
-    );
+  const notFound = () => Response.json(
+    { error: "Not found" },
+    { status: 404, headers: { "cache-control": "no-store" } },
+  );
+  if (request.method !== "POST" || !owner) return notFound();
+  // A notice is taken from the run holding the deploy turn, whichever release is
+  // live: the one before it ("ahead"), and the one it just deployed with its own
+  // token ("done"), which would otherwise read it as a deploy step it does not know.
+  const notice = await request.clone().json().catch(() => null) as { action?: string } | null;
+  if (notice?.action === "notice") {
+    return env.DB && await holdsDeployTurn(env.DB, owner) ? maintenanceNotice(notice, env) : notFound();
   }
+  if (owner !== env.PRISM_DEPLOY_TOKEN_HASH) return notFound();
   const result = (data: Record<string, unknown>, status = 200) =>
     Response.json(
       {

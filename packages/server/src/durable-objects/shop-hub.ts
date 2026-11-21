@@ -7,8 +7,15 @@ import { listHaConnections } from "../resources/capabilities/ha-connections.js";
 import { provisionReadAccess } from "../resources/capabilities/ha-read-access.js";
 import { DEFAULT_WATCHERS, MAX_WATCHERS, readWatcherLimit } from "../resources/capabilities/ha-watchers.js";
 import { loadResource } from "../resources/resource.js";
-import type { ShopEvent } from "../resources/shop-events.js";
-import { climatePower } from "../resources/capabilities/idle-power.js";
+import { announcementFrame, announcementMessage, idleReminderMessage, maintenanceMessage, type Announcement } from "../resources/shop-events.js";
+import type { MaintenanceNotice } from "../deployment-gate.js";
+import { findBotByToken } from "../resources/bot.js";
+import { announcementDeliveries, botMessage, type BotMessage } from "@prism/core";
+import {
+  applyIdleEvent, climatePower, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake,
+  parseIdleSettings, setIdleEmpty, settleIdleOff,
+  type IdleSettings, type IdleSignal, type IdleTimers,
+} from "../resources/capabilities/idle-power.js";
 import {
   climateState,
   deviceView,
@@ -30,18 +37,38 @@ import type { Resource } from "../resources/resource.js";
 import { machineRelayNamespace } from "../gateway/machine-relay-gateway.js";
 import type { HaEntityState, HaReport } from "../hardware/aimeio-relay.js";
 import type { HaWatch } from "./machine-relay.js";
-import { emptyIdleMemory, runIdleCheck, type IdleMemory, type IdleNotice } from "./shop-hub-idle.js";
-import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, type BotResponse } from "./shop-hub-bot.js";
+import {
+  climatesToSwitchOff, devicesSeenOn, heldResources, idleGroups, loadIdleSettings, shopIsEmpty, switchOff, type IdleNotice,
+} from "./shop-hub-idle.js";
+import { recordChatNames } from "../resources/player-names.js";
+import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
+import { botCommandRecord, judgeBotCommand, type BotCommandOutcome, type BotView } from "../resources/bot-commands.js";
+import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
+import { botConfigView, type BotResource } from "../resources/bot.js";
+import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
+import type { PageScope } from "./shop-hub-client.js";
 import { app } from "../app.js";
+import { logger } from "../log.js";
+
+const log = logger("shop-hub");
 
 /**
  * A shop bot's connection, kept on the socket so it survives hibernation. `id` tells this connection
  * from another bot's; `ha` and `name` come from its hello, and a bot that never said it can watch
  * Home Assistant is never given a watch.
  */
-type BotAttachment = { kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string };
+type BotAttachment = {
+  kind: "bot"; token: string; shopCode: string; reminderLeadMs: number | null; id?: string; ha?: boolean; name?: string;
+  /**
+   * The bot sends its players' commands (`commands: 1`): the platform runs
+   * them and tells it what to say in `say` frames, the shop's news included.
+   * A bot that does not is told nothing of the shop's news.
+   */
+  commands?: true;
+};
 /** A player's device page, listening for that device's state and for changes to its own page. */
-type PageAttachment = { kind: "page"; deviceId: string; userId: string };
+/** `v: 2` is a page drawn from `/session/page`. It only ever hears that it changed. */
+type PageAttachment = { kind: "page"; deviceId: string; userId: string; v?: 2 };
 /** A merchant's device board, listening for the state of every device in the shop. */
 type BoardAttachment = { kind: "board" };
 /** A write a bot sent is answered from here if it arrives again (a resend after a lost reply). */
@@ -67,9 +94,12 @@ try {
  */
 export const LEASE_MS = 150_000;
 /** A watcher that failed is not chosen again for this long, while others exist. */
+/** How long after a deployment a bot that comes back is still told it is over. */
+const MAINTENANCE_DONE_MS = 15 * 60_000;
+/** A deployment that is over, and the bots already told. */
+type MaintenanceDone = { at: number; told: string[] };
+
 const BENCH_MS = 5 * 60_000;
-/** Bursts of activity are folded into one idle check this long after the first. */
-const TOUCH_DELAY_MS = 2000;
 /**
  * The default number of clients watching at once. The second keeps the state flowing while the first
  * is replaced, so losing one never leaves a gap. A shop's own number is the platform administrator's
@@ -233,6 +263,8 @@ const WRITE_CHUNK = 40;
 export class ShopHub extends BaseDurableObject<Env> {
   /** Requests running now, so a resend while the first is in flight is not run twice. */
   private readonly running = new Set<string>();
+  /** What each connected commands bot is told, by token; cleared whenever the shop's bots are told something changed. */
+  private readonly botViews = new Map<string, { bot: BotResource; view: BotView }>();
   private shop: string | null = null;
   private lastResync = 0;
   /** The last watcher list sent to the boards, so a board hears only about a change. */
@@ -311,6 +343,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.rememberShop(shopId);
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server!, [`page:${deviceId}`, ...(userId ? [`user:${userId}`] : [])]);
+    if (new URL(request.url).searchParams.get("v") === "2") {
+      // Nothing to read or send: the page reads itself once connected.
+      server!.serializeAttachment({ kind: "page", deviceId, userId, v: 2 } satisfies PageAttachment);
+      return new Response(null, { status: 101, webSocket: client });
+    }
     server!.serializeAttachment({ kind: "page", deviceId, userId } satisfies PageAttachment);
     // The greeting never waits on Home Assistant: a live device's stored state goes with it at once,
     // and one that is not live is asked for afterwards and sent when Home Assistant answers.
@@ -335,7 +372,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         ? { frame: { watching: true, ...deviceView(device, state) }, ask: null }
         : { frame: { watching: false }, ask: device };
     } catch (error) {
-      console.error("Shop hub page greeting failed", error);
+      log.error(`could not greet a scan page on device ${deviceId}`, { shopId, deviceId, error });
       return { frame: { watching: false }, ask: null };
     }
   }
@@ -348,7 +385,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       const state = await this.readDevice(shopId!, device);
       return { watching: state.watching, ...deviceView(device, state) };
     } catch (error) {
-      console.error("Shop hub page state failed", error);
+      log.error(`could not read device ${deviceId} for a scan page`, { shopId, deviceId, error });
       return { watching: false };
     }
   }
@@ -399,9 +436,60 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
   }
 
+  /** The connected pages drawn from `/session/page` that `match` picks. */
+  private drawnPages(match: (page: PageAttachment) => boolean): WebSocket[] {
+    return this.ctx.getWebSockets().filter((ws) => {
+      const page = ws.deserializeAttachment() as PageAttachment | null;
+      return page?.kind === "page" && page.v === 2 && match(page);
+    });
+  }
+
+  private tellChanged(pages: WebSocket[], reason: string) {
+    const encoded = JSON.stringify({ method: "event.pageChanged", params: { reason } });
+    for (const ws of pages) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
+  /**
+   * Something pages show changed. The hub computes nothing about them: it passes
+   * this on and each page reads itself. A player's change also reaches mahjong
+   * tables, whose seats live and die with sessions.
+   */
+  async pagesChanged(scope: PageScope, reason: string): Promise<void> {
+    if ("shop" in scope) return this.tellChanged(this.drawnPages(() => true), reason);
+    if ("device" in scope) return this.tellChanged(this.drawnPages((page) => page.deviceId === scope.device), reason);
+    if (!this.drawnPages(() => true).length) return;
+    const shopId = await this.shopId();
+    if (!shopId) return;
+    const account = await this.env.DB.prepare("SELECT user_id FROM shop_player_accounts WHERE shop_id = ? AND player_id = ?")
+      .bind(shopId, scope.player).first<{ user_id: string }>();
+    const tables = new Set((await this.env.DB.prepare("SELECT device_id FROM device_capabilities WHERE shop_id = ? AND capability = 'mahjong'")
+      .bind(shopId).all<{ device_id: string }>()).results.map((row) => row.device_id));
+    this.tellChanged(this.drawnPages((page) => page.userId === account?.user_id || tables.has(page.deviceId)), reason);
+  }
+
+  /** Only the page of the player waiting to add a card at this device. */
+  async cardRead(userId: string, deviceId: string): Promise<void> {
+    const encoded = JSON.stringify({ method: "event.cardRead", params: {} });
+    for (const ws of this.drawnPages((page) => page.userId === userId && page.deviceId === deviceId)) {
+      try {
+        ws.send(encoded);
+      } catch {
+        // Gone.
+      }
+    }
+  }
+
   private toPages(deviceId: string, frame: Record<string, unknown>) {
+    this.tellChanged(this.drawnPages((page) => page.deviceId === deviceId), "device");
     const encoded = JSON.stringify(frame);
     for (const ws of this.ctx.getWebSockets(`page:${deviceId}`)) {
+      if ((ws.deserializeAttachment() as PageAttachment | null)?.v === 2) continue;
       try {
         ws.send(encoded);
       } catch {
@@ -427,7 +515,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     try {
       server!.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
     } catch (error) {
-      console.error("Shop hub watcher list failed", error);
+      log.error("could not send the watcher list to a board", { shopId, error });
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -460,7 +548,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
       return { frame: { type: "states", states: shown, liveConnections }, unknown };
     } catch (error) {
-      console.error("Shop hub board snapshot failed", error);
+      log.error("could not build the device board snapshot", { shopId, error });
       return null;
     }
   }
@@ -481,7 +569,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           // One that became live while Home Assistant was asked has had the live snapshot; this answer is older.
           if (!state.watching && !(await this.liveNow(device))) shown[device.id] = { watching: false, ...deviceView(device, state) };
         } catch (error) {
-          console.error("Shop hub board read failed", error);
+          log.error(`could not read device ${device.id} for the board`, { shopId, deviceId: device.id, error });
         }
       }
     }));
@@ -576,8 +664,26 @@ export class ShopHub extends BaseDurableObject<Env> {
   /** Tell the open device pages of one user that something they show changed. */
   /** Something a bot is told about changed (its settings, staff, tables): each rereads it. */
   async botsChanged(): Promise<void> {
+    // What bots are told is the shop's setup, and pages show the same setup.
+    await this.pagesChanged({ shop: true }, "shop");
     const frame = JSON.stringify({ type: "config.changed" });
+    this.botViews.clear();
+    const shopId = (await this.shopId()) ?? "";
     for (const ws of this.bots()) {
+      // A commands bot's token is checked when it connects, not on every
+      // command: one revoked or disabled since is disconnected now.
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      if (attachment?.commands) {
+        const found = await this.botOf(shopId, attachment.token).catch(() => null);
+        if (!found || !found.bot.enabled) {
+          try {
+            ws.close(4003, "credentials revoked");
+          } catch {
+            // Already closed.
+          }
+          continue;
+        }
+      }
       try {
         ws.send(frame);
       } catch {
@@ -587,15 +693,24 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Something happened at the shop that bots may announce (a device switched on
-   * or off, a card, someone starting on a resource). Each bot decides from its
-   * own settings whether and where to say it.
+   * Something happened at the shop that bots may announce (`Announcement`).
+   * Each bot says it once per announcement group that hears it, in that group's
+   * words at its destinations (`announcementDeliveries`),
+   * in its own words when it has any, and not at all when it came of the bot's
+   * own command: it answered that already.
    */
   async shopEvent(event: Record<string, unknown>): Promise<void> {
-    const frame = JSON.stringify({ type: "event", event: "shop.event", data: event });
+    const announcement = event as unknown as Announcement;
+    const shopId = (await this.shopId()) ?? "";
     for (const ws of this.bots()) {
+      const attachment = ws.deserializeAttachment() as BotAttachment | null;
+      if (!attachment?.commands) continue;
       try {
-        ws.send(frame);
+        const found = await this.botOf(shopId, attachment.token);
+        if (!found || announcement.botId === found.bot.id) continue;
+        for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null })) {
+          this.sayTo(ws, to, announcementMessage(announcement, templates));
+        }
       } catch {
         // A bot that left misses it.
       }
@@ -603,8 +718,10 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   async notifyUser(userId: string, frame: Record<string, unknown>): Promise<void> {
+    this.tellChanged(this.drawnPages((page) => page.userId === userId), String(frame.reason ?? "user"));
     const encoded = JSON.stringify(frame);
     for (const ws of this.ctx.getWebSockets(`user:${userId}`)) {
+      if ((ws.deserializeAttachment() as PageAttachment | null)?.v === 2) continue;
       try {
         ws.send(encoded);
       } catch {
@@ -633,9 +750,13 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     const snapshots = new Map<string, Promise<Record<string, unknown>>>();
     for (const ws of pages) {
-      const { deviceId } = ws.deserializeAttachment() as PageAttachment;
+      const { deviceId, v } = ws.deserializeAttachment() as PageAttachment;
       const mine = connections.get(deviceId);
       if (!mine || ![...mine].some((id) => changed.has(id))) continue;
+      if (v === 2) {
+        this.tellChanged([ws], "device");
+        continue;
+      }
       // Once per device however many pages show it, and only for devices that have one open.
       let pending = snapshots.get(deviceId);
       if (!pending) {
@@ -666,15 +787,26 @@ export class ShopHub extends BaseDurableObject<Env> {
       // allowed to watch hands its watch on first.
       if (attachment.ha && !frame.ha) await this.botGone(ws);
       const id = attachment.id ?? crypto.randomUUID();
-      ws.serializeAttachment({
-        ...attachment,
-        id,
-        reminderLeadMs: frame.reminderLeadSeconds === undefined ? null : frame.reminderLeadSeconds * 1000,
-        ha: frame.ha === true,
-        ...(frame.name ? { name: frame.name } : {}),
-      } satisfies BotAttachment);
       const shopId = (await this.shopId()) ?? "";
-      if (frame.ha) await this.botOnline(shopId, id, frame.name);
+      const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
+      // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
+      const reminded = commands && commands.bot.config.idleReminderMinutes > 0
+        && announcementDeliveries(commands.bot.config.announceGroups, { key: "idle.reminder", via: "system" }).length > 0;
+      const lead = reminded ? commands.bot.config.idleReminderMinutes * 60 : undefined;
+      const { commands: _was, ...rest } = attachment;
+      ws.serializeAttachment({
+        ...rest,
+        id,
+        reminderLeadMs: lead === undefined ? null : lead * 1000,
+        // A disabled commands bot answers that it is disabled and watches nothing.
+        ha: frame.ha === true && (!commands || commands.bot.enabled),
+        ...(frame.name ? { name: frame.name } : commands ? { name: commands.bot.name } : {}),
+        ...(commands ? { commands: true as const } : {}),
+      } satisfies BotAttachment);
+      if (frame.ha && (!commands || commands.bot.enabled)) await this.botOnline(shopId, id, frame.name ?? commands?.bot.name);
+      // Back after a deployment: say it is over, if it was over lately and this bot has not heard.
+      const done = commands ? await this.ctx.storage.get<MaintenanceDone>("maintenanceDone") : undefined;
+      if (done && Date.now() - done.at <= MAINTENANCE_DONE_MS) await this.sayMaintenance(ws, { stage: "done" });
       // Reminders may now be due earlier than the next planned check.
       await this.touch(shopId);
       return;
@@ -683,6 +815,16 @@ export class ShopHub extends BaseDurableObject<Env> {
       // Only a bot that said it can watch has anything to report; a stale or unassigned one is ignored.
       const shopId = await this.shopId();
       if (shopId && attachment.ha && attachment.id) await this.haReport(shopId, botKey(attachment.id), frame.report);
+      return;
+    }
+    if (frame.type === "command") {
+      await this.command(ws, attachment, frame);
+      return;
+    }
+    if (frame.type === "names") {
+      // Only a bot that runs commands for the shop speaks for its chat.
+      const shopId = await this.shopId();
+      if (shopId && attachment.commands) await recordChatNames(this.env.DB, shopId, frame.names);
       return;
     }
     const replayKey = `req:${frame.id}`;
@@ -722,6 +864,109 @@ export class ShopHub extends BaseDurableObject<Env> {
         // Already closed.
       }
     }
+  }
+
+  /**
+   * A player's command through a bot. Run once per command id: a command sent
+   * again (after a lost answer) is answered with what was said the first time.
+   */
+  private async command(ws: WebSocket, attachment: BotAttachment, frame: BotCommandFrame) {
+    const replayKey = `req:cmd:${frame.id}`;
+    const replay = await this.ctx.storage.get<{ frames: SayFrame[]; at: number }>(replayKey);
+    const send = (frames: SayFrame[]) => {
+      for (const said of frames) {
+        try {
+          ws.send(JSON.stringify(said));
+        } catch {
+          // The bot left; a resend gets the remembered answer.
+        }
+      }
+    };
+    if (replay) return send(replay.frames);
+    if (this.running.has(frame.id)) return;
+    this.running.add(frame.id);
+    let frames: SayFrame[];
+    // What the bot's history keeps of this command, once it is known whose bot it is.
+    let record: { shopId: string; botId: string; outcome: BotCommandOutcome } | null = null;
+    // Known as soon as they are read, so a failure says whose command it was.
+    let shopId = "";
+    let botId: string | null = null;
+    try {
+      shopId = (await this.shopId()) ?? "";
+      const found = await this.botOf(shopId, attachment.token);
+      botId = found?.bot.id ?? null;
+      const shopRow = found ? await readTenantShop(this.env.DB, shopId) : null;
+      if (!found || !shopRow) {
+        // Its credential no longer stands: the connection ends with this answer.
+        frames = [sayFrame(botMessage("Bot 凭据已失效"), { replyTo: frame.id, done: true })];
+        send(frames);
+        ws.close(4003, "credentials revoked");
+        return;
+      }
+      const shop = tenantShop(shopRow);
+      // What the command's services do is published as coming through this bot.
+      const origin: FactOrigin = {
+        via: { channel: "bot", resourceId: found.bot.id },
+        defer: (work) => this.ctx.waitUntil(work),
+      };
+      const { says, outcome } = found.bot.enabled
+        ? await judgeBotCommand({
+          env: this.env,
+          waitUntil: (promise) => this.ctx.waitUntil(promise),
+          shop,
+          deps: withOrigin(
+            getOrCreateShopDependencies(this.env.DB, shop, this.env.URL_ENCRYPTION_KEY, this.env),
+            { db: this.env.DB, env: this.env, shopId },
+            origin,
+          ),
+          bot: found.bot,
+          view: found.view,
+          from: frame.from,
+          channel: frame.channel,
+          name: frame.name,
+          args: frame.args,
+          ...(frame.target ? { target: frame.target } : {}),
+        })
+        : { says: [{ message: botMessage("Bot 已被店铺停用") }], outcome: { status: "refused" as const, code: "BOT_DISABLED" } };
+      record = { shopId, botId: found.bot.id, outcome };
+      frames = says.map((said, index) => sayFrame(said.message, { replyTo: frame.id, to: said.to, done: index === says.length - 1 }));
+    } catch (error) {
+      log.error(`bot command ${frame.name} failed`, { event: "bot_command_failed", shopId, botId, command: frame.name, error });
+      frames = [sayFrame(botMessage("操作失败，请稍后再试。"), { replyTo: frame.id, done: true })];
+      if (record) record.outcome = { status: "failed" };
+    } finally {
+      this.running.delete(frame.id);
+    }
+    await this.remember(replayKey, { frames } as never);
+    send(frames);
+    // The command is an event of the bot's own, written after it is answered:
+    // losing the row must not cost the player their answer.
+    if (record) {
+      await createRuntimeBus({
+        db: this.env.DB, env: this.env, shopId: record.shopId, hub: this,
+        via: { channel: "bot", resourceId: record.botId },
+      }).signal({ device: { id: record.botId }, capability: "bot", name: "bot.command", payload: botCommandRecord(frame, record.outcome) })
+        .catch((error) => log.error(`could not record bot command ${frame.name}`, { event: "bot_command_record_failed", shopId: record.shopId, botId: record.botId, command: frame.name, error }));
+    }
+    // The command's own events have moved the timers; the alarm is set for them as they now stand.
+    const hubShop = await this.shopId();
+    if (hubShop) await this.touch(hubShop);
+  }
+
+  /**
+   * The bot a token belongs to and what it is told, while the token stands.
+   * Kept until the shop's bots are told something changed.
+   */
+  private async botOf(shopId: string, token: string): Promise<{ bot: BotResource; view: BotView } | null> {
+    const cached = this.botViews.get(token);
+    if (cached) return cached;
+    const row = await this.env.DB.prepare("SELECT id FROM api_tokens WHERE shop_id = ? AND token_hash = ? AND status = 'active' AND role = 'integration'")
+      .bind(shopId, await sha256Hex(token)).first<{ id: string }>();
+    const bot = row ? await findBotByToken(this.env.DB, shopId, row.id) : null;
+    if (!bot) return null;
+    const found = { bot, view: await botConfigView(this.env.DB, shopId, bot) };
+    this.botViews.set(token, found);
+    return found;
   }
 
   private async remember(key: string, response: BotResponse) {
@@ -1150,14 +1395,138 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Something that may change idle state happened: activity, an entry or a
-   * checkout, a settings change. The check runs shortly after, once per burst.
+   * What moves the idle timers (`idle-power.ts`): a device switched on or off,
+   * a coin or an authorised card, a bill opening or closing, a seat, the rules.
+   * Each is applied as it arrives and the alarm is set for whatever is next.
    */
-  async touch(shopId: string): Promise<void> {
+  async idleEvents(shopId: string, signals: readonly IdleSignal[]): Promise<void> {
     await this.rememberShop(shopId);
-    const at = Date.now() + TOUCH_DELAY_MS;
-    const pending = await this.ctx.storage.get<number>("touchAt");
-    if (pending === undefined || pending > at) await this.ctx.storage.put("touchAt", at);
+    await this.idleWork(async () => {
+      const now = Date.now();
+      let { timers, settings } = await this.idleState(shopId);
+      if (signals.some((signal) => signal.kind === "settings")) ({ timers, settings } = await this.idleStartOver(shopId, timers));
+      const devices = signals.some((signal) => "deviceId" in signal) ? await idleGroups(this.env.DB, shopId) : null;
+      let seats = false;
+      for (const signal of signals) {
+        if (signal.kind === "settings") continue;
+        if (signal.kind === "sessions") {
+          setIdleEmpty(timers, await shopIsEmpty(this.env.DB, shopId), now);
+          // A bill closing also empties the seats it paid for.
+          seats = true;
+        } else if (signal.kind === "seats") seats = true;
+        else {
+          const group = devices!.groups.get(signal.deviceId);
+          if (!group) continue;
+          if (signal.kind === "off") applyIdleEvent(timers, { kind: "off", key: group.key }, now);
+          else if (signal.kind === "keep") {
+            // Kept on for the shop's keep time, however short its idle time is.
+            applyIdleEvent(timers, { kind: "activity", ...group, until: now + settings.keepMinutes * 60_000 }, now);
+          } else {
+            // A stay keeps its device on to its end: the timer starts there.
+            const at = signal.kind === "activity" && signal.stay ? now + (devices!.stays.get(signal.deviceId) ?? 0) : signal.at;
+            applyIdleEvent(timers, { kind: signal.kind, ...group, ...(at === undefined ? {} : { at }) }, now);
+          }
+        }
+      }
+      if (seats) await this.idleSeats(shopId, timers, now);
+      await this.idleSettle(shopId, timers, settings, now);
+    });
+  }
+
+  /** The bots' warning lead may have changed (one said hello): set the alarm for the timers as they stand. */
+  async touch(shopId: string): Promise<void> {
+    await this.idleEvents(shopId, []);
+  }
+
+  /** One idle change at a time: a power-off waits on Home Assistant, and a signal arriving meanwhile must not be lost. */
+  private idleQueue: Promise<unknown> = Promise.resolve();
+  private idleWork(work: () => Promise<void>): Promise<void> {
+    const run = this.idleQueue.then(work, work).catch((error) => log.error("idle power-off timers failed", { hubId: this.ctx.id.toString(), error }));
+    this.idleQueue = run;
+    return run;
+  }
+
+  /** The timers and the rules they run by, as the hub keeps them. */
+  private async idleState(shopId: string): Promise<{ timers: IdleTimers; settings: IdleSettings }> {
+    const timers = await this.ctx.storage.get<IdleTimers>("idle");
+    const settings = await this.ctx.storage.get<IdleSettings>("idleSettings");
+    // Memory from before the timers, or none at all: start from what the shop shows now.
+    if (!timers || !timers.entries || !settings) return this.idleStartOver(shopId, timers?.entries ? timers : emptyIdleTimers());
+    return { timers, settings: parseIdleSettings(settings) };
+  }
+
+  /**
+   * Read the rules again and bring the timers in line with the shop as it is:
+   * whether a bill is open, which seats are taken, and what Home Assistant
+   * reports switched on that has no timer yet. Only when the rules are edited
+   * or the hub has no timers; otherwise the events say all of it.
+   */
+  private async idleStartOver(shopId: string, timers: IdleTimers): Promise<{ timers: IdleTimers; settings: IdleSettings }> {
+    const now = Date.now();
+    const settings = await loadIdleSettings(this.env.DB, shopId);
+    await this.ctx.storage.put("idleSettings", settings);
+    idleSettingsChanged(timers);
+    setIdleEmpty(timers, await shopIsEmpty(this.env.DB, shopId), now);
+    await this.idleSeats(shopId, timers, now);
+    const { groups } = await idleGroups(this.env.DB, shopId);
+    const live = new Set(await this.load<string[]>("eventConnections", []));
+    for (const device of await devicesSeenOn(this.env.DB, shopId, live)) {
+      const group = groups.get(device.id);
+      if (group) applyIdleEvent(timers, { kind: "seen", ...group, ...(device.at === null ? {} : { at: device.at }) }, now);
+    }
+    return { timers, settings };
+  }
+
+  /** Taken seats hold a table's timer; the last one leaving starts it. */
+  private async idleSeats(shopId: string, timers: IdleTimers, now: number): Promise<void> {
+    const held = await heldResources(this.env.DB, shopId);
+    const { groups } = await idleGroups(this.env.DB, shopId);
+    for (const id of held) {
+      const group = groups.get(id);
+      if (group) applyIdleEvent(timers, { kind: "held", ...group, held: true }, now);
+    }
+    for (const [key, entry] of Object.entries(timers.entries)) {
+      if (entry.held && !entry.ids.some((id) => held.has(id))) applyIdleEvent(timers, { kind: "held", key, ids: entry.ids, power: entry.power, held: false }, now);
+    }
+  }
+
+  /**
+   * Carry out whatever has run out: say the warnings, switch off what is past
+   * its warning, the air conditioners after the last device, and set the alarm
+   * for the next step.
+   */
+  private async idleSettle(shopId: string, timers: IdleTimers, settings: IdleSettings, now: number): Promise<void> {
+    const lead = await this.reminderLead();
+    const due = dueIdle(timers, settings, now, lead);
+    timers.wakeAt = nextIdleWake(timers, settings, now, lead);
+    // Kept before anything is said or switched: a second run must not warn again.
+    await this.ctx.storage.put("idle", timers);
+    if (due.warn.length || due.off.length) {
+      const { names } = await idleGroups(this.env.DB, shopId);
+      const named = (ids: string[]) => ids.map((id) => ({ id, name: names.get(id) ?? id }));
+      const notices: IdleNotice[] = due.warn.map((warning) => ({
+        reason: warning.reason,
+        at: warning.at,
+        devices: named([...new Set(warning.keys.flatMap((key) => timers.entries[key]?.ids ?? []))]),
+      }));
+      if (notices.length) await this.notify(notices).catch((error) => log.error("could not send the idle power-off warning", { shopId, error }));
+      for (const { key } of due.off) {
+        const ids = timers.entries[key]?.ids ?? [];
+        if (!ids.length) continue;
+        // Shared bindings get one command. Its event tells the bots and releases the device's
+        // watch, as any power-off does; the others on the same switch are released here.
+        const ok = await switchOff(this.env, shopId, ids[0]!, "power.off", this);
+        settleIdleOff(timers, key, ok, Date.now());
+        if (!ok) continue;
+        for (const id of ids.slice(1)) await this.poweredOff(shopId, id).catch((error) => log.error(`could not release idle machine ${id}`, { shopId, machineId: id, error }));
+      }
+    }
+    if (due.shopOff || (timers.climateDue && !idleBusy(timers, settings))) {
+      delete timers.climateDue;
+      for (const id of await climatesToSwitchOff(this.env.DB, shopId, settings)) await switchOff(this.env, shopId, id, "climate.off", this);
+    }
+    timers.wakeAt = nextIdleWake(timers, settings, Date.now(), lead);
+    await this.ctx.storage.put("idle", timers);
     await this.schedule();
   }
 
@@ -1166,10 +1535,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     // What is due is settled before anything calls `schedule()`. It would otherwise find the work still
     // pending and set an alarm in the past, which fires again at once, and a runtime may drop an alarm
     // set to the time of the one that is running, leaving nothing to wake for the next lease.
-    const touchAt = await this.ctx.storage.get<number>("touchAt");
-    const idle = await this.load<IdleMemory>("idle", emptyIdleMemory());
-    const idleDue = (touchAt !== undefined && touchAt <= now) || (idle.wakeAt !== null && idle.wakeAt <= now);
-    if (idleDue) await this.ctx.storage.delete("touchAt");
+    const idle = await this.ctx.storage.get<IdleTimers>("idle");
+    const idleDue = typeof idle?.wakeAt === "number" && idle.wakeAt <= now;
     const watchers = await this.load<Watchers>("watchers", {});
     let lost = false;
     for (const watcher of Object.values(watchers)) {
@@ -1180,7 +1547,11 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     if (lost) await this.ctx.storage.put("watchers", watchers);
     if (await this.settleObservations()) await this.fill();
-    if (idleDue) await this.checkIdle(idle);
+    if (idleDue) {
+      const shopId = await this.shopId();
+      // Settling sets the alarm for the timers; `schedule()` below sets it again for everything.
+      if (shopId) await this.idleEvents(shopId, []);
+    }
     // Also retries a slot that was open because every IO had just failed.
     await this.fill();
     await this.schedule();
@@ -1188,34 +1559,19 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /** When the idle rules will switch devices off, by device, for the board. Times already past are left out. */
   async idleSchedule(): Promise<Record<string, number>> {
-    const now = Date.now();
-    const { powerOffAt = {} } = await this.load<IdleMemory>("idle", emptyIdleMemory());
-    return Object.fromEntries(Object.entries(powerOffAt).filter(([, at]) => at > now));
-  }
-
-  private async checkIdle(memory: IdleMemory) {
-    const shopId = await this.shopId();
-    if (!shopId) return;
-    try {
-      const result = await runIdleCheck({
-        env: this.env,
-        shopId,
-        now: Date.now(),
-        memory,
-        eventConnections: new Set(await this.load<string[]>("eventConnections", [])),
-        reminderLeadMs: await this.reminderLead(),
-      });
-      await this.ctx.storage.put("idle", result.memory);
-      // A machine the idle rule switched off is released the same way as any
-      // other power-off: same reason, same effect on its watch and its standing.
-      for (const id of result.poweredOff) await this.poweredOff(shopId, id);
-      if (result.notices.length) await this.notify(result.notices);
-    } catch (error) {
-      console.error("Idle check failed", error);
-    }
+    const timers = await this.ctx.storage.get<IdleTimers>("idle");
+    const settings = await this.ctx.storage.get<IdleSettings>("idleSettings");
+    if (!timers?.entries || !settings) return {};
+    return idleScheduleOf(timers, parseIdleSettings(settings), Date.now());
   }
 
   /** How long before a power-off the shop's bots want to hear about it; null without one. */
+  /** The shop's news, said in each place a commands bot announces in. */
+  private sayTo(ws: WebSocket, channels: string[], message: BotMessage | undefined) {
+    if (!Array.isArray(message)) return;
+    for (const to of channels) ws.send(JSON.stringify(sayFrame(message, { to })));
+  }
+
   private async reminderLead(): Promise<number | null> {
     const leads = this.bots()
       .map((ws) => (ws.deserializeAttachment() as BotAttachment | null)?.reminderLeadMs)
@@ -1223,12 +1579,53 @@ export class ShopHub extends BaseDurableObject<Env> {
     return leads.length ? Math.max(...leads) : null;
   }
 
+  /**
+   * A deployment ahead or over, said where each bot's rules send
+   * `platform.maintenance`. Bots lose their connection while the platform is
+   * replaced, so `done` is also kept a while and said to each bot when it says
+   * hello again, once.
+   */
+  async maintenance(notice: MaintenanceNotice): Promise<void> {
+    if (notice.stage === "done") await this.ctx.storage.put("maintenanceDone", { at: Date.now(), told: [] } satisfies MaintenanceDone);
+    else await this.ctx.storage.delete("maintenanceDone");
+    for (const ws of this.bots()) await this.sayMaintenance(ws, notice);
+  }
+
+  /** Say a maintenance notice to one bot, by its rules. Returns the bot's id when it was one the shop knows. */
+  private async sayMaintenance(ws: WebSocket, notice: MaintenanceNotice): Promise<string | null> {
+    const attachment = ws.deserializeAttachment() as BotAttachment | null;
+    if (!attachment?.commands) return null;
+    try {
+      const found = await this.botOf((await this.shopId()) ?? "", attachment.token);
+      if (!found) return null;
+      if (notice.stage === "done") {
+        const done = await this.ctx.storage.get<MaintenanceDone>("maintenanceDone");
+        if (!done || done.told.includes(found.bot.id)) return found.bot.id;
+        await this.ctx.storage.put("maintenanceDone", { ...done, told: [...done.told, found.bot.id] } satisfies MaintenanceDone);
+      }
+      for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "platform.maintenance", via: "system" })) {
+        this.sayTo(ws, to, maintenanceMessage(notice, templates));
+      }
+      return found.bot.id;
+    } catch {
+      // A bot that left misses it.
+      return null;
+    }
+  }
+
+  /** An idle power-off ahead: an announcement like any other, said where each bot's rules send `idle.reminder`. */
   private async notify(notices: IdleNotice[]): Promise<void> {
+    const shopId = (await this.shopId()) ?? "";
     for (const notice of notices) {
-      const frame = JSON.stringify({ type: "event", event: "idle.reminder", data: notice });
       for (const ws of this.bots()) {
+        const attachment = ws.deserializeAttachment() as BotAttachment | null;
+        if (!attachment?.commands) continue;
         try {
-          ws.send(frame);
+          const found = await this.botOf(shopId, attachment.token);
+          if (!found) continue;
+          for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: "idle.reminder", via: "system" })) {
+            this.sayTo(ws, to, idleReminderMessage(notice, templates));
+          }
         } catch {
           // A bot that left misses it; the power-off happens regardless.
         }
@@ -1470,7 +1867,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     this.makingReadAccess.add(connectionId);
     const run = this.provision(this.env.DB, shopId, connectionId, key, { origin })
       .then((result) => (result.access === "ready" ? this.refresh(shopId) : undefined))
-      .catch((error) => console.error("Home Assistant read access failed", error))
+      .catch((error) => log.error(`could not set up read access for Home Assistant connection ${connectionId}`, { shopId, connectionId, error }))
       .finally(() => this.makingReadAccess.delete(connectionId));
     this.ctx.waitUntil?.(run);
   }
@@ -1489,8 +1886,8 @@ export class ShopHub extends BaseDurableObject<Env> {
     const applied: Record<string, WatchedState> = {};
     const writes: StateWrite[] = [];
     const pushes: Array<[string, Record<string, unknown>]> = [];
-    const powerChanges: Array<{ deviceIds: string[]; state: "on" | "off"; at: string }> = [];
-    let powerMoved = false;
+    /** What the report says of each device's power, for the idle timers. */
+    const idleSignals: IdleSignal[] = [];
     /** Machines this report says lost power: their watch is released, as on any power-off. */
     const lostPower: string[] = [];
     for (const item of reported) {
@@ -1501,27 +1898,29 @@ export class ShopHub extends BaseDurableObject<Env> {
       const next: WatchedState = { state: item.state, attributes: item.attributes, lastChanged: item.last_changed, stamp };
       applied[key] = next;
       const at = item.last_changed ? new Date(item.last_changed) : undefined;
-      if (announcePower && previous) {
-        const deviceIds: string[] = [];
-        let state: "on" | "off" | null = null;
-        for (const target of targets[key] ?? []) {
-          const before = target.capability === "climate" ? climatePower(previous.state)
-            : previous.state === "on" || previous.state === "off" ? previous.state : null;
-          const after = target.capability === "climate" ? climatePower(next.state)
-            : next.state === "on" || next.state === "off" ? next.state : null;
-          if (before && after && before !== after) { deviceIds.push(target.deviceId); state = after; }
-        }
-        if (state) powerChanges.push({ deviceIds: [...new Set(deviceIds)], state, at: (at ?? new Date()).toISOString() });
-      }
       for (const target of targets[key] ?? []) {
+        // A switch between off and on that a current watcher saw happen: the change says so, and
+        // that is what the bots are told. A first snapshot, a held watcher, or a device coming back
+        // from `unavailable` stores the state without it.
+        const before = !previous ? null : target.capability === "climate" ? climatePower(previous.state)
+          : previous.state === "on" || previous.state === "off" ? previous.state : null;
+        const after = target.capability === "climate" ? climatePower(next.state)
+          : next.state === "on" || next.state === "off" ? next.state : null;
+        const switched = announcePower && before && after && before !== after ? { payload: { switched: { from: before, to: after } } } : {};
         const device = { id: target.deviceId };
         if (target.capability === "power") {
           // A repeat of the same state (an attribute-only update) has nothing new to say.
           if (previous?.state === next.state) continue;
           const power = next.state === "on" || next.state === "off" ? next.state : null;
-          writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}) });
+          writes.push({ device, capability: "power", key: "power", value: power, ...(at ? { at } : {}), ...switched });
           pushes.push([target.deviceId, { type: "state", power }]);
-          if (previous) powerMoved = true;
+          // Off to on restarts the timer; anything else that reads `on` (a first
+          // report, back from `unavailable`) only says the device is on.
+          if (power === "on") {
+            const when = at ? { at: at.getTime() } : {};
+            if (previous?.state === "off") idleSignals.push({ kind: "on", deviceId: target.deviceId, ...when });
+            idleSignals.push({ kind: "seen", deviceId: target.deviceId, ...when });
+          } else if (power === "off") idleSignals.push({ kind: "off", deviceId: target.deviceId });
           // Only a real on-to-off move: `unavailable` reads as null, and a Home
           // Assistant hiccup must not release a working watch.
           if (power === "off" && previous?.state === "on") lostPower.push(target.deviceId);
@@ -1534,38 +1933,22 @@ export class ShopHub extends BaseDurableObject<Env> {
           if (!previous || JSON.stringify(settingOf(previous)) !== JSON.stringify(settingOf(next))) {
             // HA leaves last_changed alone when only temperature or fan settings change.
             const settingAt = previous?.state === next.state && stamp !== null ? new Date(stamp) : at;
-            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}) });
-            if (previous) powerMoved = true;
+            writes.push({ device, capability: "climate", key: "climate", value: known ? settingOf(next) : null, ...(settingAt ? { at: settingAt } : {}), ...switched });
           }
           pushes.push([target.deviceId, { type: "state", climate: view }]);
         }
       }
     }
     if (writes.length) {
-      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, notifyHub: false });
+      const bus = createRuntimeBus({ db: this.env.DB, env: this.env, shopId, hub: this, via: { channel: "ha", resourceId: null } });
       try {
         for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
       } catch (error) {
-        console.error("Shop hub state write failed", error);
+        log.error(`could not write ${writes.length} Home Assistant state changes`, { shopId, writes: writes.length, error });
         return "failed";
       }
     }
     if (Object.keys(applied).length) await this.ctx.storage.put("states", { ...states, ...applied });
-    for (const change of powerChanges) {
-      try {
-        const rows = await this.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-          .bind(shopId, JSON.stringify(change.deviceIds)).all<{ id: string; name: string }>();
-        const names = new Map(rows.results.map((row) => [row.id, row.name]));
-        const event: ShopEvent = {
-          kind: "power", resourceId: change.deviceIds[0]!,
-          resourceName: change.deviceIds.map((id) => names.get(id) ?? id).join("、"),
-          state: change.state, by: "ha", player: null,
-        };
-        await this.shopEvent({ ...event, at: change.at });
-      } catch (error) {
-        console.error("HA power announcement failed", { shopId, error });
-      }
-    }
     // Pages and boards are told of a device's change only while the device is live, that is while
     // every Home Assistant connection it uses is announced. Until then a report is not yet the
     // device's state (a first snapshot, a held watcher); the announcement brings it once it is.
@@ -1579,8 +1962,8 @@ export class ShopHub extends BaseDurableObject<Env> {
       this.toPages(deviceId, frame);
       this.toBoards({ ...frame, deviceId });
     }
-    // Switched on starts an idle countdown; switched off may end one.
-    if (powerMoved) await this.touch(shopId);
+    // Switched on starts a device's idle timer; switched off ends it.
+    if (idleSignals.length) await this.idleEvents(shopId, idleSignals);
     // Home Assistant confirming the machine is off: the same observation the
     // platform's own power-off opened, now with the machine's state as evidence
     // rather than only the command having been accepted.
@@ -1616,7 +1999,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     try {
       await writeEventConnections(this.env.DB, shopId, { add, remove });
     } catch (error) {
-      console.error("Shop hub watch mode write failed", error);
+      log.error("could not record which machines are watched live", { shopId, added: add, removed: remove, error });
       return;
     }
     await this.ctx.storage.put("eventConnections", [...live]);
@@ -1630,8 +2013,7 @@ export class ShopHub extends BaseDurableObject<Env> {
   private async schedule() {
     const now = Date.now();
     const watchers = await this.load<Watchers>("watchers", {});
-    const touchAt = await this.ctx.storage.get<number>("touchAt");
-    const idle = await this.ctx.storage.get<IdleMemory>("idle");
+    const idle = await this.ctx.storage.get<IdleTimers>("idle");
     const candidates = await this.load<Candidates>("candidates", {});
     // An open slot is retried when a benched candidate becomes eligible again.
     const retry = Object.values(watchers).filter((watcher) => watcher.held === undefined).length < (await this.limit())
@@ -1645,7 +2027,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     const closing = Object.values(observations)
       .filter((entry) => entry.result === undefined)
       .map((entry) => entry.startedAt + OBSERVE_MS);
-    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), touchAt, idle?.wakeAt ?? undefined, ...retry, ...closing]
+    const due = [...Object.values(watchers).map((watcher) => watcher.leaseUntil), idle?.wakeAt ?? undefined, ...retry, ...closing]
       .filter((at): at is number => typeof at === "number")
       .reduce<number | null>((earliest, at) => (earliest === null || at < earliest ? at : earliest), null);
     const getAlarm = this.ctx.storage.getAlarm?.bind(this.ctx.storage);

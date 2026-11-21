@@ -1,5 +1,6 @@
 import type {
   DeviceEvent,
+  DeviceEventChannel,
   DeviceEventRepository,
   DeviceOperation,
   DeviceRecord,
@@ -21,7 +22,12 @@ type EventRow = {
   staff_id: string | null;
   payload_json: string;
   occurred_at: string;
+  via: string | null;
+  via_resource_id: string | null;
 };
+
+const eventColumns =
+  "id, device_id, capability, kind, name, operation_id, parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at, via, via_resource_id";
 
 type OperationRow = {
   id: string;
@@ -37,7 +43,6 @@ type OperationRow = {
   payload_json: string;
   requested_at: string;
   settled_at: string | null;
-  confirmed_at: string | null;
 };
 
 type StateRow = {
@@ -51,7 +56,7 @@ type StateRow = {
 };
 
 const operationColumns =
-  "id, device_id, capability, action, parent_id, player_id, staff_id, status, counts_as_play, failure, payload_json, requested_at, settled_at, confirmed_at";
+  "id, device_id, capability, action, parent_id, player_id, staff_id, status, counts_as_play, failure, payload_json, requested_at, settled_at";
 
 function parseObject(value: string | null): Record<string, unknown> {
   if (!value) return {};
@@ -87,7 +92,27 @@ function toEvent(row: EventRow): DeviceEvent {
     staffId: row.staff_id,
     payload: parseObject(row.payload_json),
     occurredAt: new Date(row.occurred_at),
+    via: row.via ? { channel: row.via as DeviceEventChannel, resourceId: row.via_resource_id } : null,
   };
+}
+
+function eventParams(event: DeviceEvent) {
+  return [
+    event.id,
+    event.deviceId,
+    event.capability,
+    event.kind,
+    event.name,
+    event.operationId,
+    event.parentOperationId,
+    event.origin,
+    event.playerId,
+    event.staffId,
+    JSON.stringify(event.payload),
+    event.occurredAt.toISOString(),
+    event.via?.channel ?? null,
+    event.via?.resourceId ?? null,
+  ];
 }
 
 function toOperation(row: OperationRow): DeviceOperation {
@@ -105,7 +130,6 @@ function toOperation(row: OperationRow): DeviceOperation {
     payload: parseObject(row.payload_json),
     requestedAt: new Date(row.requested_at),
     settledAt: row.settled_at ? new Date(row.settled_at) : null,
-    confirmedAt: row.confirmed_at ? new Date(row.confirmed_at) : null,
   };
 }
 
@@ -124,23 +148,9 @@ function toState(row: StateRow): DeviceStateValue {
 
 function insertEvent(shop: string, event: DeviceEvent): SqlStatement {
   return {
-    sql: `INSERT INTO device_events (shop_id, id, device_id, capability, kind, name, operation_id,
-            parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at)
-          VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      event.id,
-      event.deviceId,
-      event.capability,
-      event.kind,
-      event.name,
-      event.operationId,
-      event.parentOperationId,
-      event.origin,
-      event.playerId,
-      event.staffId,
-      JSON.stringify(event.payload),
-      event.occurredAt.toISOString(),
-    ],
+    sql: `INSERT INTO device_events (shop_id, ${eventColumns})
+          VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: eventParams(event),
   };
 }
 
@@ -156,29 +166,11 @@ function insertChangeIfDifferent(
   write: { deviceId: string; capability: string; key: string; value: string },
 ): SqlStatement {
   return {
-    sql: `INSERT INTO device_events (shop_id, id, device_id, capability, kind, name, operation_id,
-            parent_operation_id, origin, player_id, staff_id, payload_json, occurred_at)
-          SELECT ${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    sql: `INSERT INTO device_events (shop_id, ${eventColumns})
+          SELECT ${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           WHERE NOT EXISTS (SELECT 1 FROM device_state WHERE shop_id = ${shop}
             AND device_id = ? AND capability = ? AND key = ? AND value_json = ?)`,
-    params: [
-      event.id,
-      event.deviceId,
-      event.capability,
-      event.kind,
-      event.name,
-      event.operationId,
-      event.parentOperationId,
-      event.origin,
-      event.playerId,
-      event.staffId,
-      JSON.stringify(event.payload),
-      event.occurredAt.toISOString(),
-      write.deviceId,
-      write.capability,
-      write.key,
-      write.value,
-    ],
+    params: [...eventParams(event), write.deviceId, write.capability, write.key, write.value],
   };
 }
 
@@ -187,12 +179,14 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
   return {
     async record(input: DeviceRecord) {
       const statements: SqlStatement[] = input.events.map((event) => insertEvent(shop, event));
+      // Changes are written only when their state moved, which SQL decides.
+      const guarded: DeviceEvent[] = [];
 
       if (input.operation) {
         const op = input.operation;
         statements.push({
           sql: `INSERT INTO device_operations (shop_id, ${operationColumns})
-                VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           params: [
             op.id,
             op.deviceId,
@@ -207,7 +201,6 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
             JSON.stringify(op.payload),
             op.requestedAt.toISOString(),
             op.settledAt?.toISOString() ?? null,
-            op.confirmedAt?.toISOString() ?? null,
           ],
         });
       }
@@ -227,20 +220,15 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
         });
       }
 
-      if (input.confirm) {
-        statements.push({
-          sql: `UPDATE device_operations SET confirmed_at = ?
-                WHERE shop_id = ${shop} AND id = ? AND device_id = ? AND confirmed_at IS NULL`,
-          params: [input.confirm.confirmedAt.toISOString(), input.confirm.operationId, input.confirm.deviceId],
-        });
-      }
-
       for (const { write, event } of input.states ?? []) {
         const value = JSON.stringify(write.value ?? null);
         const target = { ...write, value };
         // Order matters: the change guard must read the old value before the
         // upsert below replaces it.
-        if (event) statements.push(insertChangeIfDifferent(shop, event, target));
+        if (event) {
+          statements.push(insertChangeIfDifferent(shop, event, target));
+          guarded.push(event);
+        }
         statements.push({
           sql: `INSERT INTO device_state (shop_id, device_id, capability, key, value_json, authority, event_id, changed_at)
                 VALUES (${shop}, ?, ?, ?, ?, ?, ?, ?)
@@ -263,15 +251,31 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
       }
 
       if (statements.length) await executor.batch(statements);
+      if (!guarded.length) return [...input.events];
+      const written = new Set((await executor.all<{ id: string }>(
+        `SELECT id FROM device_events WHERE shop_id = ${shop} AND id IN (SELECT value FROM json_each(?))`,
+        [JSON.stringify(guarded.map((event) => event.id))],
+      )).map((row) => row.id));
+      return [...input.events, ...guarded.filter((event) => written.has(event.id))];
     },
 
-    async listEvents({ deviceId, limit }) {
+    async listEvents({ deviceId, limit, before }) {
+      // A resource's history is every event it appears in: what happened to it,
+      // and what came through it. Each half reads its own index; an event that
+      // is both (a command said to a bot) is listed once.
+      // The cursor must be an event of this same history; any other lists nothing.
+      const older = before
+        ? `AND (occurred_at, id) < (SELECT occurred_at, id FROM device_events
+             WHERE shop_id = ${shop} AND id = ? AND (device_id = ? OR via_resource_id = ?))`
+        : "";
+      const half = (column: string) =>
+        `SELECT * FROM (SELECT ${eventColumns} FROM device_events
+           WHERE shop_id = ${shop} AND ${column} = ? ${older}
+           ORDER BY occurred_at DESC, id DESC LIMIT ?)`;
+      const params = [deviceId, ...(before ? [before, deviceId, deviceId] : []), limit];
       const rows = await executor.all<EventRow>(
-        `SELECT id, device_id, capability, kind, name, operation_id, parent_operation_id, origin,
-                player_id, staff_id, payload_json, occurred_at
-         FROM device_events WHERE shop_id = ${shop} AND device_id = ?
-         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
-        [deviceId, limit],
+        `${half("device_id")} UNION ${half("via_resource_id")} ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+        [...params, ...params, limit],
       );
       return rows.map(toEvent);
     },

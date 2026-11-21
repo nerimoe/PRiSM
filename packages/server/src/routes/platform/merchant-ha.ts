@@ -22,6 +22,9 @@ import { refreshShopHub } from "../../durable-objects/shop-hub-client.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { assertResourceShop, canConfigureResource, encryptionKey } from "./merchant-resources.js";
+import { logger } from "../../log.js";
+
+const log = logger("home-assistant");
 
 export const merchantHaRouter = new Hono<AppBindings>();
 type C = Context<AppBindings>;
@@ -48,7 +51,7 @@ export function scheduleReadAccess(c: C, shopId: string, connectionId: string, a
       ...(adminToken ? { adminToken } : {}),
     })
       .then((result) => (result.access === "ready" ? refreshShopHub(c.env, shopId) : undefined))
-      .catch((error) => console.error("Home Assistant read access failed", error)),
+      .catch((error) => log.error(`could not set up read access for Home Assistant connection ${connectionId}`, { shopId, connectionId, error })),
   );
 }
 

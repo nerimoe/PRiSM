@@ -72,7 +72,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查。 |
-| `GET` | `/version` | 查询后端发布版本与构建 Git 提交号；无需认证。 |
+| `GET` | `/version` | 查询正在应答的是哪次部署：`{ worker, revision }`，即 Worker 名称和构建所用的完整 Git 提交号，都由部署脚本写入；没有发布版本号。未经部署脚本启动的进程（如本地运行）返回 `local` 和 `dev`。无需认证。 |
 | `GET` | `/admin` | 独立 API 的管理部署提示页；店铺管理 UI 由 `packages/prism-web` 构建，统一平台入口为 `/merchant`。 |
 | `GET` | `/rpc/setup/status` | 查询系统是否已完成初始化开箱配置。 |
 | `POST` | `/rpc/setup/install` | 初始化首个 owner 员工、店铺设置、本位余额资产和 API 密钥。 |
@@ -135,7 +135,7 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
 
 `target` 只用于找到设备（ID、`public_id`、名称或别名）；设备能否执行某个动作由它绑定的能力决定，见 [集成与设备](integrations-and-machines.md)。
 
-玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；`coin` 还会检查投币冷却时间。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
+玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；玩家的 `coin` 还会检查投币冷却时间，店员从后台投币不受冷却限制（投币上限照样检查）。店员按机台上店家命名的按键用 `key.press`（带 `keyId`），它不是投币。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
 
 设施动作示例：
 
@@ -191,6 +191,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players/:playerId/assets/adjustments` | 按 `holdingId` 精确调整/扣减/ revoke 某条玩家持有记录，避免同类资产的不同有效期记录互相混淆。 |
 | `POST` | `/rpc/staff/players/:playerId/wallet/adjustment` | 按 `amount` 与 `reason` 调整玩家钱包；正数增加充值余额，负数执行余额冲正。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/history` | 查询该玩家的历史场次。 |
+| `GET` | `/rpc/staff/players/:playerId/checkouts` | 该玩家的全部结账单，含已归档（`archived: true`），按结账时间倒序；`limit`（默认 50，最多 200）/`offset` 分页，响应 `{records, page: {limit, offset, hasMore}}`，每条与 `/reports/checkouts` 相同。商户后台玩家面板的「消费记录」用它列出账单，点开读 `/reports/checkouts/:checkoutId` 显示完整时间轴。 |
 | `GET` | `/rpc/staff/players/:playerId/sessions/:sessionId/history` | 查询玩家某次结算的账单明细。 |
 | `GET` | `/rpc/staff/players/:playerId/redeem-records` | 查询该玩家的兑换记录，返回兑换码、礼物名称和兑换时间，用于玩家档案审计。 |
 | `POST` | `/rpc/staff/players/:playerId/checkout/preview` | 预览该玩家所有 active session 和未结 closed session 的统一结算结果；不关单、不扣款。 |
@@ -344,7 +345,7 @@ Bot 向玩家开放哪些命令由 Bot 自己配置，后台不做限制：后�
 | --- | --- | --- |
 | `POST` | `/rpc/integration/players/by-identity/resolve` | 按外部身份查找已绑定玩家。 |
 | `POST` | `/rpc/integration/players/by-identity/register` | 按外部身份查找或注册玩家，并自动绑定该身份。 |
-| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。请求带 `pricingConfigIds` 时开始其中第一个方案（`label` 作为场次显示名），这是给麻将还没交给平台的旧版 Bot 的兼容路径：旧版 Bot 上桌时按桌的方案开始计费、下桌时停止返回的那个场次，所以只结束麻将方案、不影响玩家的其他计费；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
+| `POST` | `/rpc/integration/players/by-identity/session/start` | 按外部身份为玩家开始发请求的 Bot 资源的方案：Bot 的专属方案，否则它所属资源组的方案。旧版请求携带 `pricingConfigIds` 或 `label` 返回 `400 VALIDATION_FAILED`，已移除自行指定麻将方案的兼容路径；麻将改用统一上下桌接口；`entry` 被忽略；Bot 资源停用时返回 `403 BOT_DISABLED`。该方案已在计费时返回原 session（`created: false`）；方案依赖的其他方案会自动开始，互斥的方案会结束。响应 `{session, created, planName, billing}`，`billing` 同扫码确认。 |
 | `POST` | `/rpc/integration/players/by-identity/presence` | 一位玩家是否在店：`{inShop, plans, occupying}`，`plans` 为在计费的方案，`occupying` 为正在占用的资源。只剩未结账单的玩家 `inShop: false`。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/preview` | 按外部身份预览玩家当前 session 结算。 |
 | `POST` | `/rpc/integration/players/by-identity/checkout/confirm` | 按外部身份确认玩家当前 session 结算。 |
@@ -422,7 +423,8 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 | 请求方法 | 路由路径 | 接口用途 |
 | --- | --- | --- |
-| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/register` | 上报实时活动推送令牌。幂等：令牌轮换后重复上报会就地更新。请求头 `x-prism-client-id` 记为这张卡所在的安装，用来判断入场的那部手机有没有自己建成活动。`bundleId` 仅接受 `moe.neri.hinatago` 与 `moe.neri.hinatago.prism`。 |
+| `POST` | `/api/v1/shops/:shopCode/player/live-activity/start-failed` | iOS 拒绝在这部手机上创建这次在店的活动时，App 上报 `{ sessionId, error }`（错误描述最多 500 字）。只记日志，不改任何状态。 |
 | `POST` | `/api/v1/shops/:shopCode/player/live-activity/unregister` | 活动结束或账号登出时注销，避免继续推送到已失效的活动。按当前账号隔离，无法操作他人活动。 |
 | `GET` | `/api/v1/shops/:shopCode/player/live-activity/bill` | 当前玩家的实时活动摘要：`{ phase, bill, nextCheckAtUnix, startedAtUnix, endedAtUnix }`，无未结账会话时均为 null；全部会话关闭但未付款时 endedAtUnix 为实际结束时间。bill 包含整数分 `amountCents`、`planLabel`、`previousEvent`、`nextEvent`、`asOfUnix`，以及可选的 `billable` / `remainingToCapCents`。事件为 `{ atUnix, label }` 或 null，时间均为 Unix 秒；事件与账单时间轴的事件一致（开始计费、结束计费、切换计费规则、封顶结束、已封顶、新的一天），另加单位收费节点「计费」/「下次计费」；上一事件不随快照刷新改变，详见 live-activity-push.md。 |
 

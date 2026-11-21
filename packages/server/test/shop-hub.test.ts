@@ -14,12 +14,15 @@ const SHOP = "shop-1";
 
 async function fixture(options: { climate?: boolean; legacy?: boolean } = {}) {
   const sqlite = new Database(":memory:");
-  sqlite.run(`CREATE TABLE players(shop_id TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(shop_id, id))`);
+  sqlite.run(`CREATE TABLE players(shop_id TEXT NOT NULL, id TEXT NOT NULL, status TEXT DEFAULT 'active', PRIMARY KEY(shop_id, id))`);
   sqlite.run(
     `CREATE TABLE machines(shop_id TEXT NOT NULL, id TEXT NOT NULL, public_id TEXT, name TEXT, aliases_json TEXT,
        kind TEXT DEFAULT 'machine', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT DEFAULT '2026-01-01', capacity INTEGER NOT NULL DEFAULT 0, occupancy_minutes INTEGER NOT NULL DEFAULT 15, PRIMARY KEY(shop_id, id))`,
   );
   sqlite.run(`CREATE TABLE app_settings(shop_id TEXT, key TEXT, value_json TEXT, updated_at TEXT, PRIMARY KEY(shop_id, key))`);
+  // What the idle timers read when the hub takes stock: open bills and taken seats.
+  sqlite.run(`CREATE TABLE sessions(shop_id TEXT, id TEXT, player_id TEXT, status TEXT)`);
+  sqlite.run(`CREATE TABLE mahjong_seats(shop_id TEXT, player_id TEXT, machine_id TEXT, session_id TEXT, entry_session_id TEXT, joined_at TEXT)`);
   for (const statement of deviceEventSchema) sqlite.run(statement);
   const db = createD1DatabaseFromSqlite(sqlite);
   const made = {
@@ -123,24 +126,25 @@ const status = (term: number, connection: string, connected: boolean) => ({
 });
 
 describe("HA-confirmed power announcements", () => {
-  const connectBot = (sockets: any[], receive: (event: any) => void) => sockets.push({
-    tags: ["bot"],
-    deserializeAttachment: () => ({ kind: "bot", reminderLeadMs: null }),
-    send(data: string) {
-      const frame = JSON.parse(data);
-      if (frame.event === "shop.event") receive(frame.data);
-    },
-  });
+  /** What the hub tells the shop's bots, before each bot's rules decide where it is said. */
+  const announced = (hub: ShopHub, receive: (event: any) => void) => {
+    const tell = hub.shopEvent.bind(hub);
+    hub.shopEvent = async (event) => {
+      receive(event);
+      return tell(event);
+    };
+  };
+  const stateOf = (event: { key: string }) => event.key.slice("power.changed.".length);
 
   for (const shared of [false, true]) it(`announces confirmed on/off changes once to every Bot, with shared power=${shared}`, async () => {
     const { hub, sockets, sqlite, connectionId, power } = await fixture();
     const events: any[] = [];
     const other: any[] = [];
-    connectBot(sockets, (event) => {
-      expect(power().filter((row) => JSON.parse(row.value_json) === event.state)).toHaveLength(shared ? 2 : 1);
+    announced(hub, (event) => {
+      expect(power().filter((row) => JSON.parse(row.value_json) === stateOf(event))).toHaveLength(shared ? 2 : 1);
       events.push(event);
     });
-    connectBot(sockets, (event) => other.push(event));
+    announced(hub, (event) => other.push(event));
     try {
       if (shared) sqlite.run("UPDATE device_capabilities SET config_json=? WHERE device_id='m2' AND capability='power'",
         [JSON.stringify({ connectionId, entityId: "switch.a" })]);
@@ -160,8 +164,8 @@ describe("HA-confirmed power announcements", () => {
       await hub.haReport(SHOP, "a", states(1, connectionId,
         [[on[0], on[1], on[2], "2026-10-21T09:02:00.000Z", { friendly_name: "Power" }]], false));
       await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
-      expect(events).toEqual(["on", "off"].map((state, index) => ({
-        kind: "power", resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", state, by: "ha", player: null,
+      expect(events).toMatchObject(["on", "off"].map((state, index) => ({
+        key: `power.changed.${state}`, resourceId: "m1", resourceName: shared ? "m1、m2" : "m1", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 3 : 1}:00.000Z`,
       })));
       expect(other).toEqual(events);
@@ -171,7 +175,7 @@ describe("HA-confirmed power announcements", () => {
   it("announces shared air conditioners only when switching between off and running modes", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture({ climate: true });
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     try {
       sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,aliases_json) VALUES (?,'m4','pub-m4','m4','[]')", [SHOP]);
       sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) SELECT shop_id,'m4',capability,config_json,secret_json,created_at,updated_at FROM device_capabilities WHERE device_id='m3'");
@@ -192,8 +196,8 @@ describe("HA-confirmed power announcements", () => {
       await report("cool", 6);
       await report("unknown", 7);
       await report("heat", 8);
-      expect(events).toEqual(["on", "off"].map((state, index) => ({
-        kind: "power", resourceId: "m3", resourceName: "m3、m4", state, by: "ha", player: null,
+      expect(events).toMatchObject(["on", "off"].map((state, index) => ({
+        key: `power.changed.${state}`, resourceId: "m3", resourceName: "m3、m4", via: "ha", player: null,
         at: `2026-10-21T09:0${index ? 4 : 1}:00.000Z`,
       })));
     } finally { sqlite.close(); }
@@ -202,7 +206,7 @@ describe("HA-confirmed power announcements", () => {
   it("does not announce snapshots, unready or stale watchers, unknown states or changes during a disconnect", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture();
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     try {
       await hub.relayOnline(SHOP, "a", "chan-a");
       const report = (state: string, minute: number, full = false, term = 1, watcher = "a") => hub.haReport(SHOP, watcher,
@@ -221,14 +225,14 @@ describe("HA-confirmed power announcements", () => {
       await report("on", 7);
       expect(events).toEqual([]);
       await report("off", 8);
-      expect(events).toEqual([expect.objectContaining({ kind: "power", state: "off", by: "ha" })]);
+      expect(events).toEqual([expect.objectContaining({ key: "power.changed.off", via: "ha" })]);
     } finally { sqlite.close(); }
   });
 
   it("does not announce a power change that failed to persist", async () => {
     const { hub, sockets, sqlite, connectionId } = await fixture();
     const events: any[] = [];
-    connectBot(sockets, (event) => events.push(event));
+    announced(hub, (event) => events.push(event));
     const quiet = spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await hub.relayOnline(SHOP, "a", "chan-a");
@@ -450,17 +454,32 @@ describe("ShopHub watchers", () => {
     const { hub, state, alarmHistory, clearAlarm, connectionId } = await fixture();
     await hub.relayOnline(SHOP, "a", "chan-a");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON]]));
-    // An idle check that has come due. Scheduling while it is still pending would set an alarm in
+    // An idle timer that has come due. Scheduling while it is still pending would set an alarm in
     // the past, which fires again at once; on a runtime that drops an alarm set to the time of the
     // one running, nothing would then wake for the watcher's lease.
-    state.set("touchAt", Date.now() - 1);
+    state.set("idle", { ...(state.get("idle") as object), wakeAt: Date.now() - 1 });
     clearAlarm();
     alarmHistory.length = 0;
     await hub.alarm();
     const now = Date.now();
     expect(alarmHistory.length).toBeGreaterThan(0);
     expect(alarmHistory.every((at) => at > now)).toBe(true);
-    expect(state.get("touchAt")).toBeUndefined();
+    const wakeAt = (state.get("idle") as { wakeAt: number | null }).wakeAt;
+    expect(wakeAt === null || wakeAt > now).toBe(true);
+  });
+
+  it("starts a device's idle timer when Home Assistant reports it switched on, and ends it when it reports it off", async () => {
+    const { hub, state, connectionId } = await fixture();
+    const timers = () => Object.values((state.get("idle") as { entries: Record<string, unknown> } | undefined)?.entries ?? {});
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", NOON], ["switch.b", "on", NOON]]));
+    // A first report that reads on: the device is on, since when Home Assistant says.
+    expect(timers()).toEqual([{ ids: ["m2"], power: true, at: Date.parse(NOON), seen: true }]);
+    const on = "2026-10-21T09:01:00.000Z";
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", on]], false));
+    expect(timers()).toContainEqual({ ids: ["m1"], power: true, at: Date.parse(on), seen: true });
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:03:00.000Z"]], false));
+    expect(timers()).toEqual([{ ids: ["m2"], power: true, at: Date.parse(NOON), seen: true }]);
   });
 
   it("replaces a quiet watcher with one that can be told", async () => {
@@ -806,12 +825,10 @@ describe("ShopHub watchers", () => {
     expect((await facts("m3")).climate).toMatchObject({ currentTemperature: 28 });
     expect(changes("climate")).toHaveLength(1);
     expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe(NOON);
-    state.delete("touchAt");
     await hub.haReport(SHOP, "a", states(1, connectionId, [["climate.c", "cool", NOON, "2026-10-21T09:02:00.000Z", attributes(28, 22)]], false));
     expect((await facts("m3")).climate).toMatchObject({ temperature: 22 });
     expect(changes("climate")).toHaveLength(2);
     expect((sqlite.query("SELECT changed_at FROM device_state WHERE device_id='m3' AND key='climate'").get() as any).changed_at).toBe("2026-10-21T09:02:00.000Z");
-    expect(state.has("touchAt")).toBe(true);
   });
 
   it("rewrites every fact after the devices an entity drives changed, without un-announcing the connection", async () => {
@@ -931,6 +948,33 @@ describe("ShopHub device pages", () => {
     await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
     expect(one!.sent.at(-1)).toEqual({ type: "state", power: "off" });
     expect(two!.sent).toEqual([{ type: "hello", watching: true, power: "on" }]);
+  });
+
+  it("announces a machine Home Assistant saw switch, whoever switched it, but not a first snapshot", async () => {
+    const { hub, connectionId } = await fixture();
+    const told: Array<Record<string, unknown>> = [];
+    spyOn(hub, "shopEvent").mockImplementation(async (event: Record<string, unknown>) => { told.push(event); });
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
+    expect(told).toEqual([]);
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "off", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.b", "on", "2026-10-21T09:31:00.000Z", "2026-10-21T09:31:00.000Z"]], false));
+    expect(told.map(({ key, resourceId, player }) => ({ key, resourceId, player }))).toEqual([
+      { key: "power.changed.off", resourceId: "m1", player: null },
+      { key: "power.changed.on", resourceId: "m2", player: null },
+    ]);
+    // What Home Assistant saw, not a request someone made through the platform.
+    expect(told.every((event) => event.via === "ha")).toBe(true);
+  });
+
+  it("does not announce a machine coming back from unavailable", async () => {
+    const { hub, connectionId } = await fixture();
+    const told: unknown[] = [];
+    spyOn(hub, "shopEvent").mockImplementation(async (event: unknown) => { told.push(event); });
+    await hub.relayOnline(SHOP, "a", "chan-a");
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "unavailable", NOON, NOON], ["switch.b", "off", NOON, NOON]]));
+    await hub.haReport(SHOP, "a", states(1, connectionId, [["switch.a", "on", "2026-10-21T09:30:00.000Z", "2026-10-21T09:30:00.000Z"]], false));
+    expect(told).toEqual([]);
   });
 
   it("reaches only the pages of the user it names", async () => {

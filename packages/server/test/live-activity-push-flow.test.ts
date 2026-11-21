@@ -14,19 +14,22 @@ describe("Live Activity start-to-end APNs fanout", () => {
       CREATE TABLE sessions (shop_id TEXT, id TEXT, player_id TEXT, started_at TEXT, ended_at TEXT, payment_status TEXT);
       CREATE TABLE live_activity_start_tokens (
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, client_id TEXT,
-        user_id TEXT, last_seen_at TEXT
+        user_id TEXT, last_seen_at TEXT, updated_at TEXT
       );
       CREATE TABLE live_activity_tokens (
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT,
-        shop_id TEXT, user_id TEXT, created_at TEXT, updated_at TEXT
+        shop_id TEXT, user_id TEXT, created_at TEXT, updated_at TEXT, client_id TEXT
       );
       INSERT INTO shop_player_accounts VALUES ('shop', 'account', 'player');
       INSERT INTO shops VALUES ('shop', 'demo', 'Example');
       INSERT INTO sessions VALUES ('shop', 'session', 'player', '2026-10-08T01:00:00Z', NULL, 'unpaid');
       INSERT INTO live_activity_start_tokens VALUES ('start', 'abcdef123456', 'sandbox',
-        'moe.neri.hinatago', 'iphone', 'account', NULL);
+        'moe.neri.hinatago', 'iphone', 'account', NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+      -- An install that has not run for months: the app is gone, and it is pushed nothing.
+      INSERT INTO live_activity_start_tokens VALUES ('gone', 'fedcba123456', 'sandbox',
+        'moe.neri.hinatago', 'old-iphone', 'account', NULL, '2026-01-01T00:00:00.000Z');
       INSERT INTO live_activity_tokens VALUES ('activity', 'abcdef654321', 'sandbox',
-        'moe.neri.hinatago', 'session', 'shop', 'account', '2026-10-08T01:00:00Z', NULL);
+        'moe.neri.hinatago', 'session', 'shop', 'account', '2026-10-08T01:00:00Z', NULL, 'other-iphone');
     `);
 
     const db = {
@@ -80,6 +83,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
       sessionId: "session", shopCode: "demo", origin: "https://link.example",
     });
     expect((sqlite.query("SELECT last_seen_at FROM live_activity_start_tokens WHERE id='start'").get() as any)?.last_seen_at).not.toBeNull();
+    expect(sqlite.query("SELECT id FROM live_activity_start_tokens WHERE id='gone'").get()).toBeNull();
 
     sqlite.run("UPDATE sessions SET ended_at='2026-10-08T02:00:00Z' WHERE id='session'");
     await pushSessionEvent(c, {
@@ -92,6 +96,36 @@ describe("Live Activity start-to-end APNs fanout", () => {
       endedAtUnix: Date.parse("2026-10-08T02:00:00Z") / 1000,
     });
     expect((sqlite.query("SELECT session_id FROM live_activity_tokens WHERE id='activity'").get() as any)?.session_id).toBeNull();
+
+    // The phone that entered starts its own activity, so it is not pushed one at once. When it
+    // shows none for the visit after the grace period, it is pushed a start like any phone.
+    sqlite.run("UPDATE sessions SET ended_at=NULL, payment_status='unpaid' WHERE id='session'");
+    sqlite.run("DELETE FROM live_activity_tokens");
+    const later: Promise<unknown>[] = [];
+    const options = { later: (work: Promise<unknown>) => { later.push(work); }, wait: async () => {} };
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    expect(pushes).toHaveLength(2);
+    await Promise.all(later.splice(0));
+    expect(pushes).toHaveLength(3);
+    expect(pushes[2]?.payload.aps.event).toBe("start");
+    expect(pushes[2]?.url).toContain("/3/device/abcdef123456");
+
+    // A phone that shows the visit itself, or a visit already over, is left alone.
+    sqlite.run(`INSERT INTO live_activity_tokens VALUES ('own', 'abcdef999999', 'sandbox', 'moe.neri.hinatago',
+      'session', 'shop', 'account', '2026-10-08T01:00:05Z', NULL, 'iphone')`);
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    await Promise.all(later.splice(0));
+    sqlite.run("DELETE FROM live_activity_tokens");
+    sqlite.run("UPDATE sessions SET payment_status='paid', ended_at='2026-10-08T02:00:00Z' WHERE id='session'");
+    await pushSessionEvent(c, {
+      shopId: "shop", playerId: "player", sessionIds: ["session"], event: "start", initiatorClientId: "iphone",
+    }, transport, options);
+    await Promise.all(later.splice(0));
+    expect(pushes).toHaveLength(3);
     sqlite.close();
   });
 });

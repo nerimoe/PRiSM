@@ -58,6 +58,13 @@ class MemoryPlayerIdentityRepository implements PlayerIdentityRepository {
   async listByPlayerId(playerId: string): Promise<PlayerIdentity[]> {
     return [...this.identities, ...this.saved].filter((identity) => identity.playerId === playerId);
   }
+
+  /** What each identity's platform calls the player, by `provider:subject`. */
+  names = new Map<string, string>();
+
+  async setName(provider: string, subject: string, name: string): Promise<void> {
+    this.names.set(`${provider}:${subject}`, name);
+  }
 }
 
 class MemorySessionRepository implements SessionRepository {
@@ -809,44 +816,36 @@ describe("createIntegrationService", () => {
     expect(stopped).toEqual([{ playerId: "player-1", sessionId: "staff-created-session" }]);
   });
 
-  it("updates player display name when identity is resolved with a different displayName", async () => {
-    const player = {
-      id: "player-1",
-      displayName: "Old Name",
-      status: "active",
-      createdAt: new Date("2026-07-07T10:00:00.000Z"),
-    } satisfies Player;
-    const players = new MemoryPlayerRepository([player]);
-    const identities = new MemoryPlayerIdentityRepository(players, [
-      {
-        playerId: "player-1",
-        provider: "qq",
-        subject: "123456",
-        createdAt: new Date("2026-07-07T10:00:00.000Z"),
-      },
-    ]);
-    const service = createIntegrationService({
-      players,
-      playerIdentities: identities,
-      playerCommands: {
-        async startSession() {
-          throw new Error("not used");
-        },
-      },
-      now: () => new Date("2026-07-07T10:30:00.000Z"),
-      id: () => "unused",
-    });
+  it("keeps a platform's name on its identity, and gives it to the player only in place of a stand-in", async () => {
+    const service = (player: Player) => {
+      const players = new MemoryPlayerRepository([player]);
+      const identities = new MemoryPlayerIdentityRepository(players, [
+        { playerId: player.id, provider: "qq", subject: "123456", createdAt: new Date("2026-07-07T10:00:00.000Z") },
+      ]);
+      return {
+        players, identities,
+        integration: createIntegrationService({
+          players,
+          playerIdentities: identities,
+          playerCommands: { async startSession() { throw new Error("not used"); } },
+          now: () => new Date("2026-07-07T10:30:00.000Z"),
+          id: () => "unused",
+        }),
+      };
+    };
+    const created = new Date("2026-07-07T10:00:00.000Z");
 
-    const resolved = await service.resolvePlayerByIdentity({
-      identityKey: "qq:123456",
-      displayName: "New Platform Nickname",
-    });
+    // A real name stays: a second platform must not rename the player back and forth.
+    const named = service({ id: "player-1", displayName: "店里叫他阿明", status: "active", createdAt: created });
+    const kept = await named.integration.resolvePlayerByIdentity({ identityKey: "qq:123456", displayName: "New Platform Nickname" });
+    expect(kept.displayName).toBe("店里叫他阿明");
+    expect(named.players.saved).toEqual([]);
+    expect(named.identities.names.get("qq:123456")).toBe("New Platform Nickname");
 
-    // Check that returned player has new name
-    expect(resolved.displayName).toBe("New Platform Nickname");
-    // Check that player was saved to the player repository with the new name
-    const savedPlayer = players.saved.find((p) => p.id === "player-1");
-    expect(savedPlayer).toBeDefined();
-    expect(savedPlayer!.displayName).toBe("New Platform Nickname");
+    // An imported stand-in is filled from the platform.
+    const imported = service({ id: "player-1", displayName: "Player 75", status: "active", createdAt: created });
+    const filled = await imported.integration.resolvePlayerByIdentity({ identityKey: "qq:123456", displayName: "New Platform Nickname" });
+    expect(filled.displayName).toBe("New Platform Nickname");
+    expect(imported.players.saved.find((p) => p.id === "player-1")!.displayName).toBe("New Platform Nickname");
   });
 });

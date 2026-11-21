@@ -27,6 +27,7 @@ import {
   type PricingConfig,
   type Session,
   type SessionRepository,
+  type SessionTransitionWrite,
   type TransitionPlan,
 } from "@prism/core";
 import { PLAYER_BILLING_LOCK_SCOPE, withOperationLease } from "./operation-lock";
@@ -115,12 +116,18 @@ export type PricingSessionOrchestratorDependencies = {
 };
 
 export type PricingSessionOrchestrator = {
+  /** Prepare several changes without writing. The caller holds the player's billing lock through commit. */
+  prepare(playerId: string, changes: readonly PricingSessionChange[]): Promise<SessionTransitionWrite & { active: Session[]; transitions: PricingSessionTransition[] }>;
   getActive(playerId: string): Promise<PricingSessionState>;
   previewActivate(input: PricingActivationInput): Promise<PricingSessionTransition>;
   activate(input: PricingActivationInput): Promise<PricingActivationResult>;
   previewDeactivate(input: PricingDeactivationInput): Promise<PricingSessionTransition>;
   deactivate(input: PricingDeactivationInput): Promise<PricingSessionTransition & { closed: (Session & { status: "closed"; endedAt: Date })[] }>;
 };
+
+export type PricingSessionChange =
+  | ({ action: "activate" } & Omit<PricingActivationInput, "playerId">)
+  | ({ action: "deactivate" } & Omit<PricingDeactivationInput, "playerId">);
 
 export function createPricingSessionOrchestrator(
   dependencies: PricingSessionOrchestratorDependencies,
@@ -230,6 +237,36 @@ export function createPricingSessionOrchestrator(
   }
 
   return {
+    async prepare(playerId, changes) {
+      const original = await dependencies.sessions.findActiveByPlayerId(playerId);
+      const staged = new Map(original.map(session => [session.id, session]));
+      const catalog = await dependencies.pricingCatalog(playerId);
+      // Run the same orchestrator against staged sessions; no SQL or cleanup runs until commit.
+      const planner = createPricingSessionOrchestrator({
+        ...dependencies,
+        operationLocks: undefined,
+        afterClose: undefined,
+        pricingCatalog: async () => catalog,
+        sessions: {
+          ...dependencies.sessions,
+          findActiveByPlayerId: async () => [...staged.values()].filter(session => session.status === "active"),
+          applyTransition: async ({ close, create }) => {
+            for (const session of [...close, ...create]) staged.set(session.id, session);
+          },
+        },
+      });
+      const transitions: PricingSessionTransition[] = [];
+      for (const change of changes) {
+        const input = { ...change, playerId };
+        transitions.push(change.action === "activate" ? await planner.activate(input) : await planner.deactivate(input));
+      }
+      return {
+        close: original.filter(session => staged.get(session.id)?.status === "closed").map(session => staged.get(session.id)!),
+        create: [...staged.values()].filter(session => session.status === "active" && !original.some(before => before.id === session.id)),
+        active: [...staged.values()].filter(session => session.status === "active"),
+        transitions,
+      };
+    },
     async getActive(playerId) {
       const { configs, graph, active } = await load(playerId);
       const nameOf = (planId: string) => configs.find((config) => config.id === planId)?.name ?? planId;

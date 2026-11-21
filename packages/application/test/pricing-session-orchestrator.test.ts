@@ -232,3 +232,36 @@ describe("pricing session orchestrator", () => {
     expect(state.available.find((entry) => entry.planId === "eight")).toMatchObject({ requires: ["base"], conflicts: ["four"] });
   });
 });
+
+describe("prepared billing changes", () => {
+  it("prepares several changes without writes and commits only their final delta", async () => {
+    const { sessions, orchestrator } = setup();
+    await orchestrator.activate({playerId:"p",pricingConfigId:"eight"});
+    const base = sessions.active().find(s=>s.pricingConfigId === "base")!;
+    const writes = sessions.transitions.length;
+    const prepared = await orchestrator.prepare("p", [
+      {action:"activate",pricingConfigId:"four",at:minutes(10)},
+      {action:"activate",pricingConfigId:"eight",at:minutes(10)},
+    ]);
+    expect(sessions.transitions).toHaveLength(writes);
+    expect(plans(sessions.active())).toEqual(["base","eight"]);
+    expect(prepared.create.map(s=>s.pricingConfigId)).toEqual(["eight"]);
+    expect(prepared.close.map(s=>s.pricingConfigId)).toEqual(["eight"]);
+    expect(prepared.active.find(s=>s.pricingConfigId === "base")!.id).toBe(base.id);
+    await sessions.applyTransition(prepared);
+    expect(plans(sessions.active())).toEqual(["base","eight"]);
+    expect(sessions.active().find(s=>s.pricingConfigId === "eight")!.startedAt).toEqual(minutes(10));
+  });
+
+  it("leaves every original session untouched when a later prepared change is invalid", async () => {
+    const { sessions, orchestrator } = setup();
+    await orchestrator.activate({playerId:"p",pricingConfigId:"eight"});
+    const before = sessions.active();
+    await expect(orchestrator.prepare("p", [
+      {action:"activate",pricingConfigId:"four"},
+      {action:"activate",pricingConfigId:"missing"},
+    ])).rejects.toThrow();
+    expect(sessions.active()).toEqual(before);
+    expect(sessions.transitions).toHaveLength(1);
+  });
+});

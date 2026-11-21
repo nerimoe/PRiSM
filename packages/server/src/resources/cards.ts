@@ -52,6 +52,31 @@ async function hashOf(key: string, shopId: string, accessCode: string): Promise<
   return toBase64Url(await crypto.subtle.sign("HMAC", hmac, encoder.encode(`${shopId}:${accessCode}`)));
 }
 
+/** Revoke an account card and its bindings in the account's own shop profiles. */
+export async function deleteAccountCard(db: D1DatabaseLike, userId: string, cardId: string, key: string | undefined): Promise<void> {
+  const card = await db.prepare("SELECT access_code FROM cards WHERE id = ? AND user_id = ?")
+    .bind(cardId, userId).first<{ access_code: string }>();
+  if (!card) return;
+  const profiles = await db.prepare("SELECT shop_id, player_id FROM shop_player_accounts WHERE user_id = ?")
+    .bind(userId).all<{ shop_id: string; player_id: string }>();
+  if (profiles.results.length && !key) throw new Error("URL_ENCRYPTION_KEY is required to revoke shop cards.");
+  const statements = [];
+  for (const profile of profiles.results) {
+    // The same number can be on another account; only revoke our own profiles.
+    const ownsProfile = `EXISTS (SELECT 1 FROM shop_player_accounts WHERE shop_id = ? AND player_id = ? AND user_id = ?)
+      AND EXISTS (SELECT 1 FROM cards WHERE id = ? AND user_id = ? AND access_code = ?)`;
+    const scope = [profile.shop_id, profile.player_id, userId, cardId, userId, card.access_code];
+    statements.push(
+      db.prepare(`DELETE FROM player_cards WHERE shop_id = ? AND player_id = ? AND card_hash = ? AND ${ownsProfile}`)
+        .bind(profile.shop_id, profile.player_id, await hashOf(key!, profile.shop_id, card.access_code), ...scope),
+      db.prepare(`DELETE FROM player_identities WHERE shop_id = ? AND player_id = ? AND provider = 'aime' AND subject = ? AND ${ownsProfile}`)
+        .bind(profile.shop_id, profile.player_id, card.access_code, ...scope),
+    );
+  }
+  statements.push(db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").bind(cardId, userId));
+  await db.batch(statements);
+}
+
 export type CardStore = {
   /** The player a card belongs to at this shop, or null. */
   playerOf(accessCode: string): Promise<string | null>;

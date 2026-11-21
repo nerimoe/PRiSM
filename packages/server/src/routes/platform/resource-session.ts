@@ -10,16 +10,17 @@ import { toPricingConfigManagementView } from "../shops/views.js";
 import { getShopForMachine, requireShopPlayer } from "./machine-login.js";
 import { publicResource, resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
 import { executeResourceAction, actionSchema, resourceClimateState, resourcePowerState } from "./resource-actions.js";
-import { has, hinataConfigOf, loadResource } from "../../resources/resource.js";
+import { has, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
 import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { checkShopLocation } from "../../middleware/geo.js";
+import { withReadScope } from "../../read-scope.js";
 import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type DeviceState } from "../../resources/capabilities/device-state.js";
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
-import { mahjongState, operateMahjong } from "./mahjong.js";
+import { mahjongState, operateMahjong, previewMahjong } from "./mahjong.js";
 
 export const resourceSessionRouter=new Hono<AppBindings>();
 export const merchantResourceActionRouter=new Hono<AppBindings>();
@@ -61,11 +62,32 @@ type C=Context<AppBindings,any,any>;
  * have not moved to `device`.
  */
 async function sessionState(c:C,machine:ScannedResource,options:{includePower:boolean;includeClimate:boolean}){
+  const loaded=await loadResource(c.env.DB,machine.shop_id,machine.id);
+  const {shop,device,gate,billing}=await readGate(c,machine,loaded);
+  if(gate==="disabled")jsonError(403,"店铺玩家资格已停用","PLAYER_DISABLED");
+  const bound=(id:Parameters<typeof has>[1])=>!!device&&has(device,id);
+  // The first read never waits on Home Assistant: a device that is not live is filled in by the page's channel.
+  const live=device?await readLiveState(c.env.DB,shop.id,device):null;
+  return {
+    gate,coinUsed:false,billing,
+    mahjong:gate==="ready"&&bound("mahjong")?await mahjongState(c,machine,undefined,device):null,
+    power:gate==="ready"&&bound("power")&&options.includePower
+      ?await resourcePowerState(c,machine):"unmanaged",
+    climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
+    device:device&&live?.watching?{watching:true,...deviceView(device,live)}:{watching:false},
+  };
+}
+
+/**
+ * What stands between the player and the resource: an identity to bind, billing
+ * to confirm, or a membership that was disabled. `device` is the resource as the
+ * caller already loaded it.
+ */
+export async function readGate(c:C,machine:ScannedResource,device:Resource|null){
   const user=requireUser(c);
   const shop=await getShopForMachine(c,machine.shop_public_id);
-  let gate:"ready"|"binding"|"entry"="ready";
+  let gate:"ready"|"binding"|"entry"|"disabled"="ready";
   let billing:{preview?:ResourceBillingPreview;error?:{code:string;message:string};rules?:unknown}|null=null;
-  const device=await loadResource(c.env.DB,shop.id,machine.id);
   const bound=(id:Parameters<typeof has>[1])=>!!device&&has(device,id);
   const resourceBilling=getOrCreateShopDependencies(c.env.DB,shop,c.env.URL_ENCRYPTION_KEY,c.env).resourceBilling;
   /** A resource that cannot bill is shown as such instead of failing the page. */
@@ -91,24 +113,27 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
     ).bind(shop.id,user.id,shop.id,user.id).first<{playerId:string|null;status:string|null;identityBound:number}>();
     if(shop.identity_binding_required&&!player?.identityBound)gate="binding";
     else if(!player?.playerId)gate=bills?"entry":"ready";
-    else if(player.status!=="active")jsonError(403,"店铺玩家资格已停用","PLAYER_DISABLED");
+    else if(player.status!=="active")gate="disabled";
     else if(bills){
       const running=await billingRead(()=>resourceBilling.activeSession({resourceId:machine.id,playerId:player.playerId!}));
       // A seat here is billed for already, by the plan the seat runs on.
       if(!running&&!await createOccupancy({db:c.env.DB,shopId:shop.id}).holds(machine.id,player.playerId))gate="entry";
     }
-    if(gate==="entry"&&bills&&!billing){
-      // A player not yet registered here has nothing running, so the preview is
-      // simply everything the plan needs.
-      const preview=await billingRead(()=>resourceBilling.preview({resourceId:machine.id,playerId:player?.playerId??""}));
-      if(preview)billing={preview};
-    }
-    // What the page shows as this resource's pricing: its own plan and every
-    // plan that bills with it, as the player's locked release defines them.
-    if(planId&&gate!=="binding"&&!billing?.error){
-      // Caps only matter where the rules are read before confirming.
-      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId:player?.playerId??"",withCaps:gate==="entry"}));
-      if(rules)billing={...billing,rules:{
+    // Only confirming shows what it would start and the resource's pricing: its
+    // own plan and every plan that bills with it, as the player's locked release
+    // defines them. A player already in reads neither.
+    if(gate==="entry"&&planId&&!billing){
+      const playerId=player?.playerId??""; // Not yet registered here: nothing is running, so everything the plan needs.
+      // At a table the preview includes the seat move, and may start the game's plan rather than the waiting one.
+      const preview=await billingRead<ResourceBillingPreview|null>(()=>bound("mahjong")
+        ?previewMahjong(c,machine,playerId)
+        :resourceBilling.preview({resourceId:machine.id,playerId}));
+      const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId,pricingConfigId:preview?.pricingConfigId,withCaps:true}));
+      // `billingRead` set any failure as these ran.
+      const failure=(billing as {error?:{code:string;message:string}}|null)?.error;
+      billing=failure?{error:failure}:null;
+      if(preview&&!failure)billing={preview};
+      if(rules&&!failure)billing={...(billing??{}),rules:{
         ...rules,
         plans:rules.plans.map(plan=>({...plan,config:toPricingConfigManagementView(plan.config)})),
         ...(rules.caps?{caps:{
@@ -120,24 +145,15 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
       }};
     }
   }
-  // The first read never waits on Home Assistant: a device that is not live is filled in by the page's channel.
-  const live=device?await readLiveState(c.env.DB,shop.id,device):null;
-  return {
-    gate,coinUsed:false,billing,
-    mahjong:gate==="ready"?await mahjongState(c,machine):null,
-    power:gate==="ready"&&bound("power")&&options.includePower
-      ?await resourcePowerState(c,machine):"unmanaged",
-    climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
-    device:device&&live?.watching?{watching:true,...deviceView(device,live)}:{watching:false},
-  };
+  return {shop,device,gate,billing};
 }
 
 resourceSessionRouter.get("/session/state", async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
-  return c.json(await sessionState(c,machine,{
+  return c.json(await withReadScope(()=>sessionState(c,machine,{
     includePower:c.req.query("includePower")!=="0",
     includeClimate:c.req.query("includeClimate")!=="0",
-  }));
+  })));
 });
 
 /**
@@ -148,7 +164,7 @@ resourceSessionRouter.get("/session/bootstrap", async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   return c.json({
     machine:await publicResource(c,machine),
-    state:optionalUser(c)?await sessionState(c,machine,{includePower:false,includeClimate:false}):null,
+    state:optionalUser(c)?await withReadScope(()=>sessionState(c,machine,{includePower:false,includeClimate:false})):null,
   });
 });
 
@@ -204,6 +220,16 @@ resourceSessionRouter.get("/session/cards/capture/:id",async c=>{
   const relay=machineRelayNamespace(c.env);
   if(!io?.channel||!relay)return c.json({status:"expired"});
   return c.json(await relay.getByName(io.channel).cardCaptureResult(c.req.param("id"),user.id));
+});
+
+resourceSessionRouter.delete("/session/cards/capture/:id",async c=>{
+  const user=requireUser(c);
+  const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
+  const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
+  const io=device?hinataConfigOf(device):null;
+  const relay=machineRelayNamespace(c.env);
+  if(io?.channel&&relay)await relay.getByName(io.channel).cancelCardCapture(c.req.param("id"),user.id);
+  return c.json({ok:true});
 });
 
 resourceSessionRouter.post("/session/actions",async c=>{

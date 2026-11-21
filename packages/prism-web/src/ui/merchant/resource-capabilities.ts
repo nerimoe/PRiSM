@@ -10,12 +10,13 @@ import type { Resource } from "../../api";
  * let the device card, the editor and the action list disagree about whether
  * coin was usable on a given machine.
  */
-export type CapabilityId = "power" | "climate" | "hinata_io" | "door" | "mahjong" | "bot";
+export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "mahjong" | "bot";
 
 export const capabilityOrder: CapabilityId[] = [
   "power",
   "climate",
   "hinata_io",
+  "coin",
   "door",
   "mahjong",
   "bot",
@@ -33,13 +34,14 @@ export function resourceCapabilities(
     | "relayConnection"
     | "coinEnabled"
     | "hasPassword"
-  > & Partial<Pick<Resource, "bot">>,
+  > & Partial<Pick<Resource, "bot" | "coin">>,
 ): Record<CapabilityId, boolean> {
   return {
     power: !!machine.homeAssistant,
     climate: !!machine.climate,
     hinata_io:
       !!machine.hasHinata || machine.relayConnection === "embedded",
+    coin: !!machine.coin,
     door: !!machine.ttlockLockId,
     mahjong: !!machine.mahjong,
     bot: !!machine.bot,
@@ -54,20 +56,20 @@ export function isDirectConnect(
 }
 
 /**
- * Whether the coin action can actually be sent. Mirrors the server's
- * `hinata_io.available`: direct connect needs a key, an external relay needs
- * a key and the password that authenticates a plaintext key press.
+ * Whether the coin action can actually be sent: the server says so
+ * (`coinEnabled`, its `coin.available`); an older response is read from the
+ * coin key and how the IO is connected.
  */
 export function canOperateCoin(
   machine: Pick<
     Resource,
     "hasHinata" | "relayConnection" | "coinKey" | "hasPassword"
-  >,
+  > & Partial<Pick<Resource, "coinEnabled">>,
 ): boolean {
+  if (machine.coinEnabled !== undefined) return machine.coinEnabled;
   if (!(machine.hasHinata || machine.relayConnection === "embedded")) {
     return false;
   }
-  // The key is the switch: a set key enables coin, an empty one disables it.
   if (!((machine.coinKey ?? 0) > 0)) return false;
   return isDirectConnect(machine) || !!machine.hasPassword;
 }
@@ -82,7 +84,8 @@ export type ResourceAction = { name: string; capability: string };
 export function actionCapability(action: string): CapabilityId | null {
   if (action === "power.on" || action === "power.off" || action === "power.keep") return "power";
   if (action.startsWith("climate.")) return "climate";
-  if (action === "aime.scan" || action === "coin") return "hinata_io";
+  if (action === "aime.scan" || action === "key.press") return "hinata_io";
+  if (action === "coin") return "coin";
   if (action === "door.open") return "door";
   if (action.startsWith("mahjong.")) return "mahjong";
   return null;
@@ -127,7 +130,7 @@ export function deviceActionGroups(
       for (const action of ["climate.on", "climate.off", "climate.set_mode", "climate.set_temperature", "climate.set_fan_mode"])
         add("climate", action);
     if (caps.hinata_io) add("hinata_io", "aime.scan");
-    if (canOperateCoin(machine)) add("hinata_io", "coin");
+    if (canOperateCoin(machine)) add("coin", "coin");
     if (caps.door) add("door", "door.open");
   }
   return capabilityOrder

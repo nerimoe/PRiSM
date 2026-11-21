@@ -1,4 +1,6 @@
 export * from "./assets";
+export * from "./bot-message";
+export * from "./bot-reply-template.js";
 export * from "./business-items";
 export * from "./device-command";
 export * from "./device-events";
@@ -14,6 +16,7 @@ export * from "./pricing-time";
 export * from "./redeem";
 export * from "./session";
 export * from "./session-transition";
+export * from "./shop-announcements";
 export * from "./settlement";
 export * from "./storage-ports";
 
@@ -22,3 +25,5 @@ export * from "./api-time";
 
 export * from "./live-billing-snapshot";
 export * from "./staff-api";
+export * from "./key-text";
+export * from "./player-names";

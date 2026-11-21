@@ -12,9 +12,12 @@
 
 业务 JSON 备份导出全部账单及归档元数据，跨库恢复后保持报表口径；仅配置备份不包含归档数据。引入归档前的 v2 业务备份缺少该表时视为空，其余缺失表仍报错。v1 格式保持原表集合。导出仍直接读取业务表，额度及进度机制不变。
 
+玩家面板（「在店」「玩家」页右侧）的「消费记录」列出这位玩家的全部结账单，不受日期范围限制，按结账时间倒序、每页 20 条。每行是结账时间、金额、累计时长和收款方式，已归档的变灰并标「已归档」（玩家确实付过钱，金额照常显示）。点一行打开与营业记录相同的账单详情：完整时间轴、计时与收费明细和归档操作。在面板里结账后列表随之刷新。
+
 相关 API：
 
 - `GET /api/v1/shops/:shopCode/staff/reports/checkouts?from=<iso>&to=<iso>&archive=active|archived|all&limit=50&offset=0`：返回 `{ records, page: { limit, offset, hasMore } }`，日期范围按结账时间左闭右开，默认未归档。
+- `GET /api/v1/shops/:shopCode/staff/players/:playerId/checkouts?limit=50&offset=0`：一位玩家的全部结账单，含已归档，结构同上。
 - `GET /api/v1/shops/:shopCode/staff/reports/checkouts/:checkoutId`：返回 `{ record, receipt }`，`receipt` 复用玩家历史账单内容。
 - `POST /api/v1/shops/:shopCode/staff/reports/checkouts/:checkoutId/archive`：输入 `{ archived: true|false }`，返回 `{ archived }`。跨店/不存在账单返回 404；只读员工和非员工返回 403；导出写锁返回 423。
 

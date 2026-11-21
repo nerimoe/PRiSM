@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { groupsOf } from "./announce-groups.js";
 import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -82,9 +83,62 @@ describe("a bot is a resource", () => {
   beforeEach(() => clearShopDependenciesCache());
   afterEach(() => clearShopDependenciesCache());
 
+  it("validates and persists per-bot replies, and can restore defaults", async () => {
+    const { bot, createBot, call } = await fixture();
+    const templates = { "wallet.success": "可用：{balance} {currency}", "billing.success": "谢谢惠顾\n{receipt}" };
+    const first = await createBot({ replyTemplates: templates });
+    const other = await createBot();
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    expect((await bot(other.token).get("bot")).body.settings.replyTemplates).toEqual({});
+    for (const replyTemplates of [
+      { "wallet.success": "{balnce}" }, { "billing.success": "已结账" },
+      // What the bot announces is said in each group's words, not here.
+      { "unknown.success": "hello" }, { "announce.card.consumed.message": "{player} 正在 {device} 刷卡" }, { "bind.success": "<at id='all'/>" },
+    ]) {
+      const result = await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates } });
+      expect(result.status).toBe(422);
+    }
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { playerCommands: "readonly" } });
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual(templates);
+    await call("PATCH", `/api/v1/merchant/machines/${first.id}`, OWNER, { bot: { replyTemplates: {} } });
+    expect((await bot(first.token).get("bot")).body.settings.replyTemplates).toEqual({});
+  });
+
+  it("announces by groups, each a whole table in its own words, and refuses what nobody knows", async () => {
+    const { bot, createBot, call } = await fixture();
+    const created = await createBot();
+    // A bot with no groups announces nothing.
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual([]);
+    // A group and a person are the same kind of destination; the idle warning is an event like any other.
+    const groups = groupsOf([
+      { events: ["checkout.settled"], sources: ["page"], to: ["onebot:9"], templates: { "announce.checkout.settled.message": "{player} 结账了" } },
+      { events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42", "onebot:private:10001"] },
+    ]);
+    expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups: groups } })).status).toBe(200);
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
+    // Other settings leave the groups alone.
+    await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { playerCommands: "readonly" } });
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
+    for (const announceGroups of [
+      groupsOf([{ events: ["card.consumed"], sources: ["phone"] }]),
+      groupsOf([{ events: ["nope"], to: ["onebot:1"] }]),
+      groupsOf([{ events: ["card.consumed"], templates: { "announce.card.consumed.message": "{unknown}" } }]),
+      groupsOf([{ events: ["card.consumed"], templates: { "wallet.success": "{balance}" } }]),
+    ]) {
+      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups } })).status).toBe(422);
+    }
+    // What a bot had before groups is no setting any more.
+    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }, { announceRules: [] }]) {
+      expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: old })).status).toBe(422);
+    }
+    expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
+    expect((await bot(created.token).get("bot")).body.settings).not.toHaveProperty("announceChannelIds");
+  });
+
   it("issues its token once and tells it its settings and what the shop knows", async () => {
     const { bot, createBot, call } = await fixture();
-    const created = await createBot({ playerCommands: "readonly", announceChannelIds: ["group-1"] });
+    const created = await createBot({ playerCommands: "readonly", idleReminderMinutes: 10 });
     expect(created.token).toMatch(/^prism_integration_/);
     expect(created.machine.bot).toMatchObject({ playerCommands: "readonly" });
     expect(created.machine.bot).not.toHaveProperty("tokenId");
@@ -95,13 +149,49 @@ describe("a bot is a resource", () => {
     expect(config.status).toBe(200);
     expect(config.body).toMatchObject({
       bot: { id: created.id, name: "店铺 Bot" },
-      settings: { playerCommands: "readonly", announceChannelIds: ["group-1"], staffCommands: true },
+      settings: { playerCommands: "readonly", idleReminderMinutes: 10, announceGroups: groupsOf([]), staffCommands: true },
       currencyName: "猫粮",
       staff: [{ provider: "onebot", subject: "10001" }],
       // The only door, found without being chosen.
       door: { id: "door", name: "大门" },
       mahjongTables: [{ id: "table", name: "A 桌", aliases: ["a"], capacity: 2 }],
     });
+  });
+
+  it("refreshes connected bots when a bound account becomes a shop owner or leaves", async () => {
+    const { sqlite, env, bot, createBot } = await fixture();
+    const client = bot((await createBot()).token);
+    sqlite.run("INSERT INTO users(id,role) VALUES ('new-owner','user')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','new-player','新负责人','active',?)", [NOW]);
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','new-owner','new-player',?)", [NOW]);
+    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','new-player','onebot','20002',?)", [NOW]);
+    sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','new-owner','onebot','20002',?)", [NOW]);
+    const staff = async () => (await client.get("bot")).body.staff;
+    expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });
+    let refreshes = 0;
+    env.SHOP_HUB = { getByName: (id: string) => {
+      expect(id).toBe("shop");
+      return { botsChanged: async () => { refreshes++; } };
+    } } as unknown as Env["SHOP_HUB"];
+    const pending: Promise<unknown>[] = [];
+    const app = createApp();
+    const change = async (method: string, path: string, body?: unknown) => {
+      const response = await app.fetch(new Request(`https://prism.test/api/v1/merchant/${path}`, {
+        method, headers: { authorization: `Bearer ${OWNER}`, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }), env, { waitUntil: (task) => { pending.push(task); }, passThroughOnException() {}, props: {} });
+      await Promise.all(pending.splice(0));
+      return response;
+    };
+    expect((await change("POST", "shop-members", { shopId: "shop", user: "new-owner", role: "owner" })).status).toBe(200);
+    expect(refreshes).toBe(1);
+    expect(await staff()).toContainEqual({ provider: "onebot", subject: "20002" });
+    const member = sqlite.query("SELECT id FROM shop_members WHERE shop_id='shop' AND user_id='new-owner'").get() as { id: string };
+    expect((await change("DELETE", `shop-members/${member.id}`)).status).toBe(200);
+    expect(refreshes).toBe(2);
+    expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });
+    expect((await change("DELETE", "shop-members/m1")).status).toBe(409);
+    expect(refreshes).toBe(2);
   });
 
   it("gives a token issued before bots were resources a resource of its own", async () => {
@@ -212,17 +302,14 @@ describe("the bot seats players through the platform", () => {
     expect((await client.post("players/by-identity/session/start", player)).body).toMatchObject({ created: false, planName: "base" });
   });
 
-  it("lets a bot from before platform mahjong start and stop a table's plan by name", async () => {
+  it("rejects obsolete named-plan starts without changing billing", async () => {
     const { bot, createBot } = await fixture();
     const client = bot((await createBot()).token);
     const player = { identity: { provider: "onebot", subject: "1" }, autoRegister: true };
     await client.post("players/by-identity/session/start", player);
     const table = await client.post("players/by-identity/session/start", { ...player, pricingConfigIds: ["mahjong"], label: "A 桌" });
-    expect(table.body).toMatchObject({ created: true, planName: "mahjong", session: { label: "A 桌" } });
-    const plans = async () => ((await client.get("sessions/active")).body.sessions as { planName: string }[]).map((s) => s.planName).sort();
-    expect(await plans()).toEqual(["base", "mahjong"]);
-    // Leaving the table stops the session it was given: the table's plan, not the player's visit.
-    expect((await client.post(`players/by-identity/sessions/${table.body.session.id}/stop`, player)).status).toBe(200);
-    expect(await plans()).toEqual(["base"]);
+    expect(table.status).toBe(400);
+    expect(table.body.error.code).toBe("VALIDATION_FAILED");
+    expect((await client.get("sessions/active")).body.sessions.map((s: any) => s.planName)).toEqual(["base"]);
   });
 });

@@ -24,7 +24,7 @@ routes/
 │   └── views.ts            # 统一响应视图对象映射器 (View DTOs)
 ├── system/                 # 系统级路由
 │   ├── health.ts           # 健康检查接口 (/health, /api/v1/health)
-│   └── version.ts          # 版本与修订号接口 (/version, /api/v1/version)
+│   └── version.ts          # Worker 名称与提交号接口 (/version, /api/v1/version)
 └── web-assets.ts           # SPA 静态前端资源分发与回退路由
 ```
 
@@ -67,6 +67,7 @@ routes/
 - `POST /players`: 创建或录入新玩家。
 - `PATCH /players/:playerId/status`: 变更玩家状态（启用/禁用）。
 - `GET /players/:playerId/assets`: 查看指定玩家的资产与账本。
+- `GET /players/:playerId/checkouts`: 该玩家的全部结账单（含已归档），按结账时间倒序，`limit`/`offset` 分页，结构同 `/reports/checkouts`；明细读 `/reports/checkouts/:checkoutId`。
 - `POST /players/:playerId/assets/grants`: 店员向玩家发放/赠送指定资产。
 - `POST /players/:playerId/assets/adjustments`: 店员调整玩家的资产持有量。
 - `POST /players/:playerId/wallet/adjustment`: 店员快捷调整玩家的充值钱包余额。
@@ -150,7 +151,7 @@ routes/
 ### 5. 系统运行状态路由
 
 - `/health` / `/api/v1/health`: 返回系统健康状态 (`ok: true`, `service: "prism-api"`), 部署阶段包含 `x-prism-revision` 标头。
-- `/version` / `/api/v1/version`: 返回服务版本号、部署修订号及运行时依赖版本信息。
+- `/version` / `/api/v1/version`: 返回 `{ worker, revision }`：Worker 名称与构建所用的 Git 提交号，由部署脚本写入 `PRISM_WORKER_NAME` 和 `PRISM_DEPLOY_REVISION`。
 
 ### 6. 静态资源路由 (`web-assets.ts`)
 

@@ -23,6 +23,8 @@ export type Occupant = {
   lastSeenAt: Date;
   /** Null while its source ends it explicitly (a seat). */
   expiresAt: Date | null;
+  /** Whether the player has a bill running at the shop; a seat can be held before one starts. */
+  billing: boolean;
 };
 
 export type ResourceOccupancy = {
@@ -62,6 +64,7 @@ type Row = {
   end_reason: string | null;
   session_ids_json: string;
   display_name?: string | null;
+  billing?: number;
 };
 
 const toOpen = (row: Row): OpenOccupancy => ({
@@ -145,8 +148,8 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
   return {
     /** What an action or a device signal says about who is on a resource. */
     /** Record what an action or signal says about who is on a resource; `started` is whoever it put on newly. */
-    async observe(input: { resourceId: string; event: OccupancyEvent; at?: Date }): Promise<{ started: { playerId: string } | null }> {
-      const none = { started: null };
+    async observe(input: { resourceId: string; event: OccupancyEvent; at?: Date }): Promise<{ started: { playerId: string } | null; counted: boolean }> {
+      const none = { started: null, counted: false };
       const at = input.at ?? now();
       const [resource] = await settings(input.resourceId);
       if (!resource || resource.provider.held) return none;
@@ -193,7 +196,7 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
           : []),
       ];
       if (statements.length) await db.batch(statements);
-      return { started: plan.start ? { playerId: plan.start.playerId } : null };
+      return { started: plan.start ? { playerId: plan.start.playerId } : null, counted: true };
     },
 
     /** A held occupant left on their own (got up from a seat). */
@@ -226,7 +229,9 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
       await syncHeld(at);
       const resources = await settings();
       const rows = (await db.prepare(
-        `SELECT o.*, p.display_name FROM resource_occupancies o
+        `SELECT o.*, p.display_name,
+           EXISTS (SELECT 1 FROM sessions s WHERE s.shop_id = o.shop_id AND s.player_id = o.player_id AND s.status = 'active') AS billing
+         FROM resource_occupancies o
          LEFT JOIN players p ON p.shop_id = o.shop_id AND p.id = o.player_id
          WHERE o.shop_id = ? AND o.ended_at IS NULL AND (o.expires_at IS NULL OR o.expires_at > ?)
          ORDER BY o.started_at, o.rowid`,
@@ -244,6 +249,7 @@ export function createOccupancy(deps: { db: D1DatabaseLike; shopId: string; now?
             since: new Date(row.started_at),
             lastSeenAt: new Date(row.last_seen_at),
             expiresAt: row.expires_at ? new Date(row.expires_at) : null,
+            billing: !!row.billing,
           })),
       }));
     },

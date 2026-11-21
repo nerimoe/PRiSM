@@ -10,48 +10,29 @@ import {
 } from "../../durable-objects/live-activity-push.js";
 import type { AppBindings } from "../../bindings.js";
 import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { logger } from "../../log.js";
+
+const log = logger("live-activity");
 
 type C = Context<AppBindings>;
 
+/** How long the phone that entered has to show the visit itself before it is pushed a start. */
+export const OWN_START_GRACE_MS = 15_000;
+
 /**
- * Bridges store session events to the phones that are showing them.
- *
- * Sessions started or settled by players, staff, cashiers or shop bots all pass
- * through the tenant event bridge. Hooking here
- * means the core billing domain stays unaware that Live Activities exist, and a new
- * channel cannot silently miss notifications.
+ * An install registers its start token every time it runs; one silent this long is gone (the
+ * app removed, an App Clip the full app replaced) and is no longer pushed starts.
  */
+export const START_TOKEN_MAX_AGE_MS = 30 * 24 * 3600_000;
 
-/** Exact paths that open a visit, relative to the `/player/` or `/integration/` mount. */
-const SESSION_START_PATHS = new Set([
-  "session/start",
-  "remote-entry",
-  "players/by-identity/session/start",
-]);
-
-/** Paths that close a visit, including the per-session stop and the bulk active checkout. */
-function isSessionEndPath(path: string): boolean {
-  return (
-    path === "checkout/confirm" ||
-    path === "checkout/override" ||
-    path === "checkout/recharge" ||
-    path === "sessions/active/checkout" ||
-    path === "players/by-identity/checkout/confirm" ||
-    path === "players/by-identity/checkout/override" ||
-    /^(players|profiles)\/[^/]+\/checkout\/(confirm|override|recharge)$/.test(path) ||
-    /^sessions\/[^/]+\/stop$/.test(path) ||
-    /^players\/[^/]+\/sessions\/[^/]+\/stop$/.test(path) ||
-    /^players\/by-identity\/sessions\/[^/]+\/stop$/.test(path)
-  );
-}
-
-export function sessionEventForPath(path: string): "start" | "end" | null {
-  // The admin console addresses a player explicitly, so its start path carries an id.
-  if (SESSION_START_PATHS.has(path) || /^players\/[^/]+\/session\/start$/.test(path) || /^profiles\/[^/]+\/entry$/.test(path)) {
-    return "start";
-  }
-  return isSessionEndPath(path) ? "end" : null;
-}
+/**
+ * Tells the phones that are showing a visit that it started or ended.
+ *
+ * Whoever starts or settles a session (a player, staff, the cashier, a bot)
+ * does it through the shop's services, which publish it as a fact; the
+ * billing subscriber (`events/subscribers.ts`) calls this. The core billing
+ * domain stays unaware that Live Activities exist.
+ */
 
 type SessionRow = {
   id: string;
@@ -60,51 +41,10 @@ type SessionRow = {
 };
 
 /**
- * Resolves the store session a response refers to, so the push can carry its start time.
- * The shapes differ per channel: a start returns `session`, a checkout returns a
- * settlement plus per-session details.
- */
-export function extractSessionIds(
-  payload: Record<string, unknown>,
-  event: "start" | "end",
-): string[] {
-  const ids: string[] = [];
-  const session = payload.session as { id?: unknown } | undefined;
-  if (session && typeof session.id === "string") ids.push(session.id);
-  for (const key of ["sessions", "sessionDetails"] as const) {
-    const list = payload[key];
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const record = item as { sessionId?: unknown; session?: { sessionId?: unknown } };
-      const id = record?.session?.sessionId ?? record?.sessionId;
-      if (typeof id === "string") ids.push(id);
-    }
-  }
-  // A checkout answers with settlement records that nest the session id.
-  const settlements = payload.settlements;
-  if (Array.isArray(settlements)) {
-    for (const item of settlements) {
-      const record = item as { settlement?: { sessionId?: unknown }; sessionId?: unknown };
-      const id = record?.settlement?.sessionId ?? record?.sessionId;
-      if (typeof id === "string") ids.push(id);
-      if (item && typeof item === "object") {
-        ids.push(...extractSessionIds(item as Record<string, unknown>, event));
-      }
-    }
-  }
-  if (event === "end" && ids.length === 0) {
-    // A stop endpoint answers with the session itself.
-    const stopped = payload.session as { id?: unknown } | undefined;
-    if (stopped && typeof stopped.id === "string") ids.push(stopped.id);
-  }
-  return Array.from(new Set(ids));
-}
-
-/**
  * Looks up the sessions a response touched, keyed by id, to recover their start/end times.
  * Missing rows simply yield no push rather than a wrong timer.
  */
-async function loadSessions(c: C, shopId: string, ids: string[]): Promise<Map<string, SessionRow>> {
+async function loadSessions(c: Pick<C, "env">, shopId: string, ids: string[]): Promise<Map<string, SessionRow>> {
   const found = new Map<string, SessionRow>();
   if (ids.length === 0) return found;
   const placeholders = ids.map(() => "?").join(",");
@@ -124,7 +64,11 @@ type TokenRow = {
   bundle_id: string;
   session_id: string | null;
   created_at: string;
+  client_id: string | null;
 };
+
+/** An install as a line names it: short enough to read, long enough to tell two phones apart. */
+const installName = (clientId: string | null | undefined) => clientId ? `install ${clientId.slice(0, 8)}` : "an unknown install";
 
 type StartTokenRow = {
   id: string;
@@ -141,7 +85,7 @@ type StartTokenRow = {
  * response the player or staff member is waiting on.
  */
 export async function pushSessionEvent(
-  c: C,
+  c: Pick<C, "env">,
   input: {
     shopId: string;
     playerId: string;
@@ -151,6 +95,12 @@ export async function pushSessionEvent(
   },
   // Test seam: APNs transport is injectable, never replaced in production.
   transport?: ApnsTransport,
+  options: {
+    /** Runs work after the caller is answered; without it the entering phone is never pushed its own start. */
+    later?: (work: Promise<unknown>) => void;
+    /** Test seam for the entering phone's grace period. */
+    wait?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<void> {
   const config = liveActivityConfig(c.env);
   // No APNs credentials (local, beta, tests) means the whole feature is inert.
@@ -183,6 +133,9 @@ export async function pushSessionEvent(
       .first<{ userId: string }>();
     if (!account) return;
 
+    const freshSince = new Date(Date.now() - START_TOKEN_MAX_AGE_MS).toISOString();
+    await c.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE user_id=? AND updated_at<?")
+      .bind(account.userId, freshSince).run();
     const startTokens = await c.env.DB.prepare(
       `SELECT id, token, environment, bundle_id, client_id
        FROM live_activity_start_tokens
@@ -222,20 +175,7 @@ export async function pushSessionEvent(
       staleAfterSeconds: snapshot?.nextCheckAt ? Math.max(1, Math.ceil(snapshot.nextCheckAt / 1000 - nowSeconds)) : undefined,
     });
 
-    for (const row of tokenRows) {
-      if (input.initiatorClientId && row.client_id === input.initiatorClientId) {
-        // Skip the client that initiated this session in the foreground to avoid race
-        // condition / duplicate activity with local Activity.request().
-        continue;
-      }
-      console.log("Pushing Live Activity start", {
-        shopId: input.shopId,
-        userId: account.userId,
-        session: sessionId,
-        bundle: row.bundle_id,
-        environment: row.environment,
-        token: maskToken(row.token),
-      });
+    const sendStart = async (row: StartTokenRow) => {
       const outcome = await pusher.send(
         {
           token: row.token,
@@ -250,13 +190,36 @@ export async function pushSessionEvent(
         await c.env.DB.prepare("UPDATE live_activity_start_tokens SET last_seen_at=? WHERE id=?")
           .bind(new Date().toISOString(), row.id)
           .run();
-      } else if (outcome.kind === "failed") {
-        console.error("Live Activity start push failed", {
-          shopId: input.shopId,
-          status: outcome.status,
-          reason: outcome.reason,
-        });
       }
+      log[outcome.kind === "failed" ? "error" : "info"](`start push to ${installName(row.client_id)} of player ${input.playerId}: ${outcome.kind}`, {
+        event: "live_activity_push", activityEvent: "start", outcome: outcome.kind,
+        shopId: input.shopId, playerId: input.playerId, userId: account.userId, sessionId,
+        clientId: row.client_id, environment: row.environment, bundleId: row.bundle_id, token: maskToken(row.token),
+        ...(outcome.kind === "failed" ? { status: outcome.status, reason: outcome.reason } : {}),
+      });
+    };
+    // The phone that entered starts its own activity in the foreground, so it is not pushed
+    // one at once: that would show the visit twice. iOS sometimes refuses that start for
+    // minutes, though, and nothing else would show the visit there; so when the phone has
+    // not registered an activity for the visit after a grace period, it is pushed one too.
+    const own = tokenRows.filter((row) => input.initiatorClientId && row.client_id === input.initiatorClientId);
+    for (const row of tokenRows) if (!own.includes(row)) await sendStart(row);
+    if (own.length && options.later) {
+      const wait = options.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      options.later((async () => {
+        await wait(OWN_START_GRACE_MS);
+        const shown = await c.env.DB.prepare(
+          `SELECT 1 FROM live_activity_tokens WHERE shop_id=? AND user_id=? AND session_id=? AND client_id=? LIMIT 1`,
+        ).bind(input.shopId, account.userId, sessionId, input.initiatorClientId ?? null).first();
+        const open = await c.env.DB.prepare(
+          "SELECT 1 FROM sessions WHERE shop_id=? AND id=? AND ended_at IS NULL AND payment_status='unpaid'",
+        ).bind(input.shopId, sessionId).first();
+        if (shown || !open) return;
+        log.info(`the entering phone (${installName(input.initiatorClientId)}) showed no card after ${OWN_START_GRACE_MS / 1000} s; pushing it one`, {
+          event: "live_activity_own_start_missing", shopId: input.shopId, playerId: input.playerId, sessionId, clientId: input.initiatorClientId ?? null,
+        });
+        for (const row of own) await sendStart(row);
+      })().catch((error) => log.error(`could not check whether the entering phone showed a card for player ${input.playerId}`, { shopId: input.shopId, playerId: input.playerId, sessionId, error })));
     }
     return;
   }
@@ -268,13 +231,13 @@ export async function pushSessionEvent(
   let bindings: string[];
   if (input.sessionIds.length > 0) {
     const placeholders = input.sessionIds.map(() => "?").join(",");
-    tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+    tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
      LEFT JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND (t.session_id IN (${placeholders}) OR a.player_id=?)`;
     bindings = [input.shopId, ...input.sessionIds, input.playerId];
   } else {
-    tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+    tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
      JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND a.player_id=?`;
@@ -304,14 +267,6 @@ export async function pushSessionEvent(
       : nowSeconds;
 
     const payload = liveActivityEndPayload({ startedAtUnix, endedAtUnix });
-    console.log("Pushing Live Activity end", {
-      shopId: input.shopId,
-      session: sessionId,
-      bundle: row.bundle_id,
-      environment: row.environment,
-      token: maskToken(row.token),
-    });
-
     const outcome = await pusher.send(
       {
         token: row.token,
@@ -321,18 +276,17 @@ export async function pushSessionEvent(
       payload,
     );
 
+    log[outcome.kind === "failed" ? "error" : "info"](`end push to ${installName(row.client_id)} of player ${input.playerId}: ${outcome.kind}`, {
+      event: "live_activity_push", activityEvent: "end", outcome: outcome.kind,
+      shopId: input.shopId, playerId: input.playerId, sessionId, cardId: row.id,
+      clientId: row.client_id, environment: row.environment, bundleId: row.bundle_id, token: maskToken(row.token),
+      ...(outcome.kind === "failed" ? { status: outcome.status, reason: outcome.reason } : {}),
+    });
     if (outcome.kind === "expired") {
       await c.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=?").bind(row.id).run();
       continue;
     }
-    if (outcome.kind === "failed") {
-      console.error("Live Activity push failed", {
-        shopId: input.shopId,
-        status: outcome.status,
-        reason: outcome.reason,
-      });
-      continue;
-    }
+    if (outcome.kind === "failed") continue;
     if (outcome.kind === "delivered") {
       await c.env.DB.prepare("UPDATE live_activity_tokens SET session_id=NULL, updated_at=? WHERE id=?")
         .bind(new Date().toISOString(), row.id)
@@ -341,91 +295,3 @@ export async function pushSessionEvent(
   }
 }
 
-/**
- * Wraps a `forward()` call so that a successful session start or settlement fans out to
- * the player's phones.
- *
- * The response body is read through `clone()` because the caller still has to return the
- * original response; consuming it here would hand the client an empty body.
- */
-export async function forwardWithLiveActivity(
-  c: C,
-  input: { shopId: string; event: "start" | "end" },
-  execute: () => Promise<Response>,
-): Promise<Response> {
-  const response = await execute();
-  if (!response.ok || !liveActivityConfig(c.env)) return response;
-
-  let task: Promise<void> | null = null;
-  try {
-    const payload = (await response.clone().json()) as Record<string, unknown>;
-    const sessionIds = extractSessionIds(payload, input.event);
-    const playerId = playerIdFromPayload(payload);
-    const initiatorClientId = c.req.header("x-prism-client-id") ?? null;
-    if (playerId && sessionIds.length > 0) {
-      task = pushSessionEvent(c, {
-        shopId: input.shopId,
-        playerId,
-        sessionIds,
-        event: input.event,
-        initiatorClientId,
-      });
-    }
-  } catch (error) {
-    console.error("Live Activity dispatch planning failed", error);
-    return response;
-  }
-  if (!task) return response;
-
-  try {
-    c.executionCtx.waitUntil(task);
-  } catch {
-    void task.catch((error) => console.error("Live Activity push failed", error));
-  }
-  return response;
-}
-
-/**
- * Reads the player from whatever shape the channel returned. Start answers carry
- * `session.playerId`; checkouts carry `playerSettlement.playerId` or per-session details.
- * Resolving from the response is what lets the bot channel — which identifies players by
- * platform identity or card, never by account id — participate without special casing.
- */
-export function playerIdFromPayload(payload: Record<string, unknown>): string | null {
-  const direct = payload.playerId;
-  if (typeof direct === "string" && direct) return direct;
-  const session = payload.session as { playerId?: unknown } | undefined;
-  if (typeof session?.playerId === "string" && session.playerId) return session.playerId;
-  const settlement = payload.playerSettlement as { playerId?: unknown } | undefined;
-  if (typeof settlement?.playerId === "string" && settlement.playerId) return settlement.playerId;
-  for (const key of ["sessions", "sessionDetails"] as const) {
-    const list = payload[key];
-    if (!Array.isArray(list)) continue;
-    for (const item of list) {
-      const record = item as { playerId?: unknown };
-      if (typeof record?.playerId === "string" && record.playerId) return record.playerId;
-    }
-  }
-  return null;
-}
-
-export function playerIdsFromPayload(payload: Record<string, unknown>): string[] {
-  const ids = new Set<string>();
-  const visit = (item: Record<string, unknown>) => {
-    const id = playerIdFromPayload(item);
-    if (id) ids.add(id);
-    for (const key of ["settlements", "sessions", "sessionDetails", "holdings", "grantedAssets", "assetLedgerEntries"] as const) {
-      if (Array.isArray(item[key])) for (const child of item[key]) {
-        if (child && typeof child === "object") visit(child as Record<string, unknown>);
-      }
-    }
-    for (const key of ["order", "businessItemOrder", "redeemRecord"] as const) {
-      const child = item[key];
-      if (child && typeof child === "object") visit(child as Record<string, unknown>);
-    }
-    const preview = item.settlementPreview as { playerId?: unknown } | undefined;
-    if (typeof preview?.playerId === "string") ids.add(preview.playerId);
-  };
-  visit(payload);
-  return [...ids];
-}

@@ -132,7 +132,7 @@ bun run check:server # (亦可使用兼容别名 check:platform)
 bun run deploy:beta
 ```
 
-构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，注入根 SemVer 和 Git 提交号。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
+构建产物位于 `packages/prism-web/dist/`。`deploy:beta` 构建 React、生成 `--platform` 配置，然后调用 `scripts/deploy-platform.ts` 自动维护部署，并把 Worker 名称和完整 Git 提交号写入 `PRISM_WORKER_NAME`、`PRISM_DEPLOY_REVISION`，`GET /version` 据此回答正在运行的是哪次部署。脚本使用配置中的 `D1_DATABASE_ID` 和 `APP_ORIGIN`，名称中的 beta 不代表它只操作测试数据库。API 与网页使用同一 origin，SPA 路由由 ASSETS binding 回退。
 
 `wrangler.jsonc` 把 Worker 固定放在台湾（`placement.region: "gcp:asia-east1"`），而不是访客最近的边缘节点。选它是因为要离中国比东京更近，并且这个值是 Cloudflare 文档里明确给出的示例；香港等区域的标识文档没有列出，没有使用。之前固定在东京（`aws:ap-northeast-1`，D1 的 APAC 附近），代价是东京不是离中国最近的位置；改到台湾后 Worker 和 D1 之间多了一段距离，每次查询的往返可能变长，部署后请用响应头 `cf-placement` 和 `x-response-time` 对比，必要时再调整。一个请求要顺序查询多次数据库，国内访问常被分到 AMS、LHR、PDX 等远端节点，在那里运行时每次查询都跨洲往返，服务端处理时间会从约 100 ms 变成 2 秒左右。请求仍从访客最近的节点进入（`cf-ray` 里的节点不变），再经 Cloudflare 内网转到所选区域执行；响应头 `cf-placement` 显示实际执行位置。静态资源仍由边缘直接返回，Durable Object 不受这个设置影响。曾试过智能放置（`mode: "smart"`），状态显示 SUCCESS 但两小时后 AMS/LHR 的请求仍在本地执行，因此改为固定区域。
 
@@ -141,7 +141,7 @@ bun run deploy:beta
 脚本先编译三个部署阶段，再开始改变线上服务；也可在生成生产平台配置后运行 `bun run scripts/deploy-platform.ts --dry-run`，仅编译三个阶段，不请求线上接口或执行迁移。
 
 1. 发布独立维护 Worker，网页、API、OAuth 回调及新设备连接均返回不可缓存的 HTTP 503 和 `Retry-After: 30`；页面显示「正在升级，请稍后重试」。不依赖旧 stable 认识维护开关。
-2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。
+2. 通过仅部署脚本可认证的控制接口，原子安装 D1 写入屏障。旧版本已进入执行阶段的请求和后台任务也不能继续修改业务表；无需把固定等待时长当作排空证明。LiveBilling Durable Object 的名称、存储和待处理 visit 保留，alarm 延后 30 秒，不读取业务库或推送状态。店铺 Hub（ShopHub）的 alarm 同样不处理、每分钟往后推一次，所以维护期间到期的闲置关机不会丢，部署结束后执行。
 3. 屏障生效后获取 D1 Time Travel 恢复书签，并在构建日志及 `.wrangler/platform-deploy-*/recovery.json` 记录。请保留构建日志。没有获取到书签则停止，不开始迁移。
 4. 按文件名和数字前缀顺序执行未应用 SQL。沿用 Wrangler 的 `d1_migrations` 表和完整文件名，因此两个 0029 都会执行，已执行的文件跳过。SQL、重建表的屏障及迁移记录在同一个 D1 batch 内提交；失败整批回滚，之前成功的文件仍保留。部署流水线不再直接运行 `wrangler d1 migrations apply`，避免绕过屏障。
 5. 发布处于 verify 阶段的正式 Worker，继续返回维护响应。执行一次性 UTC 计费转换和位置时区补齐，检查完成标记、当前及历史方案的 UTC 状态、外键及真实 API 健康响应。数据转换失败保持屏障，重复部署不会再次偏移。
@@ -150,6 +150,8 @@ bun run deploy:beta
 屏障使用主 D1 控制行，不依赖 KV 的传播延迟。部署写入许可只在一个原子 batch 内打开并关闭，业务请求不能看到中间许可。控制接口校验每次部署随机生成的令牌和当前数据库所有者，普通账号、Bot 及其他部署不能借此写库；令牌不放在命令行或日志中。Worker 保留的仅为令牌哈希。数据库表的写入屏障只在维护期间拦截，恢复后正常业务可继续写入。
 
 任意阶段失败都不自动解除维护或回滚数据库。若已经恢复后公开健康检查失败，脚本尝试重新阻止业务；如果网络故障使维护状态无法确认，明确报告而不声称恢复成功。重跑同一流程即可接管失败部署并跳过已完成迁移。并行部署可能因所有者变化安全中止，请为同一 Worker 串行运行构建。
+
+**失败时看日志最后一段**：`deploy:beta` 失败时，日志末尾会打印一个以 `deploy:beta failed` 为标题的汇总：失败的步骤名（如 `migrate`、`deploy verify`）和原因、最后确认上线的阶段（没有就说明线上 Worker 没被替换），以及 D1 恢复书签文件的位置。原因里带上了失败命令最后输出的十几行，包括 wrangler 用 `--json` 时打到标准输出、平常不显示的错误；平台控制接口返回的 SQL 或校验错误也原样带出。应急封锁也失败时，两个原因都写在同一条消息里。构建前的步骤（`build:web`、生成配置）失败时会写明是哪一条命令。
 
 恢复操作须使用日志中的目标数据库和书签；不要仅回滚 Worker 到旧 stable，因为表结构可能已升级。书签是在屏障启用后取得的，恢复该数据库仍保留维护屏障。通常先修复并重新运行 `deploy:beta`；确需恢复旧版时，由管理员恢复对应 D1 书签和匹配的 Worker，再确认兼容性并明确解除 `prism_deployment_gate` 的维护状态。脚本不会自动恢复数据库或删除业务记录。
 
@@ -160,6 +162,45 @@ Cloudflare 构建身份需有当前 Worker 的部署权限、目标 D1 权限及
 统一平台配置在 `.env.example` 中，必需构建变量为 `D1_DATABASE_ID`、`CLOUDFLARE_ACCOUNT_ID`、`APP_ORIGIN`、`MUNET_CLIENT_ID` 和 `APPLE_TEAM_ID`。OAuth 客户端密钥、会话密钥和 URL 加密密钥等真实凭据放在 Cloudflare Secrets，不写入仓库。
 
 Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测到官方 `WORKERS_CI=1` 时，先验证构建变量并生成统一配置，再构建 React），Deploy command 使用 `bun run deploy:beta`；默认预览命令可继续使用 `bunx wrangler versions upload`。日常亦可使用统一指令 `bun run deploy:worker` 构建前端并发布统一 Worker。
+
+推送到 `main` 就会触发这次部署，其中包括迁移。新迁移在推送前先用本地 D1 跑一遍（`bun run db:migrate:local`）：仓库里的测试用的是 Bun 自带的 SQLite，它比 D1 宽松，测试和 GitHub CI 通过不代表迁移能在 D1 上执行。已知的差别：D1 的复合 SELECT 最多 5 段，第 6 个 `UNION`／`UNION ALL` 会报 `too many terms in compound SELECT`，迁移失败后站点停在维护状态（`0051` 曾因此失败，改为用 `json_each` 读一张列表）。
+
+**部署排队**（`scripts/deploy-queue.ts`）：连续推送几个提交会同时触发几次构建。它们若同时部署，会互相覆盖对方的维护 Worker 和控制令牌，可能让旧版本上线并卡在维护状态。所以每次部署在编译检查之后、改动任何东西之前，先在目标 D1 的 `prism_deploy_queue` 表里排队：
+
+- 同一时间只有一个部署在进行，其他的等它结束（每 15 秒看一次，最多等 15 分钟，超时则什么都不改、构建失败）。
+- 看到更新的提交（按提交时间）正在等、正在部署或已经部署过，就让路：不做任何改动，构建按成功结束，日志写明被哪个提交取代。所以连续推送时只有最新的提交真正上线；手动重跑一个旧提交的构建也会让路。
+- 正在部署的每 30 秒刷新一次心跳；3 分钟没有心跳的视为已经中断，下一个接手。部署失败会放弃排队，由下一个部署修复。
+- 这张表由部署脚本通过 Wrangler 读写，不加写入屏障，维护期间也能排队。
+- 排队需要 Workers Builds 的 API token 能写 D1（D1 Edit）。没有这个权限时，日志会警告 `Deploy queue unavailable`，部署照常进行，但不排队、也不发维护通知，和以前一样。
+- 排队行里记的是本次控制令牌的哈希，格式和线上 Worker 校验时算的一样（SHA-256 的 base64url，43 个字符），线上 Worker 靠它认出持有部署权的那次部署。曾经排队只接受十六进制哈希，每次部署都在这里报 `Invalid token hash for the deploy queue`、按「排队不可用」处理，所以那段时间的部署既没有排队，也没有发出维护通知。
+
+**维护预告**：拿到部署权之后，脚本让当前线上的 Worker 给每家店的 Hub 发「系统维护」通知，由各 Bot 按播报组播报，然后等待通知里说的分钟数再进入维护；上线并通过健康检查后再发「维护完成」：这时线上已经是本次部署的新版本，它用本次的令牌认出持有部署权的这次部署，照样接收通知（曾经新版本把它当成不认识的部署步骤回 409，「维护完成」从没发出去过）。旧版本的 Worker 只认部署时的令牌，所以线上 Worker 改为对照排队表验证：持有部署权的那次部署才能发通知。带这个功能的第一次部署时，线上还是旧版本，不会有预告，也不等待。通知发不出去只记日志，不影响部署。
+
+| 构建变量 | 默认 | 说明 |
+|---|---|---|
+| `PRISM_MAINTENANCE_NOTICE_MINUTES` | `0` | 提前多少分钟预告，0 到 15。0 也会预告，说「即将开始后端维护」；不管设多少，发出预告后至少等 30 秒再进入维护，让 Bot 来得及把消息发出去。等待时间计入 Workers Builds 的构建时长。建议 beta 保持 0，stable 设为 5。 |
+| `PRISM_MAINTENANCE_EXPECTED_MINUTES` | `3` | 预告里说的预计维护时长，1 到 60。 |
+
+### 运行日志（Workers Observability）
+
+Worker 的日志在 Cloudflare 控制台 `prism-link-beta`（或正式 Worker）的 Observability 里看。列表里只有我们自己写的两种行，Cloudflare 自动生成的「每次调用一条」记录已关闭（`observability.logs.invocation_logs: false`）。这类自动记录对每次 Durable Object 唤醒、每条 WebSocket 消息、每次内部 RPC 都记一条，内容只有 `message` 或一个时间，一天几千条，会把有用的行淹没。
+
+每一行都是 `packages/server/src/log.ts` 写出的一个对象，常用字段：
+
+| 字段 | 内容 |
+|---|---|
+| `message` | 列表里显示的那句话：`[模块] 发生了什么: 原因`，例如 `[live-activity] rotated a card at 7.5 hours`、`[http] GET /api/v1/me 401 3ms` |
+| `kind` | `app`：代码主动写的；`request`：Worker 对每个 HTTP 请求写的一行 |
+| `module` | 哪个部分写的：`http`、`shop-hub`、`machine-relay`、`live-activity`、`bot`、`events`、`deploy`、`idle-power`、`devices` 等 |
+| `level` | `info`、`warn`、`error`；用同名的 console 方法写出，控制台自带的级别筛选也对得上 |
+| `event` | 可选，固定的事件名，方便搜，例如 `live_activity_rotated`、`bot_command_failed` |
+| `error` | 出错时的 `name`、`message`、`code`、前几帧 `stack` |
+
+请求行：静态资源不记；路径不带查询串（可能带令牌）；身份的 subject 和 8 位以上的纯数字段记成 `:subject`、`:number`，不留卡号、QQ 号。5xx 记为 `error`，4xx 记为 `warn`。
+
+每一行都要能单独看懂「谁、哪个、怎么了」：`message` 里写出对象（`rotated the card on install 962228E5 of player legacy:user:2 after 7.5 h`），同时用固定字段名放进对象，便于筛选——店铺 `shopId`、玩家 `playerId`、账号 `userId`、计费会话 `sessionId`、机台或设备 `machineId`／`deviceId`、Bot `botId`、手机上的安装 `clientId`、实时活动卡片 `cardId`。推送令牌只记掩码。
+
+常用筛选：`kind = app` 只看代码自己说的；`module = shop-hub` 看一个部分；`level = error` 看出错的；`event = live_activity_rotated` 找一类事。服务端代码不要直接用 `console.*`，用 `logger("模块名")` 得到的 `info`／`warn`／`error`。
 
 ### 登录与配置
 
@@ -358,6 +399,8 @@ Cloudflare 中生产 Deploy command 使用 `bun run deploy:beta`；关闭预览�
 ### 上传成功后控制请求返回 404
 
 Wrangler 报告上传/发布成功后，部署脚本会使用本次随机令牌调用只读 `probe`，确认自定义域名正在执行预期提交及阶段；此探测不读写 D1。确认后才执行 `begin`、迁移和恢复操作。404、临时网络错误及可重试 HTTP 状态使用最多三分钟的有界重试，每次网络请求最多十秒；认证后明确的 SQL/所有权错误立即失败。错误日志不打印令牌或任意响应体。
+
+若 Wrangler 已上传 Worker，但报 `Some triggers failed to deploy` 且原因包含 `Received a malformed response from the API`，脚本等待 10 秒、20 秒，最多两次用同一阶段配置执行 `wrangler triggers deploy`，补部署路由／自定义域名及 Cron。不会重新上传 Worker、重放迁移或跳过失败；触发器成功后仍必须通过上述认证探测。编译、上传、权限和配置错误不自动重试，触发器持续失败则停止流程并保留维护保护。此错误发生在 `deploy maintenance` 时，本次流程尚未执行 `begin` 或迁移，但维护 Worker 可能已经生效；修复后重跑完整部署，不要手动解除未知维护状态。
 
 `Deployment begin failed (404)` 表示控制请求在认证处被拒绝（或尚未到达预期 Worker），发生于本次数据库迁移之前；不能把它等同于 D1 UUID 错误。检查域名路由与部署绑定是否指向预期 Worker。`resume` 对已验证、同一部署所有者的重复请求返回成功，避免首次成功但响应丢失后重新关闭业务。上述改动仍保留维护期间的写入保护，不自动关闭未知部署的维护状态。
 
