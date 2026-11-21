@@ -21,7 +21,7 @@ const input = (over: Partial<PageInput> = {}): PageInput => ({
   head: { shop: "店", shopCode: "s", heroUrl: null, resource: "舞萌", publicId: "p" },
   billingActive: false,
   capabilities: { power: false, climate: false, card: false, coin: false, door: false, mahjong: false },
-  billed: false, coinAfterSwipe: false, cardCapture: false,
+  billed: false, cardCapture: false,
   geo: { checkin: false, machine: false },
   signedIn: true, gate: "ready", billing: null, power: null, climate: null, coinFull: false, ioWaiting: false, mahjong: null,
   ...over,
@@ -66,10 +66,10 @@ describe("what the page shows", () => {
     expect(block({ ...caps("coin"), geo: { checkin: true, machine: false } }, "coin").needsLocation).toBe(false);
   });
 
-  it("turns the coin button off at the cabinet's limit, and leaves it out when a swipe coins", () => {
+  it("turns the coin button off at the cabinet's limit, and keeps it beside the cards on a cabinet that also coins after a swipe", () => {
     expect(block({ ...caps("coin") }, "coin")).toMatchObject({ label: "投币", enabled: true });
     expect(block({ ...caps("coin"), coinFull: true }, "coin")).toMatchObject({ label: "达到机台投币上限", enabled: false });
-    expect(ids({ ...caps("card", "coin"), coinAfterSwipe: true })).toEqual(["cards"]);
+    expect(ids({ ...caps("card", "coin") })).toEqual(["cards", "coin"]);
   });
 
   it("offers only turning on while the device is off, keeping what works without power", () => {

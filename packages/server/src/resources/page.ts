@@ -64,7 +64,6 @@ export type PageInput = {
   /** What the resource can do, as players are shown it. */
   capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; mahjong: boolean };
   billed: boolean;
-  coinAfterSwipe: boolean;
   cardCapture: boolean;
   /** Which of the shop's location checks apply: the door and entry are "checkin", the rest "machine". */
   geo: { checkin: boolean; machine: boolean };
@@ -146,7 +145,8 @@ function pageBlocks(input: PageInput): PageBlock[] {
   }
   if (cap.card)
     blocks.push({ kind: "cards", id: "cards", enabled: true, capture: input.cardCapture, action: "card.swipe", needsLocation: geo.machine });
-  if (cap.coin && !input.coinAfterSwipe)
+  // Auto coin adds a coin after a card; a player can still coin by hand.
+  if (cap.coin)
     blocks.push({
       kind: "button", id: "coin", label: t(input.coinFull ? "达到机台投币上限" : "投币"), icon: "coin",
       enabled: !input.coinFull, action: "coin", answerOnButton: true, needsLocation: geo.machine,

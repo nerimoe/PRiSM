@@ -163,8 +163,6 @@ async function performResourceAction(
           ? await requireShopPlayer(c, shop)
           : null;
   if (action === "coin") {
-    if (!staff && hinataConfigOf(device)?.coinAfterSwipe)
-      jsonError(409, "请通过刷卡投币", "COIN_VIA_SWIPE");
     // Only an explicit "off" blocks: an unreadable switch must not lock players out.
     if (device.capabilities.has("power") && (await readPower({ db: c.env.DB, env: c.env, shopId: shop.id }, device)) === "off")
       jsonError(409, "请先开机", "DEVICE_POWER_OFF");

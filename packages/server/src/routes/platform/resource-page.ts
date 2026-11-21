@@ -37,7 +37,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       : null;
     const ioWaiting = !!ready && !!device && io?.transport === "embedded" && (capabilities.card || capabilities.coin)
       && state?.power !== "off" && !(await ioConnected(c.env.DB, shopId, device.id));
-    const coinButton = ready && device && capabilities.coin && !io?.coinAfterSwipe && state?.power !== "off" && !ioWaiting;
+    const coinButton = ready && device && capabilities.coin && state?.power !== "off" && !ioWaiting;
     const [coin, mahjong, billing] = await Promise.all([
       coinButton ? coinLimit(c.env.DB, shopId, device) : null,
       ready && device && capabilities.mahjong ? mahjongState(c, machine, undefined, device) : null,
@@ -58,7 +58,6 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       billingActive: !!billing,
       capabilities,
       billed: !!machine.billed,
-      coinAfterSwipe: !!io?.coinAfterSwipe,
       cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,
       geo: { checkin: !!gated?.shop.checkin_geo, machine: !!gated?.shop.machine_geo },
       signedIn: !!user,
