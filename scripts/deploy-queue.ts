@@ -42,6 +42,11 @@ const hex = (value: string, name: string) => {
   if (!/^[0-9a-f]{7,64}$/.test(value)) throw new Error(`Invalid ${name} for the deploy queue`);
   return `'${value}'`;
 };
+/** The run's control token hash as the live Worker computes it (`sha256`: unpadded base64url), never hex. */
+const tokenHash = (value: string) => {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) throw new Error("Invalid token hash for the deploy queue");
+  return `'${value}'`;
+};
 const integer = (value: number) => {
   if (!Number.isSafeInteger(value)) throw new Error("Invalid time for the deploy queue");
   return String(value);
@@ -60,7 +65,7 @@ export async function enterDeployQueue(deps: DeployQueueDeps): Promise<DeployTur
   await deps.sql(deployQueueSchema);
   await deps.sql(
     `INSERT INTO prism_deploy_queue(revision, committed_at, state, notice_hash, heartbeat_at)
-     VALUES (${me}, ${integer(deps.committedAt)}, 'waiting', ${hex(deps.noticeHash, "token hash")}, ${integer(now())})
+     VALUES (${me}, ${integer(deps.committedAt)}, 'waiting', ${tokenHash(deps.noticeHash)}, ${integer(now())})
      ON CONFLICT(revision) DO UPDATE SET state = 'waiting', notice_hash = excluded.notice_hash, heartbeat_at = excluded.heartbeat_at`,
   );
   const started = now();

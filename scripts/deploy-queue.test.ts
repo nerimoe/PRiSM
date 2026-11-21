@@ -1,9 +1,12 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { enterDeployQueue, type DeployQueueDeps } from "./deploy-queue";
+import { randomToken, sha256 } from "../packages/server/src/crypto";
 
 const MIN = 60_000;
 const rev = (n: number) => String(n).repeat(40).slice(0, 40);
+
+const noticeHash = await sha256(randomToken(48));
 
 /** One D1 for several runs, each with its own clock reading the same shared time. */
 function shared() {
@@ -13,7 +16,8 @@ function shared() {
     sql: async (statement) => db.query(statement).all() as Array<Record<string, unknown>>,
     revision: rev(n),
     committedAt: 1_700_000_000_000 + committedMinutes * MIN,
-    noticeHash: "a".repeat(64),
+    // The hash the deploy script really sends: the same `sha256` the live Worker checks notices against.
+    noticeHash,
     now: () => now,
     sleep: async (ms) => { now += ms; },
     log: () => {},
@@ -86,4 +90,13 @@ test("a run that waits too long gives up having changed nothing", async () => {
   });
   await expect(enterDeployQueue(second)).rejects.toThrow("Gave up waiting");
   expect(rows()).toEqual([{ revision: rev(1), state: "deploying" }]);
+});
+
+test("queues with the token hash as the deploy script and the live Worker compute it", async () => {
+  const { run, db } = shared();
+  const turn = await enterDeployQueue(run(1, 0));
+  expect(turn.kind).toBe("deploy");
+  // What the live Worker looks up before it lets this run tell the shops.
+  expect(db.query("SELECT 1 AS ok FROM prism_deploy_queue WHERE notice_hash = ? AND state = 'deploying'").get(noticeHash)).toEqual({ ok: 1 });
+  await expect(enterDeployQueue(run(2, 1, { noticeHash: "x'; DROP TABLE prism_deploy_queue; --" }))).rejects.toThrow("Invalid token hash");
 });
