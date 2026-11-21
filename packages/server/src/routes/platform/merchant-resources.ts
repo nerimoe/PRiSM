@@ -25,6 +25,7 @@ import { z } from "zod";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { DEFAULT_RESOURCE_GROUP_ID } from "../../resources/billing.js";
+import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
 import { findResourceGroup } from "../../resources/repository.js";
 import { assertBillablePlan } from "./merchant-resource-groups.js";
 
@@ -604,6 +605,17 @@ const machineInput=z.object({
 const patchInput=machineInput.partial();
 type MachineInput=z.infer<typeof patchInput>;
 
+/**
+ * Whether someone is still at the table: a seat whose billing still runs, as
+ * the board and the player page count it. A seat left behind by a player who
+ * checked out without getting up is not someone, and does not hold the table.
+ */
+async function tableSeated(c:C,table:Resource):Promise<boolean>{
+  return !!await c.env.DB.prepare(
+    `SELECT 1 FROM (${liveSeatsSql}) WHERE shop_id=? AND machine_id=? LIMIT 1`,
+  ).bind(table.shopId,table.id).first();
+}
+
 async function validateMahjong(c:C,shopId:string,current:Resource|null,body:MachineInput){
   if(body.mahjong===undefined)return;
   const ids=body.mahjong?.pricingConfigIds??[];
@@ -619,10 +631,7 @@ async function validateMahjong(c:C,shopId:string,current:Resource|null,body:Mach
   const after=body.mahjong?{pricingConfigIds:ids,startWhen:body.mahjong.startWhen??before?.startWhen??"full"}:null;
   const was=before?{pricingConfigIds:before.pricingConfigIds,startWhen:before.startWhen??"full"}:null;
   if(current&&JSON.stringify(after)!==JSON.stringify(was)){
-    const seated=await c.env.DB.prepare(
-      "SELECT 1 FROM mahjong_seats WHERE machine_id=? LIMIT 1",
-    ).bind(current.id).first();
-    if(seated)jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
+    if(await tableSeated(c,current))jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
   }
 }
 
@@ -879,9 +888,8 @@ async function changeResource(c:C, machineId?:string) {
   const capacity=binding.capacity??(next.has("mahjong")?4:next.has("hinata_io")?1:0);
   if(next.has("mahjong")&&(capacity<2||capacity>8))jsonError(400,"麻将桌容量须为 2 到 8 人","MAHJONG_CAPACITY_INVALID");
   // Seats are counted against the capacity, so it cannot change under seated players.
-  if(current&&next.has("mahjong")&&capacity!==current.capacity&&await c.env.DB.prepare(
-    "SELECT 1 FROM mahjong_seats WHERE machine_id=? LIMIT 1",
-  ).bind(current.id).first())jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
+  if(current&&next.has("mahjong")&&capacity!==current.capacity&&await tableSeated(c,current))
+    jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
   const aliases=[...new Set((body.aliases??current?.aliases??[]).map(x=>x.trim()).filter(Boolean))];
   const enabled=+(body.enabled??current?.enabled??true);
   const kind=body.kind??current?.kind??"machine";
