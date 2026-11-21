@@ -51,3 +51,18 @@ export function vkFromKeyText(text: string): number | null {
   const code = Number(trimmed);
   return Number.isInteger(code) && code >= 1 && code <= 65535 ? code : null;
 }
+
+const NAMES_BY_CODE: Record<number, string> = { 32: "Space", 13: "Enter", 9: "Tab", 8: "Backspace", 27: "Esc" };
+
+/**
+ * How a key code reads to staff: the key it is (`A`, `5`, `F14`, `Enter`, `;`)
+ * when it is one `vkFromKeyText` understands, otherwise the code itself.
+ */
+export function keyTextFromVk(code: number): string {
+  if (NAMES_BY_CODE[code]) return NAMES_BY_CODE[code]!;
+  if (code >= 65 && code <= 90) return String.fromCharCode(code);
+  if (code >= 48 && code <= 57) return String.fromCharCode(code);
+  if (code >= 112 && code <= 135) return `F${code - 111}`;
+  const symbol = Object.entries(SYMBOLS).find(([, value]) => value === code)?.[0];
+  return symbol ?? String(code);
+}

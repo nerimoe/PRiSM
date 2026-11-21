@@ -1,3 +1,4 @@
+import { keyTextFromVk } from "@prism/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
@@ -1153,9 +1154,9 @@ function ResourceActions({
                 />
               )}
               {id === "hinata_io" && actionNames.includes("aime.scan") && (
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2">
                   <input
-                    className={`${input} min-h-9 w-56 font-mono`}
+                    className={`${input} min-h-9 min-w-0 flex-1 font-mono`}
                     inputMode="numeric"
                     maxLength={20}
                     placeholder={t("20 位卡号")}
@@ -1170,7 +1171,7 @@ function ResourceActions({
                   />
                   <button
                     type="button"
-                    className={button}
+                    className={`${button} min-h-9 shrink-0`}
                     disabled={
                       !device.enabled || cardNumber.length !== 20 || !!busy
                     }
@@ -1185,7 +1186,7 @@ function ResourceActions({
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
-                    className={button}
+                    className={`${button} min-h-9`}
                     disabled={!device.enabled || !!busy}
                     onClick={() => void send("coin")}
                   >
@@ -1193,23 +1194,31 @@ function ResourceActions({
                   </button>
                 </div>
               )}
-              {/* The shop's named keys, for service menus and tests: not coins, and never on a player's page. */}
-              {id === "hinata_io" && actionNames.includes("key.press") && !!device.keys?.length && (
-                <div className="flex flex-wrap items-center gap-2">
-                  {device.keys.map((one) => (
-                    <button
-                      key={one.id}
-                      type="button"
-                      className={buttonQuiet}
-                      title={t("按键码 {key}", { key: String(one.key) })}
-                      disabled={!device.enabled || !!busy}
-                      onClick={() => void send("key.press", { keyId: one.id })}
-                    >
-                      {one.name}
-                    </button>
-                  ))}
-                </div>
-              )}
+              {/* The shop's named keys, for service menus and tests: not coins, and never on a player's page.
+                  The coin key is the 投币 button above, with its cooldown and limit, so it is not here again. */}
+              {id === "hinata_io" && actionNames.includes("key.press") && (() => {
+                const pressable = (device.keys ?? []).filter((one) => one.id !== device.coinKeyId);
+                if (!pressable.length) return null;
+                return (
+                  <div className="grid gap-1.5">
+                    <span className="text-xs text-ink/55">{t("按键")}</span>
+                    <div className="flex flex-wrap gap-2">
+                      {pressable.map((one) => (
+                        <button
+                          key={one.id}
+                          type="button"
+                          className={`${button} min-h-9 px-3`}
+                          disabled={!device.enabled || !!busy}
+                          onClick={() => void send("key.press", { keyId: one.id })}
+                        >
+                          <span>{one.name}</span>
+                          <kbd className="rounded border border-ink/15 bg-ink/[0.04] px-1.5 font-mono text-[11px] font-normal text-ink/60">{keyTextFromVk(one.key)}</kbd>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}
               {id === "mahjong" && (
                 <>

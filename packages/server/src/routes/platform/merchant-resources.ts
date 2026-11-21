@@ -4,7 +4,7 @@ import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
-import { vkFromKeyText } from "../../resources/capabilities/key-text.js";
+import { vkFromKeyText } from "@prism/core";
 import { machineRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";

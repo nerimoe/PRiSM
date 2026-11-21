@@ -14,7 +14,7 @@ import {
   type LucideIcon,
   Bot,
 } from "lucide-react";
-import { botReplyTemplateError } from "@prism/core";
+import { botReplyTemplateError, keyTextFromVk, vkFromKeyText } from "@prism/core";
 import { Api, api, type BotSettings, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
@@ -133,7 +133,7 @@ export function ResourceEditor({
   const [coinMethod, setCoinMethod] = useState<"key">(value?.coinMethod ?? "key");
   // The cabinet's named keys, with what staff typed for each; and which one is the coin button.
   const [keys, setKeys] = useState<CabinetKeyDraft[]>(
-    () => (value?.keys ?? []).map((one) => ({ id: one.id, name: one.name, key: String(one.key) })),
+    () => (value?.keys ?? []).map((one) => ({ id: one.id, name: one.name, key: keyTextFromVk(one.key) })),
   );
   const [coinKeyId, setCoinKeyId] = useState<string | null>(value?.coinKeyId ?? null);
   const coinChosen = !!coinKeyId && keys.some((one) => one.id === coinKeyId);
@@ -445,7 +445,7 @@ export function ResourceEditor({
             ...(caps.hinata_io ? { coinMethod } : {}),
             ...(caps.hinata_io
               ? {
-                  keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: /^\d+$/.test(one.key.trim()) ? Number(one.key.trim()) : one.key })),
+                  keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: one.key })),
                   coinKeyId: canCoin && coinChosen ? coinKeyId : null,
                 }
               : {}),
@@ -774,48 +774,76 @@ export function ResourceEditor({
             </div>
             {/* Named keys: buttons in this cabinet's admin, never on a player's page. */}
             <div className="grid gap-2 border-t border-ink/10 pt-4">
-              <span className="text-sm font-medium">{t("按键")}</span>
-              {keys.map((one, index) => (
-                <div key={one.id} className="flex flex-wrap items-center gap-2">
-                  <input
-                    className={`${input} min-w-0 flex-1`}
-                    aria-label={t("按键名称")}
-                    placeholder={t("名称，如 投币、服务、测试")}
-                    maxLength={20}
-                    value={one.name}
-                    onChange={(e) => setKeys(keys.map((other, at) => (at === index ? { ...other, name: e.target.value } : other)))}
-                  />
-                  <input
-                    className={`${input} w-32`}
-                    aria-label={t("按键")}
-                    placeholder={t("如 F1、Enter、32")}
-                    maxLength={12}
-                    value={one.key}
-                    onChange={(e) => setKeys(keys.map((other, at) => (at === index ? { ...other, key: e.target.value } : other)))}
-                  />
-                  <button
-                    type="button"
-                    className={buttonQuiet}
-                    onClick={() => {
-                      setKeys(keys.filter((_, at) => at !== index));
-                      if (one.id === coinKeyId) setCoinKeyId(null);
-                    }}
-                  >
-                    {t("删除")}
-                  </button>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm font-medium">{t("按键")}</span>
+                <span className="text-xs text-ink/45">{t("{count} / 16", { count: String(keys.length) })}</span>
+              </div>
+              {keys.length > 0 && (
+                <div className="overflow-hidden rounded-lg border border-ink/10">
+                  <div className="hidden grid-cols-[minmax(0,1fr)_9rem_2.75rem] gap-2 border-b border-ink/10 bg-ink/[0.03] px-3 py-1.5 text-xs text-ink/55 sm:grid">
+                    <span>{t("名称")}</span>
+                    <span>{t("键")}</span>
+                    <span />
+                  </div>
+                  {keys.map((one, index) => {
+                    const code = one.key.trim() ? vkFromKeyText(one.key) : null;
+                    const bad = !!one.key.trim() && code === null;
+                    const set = (patch: Partial<CabinetKeyDraft>) => setKeys(keys.map((other, at) => (at === index ? { ...other, ...patch } : other)));
+                    return (
+                      <div key={one.id} className="grid grid-cols-[minmax(0,1fr)_9rem_2.75rem] items-start gap-2 border-b border-ink/10 px-3 py-2 last:border-b-0">
+                        <div className="grid gap-1">
+                          <input
+                            className={`${input} min-h-9`}
+                            aria-label={t("按键名称")}
+                            placeholder={t("如 服务、测试")}
+                            maxLength={20}
+                            value={one.name}
+                            onChange={(e) => set({ name: e.target.value })}
+                          />
+                          {one.id === coinKeyId && <span className="text-xs text-ink/50">{t("用作投币按键")}</span>}
+                        </div>
+                        <div className="grid gap-1">
+                          <input
+                            className={`${input} min-h-9 font-mono ${bad ? "border-red-500/70" : ""}`}
+                            aria-label={t("键")}
+                            aria-invalid={bad}
+                            placeholder="F1"
+                            maxLength={12}
+                            value={one.key}
+                            onChange={(e) => set({ key: e.target.value })}
+                          />
+                          <span className={`text-xs ${bad ? "text-red-600" : "text-ink/45"}`}>
+                            {bad ? t("认不出这个键") : code !== null ? t("键码 {code}", { code: String(code) }) : " "}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={`${buttonQuiet} h-9 w-9 justify-center`}
+                          aria-label={t("删除按键 {name}", { name: one.name || t("未命名") })}
+                          onClick={() => {
+                            setKeys(keys.filter((_, at) => at !== index));
+                            if (one.id === coinKeyId) setCoinKeyId(null);
+                          }}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
+              )}
               {keys.length < 16 && (
                 <button
                   type="button"
-                  className={`${buttonQuiet} justify-self-start`}
-                  onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "32" }])}
+                  className={`${button} min-h-9 justify-self-start border-dashed`}
+                  onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "Space" }])}
                 >
+                  <Plus size={16} />
                   {t("添加按键")}
                 </button>
               )}
               <Hint>
-                {t("每个按键在后台的操作面板里显示为一个按钮，玩家页面不显示。按键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码（如 32 是空格键）。")}
+                {t("按键显示在后台这台资源的操作面板里，玩家页面不显示。键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码。")}
               </Hint>
             </div>
           </div>
