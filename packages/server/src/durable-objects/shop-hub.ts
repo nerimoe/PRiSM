@@ -40,6 +40,7 @@ import type { HaWatch } from "./machine-relay.js";
 import {
   climatesToSwitchOff, devicesSeenOn, heldResources, idleGroups, loadIdleSettings, shopIsEmpty, switchOff, type IdleNotice,
 } from "./shop-hub-idle.js";
+import { recordChatNames } from "../resources/player-names.js";
 import { DEFAULT_BOT_NAME, parseBotFrame, revokedCredentials, runBotRequest, sayFrame, type BotCommandFrame, type BotResponse, type SayFrame } from "./shop-hub-bot.js";
 import { botCommandRecord, judgeBotCommand, type BotCommandOutcome, type BotView } from "../resources/bot-commands.js";
 import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
@@ -818,6 +819,12 @@ export class ShopHub extends BaseDurableObject<Env> {
     }
     if (frame.type === "command") {
       await this.command(ws, attachment, frame);
+      return;
+    }
+    if (frame.type === "names") {
+      // Only a bot that runs commands for the shop speaks for its chat.
+      const shopId = await this.shopId();
+      if (shopId && attachment.commands) await recordChatNames(this.env.DB, shopId, frame.names);
       return;
     }
     const replayKey = `req:${frame.id}`;

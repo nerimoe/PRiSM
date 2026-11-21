@@ -17,7 +17,8 @@ import type { MaintenanceNotice } from "../deployment-gate.js";
 export type EventPlayer = {
   playerId: string;
   displayName: string | null;
-  identities: Array<{ provider: string; subject: string }>;
+  /** `name`: what that platform calls them, for a bot there to say. */
+  identities: Array<{ provider: string; subject: string; name?: string }>;
 };
 
 /**
@@ -42,10 +43,14 @@ export async function eventPlayer(db: D1DatabaseLike, shopId: string, playerId: 
   const [player, identities] = await Promise.all([
     db.prepare("SELECT display_name FROM players WHERE shop_id = ? AND id = ?").bind(shopId, playerId)
       .first<{ display_name: string | null }>(),
-    db.prepare("SELECT provider, subject FROM player_identities WHERE shop_id = ? AND player_id = ? AND provider NOT IN ('web-account', 'aime')")
-      .bind(shopId, playerId).all<{ provider: string; subject: string }>(),
+    db.prepare("SELECT provider, subject, display_name FROM player_identities WHERE shop_id = ? AND player_id = ? AND provider NOT IN ('web-account', 'aime')")
+      .bind(shopId, playerId).all<{ provider: string; subject: string; display_name: string | null }>(),
   ]);
-  return { playerId, displayName: player?.display_name ?? null, identities: identities.results };
+  return {
+    playerId,
+    displayName: player?.display_name ?? null,
+    identities: identities.results.map((row) => ({ provider: row.provider, subject: row.subject, ...(row.display_name ? { name: row.display_name } : {}) })),
+  };
 }
 
 /** Why something was turned away, for the reasons a shop meets; otherwise the platform's own words or code. */

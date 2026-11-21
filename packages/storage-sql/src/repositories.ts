@@ -627,6 +627,14 @@ function createPlayerIdentityRepository(
       return row ? toPlayer(row) : null;
     },
 
+    async setName(provider, subject, name) {
+      await executor.run(
+        `UPDATE player_identities SET display_name = ?
+         WHERE shop_id = ${sqlShop(executor)} AND provider = ? AND subject = ? AND display_name IS NOT ?`,
+        [name, provider, subject, name],
+      );
+    },
+
     async listByPlayerId(playerId) {
       const rows = await executor.all<PlayerIdentityRow>(
         `SELECT player_id, provider, subject, created_at

@@ -12,6 +12,8 @@ import type {
   SessionRepository,
 } from "@prism/core";
 import {
+  chatName,
+  isPlaceholderPlayerName,
   normalizeExternalIdentity,
   parseIdentityKey,
   PrismDomainError,
@@ -135,10 +137,17 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
   async function resolveOrRegister(input: IntegrationIdentityInput): Promise<Player> {
     const identity = identityFromInput(input);
     const existing = await dependencies.playerIdentities.findPlayerByIdentity(identity.provider, identity.subject);
+    const said = chatName(input.displayName);
     if (existing) {
-      if (input.displayName && existing.displayName !== input.displayName) {
-        existing.displayName = input.displayName;
-        await dependencies.players.save(existing);
+      // Each platform's name stays on its own identity, so a player bound on two
+      // platforms is not renamed back and forth. Their own name is filled from it
+      // only while it is still a stand-in.
+      if (said) {
+        await dependencies.playerIdentities.setName?.(identity.provider, identity.subject, said);
+        if (said !== existing.displayName && isPlaceholderPlayerName(existing.displayName, identity)) {
+          existing.displayName = said;
+          await dependencies.players.save(existing);
+        }
       }
       return existing;
     }
@@ -163,6 +172,7 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
       subject: identity.subject,
       createdAt: player.createdAt,
     });
+    if (said) await dependencies.playerIdentities.setName?.(identity.provider, identity.subject, said);
     return player;
   }
 

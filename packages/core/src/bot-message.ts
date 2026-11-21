@@ -4,10 +4,15 @@
  * (a group nickname the platform never sees). A bot only maps segments to its
  * chat's elements, so new wording needs no bot release.
  */
+/**
+ * A player in a bot's message. `displayName` is the player's own name;
+ * `name` on an identity is what that identity's platform calls them, which a
+ * bot on that platform says instead.
+ */
 export type BotMessagePlayer = {
   playerId: string;
   displayName: string | null;
-  identities: Array<{ provider: string; subject: string }>;
+  identities: Array<{ provider: string; subject: string; name?: string }>;
 };
 
 export type BotMessageSegment = { text: string } | { player: BotMessagePlayer };

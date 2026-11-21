@@ -10,6 +10,7 @@
  */
 import type { BotMessage } from "@prism/core";
 import type { Env } from "../bindings.js";
+import { chatNames, type ChatName } from "../resources/player-names.js";
 import { parseHaReport, type HaReport } from "../hardware/aimeio-relay.js";
 
 export type BotFrame =
@@ -22,7 +23,9 @@ export type BotFrame =
   | BotCommandFrame
   | { type: "request"; id: string; method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }
   /** What a watching bot reports, in the shape an IO reports it: `ha.status` and `ha.states`. */
-  | { type: "ha"; report: HaReport };
+  | { type: "ha"; report: HaReport }
+  /** What the chat calls people, read from a group's member list: kept for the shop's players among them. */
+  | { type: "names"; names: ChatName[] };
 
 /** A chat identity: the platform (`onebot`) and who on it. `name` is what the chat calls them. */
 export type ChatIdentity = { provider: string; subject: string; name?: string };
@@ -84,6 +87,7 @@ export function parseBotFrame(raw: string): BotFrame | null {
     };
   }
   if (value.type === "command") return parseCommand(value);
+  if (value.type === "names") return { type: "names", names: chatNames(value.names) };
   if (value.type === "ha") {
     const report = parseHaReport(value);
     return report ? { type: "ha", report } : null;

@@ -65,6 +65,7 @@ export const sqliteSchema = [
     provider TEXT NOT NULL,
     subject TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    display_name TEXT,
     PRIMARY KEY (shop_id, provider, subject),
     FOREIGN KEY (shop_id, player_id) REFERENCES players(shop_id, id)
   )`,

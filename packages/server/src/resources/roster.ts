@@ -24,7 +24,7 @@ import type { OccupancyService, ResourceOccupancy } from "./occupancy/service.js
 export type RosterMember = {
   playerId: string;
   displayName: string | null;
-  identities: Array<{ provider: string; subject: string }>;
+  identities: Array<{ provider: string; subject: string; name?: string }>;
   since: Date;
 };
 
@@ -41,7 +41,7 @@ const PLACEHOLDER_PLAN_NAME = "计费";
 type InShop = {
   playerId: string;
   displayName: string;
-  identities: Array<{ provider: string; subject: string }>;
+  identities: Array<{ provider: string; subject: string; name?: string }>;
   sessions: StaffActiveSessionListItem[];
 };
 
@@ -99,7 +99,7 @@ export function createRoster(dependencies: {
     ]);
     const players = new Map<string, InShop>();
     for (const session of sessions) {
-      const player = players.get(session.playerId) ?? {
+      const player: InShop = players.get(session.playerId) ?? {
         playerId: session.playerId,
         displayName: session.playerDisplayName,
         identities: session.identities ?? [],
@@ -111,14 +111,23 @@ export function createRoster(dependencies: {
     // Occupants who bill nothing are still in the shop; their identities let a bot name them.
     const strangers = [...new Set(resources.flatMap((resource) => resource.occupants)
       .flatMap((occupant) => players.has(occupant.playerId) ? [] : [occupant.playerId]))];
-    const identities = new Map<string, Array<{ provider: string; subject: string }>>();
-    if (strangers.length) {
+    // Everyone's identities, each with what its platform calls them, for a bot there to say.
+    const everyone = [...players.keys(), ...strangers];
+    const identities = new Map<string, Array<{ provider: string; subject: string; name?: string }>>();
+    if (everyone.length) {
       const rows = await db.prepare(
-        `SELECT player_id, provider, subject FROM player_identities
+        `SELECT player_id, provider, subject, display_name FROM player_identities
          WHERE shop_id = ? AND player_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, provider, subject`,
-      ).bind(shopId, JSON.stringify(strangers)).all<{ player_id: string; provider: string; subject: string }>();
+      ).bind(shopId, JSON.stringify(everyone)).all<{ player_id: string; provider: string; subject: string; display_name: string | null }>();
       for (const row of rows.results) {
-        identities.set(row.player_id, [...(identities.get(row.player_id) ?? []), { provider: row.provider, subject: row.subject }]);
+        identities.set(row.player_id, [...(identities.get(row.player_id) ?? []),
+          { provider: row.provider, subject: row.subject, ...(row.display_name ? { name: row.display_name } : {}) }]);
+      }
+      // A player billing here is listed with their identities as the sessions read them, now with names.
+      for (const player of players.values()) {
+        const named = identities.get(player.playerId);
+        if (named) player.identities = player.identities.map((one) =>
+          named.find((other) => other.provider === one.provider && other.subject === one.subject) ?? one);
       }
     }
     const names = new Map(plans.map((plan) => [plan.id, plan.name]));

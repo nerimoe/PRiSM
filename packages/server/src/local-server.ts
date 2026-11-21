@@ -388,6 +388,10 @@ export function initializeLocalDatabase(
     if (!exists) db.run(`ALTER TABLE machines ADD COLUMN ${column} ${type}`);
   }
 
+  // What each chat platform calls a player (migration 0057).
+  const identityNamed = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('player_identities') WHERE name = 'display_name'").get();
+  if (!identityNamed) db.run("ALTER TABLE player_identities ADD COLUMN display_name TEXT");
+
   db.run("PRAGMA foreign_keys = ON;");
 
   const now = new Date().toISOString();

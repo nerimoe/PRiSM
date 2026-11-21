@@ -150,6 +150,8 @@ export type PlayerIdentity = {
   provider: string;
   subject: string;
   createdAt: Date;
+  /** What this identity's platform calls the player, as it last said. */
+  displayName?: string | null;
 };
 
 export type PlayerRepository = {
@@ -164,6 +166,8 @@ export type PlayerIdentityRepository = {
   delete(playerId: string, provider: string, subject: string): Promise<void>;
   findPlayerByIdentity(provider: string, subject: string): Promise<Player | null>;
   listByPlayerId(playerId: string): Promise<PlayerIdentity[]>;
+  /** Keep what a platform calls the player on this identity. */
+  setName?(provider: string, subject: string, name: string): Promise<void>;
 };
 
 export type PlayerSessionRepository = {
