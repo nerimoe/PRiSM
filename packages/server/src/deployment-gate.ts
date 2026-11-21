@@ -266,14 +266,14 @@ export async function deploymentControl(
     { status: 404, headers: { "cache-control": "no-store" } },
   );
   if (request.method !== "POST" || !owner) return notFound();
-  if (owner !== env.PRISM_DEPLOY_TOKEN_HASH) {
-    // Only the run holding the deploy turn may ask, whichever release is live.
-    const notice = await request.clone().json().catch(() => null) as { action?: string } | null;
-    if (notice?.action === "notice" && env.DB && await holdsDeployTurn(env.DB, owner)) {
-      return maintenanceNotice(notice, env);
-    }
-    return notFound();
+  // A notice is taken from the run holding the deploy turn, whichever release is
+  // live: the one before it ("ahead"), and the one it just deployed with its own
+  // token ("done"), which would otherwise read it as a deploy step it does not know.
+  const notice = await request.clone().json().catch(() => null) as { action?: string } | null;
+  if (notice?.action === "notice") {
+    return env.DB && await holdsDeployTurn(env.DB, owner) ? maintenanceNotice(notice, env) : notFound();
   }
+  if (owner !== env.PRISM_DEPLOY_TOKEN_HASH) return notFound();
   const result = (data: Record<string, unknown>, status = 200) =>
     Response.json(
       {

@@ -7,7 +7,7 @@ import { maintenanceMessage } from "../src/resources/shop-events.js";
 import type { Env } from "../src/bindings.js";
 
 /** A live Worker of any release, two shops, and the deploy run holding its turn in the queue. */
-async function fixture(options: { fresh?: boolean; state?: string } = {}) {
+async function fixture(options: { fresh?: boolean; state?: string; deployedByThisRun?: boolean } = {}) {
   const sqlite = new Database(":memory:");
   sqlite.run("CREATE TABLE shops(id TEXT PRIMARY KEY)");
   sqlite.run("INSERT INTO shops(id) VALUES ('a'),('b')");
@@ -18,8 +18,8 @@ async function fixture(options: { fresh?: boolean; state?: string } = {}) {
   const told: Array<[string, MaintenanceNotice]> = [];
   const env = {
     DB: createD1DatabaseFromSqlite(sqlite),
-    // The live release was deployed by an earlier run, with its own token.
-    PRISM_DEPLOY_TOKEN_HASH: await sha256("E".repeat(48)),
+    // The live release was deployed by an earlier run, with its own token; or by this run, once it is over.
+    PRISM_DEPLOY_TOKEN_HASH: await sha256(options.deployedByThisRun ? token : "E".repeat(48)),
     PRISM_DEPLOY_PHASE: "live",
     PRISM_DEPLOY_REVISION: "e".repeat(40),
     SHOP_HUB: { getByName: (shopId: string) => ({ async maintenance(notice: MaintenanceNotice) { told.push([shopId, notice]); } }) },
@@ -41,6 +41,13 @@ describe("maintenance notices", () => {
     expect(told).toEqual([["a", { stage: "ahead", minutes: 5, expectedMinutes: 3 }], ["b", { stage: "ahead", minutes: 5, expectedMinutes: 3 }]]);
     await ask({ action: "notice", stage: "done" });
     expect(told.slice(2)).toEqual([["a", { stage: "done" }], ["b", { stage: "done" }]]);
+  });
+
+  it("are taken by the release this run just deployed, so \"done\" is told once it is live", async () => {
+    const { ask, told } = await fixture({ deployedByThisRun: true });
+    const response = await ask({ action: "notice", stage: "done" });
+    expect(response?.status).toBe(200);
+    expect(told).toEqual([["a", { stage: "done" }], ["b", { stage: "done" }]]);
   });
 
   it("are refused from anyone else: another token, a run gone quiet, a run only waiting, or anything but a notice", async () => {
