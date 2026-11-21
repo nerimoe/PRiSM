@@ -29,7 +29,7 @@ function plan(sqlite: Database, id: string, unitPriceCents: number, relations?: 
   );
 }
 
-async function fixture(tablePlan = "mahjong-eight", waitingPlan?: string) {
+async function fixture(tablePlan = "mahjong-eight", waitingPlan?: string, startWhen?: "full" | "seated") {
   const sqlite = new Database(":memory:");
   const migrations = resolve(import.meta.dir, "../../../migrations");
   for (const name of readdirSync(migrations).filter((file) => file.endsWith(".sql")).sort())
@@ -59,7 +59,7 @@ async function fixture(tablePlan = "mahjong-eight", waitingPlan?: string) {
   sqlite.run(
     `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
      VALUES ('shop-1','table-1','mahjong',?,'{}',?,?)`,
-    [JSON.stringify({ pricingConfigIds: [tablePlan] }), NOW, NOW],
+    [JSON.stringify({ pricingConfigIds: [tablePlan], ...(startWhen ? { startWhen } : {}) }), NOW, NOW],
   );
   // The table's own plan is what a seat bills while the table waits to fill.
   if (waitingPlan) sqlite.run("UPDATE machines SET pricing_config_override_id=? WHERE id='table-1'", [waitingPlan]);
@@ -249,6 +249,15 @@ describe("a mahjong seat that waits on its own plan", () => {
     expect(left.body.billing).toEqual({ remaining: ["normal-play"] });
     expect(active("p1").map((s) => s.plan)).toEqual(["normal-play"]);
     expect(seats()).toEqual(["p2"]);
+  });
+
+  it("has no wait on a table that starts on sitting down: each player plays from their seat", async () => {
+    const { confirmTable, act, active, seats } = await fixture("mahjong-play", "mahjong-wait", "seated");
+    await confirmTable("p1");
+    expect((await act("mahjong.join", 1)).status).toBe(200);
+    // Alone at a two-seat table, yet on the game plan at once.
+    expect(active("p1").map((s) => s.plan)).toEqual(["mahjong-play", "normal-play"]);
+    expect(seats()).toEqual(["p1"]);
   });
 
   it("ends the waiting session started for the table when its player gets up before the table fills", async () => {

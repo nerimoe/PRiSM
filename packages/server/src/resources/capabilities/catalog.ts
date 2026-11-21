@@ -154,6 +154,13 @@ export type DoorConfig = z.infer<typeof doorConfig>;
 /** A mahjong table's size is the resource's capacity, not part of this config. */
 const mahjongConfig = z.object({
   pricingConfigIds: z.array(z.string().min(1)).max(20).default([]),
+  /**
+   * When the table's game plan starts. `full`: players wait at the table on
+   * the resource's own plan until it is full, then the game starts for all of
+   * them. `seated`: the game plan starts for each player as they sit down, so
+   * there is no wait.
+   */
+  startWhen: z.enum(["full", "seated"]).default("full"),
 });
 export type MahjongConfig = z.infer<typeof mahjongConfig>;
 

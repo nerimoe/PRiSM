@@ -143,7 +143,8 @@ export type OccupancyHistoryEntry = {
 };
 
 export type Resource = {
-  mahjong?: { capacity: number; pricingConfigIds: string[] } | null;
+  /** `startWhen`: the game plan starts once the table is full (`full`, the default) or as each player sits down (`seated`). */
+  mahjong?: { capacity: number; pricingConfigIds: string[]; startWhen?: "full" | "seated" } | null;
   /** How many people can use it at once; 0 for one nobody occupies. A mahjong table's is its size. */
   capacity?: number;
   /** How long someone counts as on it after the last sign of them; also its idle time. */

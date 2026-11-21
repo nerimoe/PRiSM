@@ -104,9 +104,15 @@ async function prepareSeatBilling(
   return result;
 }
 
-function startsPlaying(here: readonly Seat[], old: Seat | undefined, gamePlan: string | null, capacity: number) {
-  return !!gamePlan && (here.length + 1 >= capacity || here.some(s => s.playing)
-    || !!old?.playing && old.planId === gamePlan);
+/**
+ * Whether a player sitting down plays now: at once on a table that starts on
+ * sitting down, otherwise once the table is full or already playing.
+ */
+function startsPlaying(here: readonly Seat[], old: Seat | undefined, gamePlan: string | null, capacity: number, startWhen: "full" | "seated" = "full") {
+  if (!gamePlan) return false;
+  if (startWhen === "seated") return true;
+  return here.length + 1 >= capacity || here.some(s => s.playing)
+    || !!old?.playing && old.planId === gamePlan;
 }
 
 /** Seat changes can change the price too: confirming a wait must not silently confirm a game. */
@@ -136,7 +142,7 @@ export async function previewMahjong(c: C, machine: ScannedResource, playerId: s
   const here = seats.filter(s => s.machineId === machine.id);
   const gamePlan = config.pricingConfigIds[0] ?? null;
   const waitingPlan = await deps.resourceBilling.planOf(machine.id);
-  const desired = startsPlaying(here, old, gamePlan, config.capacity) ? gamePlan : waitingPlan;
+  const desired = startsPlaying(here, old, gamePlan, config.capacity, config.startWhen) ? gamePlan : waitingPlan;
   if (!desired) return null;
   const result = await prepareSeatBilling(deps.pricingSessions, {
     playerId, desired, old, joining: true, at: new Date(), metadata: {},
@@ -263,7 +269,7 @@ export async function moveMahjong(
       const waitingPlan = await deps.resourceBilling.planOf(machine.id);
       if (joining && waitingPlan && !gamePlan) jsonError(409, "请店家配置麻将计费规则", "DEVICE_CONFIGURATION_REQUIRED");
       const expectedRevision = confirmedBillingRevision(body.expectedRevision, seatRevision(here, old, gamePlan, waitingPlan, config.capacity));
-      const playing = joining && startsPlaying(here, old, gamePlan, config.capacity);
+      const playing = joining && startsPlaying(here, old, gamePlan, config.capacity, config.startWhen);
       const running = joining && waitingPlan ? await deps.resourceBilling.activeSession({ resourceId: machine.id, playerId: player.id }) : null;
       if (joining && waitingPlan && !running && !onBehalf && body.consent === true)
         checkShopLocation(shop, "checkin", body.location);

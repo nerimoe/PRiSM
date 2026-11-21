@@ -597,6 +597,8 @@ const machineInput=z.object({
   mahjong:z.object({
     // A table bills one plan; what it stacks on is that plan's `requires`.
     pricingConfigIds:z.array(z.string().min(1)).max(1,"麻将桌只能选择一个计费方案"),
+    // When the game plan starts: once the table is full (players wait until then), or as each sits down.
+    startWhen:z.enum(["full","seated"]).optional(),
   }).nullable().optional(),
 });
 const patchInput=machineInput.partial();
@@ -613,7 +615,10 @@ async function validateMahjong(c:C,shopId:string,current:Resource|null,body:Mach
     if(ids.some(id=>!valid.has(id)))jsonError(400,"请选择有效的麻将计费规则","MAHJONG_PRICING_INVALID");
   }
   const before=current?mahjongConfigOf(current):null;
-  if(current&&JSON.stringify(body.mahjong)!==JSON.stringify(before)){
+  // A client that does not say when the game starts keeps what was set.
+  const after=body.mahjong?{pricingConfigIds:ids,startWhen:body.mahjong.startWhen??before?.startWhen??"full"}:null;
+  const was=before?{pricingConfigIds:before.pricingConfigIds,startWhen:before.startWhen??"full"}:null;
+  if(current&&JSON.stringify(after)!==JSON.stringify(was)){
     const seated=await c.env.DB.prepare(
       "SELECT 1 FROM mahjong_seats WHERE machine_id=? LIMIT 1",
     ).bind(current.id).first();
@@ -696,7 +701,10 @@ async function nextCapabilities(
     next.set("door",{config:{lockId:body.ttlockLockId},secrets:{},credentialHash:null});
 
   if(body.mahjong===null)next.delete("mahjong");
-  else if(body.mahjong)next.set("mahjong",{config:body.mahjong,secrets:{},credentialHash:null});
+  else if(body.mahjong)next.set("mahjong",{config:{
+    ...body.mahjong,
+    startWhen:body.mahjong.startWhen??(stored.get("mahjong")?.config.startWhen as string|undefined)??"full",
+  },secrets:{},credentialHash:null});
 
   const io=stored.get("hinata_io");
   const before=io?.config as Partial<HinataConfig>|undefined;

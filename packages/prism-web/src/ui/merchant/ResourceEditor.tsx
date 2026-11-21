@@ -148,6 +148,7 @@ export function ResourceEditor({
   const [lockId, setLockId] = useState(
     value?.ttlockLockId ? String(value.ttlockLockId) : "",
   );
+  const [mahjongStart, setMahjongStart] = useState<"full" | "seated">(value?.mahjong?.startWhen ?? "full");
   const [mahjongPricing, setMahjongPricing] = useState<string[]>(
     value?.mahjong?.pricingConfigIds ?? [],
   );
@@ -436,7 +437,7 @@ export function ResourceEditor({
             ...(caps.bot && f.get("intent") === "rotate-bot" ? { rotateBotToken: true } : {}),
             resourceGroupId: groupId,
             pricingConfigOverrideId: overrideId || null,
-            mahjong: caps.mahjong ? { pricingConfigIds: mahjongPricing } : null,
+            mahjong: caps.mahjong ? { pricingConfigIds: mahjongPricing, startWhen: mahjongStart } : null,
             // A capability that is switched off is removed, which the server
             // expresses as `null` for the bound fields.
             relayConnection: caps.hinata_io && embedded ? "embedded" : "external",
@@ -923,6 +924,27 @@ export function ResourceEditor({
                     ))}
                 </div>
               )}
+            </fieldset>
+            <fieldset className="grid gap-2 border-t border-ink/10 pt-4">
+              <legend className="mb-1 text-sm font-medium">{t("何时开始对局计费")}</legend>
+              {([
+                ["full", "人满后一起开始", "人没坐满之前算等位，按资源自己的计费方案（例如入场）计费；坐满后所有人一起切到对局方案。"],
+                ["seated", "上桌立即开始", "没有等位：每个人一坐下就按对局方案计费。"],
+              ] as const).map(([mode, label, hint]) => (
+                <label key={mode} className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    className="mt-1"
+                    name="mahjong-start"
+                    checked={mahjongStart === mode}
+                    onChange={() => setMahjongStart(mode)}
+                  />
+                  <span className="grid gap-0.5">
+                    <span>{t(label)}</span>
+                    <span className="text-xs text-ink/50">{t(hint)}</span>
+                  </span>
+                </label>
+              ))}
             </fieldset>
           </div>
         </CapabilityPane>
