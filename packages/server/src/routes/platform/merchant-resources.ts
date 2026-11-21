@@ -4,12 +4,13 @@ import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
+import { vkFromKeyText } from "../../resources/capabilities/key-text.js";
 import { machineRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { loadResource, loadResources, can, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
-import { announceGroupSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
+import { announceGroupSchema, botReplyTemplatesSchema, cabinetKeys, capabilities, coinKeyIdOf, type BotConfig, type CabinetKey, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
 import { connectedBots, idleSchedule, notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import {
   getHaConnection,
@@ -138,6 +139,10 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     hasBotToken: !!botToken,
     botLastUsedAt: botToken?.last_used_at ?? null,
     botOnline: null as boolean | null,
+    coinMethod: hinata?.coinMethod ?? "key",
+    // The shop's named keys and which is the coin button, read the same way for a cabinet set up before keys had names.
+    keys: hinata ? cabinetKeys(hinata) : [],
+    coinKeyId: hinata ? coinKeyIdOf(hinata) : null,
     coinKey,
     coinEnabled: coinKey > 0,
     coinAfterSwipe: !!hinata?.coinAfterSwipe,
@@ -527,6 +532,20 @@ const machineInput=z.object({
   homeAssistant:homeAssistantInput.optional(),
   climate:climateInput.optional(),
   ttlockLockId:z.number().int().positive().nullable().optional(),
+  /** How a coin goes in (`HinataConfig.coinMethod`); only the IO's key press so far. */
+  coinMethod:z.enum(["key"]).optional(),
+  /**
+   * The cabinet's named keys, replacing the list. `key` is what staff typed (a
+   * letter, F1–F24, Enter, a code); a new key has no `id` and gets one.
+   * `coinKeyId` names the coin button among them, or null for none; with
+   * `keys` given, the coin key code comes from it and `coinKey` is ignored.
+   */
+  keys:z.array(z.object({
+    id:z.string().regex(/^[A-Za-z0-9_-]{1,40}$/).optional(),
+    name:z.string().trim().min(1,"请填写按键名称").max(20,"按键名称最多 20 个字"),
+    key:z.union([z.string().max(12),z.number().int()]),
+  })).max(16,"最多 16 个按键").optional(),
+  coinKeyId:z.string().max(40).nullable().optional(),
   coinKey:z.number().int().min(0).max(65535).default(32),
   coinAfterSwipe:z.boolean().default(false),
   // The most credits a platform coin may leave on a cabinet that reports its
@@ -677,7 +696,24 @@ async function nextCapabilities(
     if(body.hinataPassword)secrets.password=await seal(body.hinataPassword);else delete secrets.password;
   }
   const transport=body.relayConnection??before?.transport??"external";
-  const coinKey=body.coinKey??before?.coinKey??32;
+  // The named keys, as saved now or as they were; then the coin button among them.
+  let keys:CabinetKey[]=before?.keys??[];
+  let coinKeyId:string|null=before?.coinKeyId??null;
+  let coinKey=body.coinKey??before?.coinKey??32;
+  if(body.keys){
+    keys=body.keys.map((one)=>{
+      const code=typeof one.key==="number"?one.key:vkFromKeyText(one.key);
+      if(code===null||code<1||code>65535)jsonError(400,`无法识别「${one.name}」的按键`,"INVALID_KEY");
+      return {id:one.id??randomToken(8).replace(/[^A-Za-z0-9_-]/g,""),name:one.name,key:code};
+    });
+    if(new Set(keys.map((one)=>one.id)).size!==keys.length)jsonError(400,"按键重复","DUPLICATE_KEY");
+    coinKeyId=body.coinKeyId!==undefined?body.coinKeyId:coinKeyIdOf({coinKey,keys,coinKeyId});
+    // A coin key the list no longer has is no coin key.
+    const coin=keys.find((one)=>one.id===coinKeyId);
+    if(!coin)coinKeyId=null;
+    coinKey=coin?.key??0;
+  }
+  const coinMethod=body.coinMethod??before?.coinMethod??"key";
   let relayToken:string|null=null;
   if(transport==="embedded"){
     // E2EE and the embedded relay are mutually exclusive: this platform sends
@@ -699,10 +735,10 @@ async function nextCapabilities(
     const coinCap=body.coinCap!==undefined?body.coinCap:before?.coinCap??null;
     // A coin after a card stops at the limit, so there is none without one.
     const coinAfterSwipe=coinKey>0&&coinCap!=null&&(body.coinAfterSwipe??!!before?.coinAfterSwipe);
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe,coinCap,channel},secrets,credentialHash});
+    next.set("hinata_io",{config:{transport,coinMethod,keys,coinKeyId,coinKey,coinAfterSwipe,coinCap,channel},secrets,credentialHash});
   }else if(secrets.url){
     // An external relay never says the game took a card, which is what a coin after one waits for.
-    next.set("hinata_io",{config:{transport,coinKey,coinAfterSwipe:false},secrets,credentialHash:null});
+    next.set("hinata_io",{config:{transport,coinMethod,keys,coinKeyId,coinKey,coinAfterSwipe:false},secrets,credentialHash:null});
   }else{
     next.delete("hinata_io");
   }

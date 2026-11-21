@@ -216,6 +216,32 @@ describe("pre-fork merchant machine lifecycle",()=>{
     expect(unbound.status).toBe(200);
     expect(rows()).toEqual([]);
   });
+  it("keeps a cabinet's named keys, reads an older coin key as one called 投币, and takes the coin key from the one chosen",async()=>{
+    const {app,env}=fixture();
+    const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{
+      method,headers:{"content-type":"application/json"},body:JSON.stringify(body),
+    }),env);
+    const created=await send("POST","/machines",{shopId:"shop-1",name:"Cabinet",coinKey:40,hinataUrl:"https://relay.example/io",hinataPassword:"secret-pass"});
+    const {machine}=await created.json() as {machine:Record<string,unknown>&{id:string}};
+    expect(machine).toMatchObject({keys:[{id:"coin",name:"投币",key:40}],coinKeyId:"coin",coinKey:40});
+
+    const saved=await send("PATCH",`/machines/${machine.id}`,{
+      hinataUrl:"https://relay.example/io",keys:[{id:"coin",name:"投币",key:40},{name:"服务",key:"F1"},{name:"测试",key:"Enter"}],coinKeyId:"coin",
+    });
+    expect(saved.status).toBe(200);
+    const after=(await saved.json() as {machine:{keys:{id:string;name:string;key:number}[];coinKeyId:string|null;coinKey:number}}).machine;
+    expect(after.keys.map(k=>[k.name,k.key])).toEqual([["投币",40],["服务",112],["测试",13]]);
+    expect(after).toMatchObject({coinKeyId:"coin",coinKey:40});
+
+    // Dropping the coin key leaves the cabinet without a coin, its other keys kept.
+    const service=after.keys[1]!;
+    const noCoin=await send("PATCH",`/machines/${machine.id}`,{hinataUrl:"https://relay.example/io",keys:[service],coinKeyId:"coin"});
+    expect((await noCoin.json() as {machine:Record<string,unknown>}).machine).toMatchObject({keys:[service],coinKeyId:null,coinKey:0});
+
+    const unreadable=await send("PATCH",`/machines/${machine.id}`,{hinataUrl:"https://relay.example/io",keys:[{name:"坏",key:"!!"}]});
+    expect(unreadable.status).toBe(400);
+  });
+
   it("binds an air conditioner as its own capability and reuses the power token for the same Home Assistant",async()=>{
     const {app,env,sqlite}=fixture();
     const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createD1DatabaseFromSqlite, initializeLocalDatabase } from "../src/local-server.js";
-import { COIN_SETTLE_MS, coinGate } from "../src/resources/capabilities/cabinet.js";
+import { COIN_SETTLE_MS, claimCoin, coinGate } from "../src/resources/capabilities/cabinet.js";
 import type { Resource } from "../src/resources/resource.js";
 
 const SHOP = "shop-1";
@@ -51,5 +51,18 @@ describe("coin limit from the cabinet's books", () => {
     expect(await coinGate(fixture({ credit: 0, link: "offline" }), SHOP, cabinet(2), "a")).toBe("unknown");
     // An IO that does not read its cabinet.
     expect(await coinGate(fixture({ link: "online" }), SHOP, cabinet(2), "a")).toBe("unknown");
+  });
+});
+
+describe("coin cooldown", () => {
+  it("holds players to the cooldown, lets staff coin on purpose, and keeps the limit for both", async () => {
+    const db = fixture({ link: "offline" });
+    expect(await claimCoin(db, SHOP, cabinet(null), "p1")).toBe("ok");
+    expect(await claimCoin(db, SHOP, cabinet(null), "p2")).toBe("cooldown");
+    // Staff coin again at once.
+    expect(await claimCoin(db, SHOP, cabinet(null), "s1", { cooldown: false })).toBe("ok");
+    expect(await claimCoin(db, SHOP, cabinet(null), "s2", { cooldown: false })).toBe("ok");
+    const full = fixture({ credit: 2, link: "online" });
+    expect(await claimCoin(full, SHOP, cabinet(2), "s3", { cooldown: false })).toBe("full");
   });
 });

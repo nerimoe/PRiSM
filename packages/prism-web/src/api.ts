@@ -163,6 +163,11 @@ export type Resource = {
   /** A Home Assistant `climate.*` entity, such as an air conditioner. */
   climate?: { connectionId?: string | null; url: string; entityId: string } | null;
   ttlockLockId: number | null;
+  /** How a coin goes in: `key`, the IO pressing `coinKey`. Further ways join this list. */
+  coinMethod?: "key";
+  /** The cabinet's named keys, shown as buttons in the admin; one of them may be the coin button. */
+  keys?: { id: string; name: string; key: number }[];
+  coinKeyId?: string | null;
   coinKey: number;
   coinEnabled?: boolean;
   id: string;

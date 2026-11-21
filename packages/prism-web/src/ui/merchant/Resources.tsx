@@ -857,6 +857,7 @@ const actionLabels: Record<string, string> = {
   "climate.set_temperature": "设定温度",
   "climate.set_fan_mode": "调整风速",
   coin: "投币",
+  "key.press": "按键",
   "door.open": "获取开门密码",
   "aime.scan": "刷卡",
   "card.state": "读卡状态变化",
@@ -1024,7 +1025,6 @@ function ResourceActions({
   );
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [cardNumber, setCardNumber] = useState("");
-  const [coinKey, setCoinKey] = useState("");
   const power = state?.power ?? null;
   const climate = state?.climate ?? null;
   const [table, setTable] = useState<MahjongTable | null>(null);
@@ -1180,29 +1180,34 @@ function ResourceActions({
                   </button>
                 </div>
               )}
+              {/* A coin, the cabinet's own way; staff are not held to the cooldown. */}
               {id === "hinata_io" && actionNames.includes("coin") && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    className={`${input} min-h-9 w-40`}
-                    placeholder={t("按键")}
-                    aria-label={t("投币按键")}
-                    value={coinKey}
-                    disabled={!device.enabled}
-                    onChange={(e) => setCoinKey(e.target.value)}
-                  />
                   <button
                     type="button"
                     className={button}
                     disabled={!device.enabled || !!busy}
-                    onClick={() =>
-                      void send(
-                        "coin",
-                        coinKey.trim() ? { key: coinKey } : undefined,
-                      )
-                    }
+                    onClick={() => void send("coin")}
                   >
                     {t("投币")}
                   </button>
+                </div>
+              )}
+              {/* The shop's named keys, for service menus and tests: not coins, and never on a player's page. */}
+              {id === "hinata_io" && actionNames.includes("key.press") && !!device.keys?.length && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {device.keys.map((one) => (
+                    <button
+                      key={one.id}
+                      type="button"
+                      className={buttonQuiet}
+                      title={t("按键码 {key}", { key: String(one.key) })}
+                      disabled={!device.enabled || !!busy}
+                      onClick={() => void send("key.press", { keyId: one.id })}
+                    >
+                      {one.name}
+                    </button>
+                  ))}
                 </div>
               )}
               {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}

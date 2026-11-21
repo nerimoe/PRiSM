@@ -21,6 +21,11 @@ import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, us
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
 import { resourceCapabilities, type CapabilityId } from "./resource-capabilities";
 import { BotReplyEditor } from "./BotReplyEditor";
+
+/** A named key as it is being edited: `key` is what staff typed, read by the server. */
+type CabinetKeyDraft = { id: string; name: string; key: string };
+/** An id for a key added here; the server keeps it, so the coin choice can point at it before saving. */
+const newKeyId = () => `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 import { BotAnnouncementGroups } from "./BotAnnouncementGroups";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
@@ -125,9 +130,13 @@ export function ResourceEditor({
   );
   const [hinataUrl, setHinataUrl] = useState(value?.hinataUrl ?? "");
   const [password, setPassword] = useState("");
-  const [coinKey, setCoinKey] = useState(
-    value?.coinKey ? String(value.coinKey) : "",
+  const [coinMethod, setCoinMethod] = useState<"key">(value?.coinMethod ?? "key");
+  // The cabinet's named keys, with what staff typed for each; and which one is the coin button.
+  const [keys, setKeys] = useState<CabinetKeyDraft[]>(
+    () => (value?.keys ?? []).map((one) => ({ id: one.id, name: one.name, key: String(one.key) })),
   );
+  const [coinKeyId, setCoinKeyId] = useState<string | null>(value?.coinKeyId ?? null);
+  const coinChosen = !!coinKeyId && keys.some((one) => one.id === coinKeyId);
   const [coinAfterSwipe, setCoinAfterSwipe] = useState(
     value?.coinAfterSwipe ?? false,
   );
@@ -433,12 +442,18 @@ export function ResourceEditor({
               : {}),
             homeAssistant: caps.power ? haBody(power) : null,
             climate: caps.climate ? haBody(ac) : null,
-            coinKey: caps.hinata_io && canCoin ? Number(coinKey || 0) : 0,
+            ...(caps.hinata_io ? { coinMethod } : {}),
+            ...(caps.hinata_io
+              ? {
+                  keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: /^\d+$/.test(one.key.trim()) ? Number(one.key.trim()) : one.key })),
+                  coinKeyId: canCoin && coinChosen ? coinKeyId : null,
+                }
+              : {}),
             coinAfterSwipe:
               caps.hinata_io &&
               embedded &&
               canCoin &&
-              Number(coinKey) > 0 &&
+              coinChosen &&
               Number(coinCap) > 0 &&
               coinAfterSwipe,
             ...(caps.hinata_io && embedded ? { coinCap: Number(coinCap) > 0 ? Number(coinCap) : null } : {}),
@@ -700,23 +715,35 @@ export function ResourceEditor({
             )}
             <div className="grid gap-3 border-t border-ink/10 pt-4">
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="投币按键码">
-                  <input
+                {/* How a coin goes in. The cooldown, limit and coin events below hold whichever it is. */}
+                <Field label="投币方式">
+                  <select
                     className={input}
-                    type="number"
-                    min="1"
-                    max="65535"
-                    placeholder={t("不启用")}
                     disabled={!canCoin}
-                    value={coinKey}
-                    onChange={(e) => setCoinKey(e.target.value)}
-                  />
+                    value={coinMethod}
+                    onChange={(e) => setCoinMethod(e.target.value as "key")}
+                  >
+                    <option value="key">{t("IO 模拟按键")}</option>
+                  </select>
+                </Field>
+                <Field label="投币按键">
+                  <select
+                    className={input}
+                    disabled={!canCoin}
+                    value={coinChosen ? coinKeyId! : ""}
+                    onChange={(e) => setCoinKeyId(e.target.value || null)}
+                  >
+                    <option value="">{t("不启用投币")}</option>
+                    {keys.filter((one) => one.name.trim()).map((one) => (
+                      <option key={one.id} value={one.id}>{one.name}</option>
+                    ))}
+                  </select>
                 </Field>
                 {embedded && (
                   <label className="flex items-end gap-2 pb-3 text-sm">
                     <input
                       type="checkbox"
-                      disabled={!canCoin || !coinKey || !(Number(coinCap) > 0)}
+                      disabled={!canCoin || !coinChosen || !(Number(coinCap) > 0)}
                       checked={coinAfterSwipe}
                       onChange={(e) => setCoinAfterSwipe(e.target.checked)}
                     />
@@ -732,7 +759,7 @@ export function ResourceEditor({
                     min="1"
                     max="99"
                     placeholder={t("不限制")}
-                    disabled={!canCoin || !coinKey}
+                    disabled={!canCoin || !coinChosen}
                     value={coinCap}
                     onChange={(e) => setCoinCap(e.target.value)}
                   />
@@ -744,8 +771,51 @@ export function ResourceEditor({
               {!canCoin && (
                 <Hint>{t("外部中继要先填连接密码，才能设置投币。")}</Hint>
               )}
+            </div>
+            {/* Named keys: buttons in this cabinet's admin, never on a player's page. */}
+            <div className="grid gap-2 border-t border-ink/10 pt-4">
+              <span className="text-sm font-medium">{t("按键")}</span>
+              {keys.map((one, index) => (
+                <div key={one.id} className="flex flex-wrap items-center gap-2">
+                  <input
+                    className={`${input} min-w-0 flex-1`}
+                    aria-label={t("按键名称")}
+                    placeholder={t("名称，如 投币、服务、测试")}
+                    maxLength={20}
+                    value={one.name}
+                    onChange={(e) => setKeys(keys.map((other, at) => (at === index ? { ...other, name: e.target.value } : other)))}
+                  />
+                  <input
+                    className={`${input} w-32`}
+                    aria-label={t("按键")}
+                    placeholder={t("如 F1、Enter、32")}
+                    maxLength={12}
+                    value={one.key}
+                    onChange={(e) => setKeys(keys.map((other, at) => (at === index ? { ...other, key: e.target.value } : other)))}
+                  />
+                  <button
+                    type="button"
+                    className={buttonQuiet}
+                    onClick={() => {
+                      setKeys(keys.filter((_, at) => at !== index));
+                      if (one.id === coinKeyId) setCoinKeyId(null);
+                    }}
+                  >
+                    {t("删除")}
+                  </button>
+                </div>
+              ))}
+              {keys.length < 16 && (
+                <button
+                  type="button"
+                  className={`${buttonQuiet} justify-self-start`}
+                  onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "32" }])}
+                >
+                  {t("添加按键")}
+                </button>
+              )}
               <Hint>
-                {t("按键码使用 Windows Virtual-Key Codes，例如 32 是空格键。")}
+                {t("每个按键在后台的操作面板里显示为一个按钮，玩家页面不显示。按键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码（如 32 是空格键）。")}
               </Hint>
             </div>
           </div>

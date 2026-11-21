@@ -1,6 +1,6 @@
 /**
- * A coin is a simulated key press. Staff type the key, but the relay protocol
- * only carries a numeric key code, so the text is mapped here.
+ * Staff press a key on a cabinet (`key.press`) by typing it, but the relay
+ * protocol only carries a numeric key code, so the text is mapped here.
  *
  * Only unmodified keys are representable: the protocol has no modifier field,
  * so shifted symbols (for example `!`) are not addressable.
@@ -37,6 +37,9 @@ export function vkFromKeyText(text: string): number | null {
   if (!trimmed) return null;
   const named = NAMED[trimmed.toLowerCase()];
   if (named) return named;
+  // F1–F24, which service menus and test switches are often on.
+  const fn = /^f([1-9]|1[0-9]|2[0-4])$/i.exec(trimmed);
+  if (fn) return 111 + Number(fn[1]);
   if ([...trimmed].length === 1) {
     const char = trimmed.toLowerCase();
     if (/^[a-z]$/.test(char)) return char.toUpperCase().charCodeAt(0);

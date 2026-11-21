@@ -129,31 +129,47 @@ function cardRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
+/** The IO presses a key on the cabinet, `count` times: what both a coin by key and a staff key press are. */
+async function pressKey(runtime: DeviceRuntime, device: Parameters<ActionRunner>[0]["device"], operationId: string, key: number, count: number): Promise<RunOutcome> {
+  const config = hinataConfigOf(device)!;
+  if (config.transport === "embedded") {
+    const relay = machineRelayNamespace(runtime.env);
+    if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
+    const sent = await relay.getByName(config.channel).sendKeyPress({
+      key,
+      count,
+      messageId: operationId,
+      expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
+    });
+    return sent.ok ? { outcome: "ok" } : { outcome: "failed", message: sent.error ?? "机台未在线" };
+  }
+  const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
+  if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
+  const password = await readSecret(runtime.db, device, "hinata_io", "password", runtime.env.URL_ENCRYPTION_KEY);
+  return relayOutcome(await sendHinataCoin(normalizeHinataUrl(url), key, password, operationId, {
+    count,
+    fetcher: runtime.fetcher,
+  }));
+}
+
+const countOf = (payload: Record<string, unknown>) => typeof payload.count === "number" ? payload.count : 1;
+
+/** A coin, the way this cabinet takes one (`coinMethod`). Never a key of the caller's choosing. */
 function coinRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, operationId, payload }) => {
     const config = hinataConfigOf(device)!;
-    const count = typeof payload.count === "number" ? payload.count : 1;
-    // Staff may press a key of their choosing; otherwise the device's
-    // configured coin key is used.
-    const key = typeof payload.key === "number" ? payload.key : config.coinKey;
-    if (config.transport === "embedded") {
-      const relay = machineRelayNamespace(runtime.env);
-      if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
-      const sent = await relay.getByName(config.channel).sendKeyPress({
-        key,
-        count,
-        messageId: operationId,
-        expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
-      });
-      return sent.ok ? { outcome: "ok" } : { outcome: "failed", message: sent.error ?? "机台未在线" };
+    // A configuration saved before there was a choice coins by key.
+    switch (config.coinMethod ?? "key") {
+      case "key": return pressKey(runtime, device, operationId, config.coinKey, countOf(payload));
     }
-    const url = await readSecret(runtime.db, device, "hinata_io", "url", runtime.env.URL_ENCRYPTION_KEY);
-    if (!url) return { outcome: "failed", message: "机台未配置连接地址" };
-    const password = await readSecret(runtime.db, device, "hinata_io", "password", runtime.env.URL_ENCRYPTION_KEY);
-    return relayOutcome(await sendHinataCoin(normalizeHinataUrl(url), key, password, operationId, {
-      count,
-      fetcher: runtime.fetcher,
-    }));
+  };
+}
+
+/** Staff pressing a key they name (`key.press`). */
+function keyRunner(runtime: DeviceRuntime): ActionRunner {
+  return async ({ device, operationId, payload }) => {
+    if (typeof payload.key !== "number") return { outcome: "failed", message: "缺少按键码" };
+    return pressKey(runtime, device, operationId, payload.key, countOf(payload));
   };
 }
 
@@ -201,6 +217,7 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       typeof p.fanMode === "string" && p.fanMode ? { fan_mode: p.fanMode } : null),
     "aime.scan": cardRunner(runtime),
     coin: coinRunner(runtime),
+    "key.press": keyRunner(runtime),
     "door.open": doorRunner(runtime),
   };
   const bus = createDeviceBus({

@@ -22,3 +22,10 @@ describe("coin key text", () => {
     expect(vkFromKeyText("99999")).toBeNull();
   });
 });
+
+it("reads function keys, where service menus and test switches often are", () => {
+  expect(vkFromKeyText("F1")).toBe(112);
+  expect(vkFromKeyText("f12")).toBe(123);
+  expect(vkFromKeyText("F24")).toBe(135);
+  expect(vkFromKeyText("F25")).toBeNull();
+});

@@ -198,6 +198,22 @@ describe("device bus: perform", () => {
     expect(operation.status).toBe("succeeded");
   });
 
+  it("presses a named key on a cabinet that has no coin key, as a key press and not a coin", async () => {
+    const pressed: Array<Record<string, unknown>> = [];
+    const { bus, events } = busWith({ runners: { "key.press": async ({ payload }) => { pressed.push(payload); return { outcome: "ok" }; } } });
+    const service = { id: "service", name: "服务", key: 112 };
+    const noCoin = ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0, keys: [service], coinKeyId: null }, []);
+    // Without a named key there is nothing to press.
+    await expect(bus.perform({ device: ioDevice({ transport: "embedded", channel: "m_x", coinKey: 0 }, []), action: "key.press", actor: player }))
+      .rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
+    await expect(bus.perform({ device: noCoin, action: "coin", actor: player })).rejects.toMatchObject({ code: "DEVICE_ACTION_UNSUPPORTED" });
+    const staff = { type: "staff" as const, staffId: "user:s1" };
+    const { operation } = await bus.perform({ device: noCoin, action: "key.press", actor: staff, payload: { key: 112 } });
+    expect(operation.status).toBe("succeeded");
+    expect(pressed).toEqual([expect.objectContaining({ key: 112 })]);
+    expect(events.map(deviceEventType).every((type) => type.startsWith("key.press"))).toBe(true);
+  });
+
   it("refuses a disabled device", async () => {
     const { bus } = busWith({ runners: { coin: async () => ({ outcome: "ok" }) } });
     const disabled = device({ hinata_io: { config: { transport: "external", coinKey: 32 }, secretNames: new Set(["url", "password"]) } }, false);

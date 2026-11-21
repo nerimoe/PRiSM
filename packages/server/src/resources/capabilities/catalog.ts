@@ -38,6 +38,7 @@ export type ActionName =
   | "climate.set_fan_mode"
   | "aime.scan"
   | "coin"
+  | "key.press"
   | "door.open";
 
 export type ActionSpec = {
@@ -99,8 +100,29 @@ export type HaEntityConfig = z.infer<typeof haEntityConfig>;
 const haBound = (config: HaEntityConfig, secrets: ReadonlySet<string>) =>
   secrets.has("binding") || (!!config.connectionId && !!config.entityId);
 
+/** A key on the cabinet the shop named, such as 投币, 服务, 测试: pressed from the admin, never from a player's page. */
+const cabinetKey = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+  name: z.string().trim().min(1).max(20),
+  /** Windows Virtual-Key code the IO presses. */
+  key: z.number().int().min(1).max(65535),
+});
+export type CabinetKey = z.infer<typeof cabinetKey>;
+
 const hinataConfig = z.object({
   transport: z.enum(["external", "embedded"]).default("external"),
+  /**
+   * How a coin goes into the cabinet. `key`: the IO presses `coinKey` as the
+   * cabinet's coin button. Other ways (a Home Assistant relay pulsing the coin
+   * line) are further values here; whichever it is, a coin keeps its cooldown,
+   * limit, events and billing (`coinRunner`).
+   */
+  coinMethod: z.enum(["key"]).default("key"),
+  /** The shop's named keys, shown as buttons in the admin. */
+  keys: z.array(cabinetKey).max(16).default([]),
+  /** Which of `keys` is the coin button; `coinKey` is its code, kept with it when saved. */
+  coinKeyId: z.string().nullable().default(null),
+  /** The coin button's key code; 0 when there is none. Written from `coinKeyId` when saved. */
   coinKey: z.number().int().min(0).max(65535).default(32),
   coinAfterSwipe: z.boolean().default(false),
   /**
@@ -170,6 +192,21 @@ export const climate: CapabilitySpec<HaEntityConfig> = {
   available: (_action, config, secrets) => haBound(config, secrets),
 };
 
+/**
+ * The keys a cabinet's admin shows. A configuration saved before keys could be
+ * named has only its coin key, which reads as one key called 投币.
+ */
+export function cabinetKeys(config: Pick<HinataConfig, "coinKey"> & Partial<Pick<HinataConfig, "keys">>): CabinetKey[] {
+  if (config.keys?.length) return config.keys;
+  return config.coinKey > 0 ? [{ id: "coin", name: "投币", key: config.coinKey }] : [];
+}
+
+/** Which named key is the coin button, by the same reading. */
+export function coinKeyIdOf(config: Pick<HinataConfig, "coinKey"> & Partial<Pick<HinataConfig, "keys" | "coinKeyId">>): string | null {
+  if (config.keys?.length) return config.coinKeyId ?? null;
+  return config.coinKey > 0 ? "coin" : null;
+}
+
 export const hinataIo: CapabilitySpec<HinataConfig> = {
   id: "hinata_io",
   legacyExecutor: "hinata_io",
@@ -181,6 +218,9 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     // taken within this means it is busy elsewhere; the IO drops it after 3 s.
     "aime.scan": { countsAsPlay: true, requiresBilling: true, awaits: { signal: "card.consumed", timeoutMs: 4500 } },
     coin: { countsAsPlay: true, requiresBilling: true },
+    // Staff pressing any key on the cabinet, for service menus and tests: not a
+    // coin, so no cooldown or limit, no coin event and no play.
+    "key.press": { countsAsPlay: false, staffOnly: true },
   },
   signals: {
     "card.state": { activity: true, store: true },
@@ -203,10 +243,15 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
   available(action, config, secrets) {
     const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
     if (!connected) return false;
-    if (action !== "coin") return true;
     // An external relay rejects a plaintext key press; the embedded relay
     // authenticates the connection instead and needs no password.
-    return config.coinKey > 0 && (config.transport === "embedded" || secrets.has("password"));
+    const canPress = config.transport === "embedded" || secrets.has("password");
+    if (action === "key.press") return canPress && cabinetKeys(config).length > 0;
+    if (action !== "coin") return true;
+    // A configuration saved before there was a choice coins by key.
+    switch (config.coinMethod ?? "key") {
+      case "key": return config.coinKey > 0 && canPress;
+    }
   },
 };
 

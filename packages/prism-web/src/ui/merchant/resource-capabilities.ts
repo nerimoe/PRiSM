@@ -82,7 +82,7 @@ export type ResourceAction = { name: string; capability: string };
 export function actionCapability(action: string): CapabilityId | null {
   if (action === "power.on" || action === "power.off" || action === "power.keep") return "power";
   if (action.startsWith("climate.")) return "climate";
-  if (action === "aime.scan" || action === "coin") return "hinata_io";
+  if (action === "aime.scan" || action === "coin" || action === "key.press") return "hinata_io";
   if (action === "door.open") return "door";
   if (action.startsWith("mahjong.")) return "mahjong";
   return null;

@@ -114,10 +114,15 @@ export async function coinGate(
  * books and has a coin limit is judged by them (`coinGate`); any other keeps the
  * shop's coin cooldown.
  */
-export async function claimCoin(db:D1DatabaseLike,shopId:string,device:Resource,id:string):Promise<"ok"|"cooldown"|"full"> {
+/**
+ * Whether a coin may go in now: never past the cabinet's limit, and, unless
+ * `cooldown` is off (staff coining on purpose), not within the cooldown.
+ */
+export async function claimCoin(db:D1DatabaseLike,shopId:string,device:Resource,id:string,options:{cooldown?:boolean}={}):Promise<"ok"|"cooldown"|"full"> {
   const gate=await coinGate(db,shopId,device,id);
   if(gate==="ok")return "ok";
   if(gate==="full")return "full";
+  if(options.cooldown===false)return "ok";
   if(gate==="settling")return "cooldown";
   return await claimCooldown(db,shopId,device.id,id)?"ok":"cooldown";
 }

@@ -135,7 +135,7 @@ curl -X POST http://localhost:8787/rpc/player/device-commands \
 
 `target` 只用于找到设备（ID、`public_id`、名称或别名）；设备能否执行某个动作由它绑定的能力决定，见 [集成与设备](integrations-and-machines.md)。
 
-玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；`coin` 还会检查投币冷却时间。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
+玩家发起的 `coin`、`aime.scan`、`power.on` 和 `power.off` 必须已有活跃计费 session；玩家的 `coin` 还会检查投币冷却时间，店员从后台投币不受冷却限制（投币上限照样检查）。店员按机台上店家命名的按键用 `key.press`（带 `keyId`），它不是投币。受信任的 Bot 集成可为 `power.on/off` 请求附加 `staffOverride: true`，该请求会记录为员工动作并不受玩家 session 限制。Koishi 的 `powerCommandsAdminOnly` 配置只限制 `/off`；`/on` 仍要求玩家已入场。
 
 设施动作示例：
 

@@ -11,13 +11,16 @@ import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import type { AppBindings } from "../../bindings.js";
 import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
-import { vkFromKeyText } from "../../resources/capabilities/key-text.js";
+import { cabinetKeys, type CabinetKey } from "../../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readClimate, readPower, type ClimateState } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
 import { notice, requestLocale } from "../../notices.js";
 import { claimCoin } from "../../resources/capabilities/cabinet.js";
 import type { ActionName } from "../../resources/capabilities/catalog.js";
+import { logger } from "../../log.js";
+
+const log = logger("devices");
 
 type C = Context<AppBindings, any, any>;
 
@@ -25,7 +28,7 @@ export const actionSchema=z.object({
   ticket:z.string().min(1),
   operationId:z.string().uuid(),
   action:z.enum([
-    "power.on","power.off","power.keep","aime.scan","coin","door.open",
+    "power.on","power.off","power.keep","aime.scan","coin","key.press","door.open",
     "climate.on","climate.off","climate.set_mode","climate.set_temperature","climate.set_fan_mode",
     "mahjong.join","mahjong.leave","mahjong.seat","mahjong.unseat",
   ]),
@@ -33,8 +36,8 @@ export const actionSchema=z.object({
   playerId:z.string().min(1).optional(),
   /** A card number staff typed in: 20 digits, sent to the machine as-is. */
   cardNumber:z.string().regex(/^\d{20}$/).optional(),
-  /** A key staff typed for the coin press; the configured key is the fallback. */
-  key:z.string().trim().min(1).max(12).optional(),
+  /** Which of the cabinet's named keys staff press with `key.press`. A coin always uses the cabinet's own way. */
+  keyId:z.string().min(1).max(40).optional(),
   /** Climate settings. Which values an entity accepts is its own; Home Assistant rejects the rest. */
   mode:z.string().regex(/^[a-z_]{1,32}$/).optional(),
   temperature:z.number().finite().min(-20).max(60).optional(),
@@ -114,7 +117,7 @@ export async function executeResourceAction(
       actor: staff ? { type: "staff", staffId: `user:${user.id}` } : seen.playerId ? { type: "player", playerId: seen.playerId } : { type: "system" },
       code,
       ...(typeof error?.message === "string" && error.message ? { message: error.message } : {}),
-    }).catch((failure) => console.error("Device refusal was not recorded", failure));
+    }).catch((failure) => log.error(`could not record that ${body.action} on ${machine.id} was refused (${code})`, { shopId: machine.shop_id, deviceId: machine.id, action: body.action, code, error: failure }));
   };
   try {
     const response = await performResourceAction(c, machine, body, staff, seen);
@@ -186,14 +189,13 @@ async function performResourceAction(
       jsonError(400, "请输入卡号或选择玩家", "CARD_REQUIRED");
     }
   }
-  // A coin press may use a key the staff member typed instead of the device's
-  // configured coin key. Players cannot choose the key: pressing arbitrary
-  // keys would bypass the configured coin button.
-  let coinKey: number | null = null;
-  if (action === "coin" && body.key) {
-    if (!staff) jsonError(403, "只有店员可以指定按键", "FORBIDDEN");
-    coinKey = vkFromKeyText(body.key);
-    if (coinKey === null) jsonError(400, "无法识别的按键", "INVALID_COIN_KEY");
+  // Staff may press any key on the cabinet (`key.press`), which is not a coin.
+  // A coin is always the cabinet's own coin, so its key is never the caller's.
+  let pressed: CabinetKey | null = null;
+  if (action === "key.press") {
+    if (!staff) jsonError(403, "只有店员可以按键", "FORBIDDEN");
+    pressed = cabinetKeys(hinataConfigOf(device)!).find((key) => key.id === body.keyId) ?? null;
+    if (!pressed) jsonError(404, "没有这个按键", "KEY_NOT_FOUND");
   }
   return runPlayerOperation(
     c,
@@ -210,7 +212,8 @@ async function performResourceAction(
         },
       ]);
       if (action === "coin") {
-        const claim = await claimCoin(c.env.DB, shop.id, device, body.operationId);
+        // The cooldown keeps players from coining in a burst; staff coin on purpose. The limit holds for both.
+        const claim = await claimCoin(c.env.DB, shop.id, device, body.operationId, { cooldown: !staff });
         if (claim === "full") jsonError(409, "达到机台投币上限", "COIN_CABINET_FULL");
         if (claim === "cooldown") jsonError(429, "请稍后再投币", "COIN_COOLDOWN");
       }
@@ -237,17 +240,11 @@ async function performResourceAction(
         action,
         actor: player ? { type: "player", playerId: player.id } : { type: "staff", staffId: `user:${user.id}` },
         operationId: body.operationId,
-        payload: { holder: player?.id ?? user.id, ...climate },
+        // Which key staff pressed is kept with the event; a card number is not.
+        payload: { holder: player?.id ?? user.id, ...climate, ...(pressed ? { key: pressed.key, keyId: pressed.id, keyName: pressed.name } : {}) },
         // Staff swiping or coining for a named player act for them.
         ...(staff && body.playerId ? { forPlayerId: body.playerId } : {}),
-        ...(accessCode || coinKey !== null
-          ? {
-              transient: {
-                ...(accessCode ? { accessCode } : {}),
-                ...(coinKey !== null ? { key: coinKey } : {}),
-              },
-            }
-          : {}),
+        ...(accessCode ? { transient: { accessCode } } : {}),
       });
       if (done.operation.status !== "succeeded") {
         return c.json(
