@@ -26,6 +26,9 @@ import { can, loadResources, matchesRef, type Resource } from "../resource.js";
 import { createCardStore } from "../cards.js";
 import { createRuntimeBus } from "./runtime.js";
 import { coinGate } from "./cabinet.js";
+import { logger } from "../../log.js";
+
+const log = logger("devices");
 
 export type DeviceActionDependencies = {
   db: D1DatabaseLike;
@@ -129,7 +132,7 @@ export function createDeviceActionService(deps: DeviceActionDependencies): Devic
       } catch (error) {
         if (error instanceof PrismDomainError) {
           await bus.refuse({ device: named, action, actor, code: error.code })
-            .catch((failure) => console.error("Device refusal was not recorded", failure));
+            .catch((failure) => log.error(`could not record that ${action} on ${named?.id ?? "a device"} was refused (${error.code})`, { shopId: deps.shopId, deviceId: named?.id ?? null, action, code: error.code, playerId, error: failure }));
         }
         throw error;
       }

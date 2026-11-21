@@ -4,6 +4,9 @@ import type { HaWatch } from "../durable-objects/machine-relay.js";
 import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
 import type { CabinetSnapshot } from "../hardware/aimeio-relay.js";
 import { machineRelayPath } from "./relay-path.js";
+import { logger } from "../log.js";
+
+const log = logger("machine-relay");
 
 export type RelayGatewayResult =
   | { kind: "not-relay" }
@@ -66,7 +69,7 @@ export async function relayGateway(
  * resolving a channel requires the token itself.
  */
 function rejected(reason: string): Response {
-  console.log(JSON.stringify({ event: "machine_relay_rejected", reason }));
+  log.warn(`refused a machine connection: ${reason}`, { event: "machine_relay_rejected", reason });
   return new Response("Unauthorized", {
     status: 401,
     headers: { "WWW-Authenticate": "Bearer" },

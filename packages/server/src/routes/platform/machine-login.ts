@@ -18,6 +18,9 @@ import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { reconnectImportedAccount } from "../shops/data/shop-data-accounts.js";
 import { findLegacyShopByCode } from "../../legacy/tenant-resolver.js";
 import { resolveResourceTicket } from "./resource-ticket.js";
+import { logger } from "../../log.js";
+
+const log = logger("machine-login");
 
 export const machineLoginRouter = new Hono<AppBindings>();
 type C = Context<AppBindings, any, any>;
@@ -176,7 +179,7 @@ async function handleLogin(c:C,routePublicId?:string) {
     // The shop learning whose card this is, not the player adding one: no event.
     await createCardStore(c.env.DB,shop.id,c.env.URL_ENCRYPTION_KEY)
       .bind({playerId:cardPlayerId,card:{type:card.card_type,accessCode:card.access_code},source:"scan"})
-      .catch(error=>console.error("Card binding failed",error));
+      .catch(error=>log.error(`could not bind the scanned ${card.card_type} card to player ${cardPlayerId}`, { shopId: shop.id, playerId: cardPlayerId, cardType: card.card_type, error }));
   }
   const sent=scan.operation.status==="succeeded";
   const status=sent?"completed":scan.operation.status==="pending"?"unknown":"failed";

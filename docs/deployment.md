@@ -181,6 +181,27 @@ Cloudflare Workers Builds 的 Build command 使用 `bun run build:web`（检测�
 | `PRISM_MAINTENANCE_NOTICE_MINUTES` | `0` | 提前多少分钟预告，0 到 15；0 表示不预告、不等待。等待时间计入 Workers Builds 的构建时长。建议 beta 保持 0，stable 设为 5。 |
 | `PRISM_MAINTENANCE_EXPECTED_MINUTES` | `3` | 预告里说的预计维护时长，1 到 60。 |
 
+### 运行日志（Workers Observability）
+
+Worker 的日志在 Cloudflare 控制台 `prism-link-beta`（或正式 Worker）的 Observability 里看。列表里只有我们自己写的两种行，Cloudflare 自动生成的「每次调用一条」记录已关闭（`observability.logs.invocation_logs: false`）。这类自动记录对每次 Durable Object 唤醒、每条 WebSocket 消息、每次内部 RPC 都记一条，内容只有 `message` 或一个时间，一天几千条，会把有用的行淹没。
+
+每一行都是 `packages/server/src/log.ts` 写出的一个对象，常用字段：
+
+| 字段 | 内容 |
+|---|---|
+| `message` | 列表里显示的那句话：`[模块] 发生了什么: 原因`，例如 `[live-activity] rotated a card at 7.5 hours`、`[http] GET /api/v1/me 401 3ms` |
+| `kind` | `app`：代码主动写的；`request`：Worker 对每个 HTTP 请求写的一行 |
+| `module` | 哪个部分写的：`http`、`shop-hub`、`machine-relay`、`live-activity`、`bot`、`events`、`deploy`、`idle-power`、`devices` 等 |
+| `level` | `info`、`warn`、`error`；用同名的 console 方法写出，控制台自带的级别筛选也对得上 |
+| `event` | 可选，固定的事件名，方便搜，例如 `live_activity_rotated`、`bot_command_failed` |
+| `error` | 出错时的 `name`、`message`、`code`、前几帧 `stack` |
+
+请求行：静态资源不记；路径不带查询串（可能带令牌）；身份的 subject 和 8 位以上的纯数字段记成 `:subject`、`:number`，不留卡号、QQ 号。5xx 记为 `error`，4xx 记为 `warn`。
+
+每一行都要能单独看懂「谁、哪个、怎么了」：`message` 里写出对象（`rotated the card on install 962228E5 of player legacy:user:2 after 7.5 h`），同时用固定字段名放进对象，便于筛选——店铺 `shopId`、玩家 `playerId`、账号 `userId`、计费会话 `sessionId`、机台或设备 `machineId`／`deviceId`、Bot `botId`、手机上的安装 `clientId`、实时活动卡片 `cardId`。推送令牌只记掩码。
+
+常用筛选：`kind = app` 只看代码自己说的；`module = shop-hub` 看一个部分；`level = error` 看出错的；`event = live_activity_rotated` 找一类事。服务端代码不要直接用 `console.*`，用 `logger("模块名")` 得到的 `info`／`warn`／`error`。
+
 ### 登录与配置
 
 打开部署域名的 `/merchant`，通过平台登录后创建或选择店铺，在 React 设置页面维护位置、成员、设备及「接入凭证」。时区根据店铺位置自动设置；计费区间的编辑与展示使用该时区，业务执行统一 UTC。创建店铺时可选计费模式并初始化余额资产和入场方案；旧店铺也可通过设置中的转换向导启用计费。

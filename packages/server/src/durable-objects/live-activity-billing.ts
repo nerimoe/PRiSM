@@ -19,6 +19,9 @@ import { ensureD1UtcPricing } from "../utc-pricing.js";
 import { createShopDependencies } from "../middleware/tenant.js";
 import type { Env, TenantShop } from "../bindings.js";
 import { liveActivityConfig } from "./live-activity-push.js";
+import { logger } from "../log.js";
+
+const log = logger("live-activity");
 
 export type ActivityNextEvent = {
   atUnix: number;
@@ -76,7 +79,7 @@ export async function activityBill(
     return { ...snapshot, bill: { ...snapshot.bill, nextEvent }, nextBill: next.snapshot.bill };
   } catch {
     // A forecast must not make the current bill or checkout unavailable.
-    console.warn("Live bill forecast unavailable");
+    log.warn(`could not forecast the next bill for player ${playerId}; showing the current one`, { shopId, playerId });
     return snapshot;
   }
 }

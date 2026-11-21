@@ -30,6 +30,9 @@ import {
   type IoEventMethod,
   type RelayMessage,
 } from "../hardware/aimeio-relay.js";
+import { logger } from "../log.js";
+
+const log = logger("machine-relay");
 
 const STATE_KEY = "state-message";
 const CHANNEL_KEY = "channel";
@@ -194,12 +197,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
         subscribers: [this.coinAfterCardSubscriber(channel)],
       }), channel);
     } catch (error) {
-      console.error(JSON.stringify({
-        event: "machine_relay_record_failed",
-        machineId: channel.machineId,
-        what,
-        message: error instanceof Error ? error.message : String(error),
-      }));
+      log.error(`could not record ${what} from machine ${channel.machineId}`, { event: "machine_relay_record_failed", shopId: channel.shopId, machineId: channel.machineId, what, error });
     }
   }
 
@@ -226,7 +224,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       await this.ctx.storage.put(COIN_FULL_KEY, full);
       await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "coin");
     } catch (error) {
-      console.error("Coin limit check failed", error);
+      log.error(`could not check machine ${channel.machineId}'s coin limit`, { shopId: channel.shopId, machineId: channel.machineId, error });
     }
   }
 
@@ -535,7 +533,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
         await this.ctx.storage.put(HA_SESSION_KEY, session);
         await shopHub(this.env, channel.shopId)
           ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session })
-          .catch((error) => console.error("Shop hub relayOnline failed", error));
+          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is online`, { shopId: channel.shopId, machineId: channel.machineId, error }));
       }
       return;
     }
@@ -555,14 +553,14 @@ export class MachineRelay extends BaseDurableObject<Env> {
         // Reoffer after an outage; an empty HA list also says the IO lost its assignment.
         await shopHub(this.env, channel.shopId)
           ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session: attachment.session, restart: !heartbeat.ha.length })
-          .catch((error) => console.error("Shop hub relayOnline failed", error));
+          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is online`, { shopId: channel.shopId, machineId: channel.machineId, error }));
       }
       if (channel?.channel && heartbeat.ha.length) {
         // The same session keeps its assignment; only a reconnect or lost task gets a new term.
         for (const health of heartbeat.ha) {
           await shopHub(this.env, channel.shopId)
             ?.haReport(channel.shopId, channel.machineId, { method: "ha.status", params: health })
-            .catch((error) => console.error("Shop hub haReport failed", error));
+            .catch((error) => log.error(`could not pass machine ${channel.machineId}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, machineId: channel.machineId, error }));
         }
       }
       // The beat repeats the latest books, so a missed snapshot event is made up
@@ -594,7 +592,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       if (channel) {
         await shopHub(this.env, channel.shopId)
           ?.haReport(channel.shopId, channel.machineId, report)
-          .catch((error) => console.error("Shop hub haReport failed", error));
+          .catch((error) => log.error(`could not pass machine ${channel.machineId}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, machineId: channel.machineId, error }));
       }
       return;
     }
@@ -774,7 +772,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
         }]);
       });
     } catch (error) {
-      console.error("Card capture failed", error);
+      log.error(`could not bind the card read for player ${capture.playerId}`, { shopId: capture.shopId, playerId: capture.playerId, error });
       return { status: "waiting" };
     }
     const { card: _card, ...rest } = capture;
@@ -821,7 +819,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       if (channel) {
         await shopHub(this.env, channel.shopId)
           ?.relayOffline(channel.shopId, channel.machineId, { session })
-          .catch((error) => console.error("Shop hub relayOffline failed", error));
+          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is offline`, { shopId: channel.shopId, machineId: channel.machineId, error }));
       }
     }
     await this.syncPresence();

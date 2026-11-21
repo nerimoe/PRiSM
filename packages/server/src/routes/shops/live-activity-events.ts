@@ -10,6 +10,9 @@ import {
 } from "../../durable-objects/live-activity-push.js";
 import type { AppBindings } from "../../bindings.js";
 import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
+import { logger } from "../../log.js";
+
+const log = logger("live-activity");
 
 type C = Context<AppBindings>;
 
@@ -61,7 +64,11 @@ type TokenRow = {
   bundle_id: string;
   session_id: string | null;
   created_at: string;
+  client_id: string | null;
 };
+
+/** An install as a line names it: short enough to read, long enough to tell two phones apart. */
+const installName = (clientId: string | null | undefined) => clientId ? `install ${clientId.slice(0, 8)}` : "an unknown install";
 
 type StartTokenRow = {
   id: string;
@@ -169,14 +176,6 @@ export async function pushSessionEvent(
     });
 
     const sendStart = async (row: StartTokenRow) => {
-      console.log("Pushing Live Activity start", {
-        shopId: input.shopId,
-        userId: account.userId,
-        session: sessionId,
-        bundle: row.bundle_id,
-        environment: row.environment,
-        token: maskToken(row.token),
-      });
       const outcome = await pusher.send(
         {
           token: row.token,
@@ -191,13 +190,13 @@ export async function pushSessionEvent(
         await c.env.DB.prepare("UPDATE live_activity_start_tokens SET last_seen_at=? WHERE id=?")
           .bind(new Date().toISOString(), row.id)
           .run();
-      } else if (outcome.kind === "failed") {
-        console.error("Live Activity start push failed", {
-          shopId: input.shopId,
-          status: outcome.status,
-          reason: outcome.reason,
-        });
       }
+      log[outcome.kind === "failed" ? "error" : "info"](`start push to ${installName(row.client_id)} of player ${input.playerId}: ${outcome.kind}`, {
+        event: "live_activity_push", activityEvent: "start", outcome: outcome.kind,
+        shopId: input.shopId, playerId: input.playerId, userId: account.userId, sessionId,
+        clientId: row.client_id, environment: row.environment, bundleId: row.bundle_id, token: maskToken(row.token),
+        ...(outcome.kind === "failed" ? { status: outcome.status, reason: outcome.reason } : {}),
+      });
     };
     // The phone that entered starts its own activity in the foreground, so it is not pushed
     // one at once: that would show the visit twice. iOS sometimes refuses that start for
@@ -216,9 +215,11 @@ export async function pushSessionEvent(
           "SELECT 1 FROM sessions WHERE shop_id=? AND id=? AND ended_at IS NULL AND payment_status='unpaid'",
         ).bind(input.shopId, sessionId).first();
         if (shown || !open) return;
-        console.log(JSON.stringify({ event: "live_activity_own_start_missing", session: sessionId }));
+        log.info(`the entering phone (${installName(input.initiatorClientId)}) showed no card after ${OWN_START_GRACE_MS / 1000} s; pushing it one`, {
+          event: "live_activity_own_start_missing", shopId: input.shopId, playerId: input.playerId, sessionId, clientId: input.initiatorClientId ?? null,
+        });
         for (const row of own) await sendStart(row);
-      })().catch((error) => console.error("Live Activity own start fallback failed", error)));
+      })().catch((error) => log.error(`could not check whether the entering phone showed a card for player ${input.playerId}`, { shopId: input.shopId, playerId: input.playerId, sessionId, error })));
     }
     return;
   }
@@ -230,13 +231,13 @@ export async function pushSessionEvent(
   let bindings: string[];
   if (input.sessionIds.length > 0) {
     const placeholders = input.sessionIds.map(() => "?").join(",");
-    tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+    tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
      LEFT JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND (t.session_id IN (${placeholders}) OR a.player_id=?)`;
     bindings = [input.shopId, ...input.sessionIds, input.playerId];
   } else {
-    tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at
+    tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
      JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND a.player_id=?`;
@@ -266,14 +267,6 @@ export async function pushSessionEvent(
       : nowSeconds;
 
     const payload = liveActivityEndPayload({ startedAtUnix, endedAtUnix });
-    console.log("Pushing Live Activity end", {
-      shopId: input.shopId,
-      session: sessionId,
-      bundle: row.bundle_id,
-      environment: row.environment,
-      token: maskToken(row.token),
-    });
-
     const outcome = await pusher.send(
       {
         token: row.token,
@@ -283,18 +276,17 @@ export async function pushSessionEvent(
       payload,
     );
 
+    log[outcome.kind === "failed" ? "error" : "info"](`end push to ${installName(row.client_id)} of player ${input.playerId}: ${outcome.kind}`, {
+      event: "live_activity_push", activityEvent: "end", outcome: outcome.kind,
+      shopId: input.shopId, playerId: input.playerId, sessionId, cardId: row.id,
+      clientId: row.client_id, environment: row.environment, bundleId: row.bundle_id, token: maskToken(row.token),
+      ...(outcome.kind === "failed" ? { status: outcome.status, reason: outcome.reason } : {}),
+    });
     if (outcome.kind === "expired") {
       await c.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=?").bind(row.id).run();
       continue;
     }
-    if (outcome.kind === "failed") {
-      console.error("Live Activity push failed", {
-        shopId: input.shopId,
-        status: outcome.status,
-        reason: outcome.reason,
-      });
-      continue;
-    }
+    if (outcome.kind === "failed") continue;
     if (outcome.kind === "delivered") {
       await c.env.DB.prepare("UPDATE live_activity_tokens SET session_id=NULL, updated_at=? WHERE id=?")
         .bind(new Date().toISOString(), row.id)

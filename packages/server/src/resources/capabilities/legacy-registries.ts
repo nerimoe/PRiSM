@@ -13,6 +13,9 @@ import type { D1BoundStatementLike, D1DatabaseLike } from "@prism/adapter-d1";
 import { decryptSecret, encryptSecret, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
 import { listHaConnections, normalizeHaUrl } from "./ha-connections.js";
+import { logger } from "../../log.js";
+
+const log = logger("devices");
 
 const REGISTRY_KEYS = ["devices.homeassistant", "devices.hinata_io", "devices.ttlock"] as const;
 
@@ -248,11 +251,7 @@ export async function adoptLegacyRegistries(input: {
   } catch (error) {
     // e.g. a shop export holds its write lock. The registry stays and the
     // next call tries again; until then its entries are simply not listed.
-    console.error(JSON.stringify({
-      event: "legacy_device_registry_adoption_failed",
-      shopId,
-      message: error instanceof Error ? error.message : String(error),
-    }));
+    log.error("adopting the legacy device registry failed", { event: "legacy_device_registry_adoption_failed", shopId, error });
     return 0;
   }
   adopted.add(shopId);

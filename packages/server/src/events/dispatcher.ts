@@ -20,6 +20,9 @@
  *   when there is one, so they never delay an answer.
  */
 import { deviceEventType, type DeviceEvent } from "@prism/core";
+import { logger } from "../log.js";
+
+const log = logger("events");
 
 /** An event as a subscriber hears it: what happened, and its name. */
 export type Heard = { event: DeviceEvent; type: string };
@@ -62,13 +65,15 @@ export function createEventDispatcher<Context>(input: {
   report?: (failure: SubscriberFailure) => void;
 }): EventDispatch {
   const report = input.report ?? ((failure: SubscriberFailure) =>
-    console.error(JSON.stringify({
+    log.error(`subscriber ${failure.subscriber} failed on ${failure.types.join(", ")}`, {
       event: "event_subscriber_failed",
+      // Generic over its context; a shop's dispatch says which shop.
+      shopId: (input.context as { shopId?: unknown } | null)?.shopId ?? null,
       subscriber: failure.subscriber,
       types: failure.types,
       eventIds: failure.eventIds,
-      message: failure.error instanceof Error ? failure.error.message : String(failure.error),
-    })));
+      error: failure.error,
+    }));
   const failed = (subscriber: string, heard: readonly Heard[], error: unknown) =>
     report({ subscriber, types: heard.map((one) => one.type), eventIds: heard.map((one) => one.event.id), error });
 

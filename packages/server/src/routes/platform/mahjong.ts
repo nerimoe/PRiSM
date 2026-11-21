@@ -16,6 +16,9 @@ import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import { loadResource, mahjongConfigOf, type Resource } from "../../resources/resource.js";
 import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
+import { logger } from "../../log.js";
+
+const log = logger("mahjong");
 
 type C = Context<AppBindings, any, any>;
 /** What seating needs of where it runs: a route's context, or the shop hub for a bot's command. */
@@ -297,8 +300,8 @@ export async function moveMahjong(
       }, changedSeats, player.id);
       const occupancy = createOccupancy({ db: c.env.DB, shopId: shop.id });
       if (old && (!joining || old.machineId !== machine.id))
-        await occupancy.left({ resourceId: old.machineId, playerId: player.id, at }).catch(error => console.error("Occupancy release failed", error));
-      await occupancy.syncHeld(at).catch(error => console.error("Occupancy sync failed", error));
+        await occupancy.left({ resourceId: old.machineId, playerId: player.id, at }).catch(error => log.error("occupancy release failed", { error }));
+      await occupancy.syncHeld(at).catch(error => log.error("occupancy sync failed", { error }));
       // What happened at the table; the listeners move the players' pages and bills and the table's idle timer.
       await publishShopFacts({ db: c.env.DB, env: c.env, shopId: shop.id }, input.origin, ids.map((id) => ({
         name: "seat.changed" as const, resourceId: machine.id, playerId: id,

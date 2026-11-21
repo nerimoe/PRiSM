@@ -47,6 +47,9 @@ import { botConfigView, type BotResource } from "../resources/bot.js";
 import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../middleware/tenant.js";
 import type { PageScope } from "./shop-hub-client.js";
 import { app } from "../app.js";
+import { logger } from "../log.js";
+
+const log = logger("shop-hub");
 
 /**
  * A shop bot's connection, kept on the socket so it survives hibernation. `id` tells this connection
@@ -368,7 +371,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         ? { frame: { watching: true, ...deviceView(device, state) }, ask: null }
         : { frame: { watching: false }, ask: device };
     } catch (error) {
-      console.error("Shop hub page greeting failed", error);
+      log.error(`could not greet a scan page on device ${deviceId}`, { shopId, deviceId, error });
       return { frame: { watching: false }, ask: null };
     }
   }
@@ -381,7 +384,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       const state = await this.readDevice(shopId!, device);
       return { watching: state.watching, ...deviceView(device, state) };
     } catch (error) {
-      console.error("Shop hub page state failed", error);
+      log.error(`could not read device ${deviceId} for a scan page`, { shopId, deviceId, error });
       return { watching: false };
     }
   }
@@ -511,7 +514,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     try {
       server!.send(JSON.stringify(await this.watchersFrame(await this.load<Watchers>("watchers", {}))));
     } catch (error) {
-      console.error("Shop hub watcher list failed", error);
+      log.error("could not send the watcher list to a board", { shopId, error });
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -544,7 +547,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
       return { frame: { type: "states", states: shown, liveConnections }, unknown };
     } catch (error) {
-      console.error("Shop hub board snapshot failed", error);
+      log.error("could not build the device board snapshot", { shopId, error });
       return null;
     }
   }
@@ -565,7 +568,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           // One that became live while Home Assistant was asked has had the live snapshot; this answer is older.
           if (!state.watching && !(await this.liveNow(device))) shown[device.id] = { watching: false, ...deviceView(device, state) };
         } catch (error) {
-          console.error("Shop hub board read failed", error);
+          log.error(`could not read device ${device.id} for the board`, { shopId, deviceId: device.id, error });
         }
       }
     }));
@@ -878,9 +881,13 @@ export class ShopHub extends BaseDurableObject<Env> {
     let frames: SayFrame[];
     // What the bot's history keeps of this command, once it is known whose bot it is.
     let record: { shopId: string; botId: string; outcome: BotCommandOutcome } | null = null;
+    // Known as soon as they are read, so a failure says whose command it was.
+    let shopId = "";
+    let botId: string | null = null;
     try {
-      const shopId = (await this.shopId()) ?? "";
+      shopId = (await this.shopId()) ?? "";
       const found = await this.botOf(shopId, attachment.token);
+      botId = found?.bot.id ?? null;
       const shopRow = found ? await readTenantShop(this.env.DB, shopId) : null;
       if (!found || !shopRow) {
         // Its credential no longer stands: the connection ends with this answer.
@@ -917,7 +924,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       record = { shopId, botId: found.bot.id, outcome };
       frames = says.map((said, index) => sayFrame(said.message, { replyTo: frame.id, to: said.to, done: index === says.length - 1 }));
     } catch (error) {
-      console.error(JSON.stringify({ event: "bot_command_failed", command: frame.name, message: error instanceof Error ? error.message : String(error) }));
+      log.error(`bot command ${frame.name} failed`, { event: "bot_command_failed", shopId, botId, command: frame.name, error });
       frames = [sayFrame(botMessage("操作失败，请稍后再试。"), { replyTo: frame.id, done: true })];
       if (record) record.outcome = { status: "failed" };
     } finally {
@@ -932,13 +939,11 @@ export class ShopHub extends BaseDurableObject<Env> {
         db: this.env.DB, env: this.env, shopId: record.shopId, hub: this,
         via: { channel: "bot", resourceId: record.botId },
       }).signal({ device: { id: record.botId }, capability: "bot", name: "bot.command", payload: botCommandRecord(frame, record.outcome) })
-        .catch((error) => console.error(JSON.stringify({
-          event: "bot_command_record_failed", command: frame.name, message: error instanceof Error ? error.message : String(error),
-        })));
+        .catch((error) => log.error(`could not record bot command ${frame.name}`, { event: "bot_command_record_failed", shopId: record.shopId, botId: record.botId, command: frame.name, error }));
     }
     // The command's own events have moved the timers; the alarm is set for them as they now stand.
-    const shopId = await this.shopId();
-    if (shopId) await this.touch(shopId);
+    const hubShop = await this.shopId();
+    if (hubShop) await this.touch(hubShop);
   }
 
   /**
@@ -1429,7 +1434,7 @@ export class ShopHub extends BaseDurableObject<Env> {
   /** One idle change at a time: a power-off waits on Home Assistant, and a signal arriving meanwhile must not be lost. */
   private idleQueue: Promise<unknown> = Promise.resolve();
   private idleWork(work: () => Promise<void>): Promise<void> {
-    const run = this.idleQueue.then(work, work).catch((error) => console.error("Idle timers failed", error));
+    const run = this.idleQueue.then(work, work).catch((error) => log.error("idle power-off timers failed", { hubId: this.ctx.id.toString(), error }));
     this.idleQueue = run;
     return run;
   }
@@ -1497,7 +1502,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         at: warning.at,
         devices: named([...new Set(warning.keys.flatMap((key) => timers.entries[key]?.ids ?? []))]),
       }));
-      if (notices.length) await this.notify(notices).catch((error) => console.error("Idle warning failed", { shopId, error }));
+      if (notices.length) await this.notify(notices).catch((error) => log.error("could not send the idle power-off warning", { shopId, error }));
       for (const { key } of due.off) {
         const ids = timers.entries[key]?.ids ?? [];
         if (!ids.length) continue;
@@ -1506,7 +1511,7 @@ export class ShopHub extends BaseDurableObject<Env> {
         const ok = await switchOff(this.env, shopId, ids[0]!, "power.off", this);
         settleIdleOff(timers, key, ok, Date.now());
         if (!ok) continue;
-        for (const id of ids.slice(1)) await this.poweredOff(shopId, id).catch((error) => console.error("Idle release failed", { shopId, id, error }));
+        for (const id of ids.slice(1)) await this.poweredOff(shopId, id).catch((error) => log.error(`could not release idle machine ${id}`, { shopId, machineId: id, error }));
       }
     }
     if (due.shopOff || (timers.climateDue && !idleBusy(timers, settings))) {
@@ -1855,7 +1860,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     this.makingReadAccess.add(connectionId);
     const run = this.provision(this.env.DB, shopId, connectionId, key, { origin })
       .then((result) => (result.access === "ready" ? this.refresh(shopId) : undefined))
-      .catch((error) => console.error("Home Assistant read access failed", error))
+      .catch((error) => log.error(`could not set up read access for Home Assistant connection ${connectionId}`, { shopId, connectionId, error }))
       .finally(() => this.makingReadAccess.delete(connectionId));
     this.ctx.waitUntil?.(run);
   }
@@ -1932,7 +1937,7 @@ export class ShopHub extends BaseDurableObject<Env> {
       try {
         for (let start = 0; start < writes.length; start += WRITE_CHUNK) await bus.reportMany(writes.slice(start, start + WRITE_CHUNK));
       } catch (error) {
-        console.error("Shop hub state write failed", error);
+        log.error(`could not write ${writes.length} Home Assistant state changes`, { shopId, writes: writes.length, error });
         return "failed";
       }
     }
@@ -1987,7 +1992,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     try {
       await writeEventConnections(this.env.DB, shopId, { add, remove });
     } catch (error) {
-      console.error("Shop hub watch mode write failed", error);
+      log.error("could not record which machines are watched live", { shopId, added: add, removed: remove, error });
       return;
     }
     await this.ctx.storage.put("eventConnections", [...live]);

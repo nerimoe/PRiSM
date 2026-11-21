@@ -17,6 +17,9 @@ import {
   type AlarmBudget,
   type MaintenanceWait,
 } from "./alarm-budget.js";
+import { logger } from "../log.js";
+
+const log = logger("live-activity");
 
 type Visit = { shopId: string; playerId: string; revision: number; terminal?: boolean; urgent?: boolean };
 
@@ -48,6 +51,21 @@ type Token = {
 };
 
 type Retry = { signature: string; failures: number; nextAt: number };
+
+/** Which card a line is about: whose visit, which install shows it, and its row. Never the push token itself. */
+const cardFields = (visit: Pick<Visit, "shopId" | "playerId">, token: Token) => ({
+  shopId: visit.shopId,
+  playerId: visit.playerId,
+  userId: token.user_id ?? null,
+  sessionId: token.session_id,
+  clientId: token.client_id ?? null,
+  cardId: token.id,
+  environment: token.environment,
+  bundleId: token.bundle_id,
+  cardAgeMinutes: Math.round((Date.now() - Date.parse(token.created_at)) / 60_000),
+});
+/** An install as a line names it: short enough to read, long enough to tell two phones apart. */
+const install = (token: Token) => token.client_id ? `install ${token.client_id.slice(0, 8)}` : "an unknown install";
 type Snapshot = Awaited<ReturnType<typeof activityBill>>;
 type CachedBill = { revision: number; calculatedAt: number; snapshot: Snapshot };
 
@@ -231,7 +249,7 @@ export class LiveBilling extends BaseDurableObject<Env> {
         const failedAt = await this.ctx.storage.get<number>(`rotate-failed:${token.id}`);
         if (!failedAt || now - failedAt >= ROTATE_RETRY_MS) {
           attempted += 1;
-          if (await this.rotate(token, snapshot, pusher, shopId, now)) continue;
+          if (await this.rotate(token, snapshot, pusher, visit, now)) continue;
           await this.ctx.storage.put(`rotate-failed:${token.id}`, now);
         }
       }
@@ -298,7 +316,8 @@ export class LiveBilling extends BaseDurableObject<Env> {
         payload,
         visit.urgent ? "10" : undefined,
       );
-      console.log(JSON.stringify({
+      log[result.kind === "failed" ? "warn" : "info"](`${ended ? "end" : "update"} push to ${install(token)} of player ${visit.playerId}: ${result.kind}`, {
+        ...cardFields(visit, token),
         event: "live_activity_push", activityEvent: ended ? "end" : "update", outcome: result.kind,
         priority: ended || visit.urgent ? 10 : 5,
         ...(result.kind === "failed" ? {
@@ -306,7 +325,7 @@ export class LiveBilling extends BaseDurableObject<Env> {
           reason: result.reason && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(result.reason)
             ? result.reason : result.status ? "apns_error" : "transport_error",
         } : {}),
-      }));
+      });
       if (result.kind === "failed") {
         const failures = (retry?.signature === signature ? retry.failures : 0) + 1;
         const expiresAt = new Date(token.created_at).getTime() + 8 * 3600_000;
@@ -385,14 +404,21 @@ export class LiveBilling extends BaseDurableObject<Env> {
    * False when no start was delivered (the install has no start token, or APNs refused it);
    * the old activity then carries on as before until it can be rotated.
    */
-  private async rotate(token: Token, snapshot: NonNullable<Snapshot>, pusher: LiveActivityPusher, shopId: string, now: number): Promise<boolean> {
+  private async rotate(token: Token, snapshot: NonNullable<Snapshot>, pusher: LiveActivityPusher, visit: Visit, now: number): Promise<boolean> {
+    const { shopId } = visit;
+    const card = cardFields(visit, token);
     if (!token.user_id || !token.client_id) return false;
     const starts = (await this.env.DB.prepare(
       "SELECT id, token, environment, bundle_id FROM live_activity_start_tokens WHERE user_id=? AND client_id=?",
     ).bind(token.user_id, token.client_id).all<{ id: string; token: string; environment: "sandbox" | "production"; bundle_id: string }>()).results;
     const shop = await this.env.DB.prepare("SELECT public_id AS publicId, name FROM shops WHERE id=?")
       .bind(shopId).first<{ publicId: string; name: string }>();
-    if (!starts.length || !shop) return false;
+    if (!starts.length || !shop) {
+      log.warn(`cannot rotate the card on ${install(token)} of player ${visit.playerId}: ${shop ? "that install has no start token" : "the shop is gone"}`, {
+        ...card, event: "live_activity_rotated", outcome: shop ? "no_start_token" : "no_shop",
+      });
+      return false;
+    }
     const nowSeconds = Math.floor(now / 1000);
     const startedAtUnix = Date.parse(token.started_at) / 1000;
     const payload = liveActivityStartPayload({
@@ -402,22 +428,31 @@ export class LiveBilling extends BaseDurableObject<Env> {
       staleAfterSeconds: snapshot.nextCheckAt ? Math.max(1, Math.ceil(snapshot.nextCheckAt / 1000) - nowSeconds) : undefined,
     });
     let delivered = false;
+    const outcomes: string[] = [];
     for (const start of starts) {
       const result = await pusher.send({ token: start.token, environment: start.environment, bundleId: start.bundle_id }, payload, "10");
+      outcomes.push(result.kind);
       if (result.kind === "delivered") delivered = true;
       if (result.kind === "expired") {
         await this.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE id=? AND token=?").bind(start.id, start.token).run();
       }
     }
-    console.log(JSON.stringify({ event: "live_activity_rotated", outcome: delivered ? "started" : "not_started" }));
-    if (!delivered) return false;
+    if (!delivered) {
+      log.warn(`could not start a new card on ${install(token)} of player ${visit.playerId}; keeping the old one and trying again later`, {
+        ...card, event: "live_activity_rotated", outcome: "not_started", startPushes: outcomes,
+      });
+      return false;
+    }
     // The new activity carries the visit on; the old one goes at once rather than freezing.
-    await pusher.send(
+    const dismissed = await pusher.send(
       { token: token.token, environment: token.environment, bundleId: token.bundle_id },
       liveActivityEndPayload({ startedAtUnix, endedAtUnix: now / 1000, now: nowSeconds, bill: snapshot.bill, dismissalAfterSeconds: 0 }),
       "10",
     );
     await this.env.DB.prepare("DELETE FROM live_activity_tokens WHERE id=? AND token=?").bind(token.id, token.token).run();
+    log.info(`rotated the card on ${install(token)} of player ${visit.playerId} after ${(card.cardAgeMinutes / 60).toFixed(1)} h; old card dismiss: ${dismissed.kind}`, {
+      ...card, event: "live_activity_rotated", outcome: "started", startPushes: outcomes, dismiss: dismissed.kind,
+    });
     await Promise.all([`sent:${token.id}`, `retry:${token.id}`, `rotate-failed:${token.id}`].map((key) => this.ctx.storage.delete(key)));
     return true;
   }

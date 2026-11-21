@@ -67,9 +67,18 @@ async function fixture(age: number, startTokens = true) {
 
 it("rotates an activity at 7.5 hours: a new one to the same install, the old one dismissed at once", async () => {
   const h = await fixture(ROTATE_AFTER_MS + 1000);
+  const lines: Array<Record<string, unknown>> = [];
+  const info = spyOn(console, "info").mockImplementation((line: Record<string, unknown>) => { lines.push(line); });
   try {
     await h.object().refresh("shop", "player", false, true);
     await h.run();
+    // The line says whose card it was, on which phone, and which visit.
+    expect(lines.find((line) => line.event === "live_activity_rotated")).toMatchObject({
+      message: "[live-activity] rotated the card on install iphone of player player after 7.5 h; old card dismiss: delivered",
+      kind: "app", module: "live-activity", level: "info", outcome: "started",
+      shopId: "shop", playerId: "player", userId: "user", sessionId: "visit", clientId: "iphone", cardId: "old",
+    });
+    expect(JSON.stringify(lines)).not.toContain("a".repeat(64));
     const [start, end] = h.pushes;
     expect(h.pushes).toHaveLength(2);
     // Only the install that showed it; another phone of the account is not started a second one.
@@ -83,7 +92,7 @@ it("rotates an activity at 7.5 hours: a new one to the same install, the old one
     expect(end?.payload.aps["dismissal-date"]).toBe(Math.floor(h.now() / 1000));
     // The new activity registers itself when it shows; the old one is gone.
     expect(h.sqlite.query("SELECT COUNT(*) AS n FROM live_activity_tokens").get()).toEqual({ n: 0 });
-  } finally { h.close(); }
+  } finally { info.mockRestore(); h.close(); }
 });
 
 it("wakes for the rotation, and leaves a younger activity alone until then", async () => {

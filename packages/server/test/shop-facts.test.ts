@@ -198,7 +198,7 @@ describe("shop facts", () => {
       console.error = original;
     }
     // Both facts were lost, and said so; neither call failed.
-    expect(errors.filter((error) => String(error).includes("shop_fact_publish_failed"))).toHaveLength(2);
+    expect(errors.filter((args) => ((args as unknown[])[0] as { event?: string }).event === "shop_fact_publish_failed")).toHaveLength(2);
     sqlite.close();
   });
 

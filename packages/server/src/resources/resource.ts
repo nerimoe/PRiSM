@@ -16,6 +16,9 @@ import {
   type HinataConfig,
   type MahjongConfig,
 } from "./capabilities/catalog.js";
+import { logger } from "../log.js";
+
+const log = logger("resources");
 
 export type BoundCapability = {
   id: CapabilityId;
@@ -169,7 +172,7 @@ export async function loadResources(
   } catch (error) {
     // An old binding still works as it is; a failed move (for example while a
     // backup holds the shop read-only) is retried on the next listing.
-    console.error("Home Assistant binding adoption failed", error);
+    log.error("could not move old Home Assistant bindings onto resources; trying again on the next listing", { shopId, error });
   }
   return listResources(db, shopId);
 }

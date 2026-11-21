@@ -12,6 +12,9 @@ import {
   createAppClipAuthCode, createAppClipAuthState, provisionMunetUser,
 } from "./munet-appclip.js";
 import { munetSuccessReturn, munetFailureReturn } from "./auth-return.js";
+import { logger } from "../../log.js";
+
+const log = logger("munet");
 
 export const munetAuthRouter = new Hono<AppBindings>();
 export const appclipAuthRouter = new Hono<AppBindings>();
@@ -69,7 +72,7 @@ async function finishAppClipCallback(c: Context<AppBindings>, redirectPath: stri
     const exchangeCode = await createAppClipAuthCode(c, userId);
     return callback({ code: exchangeCode, ...(isNewUser ? { setup: "passkey" } : {}) });
   } catch (error) {
-    console.error(error);
+    log.error("MuNET sign-in failed", { flow: "app-clip", error });
     return callback({
       error: error instanceof z.ZodError ? "MuNET 返回的数据无法识别"
         : error instanceof Error ? error.message : "MuNET 登录失败",
@@ -109,7 +112,7 @@ munetCallbackRouter.get("/", async (c) => {
     await createSession(c, userId);
     return c.redirect(munetSuccessReturn(next, isNewUser));
   } catch (error) {
-    console.error(error);
+    log.error("MuNET sign-in failed", { flow: "web", error });
     return fail(error instanceof z.ZodError ? "MuNET 返回的数据无法识别"
       : error instanceof Error ? error.message : "MuNET 登录失败");
   }

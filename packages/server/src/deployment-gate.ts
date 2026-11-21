@@ -16,6 +16,9 @@ import {
   migrateShopLocationTimeZones,
   shopLocationTimeZoneMigrationId,
 } from "./migrations/shop-time-zone-migration.js";
+import { logger } from "./log.js";
+
+const log = logger("deploy");
 
 export const deploymentGateTable = "prism_deployment_gate";
 export const deploymentControlPath = "/__prism_deploy";
@@ -240,7 +243,7 @@ async function maintenanceNotice(input: Record<string, unknown>, env: Env): Prom
       await shopHub(env, id)?.maintenance(notice);
       told += 1;
     } catch (error) {
-      console.error(JSON.stringify({ event: "maintenance_notice_failed", shopId: id, message: error instanceof Error ? error.message : String(error) }));
+      log.error("maintenance notice failed", { event: "maintenance_notice_failed", shopId: id, error });
     }
   }));
   return ok({ ok: true, shops: shops.length, told });

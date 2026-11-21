@@ -39,6 +39,8 @@ const config: Record<string, unknown> = {
   vars: {},
   observability: {
     enabled: true,
+    // Our own lines only (`packages/server/src/log.ts`), not a record per invocation.
+    logs: { enabled: true, invocation_logs: false },
   },
 };
 

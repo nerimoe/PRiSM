@@ -5,6 +5,9 @@ import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { deleteAccountCard } from "../../resources/cards.js";
 import { syncMunetCards } from "./oauth.js";
+import { logger } from "../../log.js";
+
+const log = logger("cards");
 
 export const cardsRouter = new Hono<AppBindings>();
 const cardInput = z.object({
@@ -51,7 +54,7 @@ cardsRouter.post("/sync", async (c) => {
     const sync = await syncMunetCards(c, user.id);
     authorizationRequired = sync.authorizationRequired;
   } catch (error) {
-    console.error(error);
+    log.error(`could not sync user ${user.id}'s cards from MuNET`, { userId: user.id, error });
     syncError = "MuNET 暂时无法同步，显示上次结果";
   }
   return c.json({ cards: await listCards(c, user.id), authorizationRequired, syncError });

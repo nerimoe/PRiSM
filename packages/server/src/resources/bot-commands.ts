@@ -53,6 +53,9 @@ import { loadResources, matchesRef } from "./resource.js";
 import { rosterMessage } from "./roster.js";
 import { eventPlayer } from "./shop-events.js";
 import { notifyBotsChanged } from "../durable-objects/shop-hub-client.js";
+import { logger } from "../log.js";
+
+const log = logger("bot");
 
 /** What the bot is told, as `GET integration/bot` reads it; the hub keeps it until the bot's settings change. */
 export type BotView = Awaited<ReturnType<typeof botConfigView>>;
@@ -158,7 +161,7 @@ async function deviceAction(
   });
   const view = toDeviceCommandView(action);
   if (view.status === "expired" || view.status === "rejected" || view.status === "pending") {
-    console.warn(JSON.stringify({ event: "bot_device_command_failed", type, failure: (view.payload as Record<string, unknown> | null)?.executorFailure ?? null }));
+    log.warn(`bot ${ctx.bot.id} could not ${type} ${target.ref}: ${view.status}`, { event: "bot_device_command_failed", shopId: ctx.shop.id, botId: ctx.bot.id, type, target: target.ref, status: view.status, failure: (view.payload as Record<string, unknown> | null)?.executorFailure ?? null });
   }
   return deviceActionMessage(view, { type, ref: target.ref, count: options.count, onEntry: options.onEntry }, ctx.bot.config.replyTemplates);
 }
@@ -482,7 +485,7 @@ export async function judgeBotCommand(input: BotCommandInput): Promise<{ says: S
   } catch (error) {
     const refusal = await refusalOf(error);
     if (!refusal || refusal.status >= 500) {
-      console.error(JSON.stringify({ event: "bot_command_failed", command: input.name, message: error instanceof Error ? error.message : String(error) }));
+      log.error(`bot command ${input.name} failed`, { event: "bot_command_failed", shopId: input.shop.id, botId: input.bot.id, command: input.name, error });
       if (!refusal) return { says: answer(ctx, "error", botMessage(GENERIC_FAILURE)), outcome: { status: "failed" } };
     }
     const checkInUrl = `${(input.env.APP_ORIGIN ?? "").replace(/\/+$/, "")}/t/${encodeURIComponent(input.shop.public_id)}`;

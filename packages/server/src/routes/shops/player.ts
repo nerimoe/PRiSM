@@ -30,6 +30,9 @@ import {
   toBusinessItemOrderView,
   toBillingChangeView,
 } from "./views.js";
+import { logger } from "../../log.js";
+
+const log = logger("player");
 
 export async function hasPlatformBinding(
   c: Context<AppBindings>,
@@ -454,7 +457,7 @@ async function handleLiveActivityRoute(
       }
     }
     const snapshot = await activityBill(c.env, shop.id, player.id);
-    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => console.error("Live bill recovery failed", error));
+    const sync = refreshActivityBill(c.env, shop.id, player.id).catch(error => log.error(`could not refresh player ${player.id}'s Live Activity bill`, { shopId: shop.id, playerId: player.id, error }));
     try { c.executionCtx.waitUntil(sync); } catch { void sync; }
     return c.json({ phase: snapshot ? "active" : null, startedAtUnix: snapshot?.startedAtUnix ?? null, bill: snapshot?.bill ?? null, nextBill: snapshot?.nextBill ?? null, nextCheckAtUnix: snapshot?.nextCheckAt ? snapshot.nextCheckAt / 1000 : null, endedAtUnix: snapshot?.endedAtUnix ?? null });
   }
@@ -556,10 +559,10 @@ async function handleLiveActivityRoute(
     await enforceRateLimits(c, [{ key: `live-activity:mutation:${user.id}`, limit: 5 }]);
     const parsed = z.object({ sessionId: z.string().max(200).nullish(), error: z.string().max(500) }).safeParse(body);
     if (!parsed.success) jsonError(400, "实时活动失败报告参数无效");
-    console.warn(JSON.stringify({
+    log.warn(`the app could not start a Live Activity: ${parsed.data.error}`, {
       event: "live_activity_start_failed", shopId: shop.id, session: parsed.data.sessionId ?? null,
-      client: clientIdOf(c.req.header("x-prism-client-id")), error: parsed.data.error,
-    }));
+      client: clientIdOf(c.req.header("x-prism-client-id")), reason: parsed.data.error,
+    });
     return c.json({ ok: true });
   }
 

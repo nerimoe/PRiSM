@@ -22,7 +22,7 @@ The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalon
 
 ## Coding Style & Naming Conventions
 
-Use ES modules, strict TypeScript, and package exports that point at `src/index.ts`. Keep domain logic pure in `core`; place orchestration in `application`; keep runtime-specific code in adapters or server package. Use kebab-case file names such as `staff-pricing.ts`, PascalCase React components, and descriptive test names. Prefer two-space indentation and concise, typed functions.
+Use ES modules, strict TypeScript, and package exports that point at `src/index.ts`. Keep domain logic pure in `core`; place orchestration in `application`; keep runtime-specific code in adapters or server package. Use kebab-case file names such as `staff-pricing.ts`, PascalCase React components, and descriptive test names. Prefer two-space indentation and concise, typed functions. In `packages/server`, log through `logger("<module>")` from `src/log.ts` (`info`/`warn`/`error`), never bare `console.*`; see the logging section of `docs/deployment.md`.
 
 ## Testing Guidelines
 

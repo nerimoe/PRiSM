@@ -6,6 +6,9 @@ import type { Env } from "../bindings.js";
 import type { HaReport } from "../hardware/aimeio-relay.js";
 import type { IdleSignal } from "../resources/capabilities/idle-power.js";
 import type { MaintenanceNotice } from "../deployment-gate.js";
+import { logger } from "../log.js";
+
+const log = logger("shop-hub");
 
 type ShopHubNamespace = {
   getByName(name: string): {
@@ -46,7 +49,7 @@ export async function connectedBots(env: Env, shopId: string): Promise<string[] 
   try {
     return (await shopHub(env, shopId)?.connectedBots()) ?? null;
   } catch (error) {
-    console.error("Shop hub bot status failed", error);
+    log.error("could not ask the shop hub which bots are connected", { shopId, error });
     return null;
   }
 }
@@ -56,7 +59,7 @@ export async function idleSchedule(env: Env, shopId: string): Promise<Record<str
   try {
     return (await shopHub(env, shopId)?.idleSchedule()) ?? {};
   } catch (error) {
-    console.error("Shop hub idle schedule failed", error);
+    log.error("could not read the idle power-off schedule", { shopId, error });
     return {};
   }
 }
@@ -66,7 +69,7 @@ export async function refreshShopHub(env: Env, shopId: string): Promise<void> {
   try {
     await shopHub(env, shopId)?.refresh(shopId);
   } catch (error) {
-    console.error("Shop hub refresh failed", error);
+    log.error("could not tell the shop hub to refresh", { shopId, error });
   }
 }
 
@@ -79,7 +82,7 @@ export async function deviceRead(env: Env, shopId: string, deviceId: string, vie
   try {
     await shopHub(env, shopId)?.deviceRead(shopId, deviceId, view);
   } catch (error) {
-    console.error("Shop hub device read failed", error);
+    log.error(`could not pass device ${deviceId}'s state to the shop hub`, { shopId, deviceId, error });
   }
 }
 
@@ -91,7 +94,7 @@ export async function machinePoweredOff(env: Env, shopId: string, machineId: str
   try {
     await (hub ?? shopHub(env, shopId))?.poweredOff(shopId, machineId);
   } catch (error) {
-    console.error("Shop hub power-off observation failed", error);
+    log.error(`could not start watching machine ${machineId} power off`, { shopId, machineId, error });
   }
 }
 
@@ -112,7 +115,7 @@ export function notifyUserPages(
     try {
       await shopHub(env, shopId)?.notifyUser(userId, frame);
     } catch (error) {
-      console.error("Shop hub notify failed", error);
+      log.error(`could not send a ${String(frame.type ?? "")} frame to a player's pages`, { shopId, userId, frameType: frame.type ?? null, error });
     }
   })();
   if (ctx) ctx.waitUntil(task);
@@ -130,7 +133,7 @@ export async function pagesChanged(env: Env, shopId: string, scope: PageScope, r
   try {
     await (hub ?? shopHub(env, shopId))?.pagesChanged(scope, reason);
   } catch (error) {
-    console.error("Shop hub page notify failed", error);
+    log.error(`could not tell pages (${reason}) that something changed`, { shopId, scope, reason, error });
   }
 }
 
@@ -139,7 +142,7 @@ export async function cardRead(env: Env, shopId: string, userId: string, deviceI
   try {
     await shopHub(env, shopId)?.cardRead(userId, deviceId);
   } catch (error) {
-    console.error("Shop hub card read failed", error);
+    log.error(`could not pass a card read on device ${deviceId} to the shop hub`, { shopId, userId, deviceId, error });
   }
 }
 
@@ -161,7 +164,7 @@ export function notifyBotsChanged(env: Env, shopId: string, ctx?: { waitUntil(pr
     try {
       await shopHub(env, shopId)?.botsChanged();
     } catch (error) {
-      console.error("Shop hub bot notify failed", error);
+      log.error("could not tell the bots their settings changed", { shopId, error });
     }
   })();
   if (ctx) ctx.waitUntil(task);
@@ -184,6 +187,6 @@ export async function sendShopEvent(env: Env, shopId: string, event: Record<stri
   try {
     await (hub ?? shopHub(env, shopId))?.shopEvent(event);
   } catch (error) {
-    console.error("Shop hub event failed", error);
+    log.error(`could not send a ${String(event.type ?? "shop")} event to the shop hub`, { shopId, eventType: event.type ?? null, error });
   }
 }

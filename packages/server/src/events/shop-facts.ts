@@ -26,6 +26,9 @@ import { PrismDomainError } from "@prism/core";
 import type { Env, PrismAppDependencies } from "../bindings.js";
 import { createEventDispatcher } from "./dispatcher.js";
 import { eventSubscribers } from "./subscribers.js";
+import { logger } from "../log.js";
+
+const log = logger("events");
 
 export const SHOP_FACTS = [
   "session.started",
@@ -111,11 +114,13 @@ export async function publishShopFacts(runtime: FactRuntime, origin: FactOrigin,
       ...(origin.defer ? { defer: origin.defer } : {}),
     })(written);
   } catch (error) {
-    console.error(JSON.stringify({
+    log.error(`publishing ${facts.map((fact) => fact.name).join(", ")} failed`, {
       event: "shop_fact_publish_failed",
+      shopId: runtime.shopId,
+      via: origin.via?.channel ?? null,
       facts: facts.map((fact) => fact.name),
-      message: error instanceof Error ? error.message : String(error),
-    }));
+      error,
+    });
   }
 }
 
@@ -140,7 +145,7 @@ function billOf(result: SettlePlayerCheckoutResult): { bill?: Record<string, unk
   try {
     return { bill: settledAsPreview(toPlayerCheckoutResultView(result)) };
   } catch (error) {
-    console.error(JSON.stringify({ event: "checkout_bill_unworded", message: error instanceof Error ? error.message : String(error) }));
+    log.error(`could not word the settled bill of player ${result.playerSettlement.playerId}`, { event: "checkout_bill_unworded", playerId: result.playerSettlement.playerId, sessionIds: result.playerSettlement.sessionIds, error });
     return {};
   }
 }

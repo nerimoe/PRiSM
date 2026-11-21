@@ -16,6 +16,9 @@ import { readShopLiveStates } from "../resources/capabilities/device-state.js";
 import { createRuntimeBus } from "../resources/capabilities/runtime.js";
 import type { HubCalls } from "./shop-hub-client.js";
 import { heldProviders } from "../resources/occupancy/providers.js";
+import { logger } from "../log.js";
+
+const log = logger("idle-power");
 
 /** A warning for the bot, with device names so it can be said as is. */
 export type IdleNotice = { reason: IdleReason; at: number; devices: Array<{ id: string; name: string }> };
@@ -146,7 +149,7 @@ export async function switchOff(env: Env, shopId: string, id: string, action: "p
   try {
     return (await bus.perform({ device: target, action, actor: { type: "system" } })).operation.status === "succeeded";
   } catch (error) {
-    console.error("Idle power-off failed", { shopId, id, action, error });
+    log.error("idle power-off failed", { shopId, id, action, error });
     return false;
   }
 }
