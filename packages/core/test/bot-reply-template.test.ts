@@ -34,3 +34,12 @@ it("covers every announcement in the catalog, including both idle reminder reaso
   expect(botReplyTemplateError("announce.coin.sent.message", "{coins}")).toContain("未知变量");
   expect(botReplyTemplateError("announce.idle.reminder.shop_empty", "快关机了")).toContain("{minutes}");
 });
+
+it("previews each refusal with a reason it really meets, and a refused checkout with the bill it fell short of", () => {
+  const samples = (key: string) => botAnnouncementTemplates.find(template => template.key === `announce.${key}.message`)!.samples;
+  expect(samples("entry.refused").reason).toBe("当前不在营业时段");
+  expect(samples("checkout.refused").bill).toStartWith("⛔ 结账失败：余额不足");
+  expect(samples("checkout.refused").bill).not.toContain("结算账单");
+  // A settled checkout still reads as its bill.
+  expect(samples("checkout.settled").bill).toStartWith("🧾 结算账单");
+});

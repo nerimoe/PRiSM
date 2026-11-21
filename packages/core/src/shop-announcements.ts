@@ -121,6 +121,34 @@ export const announcementSamples: Readonly<Record<string, string>> = {
   bill: "🧾 结算账单\n玩家：小明\n游玩时长：1小时｜计价：20元",
 };
 
+/**
+ * Where one entry's example reads differently from the rest: each refusal or
+ * failure with a reason it really meets, and a refused checkout with the bill
+ * it was short of rather than a settled one.
+ */
+const sampleOverrides: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  "power.on.failed": { reason: "设备没有响应" },
+  "power.off.failed": { reason: "设备没有响应" },
+  "power.keep.failed": { reason: "设备没有响应" },
+  "aime.scan.refused": { reason: "设备未开机" },
+  "aime.scan.failed": { reason: "设备没有响应" },
+  "coin.refused": { reason: "投币冷却中" },
+  "coin.failed": { reason: "设备没有响应" },
+  "entry.refused": { reason: "当前不在营业时段" },
+  "checkout.refused": {
+    reason: "余额不足",
+    bill: "⛔ 结账失败：余额不足\n玩家：小明\n游玩时长：1小时｜计价：20元\n当前余额：5元\n预计结账后余额：余额不足（还差 15元）",
+  },
+  "wallet.adjust.refused": { reason: "余额不足" },
+  "redeem.refused": { reason: "余额不足" },
+};
+
+/** The example values an entry's preview is filled from. */
+export function announcementSamplesOf(key: string): Readonly<Record<string, string>> {
+  const own = sampleOverrides[key];
+  return own ? { ...announcementSamples, ...own } : announcementSamples;
+}
+
 const entries = new Map(announcementCatalog.map((entry) => [entry.key, entry]));
 
 export function announcementEntry(key: string): AnnouncementEntry | undefined {

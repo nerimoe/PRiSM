@@ -32,6 +32,9 @@ const items: Item[] = (() => {
   return list;
 })();
 
+/** A column pinned under the Modal's sticky header (~5rem) that scrolls itself within the room left above the save bar. */
+const paneScroll = "sm:sticky sm:top-[5.5rem] sm:max-h-[calc(90dvh-11.5rem)] sm:overflow-y-auto sm:overscroll-contain sm:pr-1";
+
 const KIND_WORDS: Record<AnnouncementEntry["kind"], string> = { attempt: "尝试", fact: "事实", notice: "提醒" };
 
 /** The words a template key is said in for a group: its own, else the catalog's. */
@@ -98,8 +101,10 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
               <p className="text-xs text-ink/55">{t("每行一个目的地，群和人写法一样：群写 平台:群号，个人写 平台:private:用户号。")}</p>
             </div>
           </div>
-          <div className="grid gap-4 sm:grid-cols-[10.5rem_minmax(0,1fr)]">
-            <nav aria-label={t("事件")} className="grid content-start gap-3">
+          {/* Side by side, each column scrolls on its own below the dialog's header and above its save bar,
+              so reaching the bottom of the event list never pushes the chosen event's editor out of view. */}
+          <div className="grid gap-4 sm:grid-cols-[10.5rem_minmax(0,1fr)] sm:items-start">
+            <nav aria-label={t("事件")} className={`grid content-start gap-3 ${paneScroll}`}>
               {announcementTopics.map(({ topic, label }) => (
                 <div key={topic} className="grid gap-0.5">
                   <span className="text-xs font-semibold text-ink/70">{t(label)}</span>
@@ -135,7 +140,7 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
                 </div>
               ))}
             </nav>
-            <div className="hidden sm:block"><ItemEditor group={group} item={item} change={change} /></div>
+            <div className={`hidden sm:block ${paneScroll}`}><ItemEditor group={group} item={item} change={change} /></div>
           </div>
         </>
       )}
@@ -158,7 +163,7 @@ function ItemEditor({ group, item, change }: { group: AnnouncementGroup; item: I
     change({ templates });
   };
   return (
-    <section aria-label={t(item.label)} className="grid content-start gap-4 self-start sm:sticky sm:top-0">
+    <section aria-label={t(item.label)} className="grid content-start gap-4">
       <div className="flex flex-wrap items-baseline gap-2">
         <h5 className="text-base font-semibold">{t(item.label)}</h5>
         <span className="rounded bg-ink/5 px-1.5 py-0.5 text-xs text-ink/60">{t(KIND_WORDS[item.kind])}</span>

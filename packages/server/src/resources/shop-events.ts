@@ -61,6 +61,8 @@ const REFUSAL_WORDS: Record<string, string> = {
   DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
   SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
   INSUFFICIENT_BALANCE: "余额不足",
+  INSUFFICIENT_RECHARGE_BALANCE: "充值后余额仍不足",
+  PLAYER_SESSION_OUTSIDE_BILLABLE_TIME: "当前不在营业时段",
 };
 
 /** Why an attempt was refused or failed, in the words the player is told, or the platform's own. */

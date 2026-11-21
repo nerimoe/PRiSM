@@ -1,4 +1,4 @@
-import { announcementCatalog, announcementLabel, announcementSamples } from "./shop-announcements";
+import { announcementCatalog, announcementLabel, announcementSamplesOf } from "./shop-announcements";
 import { botMessage, type BotMessage, type BotMessagePlayer } from "./bot-message";
 
 export type BotReplyTemplate = {
@@ -62,7 +62,7 @@ export const botAnnouncementTemplates: BotReplyTemplate[] = [
     const own = [...entry.text.matchAll(/\{([^{}]+)\}/g)].map((match) => match[1]!);
     const variables = [...new Set([...ANNOUNCEMENT_BASE, ...own, ...(ANNOUNCEMENT_EXTRA[entry.key] ?? [])])];
     return reply(`announce.${entry.key}.message`, announcementLabel(entry.key), entry.text,
-      Object.fromEntries(variables.map((key) => [key, announcementSamples[key] ?? ""])), []);
+      Object.fromEntries(variables.map((key) => [key, announcementSamplesOf(entry.key)[key] ?? ""])), []);
   }),
   // Said by the platform for every shop around a deployment: ahead of it, and once it is over.
   reply("announce.platform.maintenance.ahead", "系统维护预告", "🛠 {minutes} 分钟后开始后端维护，预计 {expected} 分钟内完成，期间暂停服务",
