@@ -53,9 +53,10 @@ function fixture() {
     CREATE TABLE machine_login_events(id TEXT,machine_id TEXT);
     CREATE TABLE player_operations(id TEXT,device_id TEXT);
     CREATE TABLE machine_tickets(machine_id TEXT,token_hash TEXT);
-    CREATE TABLE mahjong_seats(shop_id TEXT,machine_id TEXT,player_id TEXT);
+    CREATE TABLE mahjong_seats(shop_id TEXT,machine_id TEXT,player_id TEXT,session_id TEXT,entry_session_id TEXT);
+    CREATE TABLE sessions(shop_id TEXT,id TEXT,status TEXT);
   `);
-  sqlite.run("CREATE TABLE players(shop_id TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(shop_id,id))");
+  sqlite.run("CREATE TABLE players(shop_id TEXT NOT NULL,id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',PRIMARY KEY(shop_id,id))");
   for(const statement of deviceEventSchema)sqlite.run(statement);
   sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters) VALUES ('shop-1','shop-code','Test Shop',0,0,80)");
   const db=new SqliteD1(sqlite);
@@ -240,6 +241,27 @@ describe("pre-fork merchant machine lifecycle",()=>{
 
     const unreadable=await send("PATCH",`/machines/${machine.id}`,{hinataUrl:"https://relay.example/io",keys:[{name:"坏",key:"!!"}]});
     expect(unreadable.status).toBe(400);
+  });
+
+  it("lets a mahjong table be set while nobody sits at it, even with a seat left behind by someone who checked out", async () => {
+    const {app,env,sqlite}=fixture();
+    const send=(method:string,path:string,body:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{
+      method,headers:{"content-type":"application/json"},body:JSON.stringify(body),
+    }),env);
+    const created=await send("POST","/machines",{shopId:"shop-1",name:"麻将 A 桌",capacity:4,mahjong:{pricingConfigIds:[]}});
+    const {machine}=await created.json() as {machine:{id:string}};
+    sqlite.run("INSERT INTO players(shop_id,id) VALUES ('shop-1','p1')");
+    // Checked out without getting up: the row stays, but nobody is at the table.
+    sqlite.run("INSERT INTO sessions VALUES ('shop-1','s-old','closed')");
+    sqlite.run("INSERT INTO mahjong_seats VALUES ('shop-1',?,'p1','s-old',NULL)",[machine.id]);
+    const changed=await send("PATCH",`/machines/${machine.id}`,{mahjong:{pricingConfigIds:[],startWhen:"seated"}});
+    expect(changed.status).toBe(200);
+    // Someone still playing holds the table.
+    sqlite.run("INSERT INTO sessions VALUES ('shop-1','s-live','active')");
+    sqlite.run("UPDATE mahjong_seats SET session_id='s-live'");
+    const held=await send("PATCH",`/machines/${machine.id}`,{mahjong:{pricingConfigIds:[],startWhen:"full"}});
+    expect(held.status).toBe(409);
+    expect((await held.json() as {error:{code:string}}).error.code).toBe("MAHJONG_IN_USE");
   });
 
   it("binds an air conditioner as its own capability and reuses the power token for the same Home Assistant",async()=>{
