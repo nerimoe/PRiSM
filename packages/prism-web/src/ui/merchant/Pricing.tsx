@@ -2,7 +2,7 @@ import { PricingRing } from "./PricingRing";
 import { PlanRelationGraph } from "./PlanRelationGraph";
 import { useResourceGroups } from "./ResourceGroups";
 import { BillingSimulator } from "./BillingSimulator";
-import { pricingInZone } from "./pricing-clock";
+import { pricingInZone, toggleWeekday, WEEKDAY_ORDER, weekdayKey } from "./pricing-clock";
 import { billTime } from "../bill-time";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -13,6 +13,7 @@ import {
   ActionForm,
   Field,
   Modal,
+  NumberInput,
   State,
   Table,
   button,
@@ -539,14 +540,11 @@ function PricingEditor({
               />
             </Field>
             <Field label="金额">
-              <input
+              <NumberInput
                 className={input}
-                type="number"
                 required
-                min="0"
-                step="0.01"
                 value={draft.provider.amount ?? 0}
-                onChange={(e) => provider({ amount: Number(e.target.value) })}
+                onChange={(amount) => provider({ amount })}
               />
             </Field>
           </div>
@@ -577,7 +575,7 @@ function PricingEditor({
                   })
                 }
                 onChange={(patch) => changeRule(index, patch)}
-                weekdaysLabel={(day) => t(["一", "二", "三", "四", "五", "六", "日"][day]!)}
+                weekdaysLabel={(day) => t(weekdayKey(day))}
                 t={t}
               />
             ))}
@@ -805,49 +803,41 @@ function PeriodCard({
           </p>
           {kind === "time.cap" ? (
             <Field label="封顶金额" unit="元">
-              <input
+              <NumberInput
                 className={input}
                 required
-                type="number"
-                min="0.01"
-                step="0.01"
                 value={rule.priceCap ?? 0}
-                onChange={(e) =>
-                  onChange({ priceCap: Number(e.target.value) })
-                }
+                onChange={(priceCap) => onChange({ priceCap })}
               />
             </Field>
           ) : (
             <div className="grid grid-cols-2 gap-3">
               {(
                 [
-                  ["unitMinutes", "计费间隔", "分钟", 1],
+                  ["unitMinutes", "计费间隔", "分钟", true, false],
                   // A negative price is a discount on that period, so no floor.
-                  ["unitPrice", "收费金额", "元", undefined],
-                  ["roundGraceMinutes", "宽限时长", "分钟", 0],
-                  ["priceCap", "时段封顶", "元", 0],
+                  ["unitPrice", "收费金额", "元", false, true],
+                  ["roundGraceMinutes", "宽限时长", "分钟", true, false],
+                  ["priceCap", "时段封顶", "元", false, false],
                 ] as const
-              ).map(([key, label, unit, min]) => (
+              ).map(([key, label, unit, integer, allowNegative]) => (
                 <Field
                   key={key}
                   label={label}
                   unit={key === "priceCap" && !rule.pricing?.priceCap ? "不限" : unit}
                 >
-                  <input
+                  <NumberInput
                     className={input}
-                    type="number"
                     required
+                    integer={integer}
+                    allowNegative={allowNegative}
                     aria-describedby={key === "unitPrice" ? "negative-price-note" : undefined}
-                    {...(min === undefined ? {} : { min })}
-                    step={
-                      key === "unitPrice" || key === "priceCap" ? "0.01" : "1"
-                    }
                     value={rule.pricing?.[key] ?? 0}
-                    onChange={(e) =>
+                    onChange={(next) =>
                       onChange({
                         pricing: {
                           ...rule.pricing!,
-                          [key]: Number(e.target.value),
+                          [key]: next,
                         },
                       })
                     }
@@ -865,30 +855,28 @@ function PeriodCard({
             </summary>
             <div className="mt-3 grid gap-3">
               <Field label="优先级">
-                <input
+                <NumberInput
                   className={input}
-                  type="number"
-                  step="1"
+                  integer
+                  allowNegative
                   required
                   value={rule.priority}
-                  onChange={(e) =>
-                    onChange({ priority: Number(e.target.value) })
-                  }
+                  onChange={(priority) => onChange({ priority })}
                 />
               </Field>
               <div className="flex flex-wrap gap-3">
-                {[1, 2, 3, 4, 5, 6, 0].map((day) => (
+                {WEEKDAY_ORDER.map((day) => (
                   <label className="flex gap-1 text-sm" key={day}>
                     <input
                       type="checkbox"
                       checked={rule.weekdays?.includes(day) ?? true}
                       onChange={(e) =>
                         onChange({
-                          weekdays: e.target.checked
-                            ? [...(rule.weekdays ?? []), day]
-                            : (rule.weekdays ?? [0, 1, 2, 3, 4, 5, 6]).filter(
-                                (d) => d !== day,
-                              ),
+                          weekdays: toggleWeekday(
+                            rule.weekdays,
+                            day,
+                            e.target.checked,
+                          ),
                         })
                       }
                     />

@@ -32,6 +32,12 @@ export const operatingMode = (
 ): OperatingMode =>
   !input.billing ? "devices" : input.cashierEnabled ? "desk" : "self";
 
+export type SetupResourceGroup = {
+  id: string;
+  defaultPricingConfigId: string | null;
+  enabled?: boolean;
+};
+
 /**
  * Whether any resource bills: a resource group (the default group's plan is
  * the shop default) or a resource of its own has a plan.
@@ -41,11 +47,25 @@ export const shopBills = (
   machines: Pick<Resource, "pricingConfigOverrideId">[],
 ) => groups.some((group) => !!group.defaultPricingConfigId) || machines.some((machine) => !!machine.pricingConfigOverrideId);
 
+/**
+ * Whether a single resource actually starts a billing plan when used: either it
+ * has its own override plan, or its group is enabled and has a default plan.
+ */
+export const resourceBilled = (
+  machine: Pick<Resource, "resourceGroupId" | "pricingConfigOverrideId">,
+  groups: readonly SetupResourceGroup[],
+): boolean => {
+  if (machine.pricingConfigOverrideId) return true;
+  const group = groups.find((g) => g.id === (machine.resourceGroupId ?? "default"));
+  return !!group && group.enabled !== false && !!group.defaultPricingConfigId;
+};
+
 export type SetupSignals = {
   settings: Settings;
   /** Whether any resource bills; see `shopBills`. */
   billing: boolean;
   machines: Resource[];
+  groups?: readonly SetupResourceGroup[];
   ttLock: {
     clientId?: string;
     clientSecret?: string;
@@ -84,6 +104,8 @@ export type SetupStatus = {
   complete: boolean;
   /** Why billing is not ready: no balance asset. */
   pricingProblem: "assets" | null;
+  /** Why front-desk billing is not ready: missing/disabled desk resource or unbilled desk resource. */
+  deskProblem: "missing" | "unbilled" | null;
   devices: number;
   unconfigured: number;
   doorDevices: number;
@@ -91,6 +113,11 @@ export type SetupStatus = {
   identityMatters: boolean;
   botIssued: boolean;
   botConnected: boolean;
+  botAnnounceGroups: number;
+  ioMissingToken: number;
+  ioE2ee: number;
+  ioExternal: number;
+  coinIncomplete: number;
   bindingPrompt: string;
   ttLockReady: boolean;
   players: number;
@@ -112,11 +139,40 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
   const { settings, machines } = signals;
   const mode = operatingMode({ billing: signals.billing, cashierEnabled: settings.cashierEnabled });
   const billing = mode !== "devices";
-  const caps = machines.map(resourceCapabilities);
-  const unconfigured = machines.filter(isUnconfigured).length;
+  const shopResources = machines.filter((machine) => !machine.bot);
+  const groups = signals.groups ?? [];
+  const caps = shopResources.map(resourceCapabilities);
+  const unconfigured = shopResources.filter(
+    (machine) => isUnconfigured(machine) && !resourceBilled(machine, groups),
+  ).length;
   const doorDevices = caps.filter((c) => c.door).length;
   const activeBots = machines.filter((machine) => machine.enabled && machine.bot && machine.hasBotToken);
   const botConnected = activeBots.some((machine) => machine.botOnline === true || !!machine.botLastUsedAt);
+  const botAnnounceGroups = activeBots.reduce(
+    (sum, machine) => sum + (machine.bot?.announceGroups?.length ?? 0),
+    0,
+  );
+  const enabledShop = shopResources.filter((machine) => !!machine.enabled);
+  const ioMissingToken = enabledShop.filter(
+    (machine) =>
+      resourceCapabilities(machine).hinata_io &&
+      machine.relayConnection === "embedded" &&
+      machine.hasRelayToken === false,
+  ).length;
+  const ioE2ee = enabledShop.filter(
+    (machine) =>
+      resourceCapabilities(machine).hinata_io &&
+      machine.relayConnection === "embedded" &&
+      machine.relayE2ee === true,
+  ).length;
+  const ioExternal = enabledShop.filter(
+    (machine) =>
+      resourceCapabilities(machine).hinata_io &&
+      machine.relayConnection !== "embedded",
+  ).length;
+  const coinIncomplete = enabledShop.filter(
+    (machine) => !!machine.coin && !machine.coin.keyId,
+  ).length;
   const identity = identityPolicy(settings);
   const ttLock = signals.ttLock;
   const ttLockReady = !!(
@@ -135,8 +191,19 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
   // balance to pay from.
   const pricingProblem =
     !billing || !configuration || configuration.balanceAssetsReady ? null : "assets" as const;
+  const desk = settings.cashierResourceId
+    ? shopResources.find((machine) => machine.id === settings.cashierResourceId && !!machine.enabled)
+    : undefined;
+  const deskProblem: SetupStatus["deskProblem"] =
+    mode !== "desk"
+      ? null
+      : !desk
+        ? "missing"
+        : signals.groups !== undefined && !resourceBilled(desk, groups)
+          ? "unbilled"
+          : null;
   if (billing)
-    steps.push({ id: "pricing", done: !!configuration && !pricingProblem });
+    steps.push({ id: "pricing", done: !!configuration && !pricingProblem && !deskProblem });
   if (mode === "desk") {
     steps.push({ id: "reader", done: signals.reader === true });
     steps.push({ id: "staff", done: signals.members > 1 });
@@ -145,7 +212,7 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
     steps.push({ id: "identity", done: identity === "web" || botConnected });
   if (mode === "self")
     steps.push({ id: "prepaid", done: signals.redeemCodes > 0 || fundedPlayers > 0 });
-  steps.push({ id: "devices", done: machines.length > 0 && unconfigured === 0 });
+  steps.push({ id: "devices", done: shopResources.length > 0 && unconfigured === 0 });
   if (doorDevices) steps.push({ id: "door", done: ttLockReady });
   steps.push({
     id: "trial",
@@ -157,13 +224,19 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
     steps,
     complete: steps.every((step) => step.done),
     pricingProblem,
-    devices: machines.length,
+    deskProblem,
+    devices: shopResources.length,
     unconfigured,
     doorDevices,
     identity,
     identityMatters,
     botIssued: activeBots.length > 0,
     botConnected,
+    botAnnounceGroups,
+    ioMissingToken,
+    ioE2ee,
+    ioExternal,
+    coinIncomplete,
     bindingPrompt: settings.botContact ?? "",
     ttLockReady,
     players: players.length,

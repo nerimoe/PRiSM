@@ -6,13 +6,19 @@ import {
   useEffect,
   useRef,
   useState,
-  type ReactNode,
   type FormEvent,
+  type InputHTMLAttributes,
+  type ReactNode,
 } from "react";
 import { X } from "lucide-react";
 import { api, playerOperation } from "../../api";
 import { useI18n } from "../../i18n";
 import { shopApi } from "../BillingPages";
+import {
+  formatNumericValue,
+  isValidNumericDraft,
+  parseNumericDraft,
+} from "./number-input";
 
 export const MerchantContext = createContext({
   shopCode: "",
@@ -340,6 +346,55 @@ export function CopyValue({ label, value }: { label: string; value: string }) {
         </button>
       </div>
     </div>
+  );
+}
+export function NumberInput({
+  value,
+  onChange,
+  integer = false,
+  allowNegative = false,
+  onFocus,
+  onBlur,
+  inputMode,
+  ...rest
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange"> & {
+  value: number;
+  onChange: (value: number) => void;
+  integer?: boolean;
+  allowNegative?: boolean;
+}) {
+  const [raw, setRaw] = useState(() => formatNumericValue(value));
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setRaw(formatNumericValue(value));
+  }, [value]);
+  const resolvedInputMode =
+    inputMode ?? (allowNegative ? undefined : integer ? "numeric" : "decimal");
+  return (
+    <input
+      {...rest}
+      type="text"
+      inputMode={resolvedInputMode}
+      autoComplete="off"
+      spellCheck={false}
+      value={raw}
+      onFocus={(e) => {
+        focused.current = true;
+        onFocus?.(e);
+      }}
+      onBlur={(e) => {
+        focused.current = false;
+        setRaw(formatNumericValue(value));
+        onBlur?.(e);
+      }}
+      onChange={(e) => {
+        const next = e.target.value.trim();
+        if (!isValidNumericDraft(next, { integer, allowNegative })) return;
+        setRaw(next);
+        const parsed = parseNumericDraft(next, { integer, allowNegative });
+        if (parsed !== null) onChange(parsed);
+      }}
+    />
   );
 }
 export type Player = {
