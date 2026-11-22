@@ -65,11 +65,21 @@ export function payment(record: StaffReportCheckout, t: (key: string) => string)
 }
 
 export function ReportsPage() {
+  const { shopId } = useMerchant();
+  return <ReportsContent key={shopId} />;
+}
+
+function ReportsContent() {
   const { t, errorText } = useI18n();
   const { shopId, shopCode, timeZone } = useMerchant();
   const request = useStaffApi();
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
+  const playerOptions = useResource<{ excludedPlayerIds: string[] }>("reports/exclusions");
+  const excludedIds = playerOptions.data?.excludedPlayerIds ?? [];
+  const exclusionKey = JSON.stringify(excludedIds);
+  const exclusionQuery = `excludePlayers=${encodeURIComponent(exclusionKey)}`;
+  useEffect(() => { setOffset(0); }, [exclusionKey]);
   const [preset, setPreset] = useState<RangePreset>(7);
   const [from, setFrom] = useState(() =>
     addLocalDays(formatLocalDate(new Date(), timeZone), -6),
@@ -101,16 +111,17 @@ export function ReportsPage() {
       }).toString()
     : "";
 
+  const recordsRange = archive === "active" ? `${range}&${exclusionQuery}` : range;
   const analyticsPath =
-    !valid || analyticsTooLong
+    !valid || analyticsTooLong || !playerOptions.data
       ? null
-      : `reports/analytics?source=1&startDate=${from}&endDate=${to}`;
+      : `reports/analytics?source=1&startDate=${from}&endDate=${to}&${exclusionQuery}`;
   const analyticsResource = useResource<{ source: StaffReportsAnalyticsSource }>(analyticsPath);
-  const source = analyticsPath && analyticsResource.data?.source.range.startDate === from && analyticsResource.data.source.range.endDate === to
+  const source = analyticsPath && analyticsResource.data?.source.range.startDate === from && analyticsResource.data.source.range.endDate === to && JSON.stringify(analyticsResource.data.source.excludedPlayerIds ?? []) === exclusionKey
     ? analyticsResource.data.source : null;
   const analytics = useMemo(() => source ? calculateHistoryAnalytics(source) : null, [source]);
   const traffic = useMemo(() => source ? historyTraffic(source) : null, [source]);
-  const analyticsError = analyticsTooLong
+  const analyticsError = playerOptions.error ? errorText(playerOptions.error) : analyticsTooLong
     ? t("自定义图表最多支持 366 天，结账记录不受限制。")
     : analyticsPath && analyticsResource.error
       ? errorText(analyticsResource.error)
@@ -165,8 +176,9 @@ export function ReportsPage() {
     setExportError("");
     try {
       const { loadExportCheckouts, createHistoryWorkbook, downloadHistoryWorkbook } = await import("./history-export");
-      const records = await loadExportCheckouts(request, range, archive);
-      const bytes = await createHistoryWorkbook({ analytics, traffic, records, archive,
+      const records = await loadExportCheckouts(request, recordsRange, archive);
+      const bytes = await createHistoryWorkbook({ analytics, traffic, records, archive, excludeStaff: true,
+        excludedPlayers: excludedIds,
         deviceNames: new Map((devices ?? []).map(device => [device.id, device.name])) });
       downloadHistoryWorkbook(bytes, `PRiSM-${shopCode}-${from}-${to}-${archive}.xlsx`);
     } catch (error) {
@@ -180,6 +192,7 @@ export function ReportsPage() {
     setRefreshing(true);
     setRefreshSignal((value) => value + 1);
     analyticsResource.reload();
+    playerOptions.reload();
     await loadDevices();
     setRefreshing(false);
   }
@@ -196,7 +209,7 @@ export function ReportsPage() {
             · {displayZone}
           </span>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button type="button" className={button} disabled={exporting || !analytics || !traffic}
             onClick={() => void exportSelected()}>
             <Download size={15} aria-hidden="true" />
@@ -296,6 +309,8 @@ export function ReportsPage() {
 
       {!valid ? (
         <State error={t("请选择有效日期")} />
+      ) : !playerOptions.data ? (
+        <State error={playerOptions.error ? errorText(playerOptions.error) : undefined} />
       ) : (
         <>
           {/* Historical period summary KPI strip. */}
@@ -425,6 +440,7 @@ export function ReportsPage() {
               loading={analyticsLoading}
               error={analyticsError}
             />
+            <div className="lg:col-span-2">
             <TopDevicesCard
               topDevices={analytics?.topDevices ?? []}
               devices={devices}
@@ -432,6 +448,7 @@ export function ReportsPage() {
               loading={analyticsLoading}
               error={analyticsError}
             />
+            </div>
           </div>
 
           {/* Detailed Checkout Records sharing the same unified date range */}
@@ -459,15 +476,15 @@ export function ReportsPage() {
                     setOffset(0);
                   }}
                 >
-                  <option value="active">{t("未归档")}</option>
+                  <option value="active">{t("默认")}</option>
+                  <option value="all">{t("全部")}</option>
                   <option value="archived">{t("已归档")}</option>
-                  <option value="all">{t("全部账单")}</option>
                 </select>
               </label>
             </div>
             <ReportResults
-              key={`${range}:${archive}:${offset}`}
-              range={range}
+              key={`${recordsRange}:${archive}:${offset}`}
+              range={recordsRange}
               archive={archive}
               offset={offset}
               setOffset={setOffset}

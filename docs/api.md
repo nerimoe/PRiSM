@@ -517,3 +517,7 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 `PUT /api/v1/shops/:shopCode/settings` 中显式提供的 `locationEnabled` 优先于同时提交的旧字段 `checkinGeo` / `checkoutGeo` / `machineGeo`，统一更新三项存储值。前端读取设置后合并提交时，旧别名不会覆盖用户刚修改的总开关；响应返回解析后的开关值。省略总开关的旧客户端仍可提交旧字段。租户读取时继续将旧位置标志按 OR 归一化为统一策略。
 
 仅修改位置或身份等设置，不要求已有计费配置重新通过校验；启用计费、启用收银或更改入场方案仍需配置有效，否则返回 `409 BILLING_CONFIGURATION_REQUIRED`。店主权限、未结账时禁止关闭计费／收银等限制继续生效。
+
+历史页玩家筛选：`GET /api/v1/shops/:shopCode/staff/reports/player-options` 返回 `{ players: [{ id, displayName, isStaff }] }`，需员工只读权限。`reports/analytics?source=1`、`reports/checkouts` 接受 `excludePlayers=<JSON string array>`（最多 2000 个非空玩家编号）；过滤在分页前执行，缺省不排除，非法参数为 400 `INVALID_REPORT_FILTER`。事实结果返回 `source.excludedPlayerIds`，前端用来避免切换筛选期间展示旧数据。
+
+持久统计排除：`GET/PUT staff/players/:playerId/report-settings` 读取/修改本店玩家 `{ excluded: boolean }`（PUT 需管理权限）；当前店主和店员自动排除。`GET staff/reports/exclusions` 返回 `{ excludedPlayerIds }`。`reports/analytics?source=1` 自动排除持久名单；`reports/checkouts?archive=active` 为默认（未归档且未被排除），`archive=all` 和 `archive=archived` 包含被排除玩家。

@@ -160,3 +160,7 @@ routes/
 - 自动避开所有 `/api/`、`/.well-known/`、`/callback` 等动态服务路径。
 - 在维护阶段（`PRISM_DEPLOY_PHASE === 'maintenance'`）自动拦截。
 - 支持针对 HTML 页面请求回退至 SPA 根入口 (`/`)。
+
+- `GET /reports/player-options`: 返回本店玩家及账号关联的店员标记，供历史页自动/手动排除使用。`reports/analytics?source=1` 与 `reports/checkouts` 支持 `excludePlayers` JSON 数组，在批量查询、分页前过滤；不影响个人账单。
+
+- 玩家经营统计排除持久保存在 `players.report_excluded`；`GET/PUT /players/:playerId/report-settings` 管理开关，`GET /reports/exclusions` 仅返回排除ID。店主/店员始终自动排除，默认结账列表过滤，全部与已归档可查看被排除玩家。

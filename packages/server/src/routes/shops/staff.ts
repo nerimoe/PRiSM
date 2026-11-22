@@ -33,6 +33,59 @@ import {
 
 export const staffRouter = new Hono<AppBindings>();
 
+function reportExcludedPlayers(raw: string | undefined): string[] {
+  if (!raw) return [];
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { jsonError(400, "无效的玩家筛选", "INVALID_REPORT_FILTER"); }
+  const parsed = z.array(z.string().min(1).max(200)).max(2000).safeParse(value);
+  if (!parsed.success) jsonError(400, "无效的玩家筛选", "INVALID_REPORT_FILTER");
+  return [...new Set(parsed.data!)];
+}
+
+async function reportPlayerFlags(db: import("@prism/adapter-d1").D1DatabaseLike, shopId: string, playerId?: string) {
+  const result = await db.prepare(`SELECT p.id, p.display_name AS displayName, p.report_excluded AS excluded,
+    EXISTS (SELECT 1 FROM shop_player_accounts a
+      WHERE a.shop_id=p.shop_id AND a.player_id=p.id AND (
+        EXISTS (SELECT 1 FROM shop_members m WHERE m.shop_id=a.shop_id AND m.user_id=a.user_id)
+        OR EXISTS (SELECT 1 FROM shops sh WHERE sh.id=a.shop_id AND sh.created_by=a.user_id)
+        OR EXISTS (SELECT 1 FROM shop_staff_accounts sa JOIN staff_users su ON su.shop_id=sa.shop_id AND su.id=sa.staff_id
+          WHERE sa.shop_id=a.shop_id AND sa.user_id=a.user_id AND su.status='active')
+      )) AS isStaff
+    FROM players p WHERE p.shop_id=? ${playerId ? "AND p.id=?" : ""} ORDER BY p.id`)
+    .bind(shopId, ...(playerId ? [playerId] : [])).all<{ id: string; displayName: string; isStaff: number; excluded: number }>();
+  return result.results.map(p => ({ ...p, isStaff: Boolean(p.isStaff), excluded: Boolean(p.excluded) }));
+}
+async function reportExclusions(db: import("@prism/adapter-d1").D1DatabaseLike, shopId: string) {
+  return (await reportPlayerFlags(db, shopId)).filter(p => p.isStaff || p.excluded).map(p => p.id);
+}
+staffRouter.get("/reports/player-options", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  return c.json({ players: await reportPlayerFlags(c.env.DB, shop.id) });
+});
+staffRouter.get("/reports/exclusions", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  return c.json({ excludedPlayerIds: await reportExclusions(c.env.DB, shop.id) });
+});
+staffRouter.get("/players/:playerId/report-settings", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  const [settings] = await reportPlayerFlags(c.env.DB, shop.id, c.req.param("playerId"));
+  if (!settings) jsonError(404, "玩家不存在", "PLAYER_NOT_FOUND");
+  return c.json({ excluded: settings.excluded || settings.isStaff, isStaff: settings.isStaff });
+});
+staffRouter.put("/players/:playerId/report-settings", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop);
+  const body = z.object({ excluded: z.boolean() }).parse(await c.req.json());
+  const [settings] = await reportPlayerFlags(c.env.DB, shop.id, c.req.param("playerId"));
+  if (!settings) jsonError(404, "玩家不存在", "PLAYER_NOT_FOUND");
+  if (!settings.isStaff) await c.env.DB.prepare("UPDATE players SET report_excluded=? WHERE shop_id=? AND id=?")
+    .bind(body.excluded ? 1 : 0, shop.id, settings.id).run();
+  return c.json({ excluded: settings.isStaff || body.excluded, isStaff: settings.isStaff });
+});
+
 // Only serialize the historic staff API view, not the authentication principal.
 staffRouter.get("/me", async (c) => {
   const shop = getShop(c);
@@ -501,7 +554,7 @@ staffRouter.get("/reports/analytics", async (c) => {
     if (!deps.staffQueries.getReportsAnalyticsSource) {
       jsonError(503, "统计数据暂不可用", "REPORT_SOURCE_UNAVAILABLE");
     }
-    return c.json({ source: await deps.staffQueries.getReportsAnalyticsSource!(queryInput) });
+    return c.json({ source: await deps.staffQueries.getReportsAnalyticsSource!({ ...queryInput, excludedPlayerIds: [...new Set([...(await reportExclusions(c.env.DB, shop.id)), ...reportExcludedPlayers(c.req.query("excludePlayers"))])].sort() }) });
   }
 
   if (!deps.staffQueries.getReportsAnalytics) {
@@ -550,7 +603,7 @@ staffRouter.get("/reports/analytics", async (c) => {
       topDevices: [],
     }));
   }
-  const analytics = await deps.staffQueries.getReportsAnalytics(queryInput);
+  const analytics = await deps.staffQueries.getReportsAnalytics({ ...queryInput, excludedPlayerIds: await reportExclusions(c.env.DB, shop.id) });
   return c.json(toStaffReportsAnalyticsView(analytics));
 });
 
@@ -605,7 +658,7 @@ staffRouter.get("/reports/checkouts", async (c) => {
   const rawLimit = Number(c.req.query("limit") ?? 50);
   const offset = Number.isSafeInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
   const limit = Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
-  const records = await deps.staffQueries.listReportCheckouts({ from, to, archive, offset, limit: limit + 1 });
+  const records = await deps.staffQueries.listReportCheckouts({ from, to, archive, offset, limit: limit + 1, excludedPlayerIds: archive === "active" ? [...new Set([...(await reportExclusions(c.env.DB, shop.id)), ...reportExcludedPlayers(c.req.query("excludePlayers"))])] : [] });
   return c.json({
     records: records.slice(0, limit),
     page: { limit, offset, hasMore: records.length > limit },

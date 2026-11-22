@@ -2190,5 +2190,15 @@
   "计时进行中，店员可以在「仪表板」页按位置查人、随时看实时账单。": "While the clock runs, staff can group who is in by place and view live bills on the In shop tab.",
   "余额不够：结不了账，计时继续。店员可以在「仪表板」页用「充值结账」或「改价结账」处理，也可让 Bot 把结账失败播报给店员。": "Not enough: checkout fails and the clock keeps running. Staff can use “Top up & check out” or “Adjust & check out” on In shop, and the bot can announce refused checkouts to staff.",
   "营收趋势、入场与在场分析及每笔结账记录，支持按时间导出 Excel；现场收款和余额结算分开统计，可归档测试账单。": "Revenue trends, arrivals, presence and checkout records, with Excel export by date; cash and balance payments are separate, and test bills can be archived.",
-  "营收趋势、入场与在场分析及每笔结账记录，支持按时间导出 Excel；测试账单可归档，不计入营业额。": "Revenue trends, arrivals, presence and checkout records, with Excel export by date; archive test bills to exclude them from revenue."
+  "营收趋势、入场与在场分析及每笔结账记录，支持按时间导出 Excel；测试账单可归档，不计入营业额。": "Revenue trends, arrivals, presence and checkout records, with Excel export by date; archive test bills to exclude them from revenue.",
+  "排除玩家": "Exclude players",
+  "自动排除店员（含店主）": "Automatically exclude staff (including the owner)",
+  "已排除 {count} 位玩家": "{count} players excluded",
+  "同时作用于统计、图表、结账记录和 Excel。店员按本店账号关联识别，未关联的档案可手动排除。": "Applies to statistics, charts, checkout records and Excel. Staff are identified by linked store accounts; unlinked profiles can be excluded manually.",
+  "指定排除玩家": "Choose players to exclude",
+  "已排除玩家": "Excluded players",
+  "移除 {name}": "Remove {name}",
+  "按昵称或玩家 ID 搜索；勾选玩家加入排除名单。": "Search by name or player ID; select a player to exclude them.",
+  "排除经营统计": "Exclude from analytics",
+  "店员自动排除统计": "Staff excluded from analytics"
 }

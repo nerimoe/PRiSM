@@ -22,6 +22,8 @@ export async function createHistoryWorkbook(input: {
   records: StaffReportCheckout[];
   archive: ReportArchiveFilter;
   deviceNames: ReadonlyMap<string, string>;
+  excludedPlayers?: string[];
+  excludeStaff?: boolean;
 }) {
   const { default: ExcelJS } = await import("exceljs");
   const workbook = new ExcelJS.Workbook();
@@ -39,7 +41,8 @@ export async function createHistoryWorkbook(input: {
   }
   sheet("统计概览", ["指标", "数值"], [
     ["开始日期", a.range.startDate], ["结束日期（含）", a.range.endDate], ["门店时区", a.range.timeZone],
-    ["结账记录筛选", input.archive], ["统计口径", "经营统计排除归档账单；结账明细按所选归档筛选导出"],
+    ["结账记录筛选", input.archive], ["自动排除店员", input.excludeStaff ? "是" : "否"],
+    ["已排除玩家", (input.excludedPlayers ?? []).join("、")], ["统计口径", "经营统计排除归档账单；结账明细按所选归档筛选导出"],
     ["营业额（元）", a.period.revenueTotal], ["结账笔数", a.period.checkoutCount],
     ["客流（玩家日）", a.period.visitCount], ["活跃玩家", a.period.uniquePlayerCount],
     ["新注册玩家", a.period.newPlayerCount], ["平均在店时长（分钟）", a.period.avgDurationMinutes],

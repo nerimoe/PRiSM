@@ -795,6 +795,17 @@ function PlayerPanel({
   const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
+  const reportSettings = useResource<{ excluded: boolean; isStaff: boolean }>(`${base}/report-settings`);
+  const [reportSaving, setReportSaving] = useState(false);
+  async function toggleReportExclusion(excluded: boolean) {
+    setReportSaving(true);
+    setError("");
+    try {
+      await request(`${base}/report-settings`, "PUT", { excluded });
+      reportSettings.reload();
+    } catch (e) { setError(staffMessage(e instanceof Error ? e : new Error(String(e)))); }
+    finally { setReportSaving(false); }
+  }
   const assets = useResource<Holdings>(`${base}/assets`);
   const definitions = useResource<{ assetDefinitions: Asset[] }>(
     "asset-definitions",
@@ -872,6 +883,13 @@ function PlayerPanel({
           </p>
         </div>
       </header>
+      {reportSettings.data && <label className="flex items-center justify-between gap-3 border-b border-ink/10 px-4 py-3 text-sm">
+        <span>{t(reportSettings.data.isStaff ? "店员自动排除统计" : "排除经营统计")}</span>
+        <input type="checkbox" className="size-4 accent-[var(--color-mint)]" checked={reportSettings.data.excluded}
+          disabled={!canWrite || reportSaving || reportSettings.data.isStaff}
+          onChange={e => void toggleReportExclusion(e.target.checked)} />
+      </label>}
+      {reportSettings.error && <button className={button} onClick={reportSettings.reload}>{t("重试")}</button>}
       {error && (
         <p role="alert" className="border-b border-ink/10 px-4 py-2 text-sm text-coral">
           {error}
