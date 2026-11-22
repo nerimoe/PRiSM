@@ -115,6 +115,33 @@ function mock(request, role, unknown, mutations) {
     if (action === "reports/summary") return { summary: {
       revenueTotal: 0, sessionCount: 0, assetGrantTotal: 0, coinCommandCount: 0,
     }};
+    if (action === "reports/analytics" && url.searchParams.get("source") === "1") {
+      const startDate = url.searchParams.get("startDate");
+      const endDate = url.searchParams.get("endDate");
+      const from = new Date(`${startDate}T00:00:00+08:00`);
+      const to = new Date(new Date(`${endDate}T00:00:00+08:00`).getTime() + 86400000);
+      return { source: {
+        range: { days: Math.round((to - from) / 86400000), timeZone: "Asia/Shanghai", from: from.toISOString(), to: to.toISOString(), startDate, endDate },
+        asOf: new Date().toISOString(), checkoutRows: [], sessionRows: [], playerRows: [], operationRows: [], assetGrantCount: 0,
+      } };
+    }
+    if (action === "reports/analytics") return { analytics: {
+      range: { days: 7, timeZone: "Asia/Shanghai", from: "2026-09-26T16:00:00.000Z", to: "2026-10-03T16:00:00.000Z", startDate: "2026-09-27", endDate: "2026-10-03" },
+      today: { revenueTotal: 0, yesterdayRevenueTotal: 0, checkoutCount: 0, yesterdayCheckoutCount: 0, visitCount: 0, yesterdayVisitCount: 0, newPlayerCount: 0, coinCount: 0, avgDurationMinutes: 0 },
+      period: { revenueTotal: 0, previousRevenueTotal: 0, checkoutCount: 0, previousCheckoutCount: 0, visitCount: 0, uniquePlayerCount: 0, newPlayerCount: 0, avgTicket: 0, avgDurationMinutes: 0, coinCount: 0, assetGrantCount: 0 },
+      daily: [
+        { date: "2026-09-27", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-09-28", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-09-29", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-09-30", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-10-01", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-10-02", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+        { date: "2026-10-03", revenue: 0, checkouts: 0, visits: 0, coins: 0 },
+      ],
+      hourlyVisits: Array.from({ length: 24 }, () => 0),
+      paymentMethods: [],
+      topDevices: [],
+    }};
     if (action === "reports/checkouts") return { records: [], page: { hasMore: false } };
     if (action === "players/p/checkouts") return { records: [], page: { hasMore: false } };
     if (action === "players/p/assets") return { holdings: [], ledgerEntries: [] };
@@ -133,17 +160,17 @@ const cases = [
   ]},
   { role: "viewer", pages: [
     ["/merchant/demo/devices", "店内资源"],
-    ["/merchant/demo/live", "在店玩家"],
+    ["/merchant/demo/live", "仪表板"],
     ["/merchant/demo/players", "玩家"],
     ["/merchant/demo/pricing", "计费规则"],
     ["/merchant/demo/assets", "资产与兑换"],
-    ["/merchant/demo/reports", "营业记录"],
+    ["/merchant/demo/reports", "历史"],
   ]},
   { role: "owner", pages: [
     ["/cards", "卡片"], ["/merchant/demo/guide", "开店指引"], ["/merchant/demo/devices", "店内资源"],
-    ["/merchant/demo/live", "在店玩家"], ["/merchant/demo/players", "玩家"],
+    ["/merchant/demo/live", "仪表板"], ["/merchant/demo/players", "玩家"],
     ["/merchant/demo/pricing", "计费规则"], ["/merchant/demo/assets", "资产与兑换"],
-    ["/merchant/demo/reports", "营业记录"],
+    ["/merchant/demo/reports", "历史"],
     ["/merchant/demo/settings", "店铺设置"],
     ["/merchant/demo/settings?group=billing", "店铺设置"],
     ["/merchant/demo/settings?group=players", "店铺设置"],
@@ -153,7 +180,7 @@ const cases = [
     ["/merchant/demo/settings?group=members", "店铺设置"],
   ]},
   { role: "admin", pages: [
-    ["/admin", "管理"], ["/settings", "账号"], ["/merchant/demo/live", "在店玩家"],
+    ["/admin", "管理"], ["/settings", "账号"], ["/merchant/demo/live", "仪表板"],
   ]},
 ];
 
@@ -207,6 +234,10 @@ const cases = [
               assert.strictEqual(await page.getByRole("navigation", { name: "店家导航" })
                 .getByRole("link", { name: "设置", exact: true }).count(), 0);
             }
+            if (url === "/merchant/demo/reports") {
+              await page.getByRole("region", { name: "营收与客流趋势" }).first().waitFor();
+              await page.getByRole("heading", { name: "结账记录" }).first().waitFor();
+            }
             if (url === "/merchant/demo/players") {
               // Keep both the funded and zero balance visible; undefined renders
               // an em dash, the regression caused by the server's lossy DTO.
@@ -215,6 +246,8 @@ const cases = [
               await page.getByText("零余额玩家", { exact: true }).filter({ visible: true }).first().waitFor();
             }
             if (url === "/merchant/demo/live") {
+              await page.getByRole("heading", { name: "在店玩家" }).first().waitFor();
+              await page.getByRole("region", { name: "设备概览" }).first().waitFor();
               await page.getByText(live.displayName, { exact: true }).first().waitFor();
               await page.getByRole("combobox", { name: "玩家分组" }).selectOption("status");
               await page.getByRole("combobox", { name: "玩家分组" }).selectOption("none");

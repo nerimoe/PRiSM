@@ -391,7 +391,7 @@ export function ResourcesPage() {
                         occupancy={occupancy[device.id]}
                         powerOffAt={powerOffAt[device.id]}
                         stateFailed={statesFailed && states === null}
-                        playerHref={(playerId) => `/merchant/${segment(shopCode)}/live?player=${segment(playerId)}`}
+                        playerHref={(playerId) => `/merchant/${segment(shopCode)}/dashboard?player=${segment(playerId)}`}
                         onAct={() => setActing(device)}
                         onQR={() => setQR(device)}
                         onHistory={() => setHistory(device)}
@@ -429,7 +429,7 @@ export function ResourcesPage() {
           close={() => setHistory(null)}
           wide
         >
-          <ResourceRecords device={history} playerHref={(playerId) => `/merchant/${segment(shopCode)}/live?player=${segment(playerId)}`} />
+          <ResourceRecords device={history} playerHref={(playerId) => `/merchant/${segment(shopCode)}/dashboard?player=${segment(playerId)}`} />
         </Modal>
       )}
       {editing && (
@@ -1007,7 +1007,7 @@ const capabilityMeta: Record<
  * Actions are grouped by the capability that owns them, and each group shows
  * the state that decides what those actions will do.
  */
-function ResourceActions({
+export function ResourceActions({
   device,
   state,
   onState,

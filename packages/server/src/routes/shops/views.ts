@@ -31,6 +31,7 @@ import type {
   StaffReportPlayerListItem,
   StaffReportSettlementListItem,
   StaffPricingExtension,
+  StaffReportsAnalytics,
   StaffReportsSummary,
   StaffRedeemCodeRedemptionListItem,
   PlayerRedeemRecordListItem,
@@ -749,5 +750,43 @@ export function toRosterView(roster: import("../../resources/roster.js").Roster)
       ...(group.kind === "resource" ? { capacity: group.capacity } : {}),
       members: group.members.map(toRosterMemberView),
     })),
+  };
+}
+
+export function toStaffReportsAnalyticsView(
+  analytics: StaffReportsAnalytics,
+): Record<string, unknown> {
+  return {
+    analytics: {
+      range: {
+        days: analytics.range.days,
+        timeZone: analytics.range.timeZone,
+        from: analytics.range.from.toISOString(),
+        to: analytics.range.to.toISOString(),
+        startDate: analytics.range.startDate,
+        endDate: analytics.range.endDate,
+      },
+      today: {
+        ...analytics.today,
+        revenueTotal: yuanOf(analytics.today.revenueTotal),
+        yesterdayRevenueTotal: yuanOf(analytics.today.yesterdayRevenueTotal),
+      },
+      period: {
+        ...analytics.period,
+        revenueTotal: yuanOf(analytics.period.revenueTotal),
+        previousRevenueTotal: yuanOf(analytics.period.previousRevenueTotal),
+        avgTicket: yuanOf(analytics.period.avgTicket),
+      },
+      daily: analytics.daily.map((point) => ({
+        ...point,
+        revenue: yuanOf(point.revenue),
+      })),
+      hourlyVisits: [...analytics.hourlyVisits],
+      paymentMethods: analytics.paymentMethods.map((entry) => ({
+        ...entry,
+        revenue: yuanOf(entry.revenue),
+      })),
+      topDevices: analytics.topDevices.map((entry) => ({ ...entry })),
+    },
   };
 }

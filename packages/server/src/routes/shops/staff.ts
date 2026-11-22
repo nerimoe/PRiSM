@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { addLocalDays, formatLocalDate, parseLocalDateTime, ZERO_CENTS } from "@prism/core";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -25,6 +26,7 @@ import {
   toStaffActiveSessionView,
   toStaffReportPlayerView,
   toStaffReportSettlementView,
+  toStaffReportsAnalyticsView,
   toStaffReportsSummaryView,
   toStoppedSessionView,
 } from "./views.js";
@@ -437,6 +439,119 @@ staffRouter.get("/reports/summary", async (c) => {
   }
   const summary = await deps.staffQueries.getReportsSummary({ from, to });
   return c.json(toStaffReportsSummaryView(summary));
+});
+
+function isValidLocalDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const utc = new Date(Date.UTC(year!, month! - 1, day!));
+  return (
+    utc.getUTCFullYear() === year &&
+    utc.getUTCMonth() === month! - 1 &&
+    utc.getUTCDate() === day
+  );
+}
+
+function diffLocalDays(startDate: string, endDate: string): number {
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const [ey, em, ed] = endDate.split("-").map(Number);
+  return Math.round(
+    (Date.UTC(ey!, em! - 1, ed!) - Date.UTC(sy!, sm! - 1, sd!)) / 86_400_000,
+  );
+}
+
+// Reports Analytics (Dashboard & History)
+staffRouter.get("/reports/analytics", async (c) => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  const deps = getShopDeps(c);
+  const rawStartDate = c.req.query("startDate")?.trim();
+  const rawEndDate = c.req.query("endDate")?.trim();
+  const timeZone = shop.time_zone || "Asia/Shanghai";
+
+  let days: number;
+  let startDate: string;
+  let endDate: string;
+  let queryInput: { days?: number; startDate?: string; endDate?: string; timeZone: string };
+
+  if (rawStartDate !== undefined || rawEndDate !== undefined) {
+    if (!rawStartDate || !rawEndDate || !isValidLocalDate(rawStartDate) || !isValidLocalDate(rawEndDate)) {
+      jsonError(400, "请选择有效日期范围（最多 366 天）", "INVALID_REPORT_RANGE");
+    }
+    const span = diffLocalDays(rawStartDate!, rawEndDate!) + 1;
+    if (span < 1 || span > 366) {
+      jsonError(400, "请选择有效日期范围（最多 366 天）", "INVALID_REPORT_RANGE");
+    }
+    days = span;
+    startDate = rawStartDate!;
+    endDate = rawEndDate!;
+    queryInput = { days, startDate, endDate, timeZone };
+  } else {
+    const rawDays = c.req.query("days");
+    days = rawDays === undefined ? 7 : Number(rawDays);
+    if (days !== 7 && days !== 14 && days !== 30) {
+      jsonError(400, "请选择有效天数", "INVALID_REPORT_RANGE");
+    }
+    endDate = formatLocalDate(new Date(), timeZone);
+    startDate = addLocalDays(endDate, -(days - 1));
+    queryInput = { days, timeZone };
+  }
+
+  if (c.req.query("source") === "1") {
+    if (!deps.staffQueries.getReportsAnalyticsSource) {
+      jsonError(503, "统计数据暂不可用", "REPORT_SOURCE_UNAVAILABLE");
+    }
+    return c.json({ source: await deps.staffQueries.getReportsAnalyticsSource!(queryInput) });
+  }
+
+  if (!deps.staffQueries.getReportsAnalytics) {
+    return c.json(toStaffReportsAnalyticsView({
+      range: {
+        days,
+        timeZone,
+        from: parseLocalDateTime(startDate, "00:00", timeZone),
+        to: parseLocalDateTime(addLocalDays(endDate, 1), "00:00", timeZone),
+        startDate,
+        endDate,
+      },
+      today: {
+        revenueTotal: ZERO_CENTS,
+        yesterdayRevenueTotal: ZERO_CENTS,
+        checkoutCount: 0,
+        yesterdayCheckoutCount: 0,
+        visitCount: 0,
+        yesterdayVisitCount: 0,
+        newPlayerCount: 0,
+        coinCount: 0,
+        avgDurationMinutes: 0,
+      },
+      period: {
+        revenueTotal: ZERO_CENTS,
+        previousRevenueTotal: ZERO_CENTS,
+        checkoutCount: 0,
+        previousCheckoutCount: 0,
+        visitCount: 0,
+        uniquePlayerCount: 0,
+        newPlayerCount: 0,
+        avgTicket: ZERO_CENTS,
+        avgDurationMinutes: 0,
+        coinCount: 0,
+        assetGrantCount: 0,
+      },
+      daily: Array.from({ length: days }, (_, index) => ({
+        date: addLocalDays(startDate, index),
+        revenue: ZERO_CENTS,
+        checkouts: 0,
+        visits: 0,
+        coins: 0,
+      })),
+      hourlyVisits: Array.from({ length: 24 }, () => 0),
+      paymentMethods: [],
+      topDevices: [],
+    }));
+  }
+  const analytics = await deps.staffQueries.getReportsAnalytics(queryInput);
+  return c.json(toStaffReportsAnalyticsView(analytics));
 });
 
 // Settlement Reports

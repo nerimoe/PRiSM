@@ -109,7 +109,7 @@ export function LivePlayers({ players: basePlayers, visibleIds, billingSnapshot,
         {(canWrite || error) && <footer className="p-4">
           {error && <p role="alert" className="mb-3 text-sm text-coral">{error}</p>}
           {canWrite && selected.paymentMode === "cashier"
-            ? cashierEnabled && <Link className={`${primary} w-full`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(selected.playerId)}`}>{t("前台收款")}</Link>
+            ? cashierEnabled && <Link className={`${primary} w-full`} to={`/merchant/${segment(shopCode)}/dashboard?cashierPlayer=${segment(selected.playerId)}`}>{t("前台收款")}</Link>
             : canWrite && <div className="grid gap-2 sm:grid-cols-3">
                 <button className={primary} disabled={busy} onClick={() => void previewCheckout("normal")}>{t("结账")}</button>
                 <button className={button} disabled={busy} onClick={() => void previewCheckout("override")}>{t("改价结账")}</button>

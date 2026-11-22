@@ -240,6 +240,8 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |
 | `GET` | `/rpc/staff/device-commands?limit=50` | 审计近期所有硬件发送指令的流水。失败命令会在 `payload.executorFailure.message` 中返回执行器原因，设备看板会直接展示。 |
 | `GET` | `/rpc/staff/reports/summary?from=<iso>&to=<iso>` | 查询特定时段内未归档账单的收入；消费笔数、分发道具数和投币次数仍含归档账单。 |
+| `GET` | `/rpc/staff/reports/analytics?days=7\|14\|30` 或 `?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 商户「历史」页与首页「仪表板」共用的经营统计汇总：支持 `days=7\|14\|30` 预设或自定义本地日期区间（含首尾最多 366 天，非法范围返回 400 `INVALID_REPORT_RANGE`）。按店铺时区归属自然日与小时，返回今日/昨日、当前周期/上一周期对比、每日趋势（营收、结账笔数、到店人次、投币次数）、24 小时客流分布、收款方式分布（余额结算及前台微信/支付宝/现金/其他，均排除已归档账单）以及热门活跃设备 Top 5。 |
+| `GET` | `/rpc/staff/reports/analytics?source=1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 历史页批量事实模式，复用员工只读权限与 1–366 天校验，返回 `{ source: { range, asOf, checkoutRows, sessionRows, playerRows, operationRows, assetGrantCount } }`。`range` 为门店自然日对应的 UTC 左闭右开范围；结账数据包含所选区间及等长上期并排除归档，计时查询覆盖上期起点至期末的所有重叠计时（含此前开始、未结束计时），新玩家/设备操作/资产入账限定所选区间。`checkoutRows.total` 明确为整数分，其余原汇总接口金额仍为元；计时包含 `player_id/started_at/ended_at`。前端负责汇总、排名、时段去重与 Excel 生成。未支持此查询的适配器返回 503 `REPORT_SOURCE_UNAVAILABLE`。 |
 | `GET` | `/rpc/staff/reports/settlements?from=<iso>&to=<iso>&limit=50&offset=0` | 分页查询特定时段内结账流水；返回 `settlements` 和 `{ limit, offset, hasMore }`。 |
 | `GET` | `/rpc/staff/reports/checkouts?from=<iso>&to=<iso>&archive=active&limit=50&offset=0` | 整张账单分页，筛选 active / archived / all；返回 records 和 page。 |
 | `GET` | `/rpc/staff/reports/checkouts/:checkoutId` | 店铺范围完整历史账单，返回 record 与玩家同源的 receipt/时间轴。 |

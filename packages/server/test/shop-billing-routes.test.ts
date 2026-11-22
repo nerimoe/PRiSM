@@ -1841,4 +1841,234 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const badFilter = await invalidFilter.json() as { error: { code: string } };
     expect(badFilter.error.code).toBe("INVALID_REPORT_FILTER");
   });
+
+  it("computes timezone-aware dashboard analytics, excludes archived checkouts, and allows viewer read access", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { shopId, publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+
+    // Viewer user for RBAC read check
+    const viewerUserId = "user_viewer_analytics";
+    const viewerToken = "viewer-session-token-analytics";
+    sqlite.run(
+      "INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [viewerUserId],
+    );
+    sqlite.run(
+      "INSERT INTO auth_sessions (id, user_id, token_hash, expires_at) VALUES ('sess_viewer', ?, ?, datetime('now', '+7 days'))",
+      [viewerUserId, await sha256(viewerToken)],
+    );
+    sqlite.run(
+      "INSERT INTO shop_members (id, shop_id, user_id, role) VALUES ('sm_viewer', ?, ?, 'staff')",
+      [shopId, viewerUserId],
+    );
+    sqlite.run(
+      "INSERT INTO staff_users (shop_id, id, username, display_name, password_hash, password_salt, role, status, created_at, updated_at) VALUES (?, 'st_viewer', 'viewer1', 'Viewer One', 'hash', 'salt', 'viewer', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+    sqlite.run(
+      "INSERT INTO shop_staff_accounts (shop_id, user_id, staff_id) VALUES (?, ?, 'st_viewer')",
+      [shopId, viewerUserId],
+    );
+
+    // Shop uses Asia/Shanghai (+08:00). Let's anchor relative to today's date in Asia/Shanghai.
+    const { formatLocalDate, addLocalDays, parseLocalDateTime } = await import("@prism/core");
+    const todayLocal = formatLocalDate(new Date(), "Asia/Shanghai");
+    const yesterdayLocal = addLocalDays(todayLocal, -1);
+    const prevPeriodLocal = addLocalDays(todayLocal, -9);
+
+    // Explicitly create an instant at local 01:30 today (which is 17:30Z yesterday in UTC!).
+    const todayEarlyUtc = new Date(parseLocalDateTime(todayLocal, "01:30", "Asia/Shanghai").getTime()).toISOString();
+    const todayNoonUtc = new Date(parseLocalDateTime(todayLocal, "12:00", "Asia/Shanghai").getTime()).toISOString();
+    const yesterdayAfternoonUtc = new Date(parseLocalDateTime(yesterdayLocal, "15:00", "Asia/Shanghai").getTime()).toISOString();
+    const prevPeriodNoonUtc = new Date(parseLocalDateTime(prevPeriodLocal, "12:00", "Asia/Shanghai").getTime()).toISOString();
+
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)",
+      [shopId, "p_a", "Player A", todayEarlyUtc],
+    );
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)",
+      [shopId, "p_b", "Player B", yesterdayAfternoonUtc],
+    );
+
+    // Sessions for visit and hourly distribution
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')",
+      [shopId, "s_1", "p_a", todayEarlyUtc, todayNoonUtc],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')",
+      [shopId, "s_archived", "p_a", todayEarlyUtc, todayNoonUtc],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')",
+      [shopId, "s_today_2", "p_b", todayNoonUtc, new Date(Date.parse(todayNoonUtc) + 60 * 60_000).toISOString()],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')",
+      [shopId, "s_2", "p_b", yesterdayAfternoonUtc, new Date(Date.parse(yesterdayAfternoonUtc) + 60 * 60_000).toISOString()],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')",
+      [shopId, "s_prev", "p_b", prevPeriodNoonUtc, new Date(Date.parse(prevPeriodNoonUtc) + 30 * 60_000).toISOString()],
+    );
+
+    // Checkouts: today balance (25.00), today wechat (15.00), today archived (99.00), yesterday cash (10.00), previous period balance (40.00)
+    const addCheckout = (id: string, playerId: string, sessionId: string, cents: number, settledAt: string) => {
+      sqlite.run(
+        "INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)",
+        [shopId, id, playerId, cents, cents, settledAt],
+      );
+      sqlite.run(
+        "INSERT INTO settlements(shop_id,id,session_id,checkout_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,?,'settled',?)",
+        [shopId, `st_${id}`, sessionId, id, cents, cents, settledAt],
+      );
+    };
+    addCheckout("co_today_1", "p_a", "s_1", 2500, todayEarlyUtc);
+    addCheckout("co_today_2", "p_b", "s_today_2", 1500, todayNoonUtc);
+    sqlite.run(
+      "INSERT INTO cashier_payments(shop_id,checkout_id,staff_id,method,collected_at) VALUES (?,'co_today_2','staff_1','wechat',?)",
+      [shopId, todayNoonUtc],
+    );
+    addCheckout("co_archived", "p_a", "s_archived", 9900, todayNoonUtc);
+    sqlite.run(
+      "INSERT INTO checkout_report_states(shop_id,checkout_id,archived,updated_at,updated_by) VALUES (?,'co_archived',1,CURRENT_TIMESTAMP,'staff_1')",
+      [shopId],
+    );
+    addCheckout("co_yesterday", "p_b", "s_2", 1000, yesterdayAfternoonUtc);
+    sqlite.run(
+      "INSERT INTO cashier_payments(shop_id,checkout_id,staff_id,method,collected_at) VALUES (?,'co_yesterday','staff_1','cash',?)",
+      [shopId, yesterdayAfternoonUtc],
+    );
+    addCheckout("co_prev", "p_b", "s_prev", 4000, prevPeriodNoonUtc);
+
+    // Device operations & asset grants
+    sqlite.run(
+      "INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,'op_1','cab_1','coin','coin','p_a','succeeded',1,?)",
+      [shopId, todayEarlyUtc],
+    );
+    sqlite.run(
+      "INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,'op_2','cab_1','hinata_io','aime.scan','p_a','succeeded',1,?)",
+      [shopId, todayNoonUtc],
+    );
+    sqlite.run(
+      "INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,'op_3','cab_2','coin','coin','p_b','failed',1,?)",
+      [shopId, yesterdayAfternoonUtc],
+    );
+    sqlite.run(
+      "INSERT INTO asset_ledger_entries(shop_id,id,player_id,asset_type,asset_code,delta,reason,ref_id,created_at) VALUES (?,'ale_1','p_a','currency','paid',5000,'topup','ref1',?)",
+      [shopId, todayEarlyUtc],
+    );
+
+    // 1. Rejects invalid days
+    const badDaysRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?days=10`, {
+        headers: { Authorization: `Bearer ${staffSessionToken}` },
+      }),
+      env,
+    );
+    expect(badDaysRes.status).toBe(400);
+
+    // 2. Viewer read succeeds and returns exact timezone-bucketed analytics
+    const res = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?days=7`, {
+        headers: { Authorization: `Bearer ${viewerToken}` },
+      }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { analytics: any };
+    const { analytics } = body;
+
+    expect(analytics.range.days).toBe(7);
+    expect(analytics.range.startDate).toBe(addLocalDays(todayLocal, -6));
+    expect(analytics.range.endDate).toBe(todayLocal);
+    expect(analytics.daily).toHaveLength(7);
+
+    // Today revenue excludes archived 99.00 -> 25 + 15 = 40
+    expect(analytics.today.revenueTotal).toBe(40);
+    expect(analytics.today.yesterdayRevenueTotal).toBe(10);
+    expect(analytics.today.checkoutCount).toBe(2);
+    expect(analytics.today.yesterdayCheckoutCount).toBe(1);
+    expect(analytics.today.visitCount).toBe(2);
+    expect(analytics.today.yesterdayVisitCount).toBe(1);
+    expect(analytics.today.newPlayerCount).toBe(1);
+    expect(analytics.today.coinCount).toBe(1);
+
+    // Period totals (7 days) vs previous 7 days
+    expect(analytics.period.revenueTotal).toBe(50);
+    expect(analytics.period.previousRevenueTotal).toBe(40);
+    expect(analytics.period.checkoutCount).toBe(3);
+    expect(analytics.period.previousCheckoutCount).toBe(1);
+    expect(analytics.period.visitCount).toBe(3);
+    expect(analytics.period.uniquePlayerCount).toBe(2);
+    expect(analytics.period.newPlayerCount).toBe(2);
+    expect(analytics.period.coinCount).toBe(2);
+    expect(analytics.period.assetGrantCount).toBe(1);
+
+    // Local 01:30, 12:00 & 15:00 in Asia/Shanghai
+    expect(analytics.hourlyVisits[1]).toBe(1);
+    expect(analytics.hourlyVisits[12]).toBe(1);
+    expect(analytics.hourlyVisits[15]).toBe(1);
+
+    const todayPoint = analytics.daily.find((d: any) => d.date === todayLocal);
+    expect(todayPoint).toEqual({ date: todayLocal, revenue: 40, checkouts: 2, visits: 2, coins: 1 });
+
+    expect(analytics.paymentMethods).toEqual([
+      { method: "balance", revenue: 25, count: 1 },
+      { method: "wechat", revenue: 15, count: 1 },
+      { method: "cash", revenue: 10, count: 1 },
+    ]);
+
+    // Failed op_3 excluded from topDevices
+    expect(analytics.topDevices).toEqual([
+      { deviceId: "cab_1", operations: 2, coins: 1, swipes: 1 },
+    ]);
+
+    // 3. Custom local date range (e.g. single yesterday day) scopes period, daily, and paymentMethods accurately
+    const customRes = await app.fetch(
+      new Request(
+        `https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?startDate=${yesterdayLocal}&endDate=${yesterdayLocal}`,
+        { headers: { Authorization: `Bearer ${viewerToken}` } },
+      ),
+      env,
+    );
+    expect(customRes.status).toBe(200);
+    const { analytics: customAnalytics } = (await customRes.json()) as { analytics: any };
+    expect(customAnalytics.range.days).toBe(1);
+    expect(customAnalytics.range.startDate).toBe(yesterdayLocal);
+    expect(customAnalytics.range.endDate).toBe(yesterdayLocal);
+    expect(customAnalytics.daily).toHaveLength(1);
+    expect(customAnalytics.period.revenueTotal).toBe(10);
+    expect(customAnalytics.period.checkoutCount).toBe(1);
+    expect(customAnalytics.today.revenueTotal).toBe(0);
+    expect(customAnalytics.paymentMethods).toEqual([{ method: "cash", revenue: 10, count: 1 }]);
+
+    const sourceRes = await app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?source=1&startDate=${yesterdayLocal}&endDate=${yesterdayLocal}`,
+      { headers: { Authorization: `Bearer ${viewerToken}` } },
+    ), env);
+    expect(sourceRes.status).toBe(200);
+    const { source } = await sourceRes.json() as { source: import("@prism/application").StaffReportsAnalyticsSource };
+    expect(source.range.startDate).toBe(yesterdayLocal);
+    expect(source.checkoutRows.filter(row => row.settled_at >= source.range.from).reduce((sum, row) => sum + row.total, 0)).toBe(1000);
+    expect(source.sessionRows.every(row => "ended_at" in row)).toBe(true);
+
+    // 4. Reject invalid or over-long custom ranges with 400 INVALID_REPORT_RANGE
+    for (const qs of [
+      `startDate=${yesterdayLocal}`,
+      `startDate=${todayLocal}&endDate=${yesterdayLocal}`,
+      `startDate=2026-02-30&endDate=2026-03-01`,
+      `startDate=2025-01-01&endDate=2026-06-01`,
+    ]) {
+      const invalidRes = await app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?${qs}`, {
+          headers: { Authorization: `Bearer ${viewerToken}` },
+        }),
+        env,
+      );
+      expect(invalidRes.status).toBe(400);
+    }
+  });
 });

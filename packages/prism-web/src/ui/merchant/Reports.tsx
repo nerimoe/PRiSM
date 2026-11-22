@@ -1,29 +1,48 @@
 import type {
+  StaffReportsAnalyticsSource,
   ReportArchiveFilter,
   StaffReportCheckout,
   StaffReportCheckoutDetail,
 } from "@prism/application";
 import { addLocalDays, formatLocalDate, parseLocalDateTime } from "@prism/core";
-import { useEffect, useRef, useState } from "react";
+import { Clock, Coins, Download, RefreshCw, Users, Wallet } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Api, api, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
-import { api } from "../../api";
 import { shopApi } from "../BillingPages";
 import { BillTimeline, BillTotal } from "../BillTimeline";
 import { displayDateTime } from "../bill-time";
 import {
-  Field,
+  DeltaBadge,
+  HourlyTrafficChart,
+  PaymentBreakdownCard,
+  RevenueTrendChart,
+  TopDevicesCard,
+} from "./DashboardCharts";
+import {
+  deltaIndicator,
+  diffLocalDays,
+  formatDurationSummary,
+  peakHourSummary,
+  type DashboardAnalytics,
+} from "./dashboard-metrics";
+import {
   Modal,
   State,
   Table,
   button,
   cell,
-  input,
   money,
   primary,
   segment,
-  useResource,
   useMerchant,
+  useResource,
+  useStaffApi,
 } from "./shared";
+
+import { historyPresetRange, type HistoryPreset as RangePreset } from "./history-range";
+import { calculateHistoryAnalytics } from "./history-analytics";
+import { historyTraffic } from "./history-traffic";
 
 // Explicit state assignment is idempotent; it is not a debit operation.
 const setReportArchive = (
@@ -46,14 +65,23 @@ export function payment(record: StaffReportCheckout, t: (key: string) => string)
 }
 
 export function ReportsPage() {
-  const { t } = useI18n();
-  const { timeZone } = useMerchant();
-  const [from, setFrom] = useState(
-    () => formatLocalDate(new Date(), timeZone).slice(0, 8) + "01",
+  const { t, errorText } = useI18n();
+  const { shopId, shopCode, timeZone } = useMerchant();
+  const request = useStaffApi();
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState("");
+  const [preset, setPreset] = useState<RangePreset>(7);
+  const [from, setFrom] = useState(() =>
+    addLocalDays(formatLocalDate(new Date(), timeZone), -6),
   );
   const [to, setTo] = useState(() => formatLocalDate(new Date(), timeZone));
   const [archive, setArchive] = useState<ReportArchiveFilter>("active");
   const [offset, setOffset] = useState(0);
+  const [refreshSignal, setRefreshSignal] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [devices, setDevices] = useState<Resource[] | null>(null);
+  const fromInputRef = useRef<HTMLInputElement>(null);
+
   const start = from
     ? parseLocalDateTime(from, "00:00", timeZone)
     : new Date(NaN);
@@ -64,67 +92,390 @@ export function ReportsPage() {
     Number.isFinite(start.getTime()) &&
     Number.isFinite(end.getTime()) &&
     start < end;
+  const spanDays = valid ? diffLocalDays(from, to) + 1 : 0;
+  const analyticsTooLong = valid && spanDays > 366;
   const range = valid
     ? new URLSearchParams({
         from: start.toISOString(),
         to: end.toISOString(),
       }).toString()
     : "";
+
+  const analyticsPath =
+    !valid || analyticsTooLong
+      ? null
+      : `reports/analytics?source=1&startDate=${from}&endDate=${to}`;
+  const analyticsResource = useResource<{ source: StaffReportsAnalyticsSource }>(analyticsPath);
+  const source = analyticsPath && analyticsResource.data?.source.range.startDate === from && analyticsResource.data.source.range.endDate === to
+    ? analyticsResource.data.source : null;
+  const analytics = useMemo(() => source ? calculateHistoryAnalytics(source) : null, [source]);
+  const traffic = useMemo(() => source ? historyTraffic(source) : null, [source]);
+  const analyticsError = analyticsTooLong
+    ? t("自定义图表最多支持 366 天，结账记录不受限制。")
+    : analyticsPath && analyticsResource.error
+      ? errorText(analyticsResource.error)
+      : "";
+  const analyticsLoading = Boolean(analyticsPath) && !analytics && !analyticsError;
+
+  const loadDevices = useCallback(async () => {
+    try {
+      const result = await Api.machines(shopId);
+      setDevices(result.machines ?? []);
+    } catch {
+      // Keep raw device IDs as fallback if the inventory endpoint fails or is omitted.
+    }
+  }, [shopId]);
+
+  useEffect(() => {
+    setDevices(null);
+    void loadDevices();
+  }, [loadDevices]);
+
+  function selectPreset(next: RangePreset) {
+    setOffset(0);
+    if (next === "custom") {
+      setPreset("custom");
+      return;
+    }
+    const today = formatLocalDate(new Date(), timeZone);
+    setPreset(next);
+    const dates = historyPresetRange(today, next);
+    setFrom(dates.from);
+    setTo(dates.to);
+  }
+
+  const displayZone = analytics?.range.timeZone || timeZone || "Asia/Shanghai";
+  const periodDays = analytics?.range.days ?? (spanDays || 7);
+  const isCustom = preset === "custom";
+  const isCalendarRange = isCustom || preset === "lastMonth";
+  useEffect(() => {
+    if (isCustom) fromInputRef.current?.focus();
+  }, [isCustom]);
+  const periodDelta = analytics
+    ? deltaIndicator(analytics.period.revenueTotal, analytics.period.previousRevenueTotal)
+    : null;
+  const avgDuration = analytics
+    ? formatDurationSummary(analytics.period.avgDurationMinutes)
+    : null;
+  const peak = analytics ? peakHourSummary(analytics.hourlyVisits) : null;
+
+  async function exportSelected() {
+    if (!analytics || !traffic || exporting) return;
+    setExporting(true);
+    setExportError("");
+    try {
+      const { loadExportCheckouts, createHistoryWorkbook, downloadHistoryWorkbook } = await import("./history-export");
+      const records = await loadExportCheckouts(request, range, archive);
+      const bytes = await createHistoryWorkbook({ analytics, traffic, records, archive,
+        deviceNames: new Map((devices ?? []).map(device => [device.id, device.name])) });
+      downloadHistoryWorkbook(bytes, `PRiSM-${shopCode}-${from}-${to}-${archive}.xlsx`);
+    } catch (error) {
+      setExportError(errorText(error));
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function refreshAll() {
+    setRefreshing(true);
+    setRefreshSignal((value) => value + 1);
+    analyticsResource.reload();
+    await loadDevices();
+    setRefreshing(false);
+  }
+
   return (
     <div className="grid gap-5">
-      <h2 className="text-xl font-semibold">{t("营业记录")}</h2>
-      <div className="flex flex-wrap gap-3">
-        <Field label="从">
-          <input
-            className={input}
-            type="date"
-            required
-            value={from}
-            max={to}
-            onChange={(e) => {
-              setFrom(e.target.value);
-              setOffset(0);
-            }}
-          />
-        </Field>
-        <Field label="至">
-          <input
-            className={input}
-            type="date"
-            required
-            value={to}
-            min={from}
-            onChange={(e) => {
-              setTo(e.target.value);
-              setOffset(0);
-            }}
-          />
-        </Field>
-        <Field label="归档筛选">
-          <select
-            className={input}
-            value={archive}
-            onChange={(e) => {
-              setArchive(e.target.value as ReportArchiveFilter);
-              setOffset(0);
-            }}
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-baseline gap-2.5">
+          <h2 className="text-xl font-semibold">{t("历史")}</h2>
+          <span className="text-xs text-ink/50 tabular-nums">
+            {valid
+              ? `${from} – ${to} · ${t("{days} 天", { days: spanDays })}`
+              : t("请选择有效日期")}{" "}
+            · {displayZone}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" className={button} disabled={exporting || !analytics || !traffic}
+            onClick={() => void exportSelected()}>
+            <Download size={15} aria-hidden="true" />
+            {t(exporting ? "正在导出..." : "导出 Excel")}
+          </button>
+          <button
+            type="button"
+            className={button}
+            aria-label={t("刷新")}
+            disabled={refreshing}
+            onClick={() => void refreshAll()}
           >
-            <option value="active">{t("未归档")}</option>
-            <option value="archived">{t("已归档")}</option>
-            <option value="all">{t("全部账单")}</option>
-          </select>
-        </Field>
+            <RefreshCw
+              size={15}
+              className={refreshing ? "animate-spin" : ""}
+              aria-hidden="true"
+            />
+            {t("刷新")}
+          </button>
+        </div>
+      </header>
+      {exportError && <p role="alert" className="text-sm text-coral">{exportError}</p>}
+
+      {/* Unified Time Range Selector driving both historical analytics charts and checkout records */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink/10 bg-panel p-3 shadow-soft">
+        <div
+          role="group"
+          aria-label={t("统计周期")}
+          className="inline-flex flex-wrap rounded-xl bg-ink/[0.045] p-0.5 text-xs"
+        >
+          {(
+            [
+              [7, "近 {days} 天"],
+              [14, "近 {days} 天"],
+              [30, "近 {days} 天"],
+              ["lastMonth", "上个月"],
+              ["custom", "自定义"],
+            ] as const
+          ).map(([option, label]) => (
+            <button
+              key={String(option)}
+              type="button"
+              aria-pressed={preset === option}
+              onClick={() => selectPreset(option)}
+              className={`focus-ring rounded-[10px] px-3 py-1.5 font-medium transition-colors ${
+                preset === option
+                  ? "bg-primary text-primary-foreground"
+                  : "text-ink/65 hover:text-ink"
+              }`}
+            >
+              {typeof option === "string" ? t(label) : t(label, { days: option })}
+            </button>
+          ))}
+        </div>
+
+        {isCustom && <div className="flex flex-wrap items-center gap-2 text-xs">
+          <label className="inline-flex items-center gap-1.5">
+            <span className="text-ink/60">{t("从")}</span>
+            <input
+              ref={fromInputRef}
+              type="date"
+              required
+              aria-label={t("从")}
+              value={from}
+              max={to}
+              onChange={(e) => {
+                setPreset("custom");
+                setFrom(e.target.value);
+                setOffset(0);
+              }}
+              className={`focus-ring min-h-9 rounded-lg border bg-canvas px-2.5 py-1 text-sm text-ink dark:bg-surface ${
+                isCustom ? "border-mint/60" : "border-ink/15"
+              }`}
+            />
+          </label>
+          <span className="text-ink/40" aria-hidden="true">–</span>
+          <label className="inline-flex items-center gap-1.5">
+            <span className="text-ink/60">{t("至")}</span>
+            <input
+              type="date"
+              required
+              aria-label={t("至")}
+              value={to}
+              min={from}
+              onChange={(e) => {
+                setPreset("custom");
+                setTo(e.target.value);
+                setOffset(0);
+              }}
+              className={`focus-ring min-h-9 rounded-lg border bg-canvas px-2.5 py-1 text-sm text-ink dark:bg-surface ${
+                isCustom ? "border-mint/60" : "border-ink/15"
+              }`}
+            />
+          </label>
+        </div>}
       </div>
-      {valid ? (
-        <ReportResults
-          key={`${range}:${archive}:${offset}`}
-          range={range}
-          archive={archive}
-          offset={offset}
-          setOffset={setOffset}
-        />
-      ) : (
+
+      {!valid ? (
         <State error={t("请选择有效日期")} />
+      ) : (
+        <>
+          {/* Historical period summary KPI strip. */}
+          <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+            <div className="grid content-between gap-2.5 rounded-2xl border border-ink/10 bg-panel p-4 shadow-soft">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-ink/60">
+                  {isCalendarRange ? t("所选时段营收") : t("近 {days} 天营收", { days: periodDays })}
+                </span>
+                <span className="grid size-7 place-items-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                  <Wallet size={15} aria-hidden="true" />
+                </span>
+              </div>
+              <div className="flex flex-wrap items-baseline gap-2 tabular-nums">
+                <strong className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {analytics ? `¥${money(analytics.period.revenueTotal)}` : "—"}
+                </strong>
+                {periodDelta && <DeltaBadge delta={periodDelta} label={t("较上期")} />}
+              </div>
+              <p className="truncate text-xs text-ink/55 tabular-nums">
+                {analytics
+                  ? `${t("均单")} ¥${money(analytics.period.avgTicket)} · ${analytics.period.checkoutCount} ${t("笔")}`
+                  : "—"}
+              </p>
+            </div>
+
+            <div className="grid content-between gap-2.5 rounded-2xl border border-ink/10 bg-panel p-4 shadow-soft">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-ink/60">
+                  {isCalendarRange ? t("所选时段客流") : t("近 {days} 天客流", { days: periodDays })}
+                </span>
+                <span className="grid size-7 place-items-center rounded-full bg-mint/10 text-mint">
+                  <Users size={15} aria-hidden="true" />
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5 tabular-nums">
+                <strong className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {analytics ? analytics.period.visitCount : "—"}
+                </strong>
+                <span className="text-xs text-ink/55">{t("人次")}</span>
+              </div>
+              <p className="truncate text-xs text-ink/55 tabular-nums">
+                {analytics
+                  ? `${t("活跃玩家")} ${analytics.period.uniquePlayerCount} · ${t("新注册玩家")} ${analytics.period.newPlayerCount}`
+                  : "—"}
+              </p>
+            </div>
+
+            <div className="grid content-between gap-2.5 rounded-2xl border border-ink/10 bg-panel p-4 shadow-soft">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-ink/60">{t("平均在店时长")}</span>
+                <span className="grid size-7 place-items-center rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                  <Clock size={15} aria-hidden="true" />
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5 tabular-nums">
+                <strong className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {analytics
+                    ? avgDuration
+                      ? avgDuration.hours
+                        ? t("{hours} 时 {minutes} 分", avgDuration)
+                        : t("{minutes} 分", avgDuration)
+                      : "—"
+                    : "—"}
+                </strong>
+              </div>
+              <p className="truncate text-xs text-ink/55 tabular-nums">
+                {analytics
+                  ? `${t("资产入账")} ${analytics.period.assetGrantCount} ${t("笔")}`
+                  : "—"}
+              </p>
+            </div>
+
+            <div className="grid content-between gap-2.5 rounded-2xl border border-ink/10 bg-panel p-4 shadow-soft">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-ink/60">
+                  {isCalendarRange ? t("所选时段投币") : t("近 {days} 天投币", { days: periodDays })}
+                </span>
+                <span className="grid size-7 place-items-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                  <Coins size={15} aria-hidden="true" />
+                </span>
+              </div>
+              <div className="flex items-baseline gap-1.5 tabular-nums">
+                <strong className="text-2xl font-semibold tracking-tight sm:text-3xl">
+                  {analytics ? analytics.period.coinCount : "—"}
+                </strong>
+                <span className="text-xs text-ink/55">{t("币")}</span>
+              </div>
+              <p className="truncate text-xs text-ink/55 tabular-nums">
+                {analytics
+                  ? peak
+                    ? `${t("高峰时段")} ${peak.label}`
+                    : t("暂无高峰数据")
+                  : "—"}
+              </p>
+            </div>
+          </div>
+
+          {/* Historical Analytics Charts */}
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
+            <RevenueTrendChart
+              analytics={analytics}
+              days={periodDays}
+              custom={isCalendarRange}
+              loading={analyticsLoading}
+              error={analyticsError}
+            />
+            <PaymentBreakdownCard
+              analytics={analytics}
+              loading={analyticsLoading}
+              error={analyticsError}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <HourlyTrafficChart
+              hourlyVisits={traffic?.entries ?? []}
+              title="时段入场分布"
+              timeZone={displayZone}
+              loading={analyticsLoading}
+              error={analyticsError}
+            />
+            <HourlyTrafficChart
+              hourlyVisits={traffic?.presence ?? []}
+              title="时段在场分布"
+              timeZone={displayZone}
+              loading={analyticsLoading}
+              error={analyticsError}
+            />
+            <TopDevicesCard
+              topDevices={analytics?.topDevices ?? []}
+              devices={devices}
+              shopCode={shopCode}
+              loading={analyticsLoading}
+              error={analyticsError}
+            />
+          </div>
+
+          {/* Detailed Checkout Records sharing the same unified date range */}
+          <section
+            className="grid gap-4 rounded-2xl border border-ink/10 bg-panel p-5 shadow-soft"
+            aria-label={t("结账记录")}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-baseline gap-2.5">
+                <h3 className="text-base font-semibold">{t("结账记录")}</h3>
+                <span className="text-xs text-ink/50 tabular-nums">
+                  {from} – {to}
+                </span>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="whitespace-nowrap text-xs font-medium text-ink/60">
+                  {t("归档筛选")}
+                </span>
+                <select
+                  aria-label={t("归档筛选")}
+                  className="focus-ring min-h-10 rounded-lg border border-ink/15 bg-panel px-3 py-1.5 text-sm font-normal"
+                  value={archive}
+                  onChange={(e) => {
+                    setArchive(e.target.value as ReportArchiveFilter);
+                    setOffset(0);
+                  }}
+                >
+                  <option value="active">{t("未归档")}</option>
+                  <option value="archived">{t("已归档")}</option>
+                  <option value="all">{t("全部账单")}</option>
+                </select>
+              </label>
+            </div>
+            <ReportResults
+              key={`${range}:${archive}:${offset}`}
+              range={range}
+              archive={archive}
+              offset={offset}
+              setOffset={setOffset}
+              refreshSignal={refreshSignal}
+              onMutated={analyticsResource.reload}
+            />
+          </section>
+        </>
       )}
     </div>
   );
@@ -135,31 +486,35 @@ function ReportResults({
   archive,
   offset,
   setOffset,
+  refreshSignal,
+  onMutated,
 }: {
   range: string;
   archive: ReportArchiveFilter;
   offset: number;
   setOffset: (offset: number) => void;
+  refreshSignal: number;
+  onMutated?: () => void;
 }) {
   const { t, errorText } = useI18n();
   const { timeZone } = useMerchant();
   const [selected, setSelected] = useState<string | null>(null);
-  const summary = useResource<{
-    summary: {
-      revenueTotal: number;
-      sessionCount: number;
-      assetGrantTotal: number;
-      coinCommandCount: number;
-    };
-  }>(`reports/summary?${range}`);
   const checkouts = useResource<{
     records: StaffReportCheckout[];
     page: { hasMore: boolean };
   }>(`reports/checkouts?${range}&archive=${archive}&limit=50&offset=${offset}`);
+
+  const handledRefresh = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal === handledRefresh.current) return;
+    handledRefresh.current = refreshSignal;
+    checkouts.reload();
+  }, [refreshSignal, checkouts.reload]);
+
   function changed() {
     setSelected(null);
-    summary.reload();
     checkouts.reload();
+    onMutated?.();
     if (offset && archive !== "all" && checkouts.data?.records.length === 1)
       setOffset(Math.max(0, offset - 50));
   }
@@ -170,32 +525,6 @@ function ReportResults({
   );
   return (
     <>
-      {summary.error ? (
-        <State error={errorText(summary.error)} />
-      ) : (
-        summary.data && (
-          <>
-            <dl className="grid grid-cols-2 gap-5 border-y border-ink/10 py-5 sm:grid-cols-4">
-              {[
-                ["营业额", money(summary.data.summary.revenueTotal)],
-                ["消费笔数", summary.data.summary.sessionCount],
-                ["发放笔数", summary.data.summary.assetGrantTotal],
-                ["投币次数", summary.data.summary.coinCommandCount],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <dt className="text-xs text-ink/60">{t(String(label))}</dt>
-                  <dd className="mt-2 text-2xl font-semibold tabular-nums">
-                    {value}
-                  </dd>
-                </div>
-              ))}
-            </dl>
-            <p className="text-sm text-ink/60">
-              {t("营业额不包含已归档账单；消费笔数等其他统计保持不变。")}
-            </p>
-          </>
-        )
-      )}
       {checkouts.error ? (
         <State error={errorText(checkouts.error)} />
       ) : !checkouts.data ? (
@@ -204,7 +533,7 @@ function ReportResults({
         <State empty />
       ) : (
         <>
-          <div className="divide-y divide-ink/10 rounded-xl bg-panel md:hidden">
+          <div className="divide-y divide-ink/10 rounded-xl border border-ink/10 bg-canvas/60 dark:bg-surface/60 md:hidden">
             {checkouts.data.records.map((record) => (
               <div
                 key={record.checkoutId}
@@ -282,11 +611,10 @@ function ReportResults({
           </button>
         </div>
       )}
-      {(summary.error || checkouts.error) && (
+      {checkouts.error && (
         <button
           className={`${button} justify-self-start`}
           onClick={() => {
-            summary.reload();
             checkouts.reload();
           }}
         >

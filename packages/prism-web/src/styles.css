@@ -146,7 +146,7 @@ input::placeholder {
   top: 0;
   z-index: 20;
   padding: 20px 24px 12px;
-  background: rgb(245 245 247 / 0.72);
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
   backdrop-filter: blur(24px) saturate(140%);
   -webkit-backdrop-filter: blur(24px) saturate(140%);
 }
@@ -199,6 +199,10 @@ input::placeholder {
   max-width: 1168px;
   margin: auto;
   padding: 48px 24px 64px;
+}
+.site-main:has(.merchant-workspace) {
+  max-width: 1328px;
+  padding-top: 28px;
 }
 .site-main h1 {
   font-size: clamp(28px, 4vw, 36px);
