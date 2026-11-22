@@ -330,7 +330,7 @@ function PlayerDetail({
           {error}
         </p>
       )}
-      {canWrite && cashierEnabled && player.paymentMode === "cashier" && <Link className={`${primary} mb-5`} to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(player.id)}`}>{t("前台收银")}</Link>}
+      {canWrite && cashierEnabled && player.paymentMode === "cashier" && <Link className={`${primary} mb-5`} to={`/merchant/${segment(shopCode)}/dashboard?cashierPlayer=${segment(player.id)}`}>{t("前台收银")}</Link>}
       {canWrite && player.paymentMode !== "cashier" && (
         <div className="mb-5 flex flex-wrap gap-2">
           <button className={primary} onClick={() => setAction("wallet")}>

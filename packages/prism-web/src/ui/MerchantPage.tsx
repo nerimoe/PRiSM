@@ -21,6 +21,7 @@ import {
   button,
   primary,
 } from "./merchant/shared";
+import { DashboardPage } from "./merchant/Dashboard";
 import { PlayerWorkspace } from "./merchant/PlayerWorkspace";
 import { PricingPage } from "./merchant/Pricing";
 import { AssetsPage } from "./merchant/Assets";
@@ -67,7 +68,7 @@ function MerchantContent() {
       />
     );
   return (
-    <section className="merchant-workspace mx-auto grid w-full max-w-6xl min-w-0 gap-6">
+    <section className="merchant-workspace mx-auto grid w-full max-w-7xl min-w-0 gap-6">
       {shop ? (
         <Workspace
           key={shop.id}
@@ -156,30 +157,36 @@ function Workspace({
   const setup = useSetupStatus(shop.publicId, shop.id, !!state?.owner);
   if (!state || !setup.loaded) return <State error={error} />;
   // A bare shop URL opens where the owner has work left, otherwise on the
-  // screen used every day: who is in the shop.
+  // unified merchant homepage dashboard.
   if (!requested)
     return (
       <Navigate
         replace
         to={`/merchant/${shop.publicId}/${
-          setup.status && !setup.status.complete ? "guide" : "live"
+          setup.status && !setup.status.complete ? "guide" : "dashboard"
         }`}
       />
     );
+  // Older links and bookmarks point at the in-shop workspace under /live.
+  if (requested === "live")
+    return <Navigate replace to={`/merchant/${shop.publicId}/dashboard${window.location.search}`} />;
   // Older links and printed guides point at the page under its former name.
   if (requested === "devices")
     return <Navigate replace to={`/merchant/${shop.publicId}/resources${window.location.search}`} />;
+  // Former /reports route merged with historical analytics under /history.
+  if (requested === "reports")
+    return <Navigate replace to={`/merchant/${shop.publicId}/history${window.location.search}`} />;
   const section = requested;
   const tabs = [
     ...(state.owner && setup.status && (!setup.status.complete || section === "guide")
       ? [["guide", "开店指引"]]
       : []),
-    ["live", "在店"],
+    ["dashboard", "仪表板"],
     ["players", "玩家"],
     ["resources", "资源"],
     ["pricing", "计费"],
     ["assets", "资产"],
-    ["reports", "记录"],
+    ["history", "历史"],
     ...(state.owner ? [["settings", "设置"]] : []),
   ];
   return (
@@ -249,15 +256,15 @@ function Workspace({
           <ResourcesPage />
         ) : section === "cashier" ? (
           <CashierRedirect shopCode={shop.publicId} />
-        ) : section === "live" ? (
-          <PlayerWorkspace live />
+        ) : section === "dashboard" ? (
+          <DashboardPage />
         ) : section === "players" ? (
           <PlayerWorkspace />
         ) : section === "pricing" ? (
           <PricingPage />
         ) : section === "assets" ? (
           <AssetsPage />
-        ) : section === "reports" ? (
+        ) : section === "history" ? (
           <ReportsPage />
         ) : section === "settings" && state.owner ? (
           <div className="mx-auto w-full max-w-5xl">
@@ -281,7 +288,7 @@ function CashierRedirect({ shopCode }: { shopCode: string }) {
   const next = new URLSearchParams(params);
   const player = next.get("player");
   if (player) { next.set("cashierPlayer", player); next.delete("player"); }
-  return <Navigate replace to={`/merchant/${encodeURIComponent(shopCode)}/live?${next}`} />;
+  return <Navigate replace to={`/merchant/${encodeURIComponent(shopCode)}/dashboard?${next}`} />;
 }
 function StaffMembers({ shopId }: { shopId: string }) {
   const [members, setMembers] = useState<

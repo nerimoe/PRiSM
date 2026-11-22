@@ -176,6 +176,84 @@ export type StaffReportsSummary = StaffReportsSummaryInput & {
   coinCommandCount: number;
 };
 
+export type StaffReportsAnalyticsInput = {
+  days?: number;
+  startDate?: string;
+  endDate?: string;
+  timeZone: string;
+};
+
+/** Batch facts for browser-side historical reporting. Monetary totals are integer cents. */
+export type StaffReportsAnalyticsSource = {
+  range: { days: number; timeZone: string; from: string; to: string; startDate: string; endDate: string };
+  asOf: string;
+  checkoutRows: { id: string; player_id: string; total: number; settled_at: string; duration_minutes: number; payment_method: string | null }[];
+  sessionRows: { player_id: string; started_at: string; ended_at: string | null }[];
+  playerRows: { created_at: string }[];
+  operationRows: { device_id: string | null; action: string; status: string; counts_as_play: number; requested_at: string }[];
+  assetGrantCount: number;
+};
+
+export type StaffReportsAnalyticsDailyPoint = {
+  date: string;
+  revenue: Cents;
+  checkouts: number;
+  visits: number;
+  coins: number;
+};
+
+export type StaffReportsAnalyticsPaymentMethod = {
+  method: "balance" | "wechat" | "alipay" | "cash" | "other";
+  revenue: Cents;
+  count: number;
+};
+
+export type StaffReportsAnalyticsDeviceActivity = {
+  deviceId: string;
+  operations: number;
+  coins: number;
+  swipes: number;
+};
+
+export type StaffReportsAnalytics = {
+  range: {
+    days: number;
+    timeZone: string;
+    from: Date;
+    to: Date;
+    startDate: string;
+    endDate: string;
+  };
+  today: {
+    revenueTotal: Cents;
+    yesterdayRevenueTotal: Cents;
+    checkoutCount: number;
+    yesterdayCheckoutCount: number;
+    visitCount: number;
+    yesterdayVisitCount: number;
+    newPlayerCount: number;
+    coinCount: number;
+    avgDurationMinutes: number;
+  };
+  period: {
+    revenueTotal: Cents;
+    previousRevenueTotal: Cents;
+    checkoutCount: number;
+    previousCheckoutCount: number;
+    visitCount: number;
+    uniquePlayerCount: number;
+    newPlayerCount: number;
+    avgTicket: Cents;
+    avgDurationMinutes: number;
+    coinCount: number;
+    assetGrantCount: number;
+  };
+  daily: StaffReportsAnalyticsDailyPoint[];
+  hourlyVisits: number[];
+  paymentMethods: StaffReportsAnalyticsPaymentMethod[];
+  topDevices: StaffReportsAnalyticsDeviceActivity[];
+};
+
 export type StaffReportSettlementListItem = {
   externalPayment?: { method: string; staffId: string };
   settlementId: string;
@@ -233,6 +311,8 @@ export type StaffQueries = {
   listDeviceStates?(): Promise<DeviceState[]>;
   listMachineConnections?(): Promise<MachineConnection[]>;
   getReportsSummary?(input: StaffReportsSummaryInput): Promise<StaffReportsSummary>;
+  getReportsAnalyticsSource?(input: StaffReportsAnalyticsInput): Promise<StaffReportsAnalyticsSource>;
+  getReportsAnalytics?(input: StaffReportsAnalyticsInput): Promise<StaffReportsAnalytics>;
   /** Checkouts settled in a range, or every checkout of one player when `playerId` is given. */
   listReportCheckouts?(input: (StaffReportsSummaryInput | { playerId: string }) & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
   getReportCheckout?(checkoutId: string): Promise<StaffReportCheckoutDetail | null>;

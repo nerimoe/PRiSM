@@ -1,4 +1,19 @@
-import { type Cents, type BillTimeline, yuanOf, assetQuantityFromStored, centsOfInteger, sumCents, ZERO_CENTS, operationToLegacyCommand } from "@prism/core";
+import {
+  type Cents,
+  type BillTimeline,
+  addCents,
+  addLocalDays,
+  assetQuantityFromStored,
+  centsOfInteger,
+  formatLocalDate,
+  formatOffsetTimestamp,
+  parseLocalDateTime,
+  sumCents,
+  timestampDisplayParts,
+  yuanOf,
+  ZERO_CENTS,
+  operationToLegacyCommand,
+} from "@prism/core";
 import { buildBillTimeline } from "@prism/application";
 import { sqlShop } from "./shop-scope";
 import { createDeviceEventRepository } from "./device-event-repository";
@@ -18,6 +33,12 @@ import type {
   StaffRedeemQueries,
   StaffReportPlayerListItem,
   StaffReportSettlementListItem,
+  StaffReportsAnalytics,
+  StaffReportsAnalyticsDailyPoint,
+  StaffReportsAnalyticsDeviceActivity,
+  StaffReportsAnalyticsInput,
+  StaffReportsAnalyticsSource,
+  StaffReportsAnalyticsPaymentMethod,
   StaffReportsSummary,
 } from "@prism/application";
 import {
@@ -382,6 +403,13 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
       return getReportsSummary(input, query);
     },
 
+    async getReportsAnalyticsSource(query) {
+      return getReportsAnalyticsSource(input, query);
+    },
+    async getReportsAnalytics(query) {
+      return getReportsAnalytics(input, query);
+    },
+
     async listReportSettlements(query) {
       return listReportSettlements(input, query);
     },
@@ -468,6 +496,345 @@ async function getReportsSummary(
     sessionCount: row?.session_count ?? 0,
     assetGrantTotal: row?.asset_grant_total ?? 0,
     coinCommandCount: row?.coin_command_count ?? 0,
+  };
+}
+
+function parseStoredInstant(value: string): Date | null {
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function localPartsOf(raw: string, timeZone: string): { date: string; hour: number } | null {
+  const parsed = parseStoredInstant(raw);
+  if (!parsed) return null;
+  const parts = timestampDisplayParts(formatOffsetTimestamp(parsed.toISOString(), timeZone));
+  if (!parts) return null;
+  const hour = Number(parts.time.slice(0, 2));
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? { date: parts.date, hour } : null;
+}
+
+const PAYMENT_METHOD_ORDER: readonly StaffReportsAnalyticsPaymentMethod["method"][] = [
+  "balance",
+  "wechat",
+  "alipay",
+  "cash",
+  "other",
+];
+
+function normalizePaymentMethod(method: string | null): StaffReportsAnalyticsPaymentMethod["method"] {
+  if (!method) return "balance";
+  if (method === "wechat" || method === "alipay" || method === "cash" || method === "other") {
+    return method;
+  }
+  return "other";
+}
+
+function diffLocalDays(startDate: string, endDate: string): number {
+  const [sy, sm, sd] = startDate.split("-").map(Number);
+  const [ey, em, ed] = endDate.split("-").map(Number);
+  return Math.round(
+    (Date.UTC(ey!, em! - 1, ed!) - Date.UTC(sy!, sm! - 1, sd!)) / 86_400_000,
+  );
+}
+
+async function getReportsAnalyticsSource(
+  input: CreateSqlReadModelsInput,
+  query: StaffReportsAnalyticsInput,
+): Promise<StaffReportsAnalyticsSource> {
+  const timeZone = query.timeZone;
+  const actualToday = formatLocalDate(input.now(), timeZone);
+  const actualYesterday = addLocalDays(actualToday, -1);
+  const hasCustomRange = Boolean(query.startDate && query.endDate);
+  const endDate = hasCustomRange ? query.endDate! : actualToday;
+  const requestedDays = Math.max(1, query.days ?? 7);
+  const startDate = hasCustomRange
+    ? query.startDate!
+    : addLocalDays(endDate, -(requestedDays - 1));
+  const days = hasCustomRange
+    ? Math.max(1, diffLocalDays(startDate, endDate) + 1)
+    : requestedDays;
+  const prevStartDate = addLocalDays(startDate, -days);
+
+  const prevFrom = parseLocalDateTime(prevStartDate, "00:00", timeZone);
+  const periodFrom = parseLocalDateTime(startDate, "00:00", timeZone);
+  const endExclusive = parseLocalDateTime(addLocalDays(endDate, 1), "00:00", timeZone);
+
+  const prevFromIso = prevFrom.toISOString();
+  const periodFromIso = periodFrom.toISOString();
+  const endExclusiveIso = endExclusive.toISOString();
+  const shop = sqlShop(input.executor);
+
+  const [checkoutRows, sessionRows, playerRows, operationRows, assetRow] = await Promise.all([
+    input.executor.all<{
+      id: string;
+      player_id: string;
+      total: number;
+      settled_at: string;
+      duration_minutes: number;
+      payment_method: string | null;
+    }>(
+      `SELECT
+         c.id,
+         c.player_id,
+         c.total,
+         c.settled_at,
+         COALESCE(SUM(CASE WHEN s.ended_at IS NOT NULL THEN MAX(0, CAST(ROUND((julianday(s.ended_at) - julianday(s.started_at)) * 86400000) / 60000 AS INTEGER)) ELSE 0 END), 0) AS duration_minutes,
+         payment.method AS payment_method
+       FROM (SELECT * FROM player_checkouts WHERE shop_id = ${shop}) c
+       LEFT JOIN checkout_report_states a ON a.shop_id = c.shop_id AND a.checkout_id = c.id
+       LEFT JOIN settlements st ON st.shop_id = c.shop_id AND st.checkout_id = c.id
+       LEFT JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id AND s.player_id = c.player_id
+       LEFT JOIN cashier_payments payment ON payment.shop_id = c.shop_id AND payment.checkout_id = c.id
+       WHERE c.settled_at >= ? AND c.settled_at < ?
+         AND COALESCE(a.archived, 0) = 0
+       GROUP BY c.id`,
+      [prevFromIso, endExclusiveIso],
+    ),
+    input.executor.all<{ player_id: string; started_at: string; ended_at: string | null }>(
+      `SELECT player_id, started_at, ended_at
+       FROM (SELECT * FROM sessions WHERE shop_id = ${shop})
+       WHERE (ended_at IS NULL OR ended_at > ?) AND started_at < ?`,
+      [prevFromIso, endExclusiveIso],
+    ),
+    input.executor.all<{ created_at: string }>(
+      `SELECT created_at
+       FROM (SELECT * FROM players WHERE shop_id = ${shop})
+       WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)`,
+      [periodFromIso, endExclusiveIso],
+    ),
+    input.executor.all<{
+      device_id: string | null;
+      action: string;
+      status: string;
+      counts_as_play: number;
+      requested_at: string;
+    }>(
+      `SELECT device_id, action, status, counts_as_play, requested_at
+       FROM (SELECT * FROM device_operations WHERE shop_id = ${shop})
+       WHERE requested_at >= ? AND requested_at < ?`,
+      [periodFromIso, endExclusiveIso],
+    ),
+    input.executor.first<{ asset_grant_count: number }>(
+      `SELECT COUNT(*) AS asset_grant_count
+       FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${shop})
+       WHERE delta > 0 AND created_at >= ? AND created_at < ?`,
+      [periodFromIso, endExclusiveIso],
+    ),
+  ]);
+
+  return {
+    range: { days, timeZone, from: periodFromIso, to: endExclusiveIso, startDate, endDate },
+    asOf: input.now().toISOString(), checkoutRows, sessionRows, playerRows, operationRows,
+    assetGrantCount: assetRow?.asset_grant_count ?? 0,
+  };
+}
+
+async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: StaffReportsAnalyticsInput): Promise<StaffReportsAnalytics> {
+  const facts = await getReportsAnalyticsSource(input, query);
+  const { checkoutRows, sessionRows, playerRows, operationRows } = facts;
+  const { days, timeZone, startDate, endDate } = facts.range;
+  const actualToday = formatLocalDate(input.now(), timeZone);
+  const actualYesterday = addLocalDays(actualToday, -1);
+  const prevStartDate = addLocalDays(startDate, -days);
+  const periodFrom = new Date(facts.range.from);
+  const endExclusive = new Date(facts.range.to);
+  const daily: StaffReportsAnalyticsDailyPoint[] = [];
+  const dailyMap = new Map<string, StaffReportsAnalyticsDailyPoint>();
+  for (let i = 0; i < days; i += 1) {
+    const date = addLocalDays(startDate, i);
+    const point: StaffReportsAnalyticsDailyPoint = {
+      date,
+      revenue: ZERO_CENTS,
+      checkouts: 0,
+      visits: 0,
+      coins: 0,
+    };
+    daily.push(point);
+    dailyMap.set(date, point);
+  }
+
+  let todayRevenueTotal = ZERO_CENTS;
+  let yesterdayRevenueTotal = ZERO_CENTS;
+  let todayCheckoutCount = 0;
+  let yesterdayCheckoutCount = 0;
+  let todayDurationSum = 0;
+
+  let periodRevenueTotal = ZERO_CENTS;
+  let previousRevenueTotal = ZERO_CENTS;
+  let periodCheckoutCount = 0;
+  let previousCheckoutCount = 0;
+  let periodDurationSum = 0;
+
+  const paymentTotals = new Map<StaffReportsAnalyticsPaymentMethod["method"], { revenue: Cents; count: number }>();
+
+  for (const row of checkoutRows) {
+    const parts = localPartsOf(row.settled_at, timeZone);
+    if (!parts) continue;
+    const total = centsOfInteger(row.total);
+    const duration = Math.max(0, Math.round(row.duration_minutes ?? 0));
+    const { date } = parts;
+
+    if (date === actualToday) {
+      todayRevenueTotal = addCents(todayRevenueTotal, total);
+      todayCheckoutCount += 1;
+      todayDurationSum += duration;
+    } else if (date === actualYesterday) {
+      yesterdayRevenueTotal = addCents(yesterdayRevenueTotal, total);
+      yesterdayCheckoutCount += 1;
+    }
+
+    if (date >= startDate && date <= endDate) {
+      periodRevenueTotal = addCents(periodRevenueTotal, total);
+      periodCheckoutCount += 1;
+      periodDurationSum += duration;
+      const point = dailyMap.get(date);
+      if (point) {
+        point.revenue = addCents(point.revenue, total);
+        point.checkouts += 1;
+      }
+      const method = normalizePaymentMethod(row.payment_method);
+      const bucket = paymentTotals.get(method) ?? { revenue: ZERO_CENTS, count: 0 };
+      bucket.revenue = addCents(bucket.revenue, total);
+      bucket.count += 1;
+      paymentTotals.set(method, bucket);
+    } else if (date >= prevStartDate && date < startDate) {
+      previousRevenueTotal = addCents(previousRevenueTotal, total);
+      previousCheckoutCount += 1;
+    }
+  }
+
+  const dailyVisits = new Map<string, Set<string>>();
+  const hourlyVisitsSets = Array.from({ length: 24 }, () => new Set<string>());
+  const uniquePeriodPlayers = new Set<string>();
+
+  for (const row of sessionRows) {
+    const parts = localPartsOf(row.started_at, timeZone);
+    if (!parts) continue;
+    const { date, hour } = parts;
+    let daySet = dailyVisits.get(date);
+    if (!daySet) {
+      daySet = new Set<string>();
+      dailyVisits.set(date, daySet);
+    }
+    daySet.add(row.player_id);
+
+    if (date >= startDate && date <= endDate) {
+      uniquePeriodPlayers.add(row.player_id);
+      hourlyVisitsSets[hour]!.add(`${date}:${row.player_id}`);
+    }
+  }
+
+  let periodVisitCount = 0;
+  for (const point of daily) {
+    const visits = dailyVisits.get(point.date)?.size ?? 0;
+    point.visits = visits;
+    periodVisitCount += visits;
+  }
+
+  let todayNewPlayerCount = 0;
+  let periodNewPlayerCount = 0;
+  for (const row of playerRows) {
+    const parts = localPartsOf(row.created_at, timeZone);
+    if (!parts) continue;
+    if (parts.date >= startDate && parts.date <= endDate) {
+      periodNewPlayerCount += 1;
+    }
+    if (parts.date === actualToday) todayNewPlayerCount += 1;
+  }
+
+  let todayCoinCount = 0;
+  let periodCoinCount = 0;
+  const deviceMap = new Map<string, StaffReportsAnalyticsDeviceActivity>();
+
+  for (const row of operationRows) {
+    const parts = localPartsOf(row.requested_at, timeZone);
+    if (!parts || parts.date < startDate || parts.date > endDate) continue;
+
+    if (row.action === "coin") {
+      periodCoinCount += 1;
+      if (parts.date === actualToday) todayCoinCount += 1;
+      const point = dailyMap.get(parts.date);
+      if (point) point.coins += 1;
+    }
+
+    if (
+      row.device_id &&
+      row.status !== "failed" &&
+      (row.counts_as_play === 1 ||
+        row.action === "coin" ||
+        row.action === "aime.scan" ||
+        row.action === "power.on" ||
+        row.action === "mahjong.seat")
+    ) {
+      const activity = deviceMap.get(row.device_id) ?? {
+        deviceId: row.device_id,
+        operations: 0,
+        coins: 0,
+        swipes: 0,
+      };
+      activity.operations += 1;
+      if (row.action === "coin") activity.coins += 1;
+      if (row.action === "aime.scan") activity.swipes += 1;
+      deviceMap.set(row.device_id, activity);
+    }
+  }
+
+  const paymentMethods: StaffReportsAnalyticsPaymentMethod[] = [...paymentTotals.entries()]
+    .filter(([, bucket]) => bucket.count > 0)
+    .map(([method, bucket]) => ({ method, revenue: bucket.revenue, count: bucket.count }))
+    .sort(
+      (a, b) =>
+        b.revenue - a.revenue ||
+        b.count - a.count ||
+        PAYMENT_METHOD_ORDER.indexOf(a.method) - PAYMENT_METHOD_ORDER.indexOf(b.method),
+    );
+
+  const topDevices = [...deviceMap.values()]
+    .sort((a, b) => b.operations - a.operations || b.coins - a.coins || a.deviceId.localeCompare(b.deviceId))
+    .slice(0, 5);
+
+  return {
+    range: {
+      days,
+      timeZone,
+      from: periodFrom,
+      to: endExclusive,
+      startDate,
+      endDate,
+    },
+    today: {
+      revenueTotal: todayRevenueTotal,
+      yesterdayRevenueTotal,
+      checkoutCount: todayCheckoutCount,
+      yesterdayCheckoutCount,
+      visitCount: dailyVisits.get(actualToday)?.size ?? 0,
+      yesterdayVisitCount: dailyVisits.get(actualYesterday)?.size ?? 0,
+      newPlayerCount: todayNewPlayerCount,
+      coinCount: todayCoinCount,
+      avgDurationMinutes: todayCheckoutCount > 0 ? Math.round(todayDurationSum / todayCheckoutCount) : 0,
+    },
+    period: {
+      revenueTotal: periodRevenueTotal,
+      previousRevenueTotal,
+      checkoutCount: periodCheckoutCount,
+      previousCheckoutCount,
+      visitCount: periodVisitCount,
+      uniquePlayerCount: uniquePeriodPlayers.size,
+      newPlayerCount: periodNewPlayerCount,
+      avgTicket: periodCheckoutCount > 0
+        ? centsOfInteger(Math.round((periodRevenueTotal as number) / periodCheckoutCount))
+        : ZERO_CENTS,
+      avgDurationMinutes: periodCheckoutCount > 0 ? Math.round(periodDurationSum / periodCheckoutCount) : 0,
+      coinCount: periodCoinCount,
+      assetGrantCount: facts.assetGrantCount,
+    },
+    daily,
+    hourlyVisits: hourlyVisitsSets.map((set) => set.size),
+    paymentMethods,
+    topDevices,
   };
 }
 

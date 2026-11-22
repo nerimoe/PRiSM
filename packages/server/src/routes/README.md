@@ -82,6 +82,7 @@ routes/
 - `POST /checkout/confirm`: 店员代为发起结算。
 - `POST /checkout/override`: 店员权限人工调整金额并结算。
 - `GET /reports/summary`: 查询指定时段营收报表汇总（营业额、人次、赠送总额）。
+- `GET /reports/analytics`: 查询店铺经营趋势与统计分析（支持 `days=7|14|30` 或自定义 `startDate`/`endDate` 最长 366 天，含今日/上期对比、每日趋势、时段客流、收款方式与活跃设备），原汇总模式供首页「仪表板」与兼容调用使用；`source=1` 返回区间事实批次（结账总额为整数分、计时含结束时间与跨边界重叠行），历史页在前端汇总并导出 Excel，不按日／小时循环查库。
 - `GET /reports/settlements`: 查询结算流水明细报表。
 - `GET /reports/checkouts`: 查询出场结算订单报表。
 - `GET /reports/players`: 查询玩家消费频次与累计支出统计。

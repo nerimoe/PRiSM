@@ -296,7 +296,7 @@ function PlayerJourney({ mode, identity }: { mode: OperatingMode; identity: bool
       ? [
           [CreditCard, "前台刷卡", "第一次来由店员登记一个昵称，之后刷卡就能认出。"],
           [Receipt, "店员点入场", "按前台资源所在资源组的方案开始计时。"],
-          [Gamepad2, "游玩", "计时进行中，店员可以在「在店」页随时看账单。"],
+          [Gamepad2, "游玩", "计时进行中，店员可以在「仪表板」页随时看账单。"],
           [Wallet, "回前台付款", "店员按屏幕金额收微信、支付宝或现金，确认收款后结账。"],
         ]
       : mode === "self"
@@ -332,17 +332,17 @@ function OwnerDaily({ mode }: { mode: OperatingMode }) {
   const items: [string, string][] =
     mode === "desk"
       ? [
-          ["在店", "前台电脑用桌面版 Chrome 或 Edge 打开，连上读卡器。玩家刷卡入场，离店再刷卡收款。"],
+          ["仪表板", "查看当前在店玩家、实时预估账单与设备运行状态；前台电脑用桌面版 Chrome 或 Edge 打开，连上读卡器，玩家刷卡入场、离店再刷卡收款。"],
           ["玩家", "查玩家档案、余额和绑定的身份；给预存余额的玩家充值。"],
-          ["记录", "每笔结账和营业额，现场收款和余额结算分开统计。"],
+          ["历史", "查看营收趋势、客流分析与每笔结账记录，现场收款和余额结算分开统计。"],
           ["资源", "看设备状态、远程开关机、查操作记录。"],
         ]
       : mode === "self"
         ? [
-            ["在店", "谁在店里、实时账单，必要时替玩家结账。"],
+            ["仪表板", "查看当前在店玩家、实时预估账单与设备状态，必要时替玩家结账或快捷控制设备。"],
             ["玩家", "玩家余额不够时在这里充值；查档案和绑定的身份。"],
             ["资产", "建充值礼物、生成兑换码，拿到群里或网店售卖。"],
-            ["记录", "每笔结账和营业额。"],
+            ["历史", "查看营收趋势、客流分析与每笔结账记录。"],
             ["资源", "看设备状态、远程开关机、查操作记录。"],
           ]
         : [
@@ -411,7 +411,7 @@ function MoneyFlow({ mode }: { mode: OperatingMode }) {
         <div className="grid content-center gap-2 rounded-lg bg-ink/[0.03] p-3 text-sm">
           <strong>{t("结账时")}</strong>
           <span className="leading-relaxed text-ink/70">{t("先扣赠送余额，再扣充值余额。")}</span>
-          <span className="leading-relaxed text-coral">{t("余额不够：结不了账，计时继续。店员可以在「在店」页用「充值结账」现场补款。")}</span>
+          <span className="leading-relaxed text-coral">{t("余额不够：结不了账，计时继续。店员可以在「仪表板」页用「充值结账」现场补款。")}</span>
         </div>
       </div>
     </section>
@@ -470,14 +470,14 @@ function StepCard({
       : id === "reader"
         ? {
             title: "准备前台读卡器",
-            why: "前台用 HINATA 读卡器读玩家的实体卡（IC 卡或 FeliCa 卡）。在前台电脑上用桌面版 Chrome 或 Edge 打开「在店」页，点「连接读卡器」授权一次，之后会自动连接。",
+            why: "前台用 HINATA 读卡器读玩家的实体卡（IC 卡或 FeliCa 卡）。在前台电脑上用桌面版 Chrome 或 Edge 打开「仪表板」页，点「连接读卡器」授权一次，之后会自动连接。",
             fact:
               status.reader === null
                 ? "这个浏览器不支持读卡器，需要桌面版 Chrome 或 Edge。"
                 : status.reader
                   ? "这台电脑的浏览器已授权读卡器。"
                   : "这台电脑的浏览器还没有授权读卡器。",
-            actions: go(`${base}/live`, "打开「在店」页"),
+            actions: go(`${base}/dashboard`, "打开「仪表板」页"),
           }
         : id === "staff"
           ? {

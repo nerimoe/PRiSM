@@ -72,6 +72,14 @@ type Holdings = {
   }[];
 };
 
+export type LiveSummary = {
+  present: number;
+  unpaid: number;
+  shortBalanceCount: number;
+  estimatedTotal: number;
+  loaded: boolean;
+};
+
 /**
  * The player surface shared by both tabs: a list of players on the left and
  * the selected player's management on the right. "In shop" narrows the list to
@@ -80,7 +88,19 @@ type Holdings = {
  * Selection is a modifier-gated multi-select: checkboxes only exist while a
  * modifier is held, so the normal case stays a plain click-to-open list.
  */
-export function PlayerWorkspace({ live = false }: { live?: boolean }) {
+export function PlayerWorkspace({
+  live = false,
+  embedded = false,
+  refreshSignal = 0,
+  onLiveSummary,
+  onMutated,
+}: {
+  live?: boolean;
+  embedded?: boolean;
+  refreshSignal?: number;
+  onLiveSummary?: (summary: LiveSummary) => void;
+  onMutated?: () => void;
+}) {
   const { t } = useI18n();
   const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
   const request = useStaffApi();
@@ -224,6 +244,38 @@ export function PlayerWorkspace({ live = false }: { live?: boolean }) {
   const present = roster?.total ?? visible.filter((player) => player.activeSessionId).length;
   const unpaid = visible.filter((player) => !player.activeSessionId).length;
 
+  const liveSummary = useMemo<LiveSummary>(() => {
+    let shortBalanceCount = 0;
+    let estimatedTotal = 0;
+    for (const player of calculation.players) {
+      if (player.estimatedTotal != null) {
+        estimatedTotal += player.estimatedTotal;
+        if (player.paymentMode !== "cashier" && player.walletTotal < player.estimatedTotal) {
+          shortBalanceCount += 1;
+        }
+      }
+    }
+    return {
+      present,
+      unpaid,
+      shortBalanceCount,
+      estimatedTotal: Math.round(estimatedTotal * 100) / 100,
+      loaded: !!onSite.data,
+    };
+  }, [calculation.players, present, unpaid, onSite.data]);
+
+  useEffect(() => {
+    if (live) onLiveSummary?.(liveSummary);
+  }, [live, liveSummary, onLiveSummary]);
+
+  const lastRefreshSignal = useRef(refreshSignal);
+  useEffect(() => {
+    if (refreshSignal === lastRefreshSignal.current) return;
+    lastRefreshSignal.current = refreshSignal;
+    list.reload();
+    onSite.reload();
+  }, [refreshSignal, list.reload, onSite.reload]);
+
   const groups = useMemo(() => {
     const result = new Map<string, { label: string; players: Row[]; count?: string }>();
     if (groupBy === "place" && roster) {
@@ -280,6 +332,7 @@ export function PlayerWorkspace({ live = false }: { live?: boolean }) {
   const refresh = () => {
     list.reload();
     onSite.reload();
+    onMutated?.();
   };
 
   const togglePick = (id: string) => {
@@ -332,28 +385,46 @@ export function PlayerWorkspace({ live = false }: { live?: boolean }) {
   return (
     <div className="grid gap-4">
       <header className="flex flex-wrap items-end justify-between gap-3">
-        <h2 className="text-xl font-semibold">
-          {t(live ? "在店玩家" : "玩家")}
-          {rows && (
-            <span className="ml-2 text-base font-normal text-ink/50">
-              {live ? present : visible.length}
-            </span>
-          )}
-          {live && rows && unpaid > 0 && (
-            <span className="ml-3 text-sm font-normal text-ink/50">
-              {t("待结账")} {unpaid}
-            </span>
-          )}
-        </h2>
+        {embedded ? (
+          <h3 className="text-lg font-semibold">
+            {t(live ? "在店玩家" : "玩家")}
+            {rows && (
+              <span className="ml-2 text-sm font-normal text-ink/50">
+                {live ? present : visible.length}
+              </span>
+            )}
+            {live && rows && unpaid > 0 && (
+              <span className="ml-3 text-sm font-normal text-ink/50">
+                {t("待结账")} {unpaid}
+              </span>
+            )}
+          </h3>
+        ) : (
+          <h2 className="text-xl font-semibold">
+            {t(live ? "在店玩家" : "玩家")}
+            {rows && (
+              <span className="ml-2 text-base font-normal text-ink/50">
+                {live ? present : visible.length}
+              </span>
+            )}
+            {live && rows && unpaid > 0 && (
+              <span className="ml-3 text-sm font-normal text-ink/50">
+                {t("待结账")} {unpaid}
+              </span>
+            )}
+          </h2>
+        )}
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className={button}
-            onClick={refresh}
-            aria-label={t("刷新")}
-          >
-            <RefreshCw size={16} />
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              className={button}
+              onClick={refresh}
+              aria-label={t("刷新")}
+            >
+              <RefreshCw size={16} />
+            </button>
+          )}
           {canWrite && (
             <button type="button" className={button} onClick={() => setBinding(true)}>
               {t("绑定账号")}
@@ -812,7 +883,7 @@ function PlayerPanel({
             cashierEnabled && (
               <Link
                 className={primary}
-                to={`/merchant/${segment(shopCode)}/live?cashierPlayer=${segment(player.id)}`}
+                to={`/merchant/${segment(shopCode)}/dashboard?cashierPlayer=${segment(player.id)}`}
               >
                 {t("前台收款")}
               </Link>
