@@ -317,7 +317,7 @@ const operatingModes: [OperatingMode, string, string][] = [
   [
     "devices",
     "不使用计费",
-    "只用 PRiSM 的设备功能：扫码或碰 NFC 开机、刷卡、投币、开门。收费在你自己的其它经营平台完成。以后给哪个资源组设置计费方案，哪里就开始计费。",
+    "只用 PRiSM 的设备功能：扫码或碰 NFC 开机、调空调、刷卡、投币、开门或开麻将桌。收费在你自己的其它经营平台完成。以后给哪个资源组设置计费方案，哪里就开始计费。",
   ],
 ];
 function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
@@ -341,10 +341,9 @@ function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {
       <div className="grid gap-5">
         <h3 className="font-semibold">{t("连接 Bot")}</h3>
         <p className="text-sm text-ink/60">
-          {t("把下面三项填进店铺 Bot 的 PRiSM 插件配置。凭据只显示这一次。")}
+          {t("把下面两项填进店铺 Bot 的 PRiSM 插件配置。凭据自己指明店铺，只显示这一次；其余权限、播报和回复设置都在「资源」页的 Bot 里修改。")}
         </p>
         <CopyValue label="接入凭据" value={created.token} />
-        <CopyValue label="店铺编号" value={created.shop.publicId} />
         <CopyValue label="API 地址" value={window.location.origin} />
         <button className={primary} onClick={() => done(created.shop)}>
           {t("进入开店指引")}

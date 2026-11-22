@@ -5,6 +5,7 @@ import {
   identityPolicy,
   identityPolicySettings,
   operatingMode,
+  resourceBilled,
   setupStatus,
   shopBills,
   type SetupSignals,
@@ -110,18 +111,108 @@ describe("setup guide", () => {
   });
 
   it("walks a front-desk shop through the reader and staff instead of prepaid balance", () => {
+    const desk = machine({ id: "desk-1", name: "前台" });
+    const groups = [{ id: "default", defaultPricingConfigId: "p1", enabled: true }];
     const status = setupStatus(signals({
-      billing: true, settings: settings({ cashierEnabled: true, billingConfiguration: ready }),
+      billing: true,
+      settings: settings({ cashierEnabled: true, cashierResourceId: "desk-1", billingConfiguration: ready }),
+      machines: [desk],
+      groups,
       players: [],
       reader: false,
     }));
     expect(status.mode).toBe("desk");
-    expect(ids(status)).toEqual(["pricing:done", "reader:todo", "staff:todo", "identity:todo", "devices:todo", "trial:todo"]);
+    expect(status.deskProblem).toBeNull();
+    expect(ids(status)).toEqual(["pricing:done", "reader:todo", "staff:todo", "identity:todo", "devices:done", "trial:todo"]);
     const ready2 = setupStatus(signals({
-      billing: true, settings: settings({ cashierEnabled: true, billingConfiguration: ready }),
+      billing: true,
+      settings: settings({ cashierEnabled: true, cashierResourceId: "desk-1", billingConfiguration: ready }),
+      machines: [desk],
+      groups,
       players: [], reader: true, members: 2,
     }));
     expect(ready2.steps.filter((s) => s.id === "reader" || s.id === "staff").every((s) => s.done)).toBe(true);
+  });
+
+  it("flags missing or unbilled front-desk resources on the pricing step", () => {
+    const desk = machine({ id: "desk-1", name: "前台" });
+    const missing = setupStatus(signals({
+      billing: true,
+      settings: settings({ cashierEnabled: true, cashierResourceId: null, billingConfiguration: ready }),
+      machines: [desk],
+      groups: [{ id: "default", defaultPricingConfigId: "p1", enabled: true }],
+    }));
+    expect(missing.deskProblem).toBe("missing");
+    expect(missing.steps.find((s) => s.id === "pricing")?.done).toBe(false);
+
+    const disabled = setupStatus(signals({
+      billing: true,
+      settings: settings({ cashierEnabled: true, cashierResourceId: "desk-1", billingConfiguration: ready }),
+      machines: [machine({ id: "desk-1", name: "前台", enabled: false })],
+      groups: [{ id: "default", defaultPricingConfigId: "p1", enabled: true }],
+    }));
+    expect(disabled.deskProblem).toBe("missing");
+
+    const unbilled = setupStatus(signals({
+      billing: true,
+      settings: settings({ cashierEnabled: true, cashierResourceId: "desk-1", billingConfiguration: ready }),
+      machines: [desk],
+      groups: [{ id: "default", defaultPricingConfigId: null, enabled: true }],
+    }));
+    expect(unbilled.deskProblem).toBe("unbilled");
+    expect(unbilled.steps.find((s) => s.id === "pricing")?.done).toBe(false);
+  });
+
+  it("does not count a bot alone as a shop resource and allows billed QR-only resources", () => {
+    const botOnly = setupStatus(signals({ machines: [bot()] }));
+    expect(botOnly.devices).toBe(0);
+    expect(botOnly.steps.find((s) => s.id === "devices")?.done).toBe(false);
+
+    const freeQr = machine({ id: "qr-free", name: "休息区" });
+    const billedGroup = [{ id: "default", defaultPricingConfigId: "p1", enabled: true }];
+    const freeGroup = [{ id: "default", defaultPricingConfigId: null, enabled: true }];
+    expect(resourceBilled(freeQr, freeGroup)).toBe(false);
+    expect(resourceBilled(freeQr, billedGroup)).toBe(true);
+    expect(resourceBilled(machine({ id: "qr-own", pricingConfigOverrideId: "vip" }), freeGroup)).toBe(true);
+
+    const withFreeQr = setupStatus(signals({ machines: [freeQr], groups: freeGroup }));
+    expect(withFreeQr.unconfigured).toBe(1);
+    expect(withFreeQr.steps.find((s) => s.id === "devices")?.done).toBe(false);
+
+    const withBilledQr = setupStatus(signals({
+      billing: true,
+      settings: settings({ billingConfiguration: ready }),
+      machines: [freeQr],
+      groups: billedGroup,
+    }));
+    expect(withBilledQr.unconfigured).toBe(0);
+    expect(withBilledQr.steps.find((s) => s.id === "devices")?.done).toBe(true);
+  });
+
+  it("reports hardware and bot diagnostics only for enabled resources", () => {
+    const status = setupStatus(signals({
+      machines: [
+        bot({
+          bot: {
+            playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false,
+            doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
+            announceGroups: [{ id: "g1", name: "群", to: ["onebot:1"], events: {}, templates: {} }],
+            idleReminderMinutes: 5,
+          },
+        }),
+        machine({ id: "io-e2ee", hasHinata: true, relayConnection: "embedded", hasRelayToken: true, relayE2ee: true }),
+        machine({ id: "io-notoken", hasHinata: true, relayConnection: "embedded", hasRelayToken: false }),
+        machine({ id: "io-ext", hasHinata: true, relayConnection: "external" }),
+        machine({ id: "coin-nokey", coin: { method: "key", keyId: null, cap: null, afterSwipe: false } }),
+        machine({ id: "io-disabled", enabled: false, hasHinata: true, relayConnection: "embedded", hasRelayToken: false, relayE2ee: true }),
+      ],
+    }));
+    expect(status.botAnnounceGroups).toBe(1);
+    expect(status.ioE2ee).toBe(1);
+    expect(status.ioMissingToken).toBe(1);
+    expect(status.ioExternal).toBe(1);
+    expect(status.coinIncomplete).toBe(1);
+    expect(status.steps.find((s) => s.id === "devices")?.done).toBe(true);
   });
 
   it("reads bot setup from enabled resources with an active, used credential", () => {

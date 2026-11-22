@@ -71,7 +71,7 @@ function mock(request, role, unknown, mutations) {
   if (p === "/api/v1/merchant/machines/occupancy") return { resources: [] };
   if (p === "/api/v1/merchant/device-bindings") return { bindings: [] };
   if (p === "/api/v1/merchant/ha-connections") return { connections: [] };
-  if (p === "/api/v1/merchant/idle-power") return { settings: { shopEmpty: { enabled: false, minutes: 15 }, device: { defaultMinutes: 0, whileOccupied: "mark" }, devices: {} } };
+  if (p === "/api/v1/merchant/idle-power") return { settings: { shopEmpty: { enabled: false, minutes: 15 }, device: { enabled: false, minutes: 10, whileOccupied: "mark" }, keepMinutes: 45, devices: {} } };
   if (p === "/api/v1/merchant/shop-members") return { members: [] };
   if (p === "/api/v1/admin/users") return { users: [] };
   if (p === "/api/v1/admin/bans") return { bans: [] };
@@ -140,7 +140,7 @@ const cases = [
     ["/merchant/demo/reports", "营业记录"],
   ]},
   { role: "owner", pages: [
-    ["/cards", "卡片"], ["/merchant/demo/devices", "店内资源"],
+    ["/cards", "卡片"], ["/merchant/demo/guide", "开店指引"], ["/merchant/demo/devices", "店内资源"],
     ["/merchant/demo/live", "在店玩家"], ["/merchant/demo/players", "玩家"],
     ["/merchant/demo/pricing", "计费规则"], ["/merchant/demo/assets", "资产与兑换"],
     ["/merchant/demo/reports", "营业记录"],
