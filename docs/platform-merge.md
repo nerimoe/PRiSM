@@ -182,7 +182,7 @@ Table player controls group the title/status and occupancy count in one header, 
 
 麻将人数不足时统一显示“等待玩家”（Waiting for players），保留两列座位布局。
 
-Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update both `player_identities` and `shop_platform_bindings`. See [API](api.md#店铺绑定要求与身份转换).
+Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update `player_identities` (migration 0063 removed the duplicate `shop_platform_bindings` table). See [API](api.md#店铺绑定要求与身份转换).
 
 当前扫码/请求放大修复以 [扫码性能与请求预算](scan-performance.md) 为准：新 ticket 为 AEAD 密文且不写 D1；历史 ticket claim 描述不适用于新流程。
 

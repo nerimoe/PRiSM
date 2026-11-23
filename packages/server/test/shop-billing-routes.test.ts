@@ -136,14 +136,6 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY(shop_id, user_id)
     );
-    CREATE TABLE IF NOT EXISTS shop_platform_bindings (
-      shop_id TEXT NOT NULL REFERENCES shops(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      provider TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, provider, subject)
-    );
     CREATE TABLE IF NOT EXISTS platform_binding_codes (
       shop_id TEXT NOT NULL REFERENCES shops(id),
       user_id TEXT NOT NULL REFERENCES users(id),
@@ -1613,13 +1605,13 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(confirmData.provider).toBe("qq");
     expect(confirmData.subject).toBe("99887766");
 
-    // 4. Verify binding was saved in shop_platform_bindings
+    // 4. The account owns the profile, and the identity sits on that profile
     const bindingRow = sqlite.query(
-      "SELECT provider, subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = ?",
+      `SELECT i.provider, i.subject FROM shop_player_accounts a
+       JOIN player_identities i ON i.shop_id = a.shop_id AND i.player_id = a.player_id
+       WHERE a.shop_id = ? AND a.user_id = ? AND i.provider = 'qq'`,
     ).get(shopId, bobUserId) as { provider: string; subject: string } | null;
-    expect(bindingRow).toBeDefined();
-    expect(bindingRow?.provider).toBe("qq");
-    expect(bindingRow?.subject).toBe("99887766");
+    expect(bindingRow).toEqual({ provider: "qq", subject: "99887766" });
   });
 
   it("lets the shop, never the bot request, decide registration on every bot command", async () => {
@@ -2396,9 +2388,35 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(applyRes.status).toBe(200);
 
     const convertedRows = sqlite
-      .query("SELECT subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = 'u_multi' AND provider = 'onebot' ORDER BY subject")
+      .query("SELECT subject FROM player_identities WHERE shop_id = ? AND player_id = 'p_multi' AND provider = 'onebot' ORDER BY subject")
       .all(shopId) as { subject: string }[];
     expect(convertedRows.map((r) => r.subject)).toEqual(["10001", "10002", "30001"]);
+
+    // 6. Staff removing an identity removes it everywhere: the player's list, and once none
+    // are left, the binding gate.
+    const listBindings = async () => {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, { headers: { Authorization: "Bearer tok_multi" } }), env);
+      return ((await res.json()) as { bindings: { subject: string }[] }).bindings.map((b) => b.subject);
+    };
+    const removeIdentity = (subject: string) => app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players/p_multi/identities/onebot/${subject}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${staffSessionToken}` } },
+    ), env);
+    const identityBound = async () => {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}`, { headers: { Authorization: "Bearer tok_multi" } }), env);
+      return ((await res.json()) as { membership?: { identityBound?: boolean } }).membership?.identityBound;
+    };
+    expect(await listBindings()).toEqual(["10001", "10002", "30001"]);
+    expect(await identityBound()).toBe(true);
+    expect((await removeIdentity("10001")).status).toBe(200);
+    expect(await listBindings()).toEqual(["10002", "30001"]);
+    expect((await removeIdentity("10002")).status).toBe(200);
+    expect((await removeIdentity("30001")).status).toBe(200);
+    expect(await listBindings()).toEqual([]);
+    expect(await identityBound()).toBe(false);
+    // The removed account can be claimed again by another account's binding code.
+    const reclaimCode = await genCode("tok_other");
+    expect((await confirm({ code: reclaimCode, provider: "onebot", subject: "10001" })).status).toBe(200);
 
     sqlite.close();
   });

@@ -31,6 +31,7 @@ import {
   toBillingChangeView,
 } from "./views.js";
 import { logger } from "../../log.js";
+import { accountHasPlatformIdentity } from "../../resources/platform-identities.js";
 
 const log = logger("player");
 
@@ -39,11 +40,7 @@ export async function hasPlatformBinding(
   shopId: string,
   userId: string,
 ): Promise<boolean> {
-  return !!(await c.env.DB.prepare(
-    "SELECT 1 FROM shop_platform_bindings WHERE shop_id = ? AND user_id = ? LIMIT 1",
-  )
-    .bind(shopId, userId)
-    .first());
+  return accountHasPlatformIdentity(c.env.DB, shopId, userId);
 }
 
 export async function requireShopPlayer(

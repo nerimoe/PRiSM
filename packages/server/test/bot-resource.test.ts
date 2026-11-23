@@ -42,7 +42,6 @@ async function fixture() {
   sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','owner-player','店主','active',?)", [NOW]);
   sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','owner-user','owner-player',?)", [NOW]);
   sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','owner-player','onebot','10001',?)", [NOW]);
-  sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','owner-user','onebot','10001',?)", [NOW]);
   sqlite.run(`INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,identity_binding_required)
     VALUES ('shop',1,1,0)`);
   // Every resource without a group of its own bills through the default group.
@@ -166,7 +165,6 @@ describe("a bot is a resource", () => {
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','new-player','新负责人','active',?)", [NOW]);
     sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','new-owner','new-player',?)", [NOW]);
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','new-player','onebot','20002',?)", [NOW]);
-    sqlite.run("INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at) VALUES ('shop','new-owner','onebot','20002',?)", [NOW]);
     const staff = async () => (await client.get("bot")).body.staff;
     expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });
     let refreshes = 0;

@@ -18,6 +18,7 @@ import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { reconnectImportedAccount } from "../shops/data/shop-data-accounts.js";
 import { findLegacyShopByCode } from "../../legacy/tenant-resolver.js";
 import { resolveResourceTicket } from "./resource-ticket.js";
+import { accountHasPlatformIdentity } from "../../resources/platform-identities.js";
 import { logger } from "../../log.js";
 
 const log = logger("machine-login");
@@ -68,9 +69,7 @@ export async function requireShopPlayer(c:C,shop:TenantShop):Promise<{id:string,
   ).bind(shop.id,user.id).first<{id:string;status:string}>();
   let player=await find();
   if(shop.identity_binding_required) {
-    const bound=await c.env.DB.prepare(
-      "SELECT 1 FROM shop_platform_bindings WHERE shop_id=? AND user_id=? LIMIT 1",
-    ).bind(shop.id,user.id).first();
+    const bound=await accountHasPlatformIdentity(c.env.DB,shop.id,user.id);
     if(!bound)jsonError(403,"请先绑定平台身份","PLATFORM_BINDING_REQUIRED");
   }
   if(!player) {

@@ -25,7 +25,6 @@ export function replaceBusinessStatements(
     );
   // Platform credentials and monthly allowance / operation receipts are never reset.
   for (const table of [
-    "shop_platform_bindings",
     "shop_player_accounts",
     "shop_imported_accounts",
     "platform_binding_codes",

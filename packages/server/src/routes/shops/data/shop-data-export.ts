@@ -203,8 +203,9 @@ const accountSql = `WITH related AS (${accountSources
  CASE WHEN u.id IS NOT NULL AND (a.user_id IS NOT NULL OR f.user_id IS NOT NULL OR m.user_id IS NOT NULL OR w.subject IS NOT NULL)
  THEN (SELECT json_group_array(json_object('provider',i.provider,'subject',i.provider_subject)) FROM auth_identities i WHERE i.user_id=u.id)||''
  ELSE COALESCE(h.identities_json,'[]') END AS identities_json,
- COALESCE(NULLIF((SELECT json_group_array(json_object('provider',b.provider,'subject',b.subject,'verified_at',b.verified_at))
- FROM shop_platform_bindings b WHERE b.shop_id=? AND b.user_id=u.id)||'','[]'),h.platform_bindings_json,'[]') AS platform_bindings_json
+ COALESCE(NULLIF((SELECT json_group_array(json_object('provider',pi.provider,'subject',pi.subject,'verified_at',pi.created_at))
+ FROM player_identities pi WHERE pi.shop_id=? AND u.id IS NOT NULL AND pi.player_id=COALESCE(a.player_id,w.player_id)
+ AND pi.provider NOT IN ('web-account','aime'))||'','[]'),h.platform_bindings_json,'[]') AS platform_bindings_json
  FROM selected r LEFT JOIN users u ON u.id=r.user_id
  LEFT JOIN shop_player_accounts a ON a.user_id=r.user_id AND a.shop_id=? LEFT JOIN shop_staff_accounts f ON f.user_id=r.user_id AND f.shop_id=?
  LEFT JOIN shop_members m ON m.user_id=r.user_id AND m.shop_id=? LEFT JOIN player_identities w ON w.subject=r.user_id AND w.provider='web-account' AND w.shop_id=?

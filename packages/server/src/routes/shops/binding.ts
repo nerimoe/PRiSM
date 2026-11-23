@@ -92,16 +92,6 @@ export async function confirmBinding(
                 jsonError(410, "验证码已失效，请重新生成", "BINDING_CODE_EXPIRED");
               }
 
-              const existingBinding = await c.env.DB.prepare(
-                "SELECT user_id FROM shop_platform_bindings WHERE shop_id = ? AND provider = ? AND subject = ?",
-              )
-                .bind(shop.id, body.provider, body.subject)
-                .first<{ user_id: string }>();
-
-              if (existingBinding && existingBinding.user_id !== code.user_id) {
-                jsonError(409, "该平台身份已绑定其他账号", "PLATFORM_BINDING_CONFLICT");
-              }
-
               const membership = await c.env.DB.prepare(
                 "SELECT player_id FROM shop_player_accounts WHERE shop_id = ? AND user_id = ?",
               )
@@ -147,9 +137,6 @@ export async function confirmBinding(
                 c.env.DB.prepare(
                   "INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO NOTHING",
                 ).bind(shop.id, player.id, body.provider, body.subject, now),
-                c.env.DB.prepare(
-                  "INSERT INTO shop_platform_bindings (shop_id, user_id, provider, subject, verified_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO NOTHING",
-                ).bind(shop.id, code.user_id, body.provider, body.subject, now),
                 c.env.DB.prepare(
                   "DELETE FROM platform_binding_codes WHERE shop_id = ? AND user_id = ? AND code_hash = ?",
                 ).bind(shop.id, code.user_id, codeHash),

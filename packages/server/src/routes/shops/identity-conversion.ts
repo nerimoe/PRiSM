@@ -15,32 +15,21 @@ const conversionSchema = z.object({ sourceProvider: provider, targetProvider: pr
   .refine(value => value.sourceProvider !== value.targetProvider, "原标识和目标标识不能相同");
 
 async function snapshot(c: C, shopId: string, source: string, target: string) {
-  const identities = await c.env.DB.prepare(`SELECT i.player_id AS playerId,i.provider,i.subject,p.display_name AS displayName
+  const identities = await c.env.DB.prepare(`SELECT i.player_id AS playerId,i.provider,i.subject,p.display_name AS displayName,
+      EXISTS(SELECT 1 FROM shop_player_accounts a WHERE a.shop_id=i.shop_id AND a.player_id=i.player_id) AS owned
     FROM player_identities i JOIN players p ON p.shop_id=i.shop_id AND p.id=i.player_id
     WHERE i.shop_id=? AND i.provider IN (?,?) ORDER BY i.provider,i.subject`).bind(shopId,source,target)
-    .all<{ playerId:string;provider:string;subject:string;displayName:string }>();
-  const bindings = await c.env.DB.prepare(`SELECT b.user_id AS userId,b.provider,b.subject,a.player_id AS playerId FROM shop_platform_bindings b
-    JOIN shop_player_accounts a ON a.shop_id=b.shop_id AND a.user_id=b.user_id
-    WHERE b.shop_id=? AND b.provider IN (?,?) ORDER BY b.provider,b.subject`).bind(shopId,source,target)
-    .all<{ userId:string;provider:string;subject:string;playerId:string }>();
+    .all<{ playerId:string;provider:string;subject:string;displayName:string;owned:number }>();
   const rows = identities.results.filter(row => row.provider === source);
   const targets = new Map(identities.results.filter(row => row.provider === target).map(row => [row.subject,row.playerId]));
-  const sourceOwners = new Map(rows.map(row => [row.subject,row.playerId]));
-  const targetBindings = bindings.results.filter(row => row.provider === target);
-  const targetBySubject = new Map(targetBindings.map(row => [row.subject,row.userId]));
   const conflicts = rows.filter(row => targets.has(row.subject) && targets.get(row.subject) !== row.playerId)
     .map(row => ({ subject:row.subject,reason:"目标身份已属于其他玩家" }));
-  for (const row of bindings.results.filter(row => row.provider === source)) {
-    if (sourceOwners.get(row.subject) !== row.playerId)
-      conflicts.push({ subject:row.subject,reason:"绑定与玩家身份不一致，请先修复" });
-    if (targetBySubject.has(row.subject) && targetBySubject.get(row.subject) !== row.userId)
-      conflicts.push({ subject:row.subject,reason:"目标平台已有不同账号绑定" });
-  }
-  const sourceBindings = bindings.results.filter(row => row.provider === source);
   return { sourceProvider:source,targetProvider:target,identityCount:rows.length,
-    playerCount:new Set(rows.map(row=>row.playerId)).size,bindingCount:sourceBindings.length,conflicts,
+    playerCount:new Set(rows.map(row=>row.playerId)).size,
+    // Identities on profiles a PRiSM account owns: what the account sees as its bound platform identities.
+    bindingCount:rows.filter(row => row.owned).length,conflicts,
     samples:rows.slice(0,20).map(row=>({ playerId:row.playerId,displayName:row.displayName,from:`${source}:${row.subject}`,to:`${target}:${row.subject}` })),
-    fingerprint:await sha256(JSON.stringify([source,target,identities.results,bindings.results])) };
+    fingerprint:await sha256(JSON.stringify([source,target,identities.results])) };
 }
 
 export const identityConversionRouter = new Hono<AppBindings>();
@@ -61,16 +50,12 @@ identityConversionRouter.post("/preview",async c => {
         if (preview.fingerprint !== body.fingerprint) jsonError(409,"身份数据已变化，请重新预览","IDENTITY_CONVERSION_STALE");
         if (preview.conflicts.length) jsonError(409,"存在身份冲突，请处理后重新预览","IDENTITY_CONVERSION_CONFLICT");
         const { sourceProvider:source,targetProvider:target } = body;
-        // All four writes form one D1 transaction. Uniqueness protects against concurrent target claims.
+        // Both writes form one D1 transaction. Uniqueness protects against concurrent target claims.
         await c.env.DB.batch([
           c.env.DB.prepare(`DELETE FROM player_identities AS old WHERE shop_id=? AND provider=?
             AND EXISTS(SELECT 1 FROM player_identities destination WHERE destination.shop_id=old.shop_id
               AND destination.provider=? AND destination.subject=old.subject AND destination.player_id=old.player_id)`).bind(shop.id,source,target),
           c.env.DB.prepare("UPDATE player_identities SET provider=? WHERE shop_id=? AND provider=?").bind(target,shop.id,source),
-          c.env.DB.prepare(`DELETE FROM shop_platform_bindings AS old WHERE shop_id=? AND provider=?
-            AND EXISTS(SELECT 1 FROM shop_platform_bindings destination WHERE destination.shop_id=old.shop_id
-              AND destination.provider=? AND destination.subject=old.subject AND destination.user_id=old.user_id)`).bind(shop.id,source,target),
-          c.env.DB.prepare("UPDATE shop_platform_bindings SET provider=? WHERE shop_id=? AND provider=?").bind(target,shop.id,source),
         ]);
         return c.json({ ...preview,converted:true });
       });

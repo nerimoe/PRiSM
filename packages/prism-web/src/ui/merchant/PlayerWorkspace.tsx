@@ -1095,6 +1095,9 @@ function PlayerPanel({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
   const [reportSaving, setReportSaving] = useState(false);
+  const [removingIdentity, setRemovingIdentity] = useState<
+    NonNullable<Player["identities"]>[number] | null
+  >(null);
   const [error, setError] = useState("");
   async function toggleReportExclusion(excluded: boolean) {
     setReportSaving(true);
@@ -1974,13 +1977,48 @@ function PlayerPanel({
                       </span>
                       {i.displayName && <span>{i.displayName}</span>}
                     </span>
-                    <code className="select-all break-all text-xs text-ink/60">
-                      {i.subject}
-                    </code>
+                    <span className="inline-flex items-center gap-2">
+                      <code className="select-all break-all text-xs text-ink/60">
+                        {i.subject}
+                      </code>
+                      {canWrite && i.provider !== "web-account" && i.provider !== "aime" && (
+                        <button
+                          type="button"
+                          className="focus-ring grid size-7 shrink-0 place-items-center rounded-lg text-ink/45 hover:bg-coral/10 hover:text-coral"
+                          aria-label={t("删除身份 {identity}", { identity: `${identityProviderLabel(i.provider, t)} ${i.subject}` })}
+                          onClick={() => setRemovingIdentity(i)}
+                        >
+                          <X size={15} aria-hidden="true" />
+                        </button>
+                      )}
+                    </span>
                   </div>
                 ))
               ) : (
                 <p className="py-2 text-sm text-ink/50">{t("无绑定身份")}</p>
+              )}
+              {removingIdentity && (
+                <Modal title="删除身份" close={() => setRemovingIdentity(null)}>
+                  <ActionForm
+                    label="删除"
+                    done={() => {
+                      setRemovingIdentity(null);
+                      done();
+                    }}
+                    submit={() =>
+                      request(
+                        `${base}/identities/${segment(removingIdentity.provider)}/${segment(removingIdentity.subject)}`,
+                        "DELETE",
+                      )
+                    }
+                  >
+                    <p className="text-sm leading-relaxed">
+                      {t("删除后，{identity} 不再指向这位玩家，Bot 指令不会再找到这个档案，玩家账号上也不再显示这项平台身份。", {
+                        identity: `${identityProviderLabel(removingIdentity.provider, t)} ${removingIdentity.displayName ? `${removingIdentity.displayName} · ` : ""}${removingIdentity.subject}`,
+                      })}
+                    </p>
+                  </ActionForm>
+                </Modal>
               )}
             </div>
 

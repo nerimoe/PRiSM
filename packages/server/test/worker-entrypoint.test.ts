@@ -270,14 +270,6 @@ function createTestEnvironment(): {
       staff_id TEXT NOT NULL,
       PRIMARY KEY (shop_id, user_id)
     );
-    CREATE TABLE IF NOT EXISTS shop_platform_bindings (
-      shop_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (shop_id, provider, subject)
-    );
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       shop_id TEXT NOT NULL,

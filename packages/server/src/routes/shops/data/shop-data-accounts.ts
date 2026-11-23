@@ -38,21 +38,8 @@ export function accountLinkStatements(
         )
         .bind(shopId, link.player_id, userId, link.verified_at ?? now),
     );
-    const bindings = JSON.parse(link.platform_bindings_json) as {
-      provider: string;
-      subject: string;
-      verified_at: string;
-    }[];
-    for (const binding of bindings)
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at)
-      VALUES (?,?,?,?,?) ON CONFLICT(shop_id,provider,subject) DO UPDATE SET user_id=CASE WHEN shop_platform_bindings.user_id=excluded.user_id
-        THEN shop_platform_bindings.user_id ELSE NULL END`,
-          )
-          .bind(shopId, userId, binding.provider, binding.subject, binding.verified_at),
-      );
+    // Platform identities come back with the profile's own `player_identities` rows;
+    // `platform_bindings_json` in older backups is no longer needed.
   }
   if (link.member_role)
     statements.push(
