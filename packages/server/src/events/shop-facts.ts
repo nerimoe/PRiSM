@@ -24,6 +24,7 @@ import { settledAsPreview } from "../resources/bot-replies.js";
 import { toPlayerCheckoutPreviewView, toPlayerCheckoutResultView } from "../routes/shops/views.js";
 import { PrismDomainError } from "@prism/core";
 import type { Env, PrismAppDependencies } from "../bindings.js";
+import type { HubCalls } from "../durable-objects/shop-hub-client.js";
 import { createEventDispatcher } from "./dispatcher.js";
 import { eventSubscribers } from "./subscribers.js";
 import { logger } from "../log.js";
@@ -80,9 +81,11 @@ export type FactOrigin = {
   defer?: (work: Promise<unknown>) => void;
   /** The client that asked, which already shows what it did and is not pushed its own news. */
   clientId?: string | null;
+  /** Destination where the initiating bot answered this command, so broadcasts skip only that chat. */
+  botChannel?: string | null;
 };
 
-export type FactRuntime = { db: D1DatabaseLike; env: Env; shopId: string };
+export type FactRuntime = { db: D1DatabaseLike; env: Env; shopId: string; hub?: HubCalls };
 
 /** Write facts and tell whoever listens. Never throws. */
 export async function publishShopFacts(runtime: FactRuntime, origin: FactOrigin, facts: readonly ShopFact[]): Promise<void> {
@@ -109,6 +112,8 @@ export async function publishShopFacts(runtime: FactRuntime, origin: FactOrigin,
       subscribers: eventSubscribers,
       context: {
         db: runtime.db, env: runtime.env, shopId: runtime.shopId, initiatorClientId: origin.clientId ?? null,
+        ...(runtime.hub ? { hub: runtime.hub } : {}),
+        ...(origin.botChannel ? { botChannel: origin.botChannel } : {}),
         ...(origin.defer ? { later: origin.defer } : {}),
       },
       ...(origin.defer ? { defer: origin.defer } : {}),

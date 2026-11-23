@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
+import { capabilities } from "../src/resources/capabilities/catalog.js";
 
 const migrations = resolve(import.meta.dir, "../../../migrations");
 const run = (sqlite: Database, name: string) => {
@@ -208,6 +209,64 @@ describe("migration 0054: each rule becomes a group with a whole table, in the b
     // A bot without rules announces nothing still, and keeps no announcement words.
     expect(read("c")).toEqual({ tokenId: "u", announceGroups: [], replyTemplates: {} });
     expect(read("m")).toEqual({});
+    sqlite.close();
+  });
+});
+
+describe("migration 0060: receiptsToStaff becomes a checkout receipt announcement group", () => {
+  it("migrates bots with receiptsToStaff into a checkout.settled group, honors the 10-group limit, and removes the old switch", () => {
+    const sqlite = new Database(":memory:");
+    sqlite.run("CREATE TABLE device_capabilities(shop_id TEXT, device_id TEXT, capability TEXT, config_json TEXT, PRIMARY KEY (shop_id, device_id, capability))");
+    sqlite.run("CREATE TABLE shop_platform_bindings(shop_id TEXT, user_id TEXT, provider TEXT, subject TEXT)");
+    sqlite.run("CREATE TABLE shop_members(shop_id TEXT, user_id TEXT)");
+    sqlite.run("CREATE TABLE shop_staff_accounts(shop_id TEXT, user_id TEXT, staff_id TEXT)");
+    sqlite.run("CREATE TABLE staff_users(shop_id TEXT, id TEXT, status TEXT)");
+
+    // Staff at migration time: owner (two platforms) and an active staff account;
+    // excludes a player, a disabled staff account, and someone from another shop.
+    sqlite.run("INSERT INTO shop_members VALUES ('s','owner'),('t','elsewhere')");
+    sqlite.run("INSERT INTO shop_staff_accounts VALUES ('s','clerk','c1'),('s','gone','c2')");
+    sqlite.run("INSERT INTO staff_users VALUES ('s','c1','active'),('s','c2','disabled')");
+    sqlite.run(`INSERT INTO shop_platform_bindings VALUES
+      ('s','owner','onebot','7'),('s','owner','discord','99'),('s','clerk','onebot','8'),
+      ('s','player','onebot','9'),('s','gone','onebot','10'),('t','elsewhere','onebot','11')`);
+
+    const existingGroup = { id: "group-1", name: "玩家群", to: ["onebot:42"], events: { "card.consumed": { on: true, sources: [] } }, templates: {} };
+    const tenGroups = Array.from({ length: 10 }, (_, idx) => ({ ...existingGroup, id: `g-${idx + 1}`, name: `组 ${idx + 1}` }));
+
+    sqlite.query("INSERT INTO device_capabilities VALUES ('s','append','bot',?),('s','fresh','bot',?),('s','off','bot',?),('s','omitted','bot',?),('s','full','bot',?),('nostaff','empty','bot',?),('s','power','power',?)").run(
+      JSON.stringify({ tokenId: "t1", receiptsToStaff: true, announceGroups: [existingGroup] }),
+      JSON.stringify({ tokenId: "t2", receiptsToStaff: true }),
+      JSON.stringify({ tokenId: "t3", receiptsToStaff: false, announceGroups: [existingGroup] }),
+      JSON.stringify({ tokenId: "t4", announceGroups: [] }),
+      JSON.stringify({ tokenId: "t5", receiptsToStaff: true, announceGroups: tenGroups }),
+      JSON.stringify({ tokenId: "t6", receiptsToStaff: true }),
+      JSON.stringify({ receiptsToStaff: true }),
+    );
+
+    run(sqlite, "0060_receipts_to_staff_group.sql");
+
+    const read = (id: string) => JSON.parse((sqlite.query("SELECT config_json FROM device_capabilities WHERE device_id = ?").get(id) as { config_json: string }).config_json);
+    const expectedGroup = {
+      id: "receipts-to-staff",
+      name: "结账回执",
+      to: ["discord:private:99", "onebot:private:7", "onebot:private:8"],
+      events: { "checkout.settled": { on: true, sources: [] } },
+      templates: {},
+    };
+
+    expect(read("append")).toEqual({ tokenId: "t1", announceGroups: [existingGroup, expectedGroup] });
+    expect(read("fresh")).toEqual({ tokenId: "t2", announceGroups: [expectedGroup] });
+    expect(read("off")).toEqual({ tokenId: "t3", announceGroups: [existingGroup] });
+    expect(read("omitted")).toEqual({ tokenId: "t4", announceGroups: [] });
+    expect(read("full")).toEqual({ tokenId: "t5", announceGroups: tenGroups });
+    expect(read("empty")).toEqual({ tokenId: "t6", announceGroups: [{ ...expectedGroup, to: [] }] });
+    expect(read("power")).toEqual({ receiptsToStaff: true });
+
+    for (const id of ["append", "fresh", "off", "omitted", "full", "empty"]) {
+      const parsed = capabilities.bot.config.safeParse(read(id));
+      expect(parsed.success).toBe(true);
+    }
     sqlite.close();
   });
 });

@@ -579,7 +579,6 @@ const machineInput=z.object({
     staffCommands:z.boolean().optional(),
     powerOffStaffOnly:z.boolean().optional(),
     doorResourceId:z.string().min(1).nullable().optional(),
-    receiptsToStaff:z.boolean().optional(),
     doorPasswordOnEntry:z.boolean().optional(),
     idleReminderMinutes:z.number().int().min(0).max(120).optional(),
     announceGroups:z.array(announceGroupSchema).max(10).optional(),

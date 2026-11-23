@@ -25,7 +25,7 @@ const base = {
   relayConnection: "embedded", relayUrl: "wss://relay.test/io", relayOnline: true, relayE2ee: false,
   bot: {
     playerCommands: "all", readOnlyNotice: "请扫码", staffCommands: true, powerOffStaffOnly: false,
-    doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
+    doorResourceId: null, doorPasswordOnEntry: false,
     announceGroups: [], idleReminderMinutes: 5,
   },
 };

@@ -71,7 +71,6 @@ describe("dashboard metrics", () => {
           staffCommands: true,
           powerOffStaffOnly: false,
           doorResourceId: null,
-          receiptsToStaff: false,
           doorPasswordOnEntry: false,
           announceGroups: [],
           idleReminderMinutes: 5,
