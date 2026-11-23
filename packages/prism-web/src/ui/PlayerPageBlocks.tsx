@@ -135,20 +135,20 @@ export function PlayerPageBlocks({ page, ticket, act, read, cardAsks, onExpired 
                 {noteUnder(block.id)}
               </div>
             );
-          case "mahjong":
+          case "table":
             return (
-              <section key={block.id} className="mahjong-table">
-                <header className="mahjong-heading">
+              <section key={block.id} className="table-card">
+                <header className="table-heading">
                   <div><h2>{block.title}</h2><p>{block.status}</p></div>
-                  <span className="mahjong-count">{block.seats.length}<span> / {block.capacity}</span></span>
+                  <span className="table-count">{block.seats.length}<span> / {block.capacity}</span></span>
                 </header>
-                <ul className="mahjong-seats">
+                <ul className="table-seats">
                   {Array.from({ length: block.capacity }, (_, index) => {
                     const seat = block.seats[index];
                     return (
-                      <li className={`mahjong-seat${seat?.mine ? " is-mine" : ""}${!seat ? " is-empty" : ""}`} key={index}>
-                        <span className="mahjong-seat-name">{seat?.name || block.emptyLabel}</span>
-                        {seat?.mine && <span className="mahjong-self">{block.mineLabel}</span>}
+                      <li className={`table-seat${seat?.mine ? " is-mine" : ""}${!seat ? " is-empty" : ""}`} key={index}>
+                        <span className="table-seat-name">{seat?.name || block.emptyLabel}</span>
+                        {seat?.mine && <span className="table-self">{block.mineLabel}</span>}
                       </li>
                     );
                   })}

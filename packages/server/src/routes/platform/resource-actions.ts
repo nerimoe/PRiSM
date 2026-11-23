@@ -30,9 +30,9 @@ export const actionSchema=z.object({
   action:z.enum([
     "power.on","power.off","power.keep","aime.scan","coin","key.press","door.open",
     "climate.on","climate.off","climate.set_mode","climate.set_temperature","climate.set_fan_mode",
-    "mahjong.join","mahjong.leave","mahjong.seat","mahjong.unseat",
+    "table.join","table.leave","table.seat","table.unseat",
   ]),
-  /** Staff act on behalf of a chosen player for mahjong seats, or send a raw card. */
+  /** Staff act on behalf of a chosen player for table seats, or send a raw card. */
   playerId:z.string().min(1).optional(),
   /** A card number staff typed in: 20 digits, sent to the machine as-is. */
   cardNumber:z.string().regex(/^\d{20}$/).optional(),

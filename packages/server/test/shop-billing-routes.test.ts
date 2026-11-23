@@ -177,7 +177,7 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       PRIMARY KEY(shop_id,id),
       UNIQUE(shop_id,public_id)
     );
-    CREATE TABLE IF NOT EXISTS mahjong_seats (
+    CREATE TABLE IF NOT EXISTS table_seats (
       shop_id TEXT NOT NULL, player_id TEXT NOT NULL, machine_id TEXT NOT NULL, session_id TEXT NOT NULL,
       entry_session_id TEXT, entry_owned INTEGER NOT NULL DEFAULT 0, joined_at TEXT NOT NULL,
       PRIMARY KEY (shop_id, player_id)

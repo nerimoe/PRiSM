@@ -17,3 +17,39 @@ export function billPeriod(startedAt: string, endedAt: string, timeZone?: string
   const sameYear = start.date.slice(0, 4) === end.date.slice(0, 4);
   return `${sameYear ? start.date.slice(5) : start.date} ${startTime} – ${sameYear ? end.date.slice(5) : end.date} ${endTime}`;
 }
+
+export type DateBucket<T> = {
+  localDate: string;
+  items: T[];
+};
+
+/** Groups timestamped items into consecutive buckets by local shop date. */
+export function groupByDate<T>(
+  items: readonly T[],
+  getTimestamp: (item: T) => string,
+  timeZone?: string,
+): DateBucket<T>[] {
+  const buckets: DateBucket<T>[] = [];
+  for (const item of items) {
+    const localDate = billTime(getTimestamp(item), timeZone).date;
+    const prev = buckets[buckets.length - 1];
+    if (prev && prev.localDate === localDate) {
+      prev.items.push(item);
+      continue;
+    }
+    buckets.push({ localDate, items: [item] });
+  }
+  return buckets;
+}
+
+/** Formats YYYY-MM-DD as a compact localized month/day, adding the year when cross-year. */
+export function shortDateLabel(localDate: string, todayDate?: string): string {
+  if (!localDate) return "—";
+  const crossYear = todayDate ? localDate.slice(0, 4) !== todayDate.slice(0, 4) : false;
+  return new Date(`${localDate}T12:00:00Z`).toLocaleDateString([], {
+    timeZone: "UTC",
+    ...(crossYear ? { year: "numeric" } : {}),
+    month: "short",
+    day: "numeric",
+  });
+}

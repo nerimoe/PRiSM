@@ -249,11 +249,11 @@ export function createShopDependencies(input: {
         config: { ...config.provider, timeZone: config.provider.timeZone ?? (input.shop.time_zone || "UTC") },
         at,
       }),
-    // A seat belongs to its mahjong session: when a switch or a stop ends that
+    // A seat belongs to its table session: when a switch or a stop ends that
     // session, the player is no longer seated.
     afterClose: async (closed) => {
       await input.db
-        .prepare("DELETE FROM mahjong_seats WHERE shop_id = ? AND session_id IN (SELECT value FROM json_each(?))")
+        .prepare("DELETE FROM table_seats WHERE shop_id = ? AND session_id IN (SELECT value FROM json_each(?))")
         .bind(shopId, JSON.stringify(closed.map((session) => session.id)))
         .run();
     },

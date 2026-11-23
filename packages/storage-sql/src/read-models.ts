@@ -770,7 +770,7 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
         row.action === "coin" ||
         row.action === "aime.scan" ||
         row.action === "power.on" ||
-        row.action === "mahjong.seat")
+        row.action === "table.seat")
     ) {
       const activity = deviceMap.get(row.device_id) ?? {
         deviceId: row.device_id,

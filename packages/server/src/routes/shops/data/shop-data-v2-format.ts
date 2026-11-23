@@ -22,7 +22,7 @@ export const extraSchema = [
  aliases_json TEXT NOT NULL,resource_group_id TEXT,pricing_config_override_id TEXT,
  capacity INTEGER,occupancy_minutes INTEGER,
  PRIMARY KEY(shop_id,id),UNIQUE(shop_id,public_id))`,
-  `CREATE TABLE IF NOT EXISTS mahjong_seats (
+  `CREATE TABLE IF NOT EXISTS table_seats (
  shop_id TEXT NOT NULL,player_id TEXT NOT NULL,machine_id TEXT NOT NULL,session_id TEXT NOT NULL,
  entry_session_id TEXT,joined_at TEXT NOT NULL,PRIMARY KEY(shop_id,player_id),UNIQUE(shop_id,session_id),
  FOREIGN KEY(shop_id,player_id) REFERENCES players(shop_id,id),
@@ -35,6 +35,17 @@ export const extraSchema = [
  PRIMARY KEY(shop_id,source_user_id),UNIQUE(shop_id,player_id),UNIQUE(shop_id,staff_id),
  FOREIGN KEY(shop_id,player_id) REFERENCES players(shop_id,id),
  FOREIGN KEY(shop_id,staff_id) REFERENCES staff_users(shop_id,id))`,
+] as const;
+
+/** v2 to v6 files named the table `mahjong_seats`; v7 renamed it to `table_seats`. */
+const v6SeatSchema = [
+  `CREATE TABLE IF NOT EXISTS mahjong_seats (
+ shop_id TEXT NOT NULL,player_id TEXT NOT NULL,machine_id TEXT NOT NULL,session_id TEXT NOT NULL,
+ entry_session_id TEXT,joined_at TEXT NOT NULL,PRIMARY KEY(shop_id,player_id),UNIQUE(shop_id,session_id),
+ FOREIGN KEY(shop_id,player_id) REFERENCES players(shop_id,id),
+ FOREIGN KEY(shop_id,machine_id) REFERENCES machines(shop_id,id),
+ FOREIGN KEY(shop_id,session_id) REFERENCES sessions(shop_id,id),
+ FOREIGN KEY(shop_id,entry_session_id) REFERENCES sessions(shop_id,id))`,
 ] as const;
 
 /**
@@ -174,6 +185,22 @@ export const fullBusinessTables = [
   "resource_groups",
   "machines",
   "device_capabilities",
+  "table_seats",
+  "device_operations",
+  "device_events",
+  "device_state",
+  "account_links",
+  "checkout_report_states",
+] as const;
+const v6BusinessTables = [
+  "staff_users",
+  ...businessTables,
+  "app_settings",
+  "shop_billing_settings",
+  "api_tokens",
+  "resource_groups",
+  "machines",
+  "device_capabilities",
   "mahjong_seats",
   "device_operations",
   "device_events",
@@ -196,10 +223,12 @@ const v2BusinessTables = [
   "account_links",
   "checkout_report_states",
 ] as const;
-export type FullTable = (typeof fullBusinessTables)[number] | (typeof v2BusinessTables)[number];
-/** The tables the current format (v6, and v4 and v5 before it) carries; export writes exactly these. */
+export type FullTable = (typeof fullBusinessTables)[number] | (typeof v6BusinessTables)[number] | (typeof v2BusinessTables)[number];
+/** The tables the current format (v7) carries; export writes exactly these. */
 export const currentTablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>
   scope === "business" ? fullBusinessTables : fullConfigurationTables;
+const v6TablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>
+  scope === "business" ? v6BusinessTables : fullConfigurationTables;
 const v3TablesFor = (scope: "business" | "configuration"): readonly FullTable[] =>
   scope === "business" ? v3BusinessTables : v3ConfigurationTables;
 type TableSchema = (typeof tableSchemas)[(typeof businessTables)[number]];
@@ -249,7 +278,7 @@ function buildSchemas(tables: readonly FullTable[], ddl: readonly string[]) {
   return result;
 }
 
-/** The current (v6) table shapes. */
+/** The current (v7) table shapes. */
 export const schemas = buildSchemas(fullBusinessTables, [...sqliteSchema, ...extraSchema]);
 // A machine may only name a group the backup also carries.
 schemas.machines = {
@@ -266,17 +295,29 @@ for (const table of ["device_capabilities", "device_state"] as const)
   };
 const v4Operations = buildSchemas(["device_operations"], v4OperationSchema).device_operations;
 const v5Events = buildSchemas(["device_events"], v5EventSchema).device_events;
-const v5Schemas = { ...schemas, device_events: v5Events };
+const v6Seat = buildSchemas(["mahjong_seats"], v6SeatSchema).mahjong_seats;
+const v6Schemas = { ...schemas, mahjong_seats: v6Seat };
+const v5Schemas = { ...v6Schemas, device_events: v5Events };
 const v4Schemas = { ...v5Schemas, device_operations: v4Operations };
-const v3Schemas = buildSchemas(v3BusinessTables, [...v3MachineSchema, ...sqliteSchema, ...extraSchema]);
+const v3Schemas = buildSchemas(v3BusinessTables, [...v3MachineSchema, ...sqliteSchema, ...extraSchema, ...v6SeatSchema]);
 for (const table of ["device_capabilities", "device_state"] as const) v3Schemas[table] = schemas[table];
 v3Schemas.device_operations = v4Operations;
 v3Schemas.device_events = v5Events;
-const v2Schemas = buildSchemas(v2BusinessTables, [...v2DeviceSchema, ...sqliteSchema, ...extraSchema]);
+const v2Schemas = buildSchemas(v2BusinessTables, [...v2DeviceSchema, ...sqliteSchema, ...extraSchema, ...v6SeatSchema]);
 
-export type FormatVersion = 1 | 2 | 3 | 4 | 5 | 6;
+export type FormatVersion = 1 | 2 | 3 | 4 | 5 | 6 | 7;
 export function schemasFor(version: FormatVersion): Record<FullTable, TableSchema> {
-  return version === 6 ? schemas : version === 5 ? v5Schemas : version === 4 ? v4Schemas : version === 3 ? v3Schemas : v2Schemas;
+  return version === 7
+    ? schemas
+    : version === 6
+      ? v6Schemas
+      : version === 5
+        ? v5Schemas
+        : version === 4
+          ? v4Schemas
+          : version === 3
+            ? v3Schemas
+            : v2Schemas;
 }
 
 /**
@@ -285,13 +326,14 @@ export function schemasFor(version: FormatVersion): Record<FullTable, TableSchem
  * the insert.
  */
 export function importColumns(table: FullTable, version: FormatVersion): string[] {
-  const current = new Set(schemas[table]?.columns.map((c) => c.name) ?? []);
+  const target = table === "mahjong_seats" ? "table_seats" : table;
+  const current = new Set(schemas[target]?.columns.map((c) => c.name) ?? []);
   return schemasFor(version)[table].columns.map((c) => c.name).filter((name) => current.size === 0 || current.has(name));
 }
 export const fullHeaderSchema = backupSchema
   .omit({ tables: true, version: true })
   .extend({
-    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6)]),
+    version: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5), z.literal(6), z.literal(7)]),
     shopProfile: z
       .object({
         name: z.string().min(1).max(80),
@@ -324,9 +366,11 @@ export function fullTables(header: FullHeader): readonly FullTable[] {
       ? header.scope === "business" ? v2BusinessTables : v2ConfigurationTables
       : header.version === 3
         ? v3TablesFor(header.scope)
-        : currentTablesFor(header.scope);
+        : header.version <= 6
+          ? v6TablesFor(header.scope)
+          : currentTablesFor(header.scope);
 }
-export function validateRows(table: FullTable, rows: DataRow[], version: FormatVersion = 6): string[] {
+export function validateRows(table: FullTable, rows: DataRow[], version: FormatVersion = 7): string[] {
   const errors: string[] = [],
     schema = schemasFor(version)[table];
   const columns = schema.columns

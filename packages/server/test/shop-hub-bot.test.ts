@@ -692,9 +692,9 @@ describe("what a page drawn from /session/page hears", () => {
     sqlite.close();
   });
 
-  it("hears at a mahjong table whoever's billing moved, as its seats follow sessions", async () => {
+  it("hears at a table whoever's billing moved, as its seats follow sessions", async () => {
     const { sqlite, hub, open } = await shop();
-    sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','table','mahjong','{}','{}','2026-01-01','2026-01-01')");
+    sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','table','table','{}','{}','2026-01-01','2026-01-01')");
     const table = await open("table", "u2");
     const elsewhere = await open("m1", "u2");
     await hub.pagesChanged({ player: "p1" }, "billing");

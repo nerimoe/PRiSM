@@ -55,7 +55,7 @@
 
 ### 接口读取边界
 
-`useSetupStatus` 在所有店主工作台页签挂载时复用同一份 8 个现有 GET 接口加载进度（`settings`、`merchant/machines`、`merchant/resource-groups`、`staff/settings`、`staff/players`、`merchant/shop-members`、`staff/presents`、`staff/redeem-codes`，`resource-groups` 失败时退回 `undefined` 以免误报 `unbilled`），不新增跨页请求，避免影响其它页面和浏览器检查脚本的接口约束。已创建 Bot 凭据但尚未接入时，每 15 秒自动复查一次，Bot 接入后自动更新；可选接口失败不阻塞工作台。
+`useSetupStatus` 在所有店主工作台页签挂载时复用同一份 8 个现有 GET 接口加载进度（`settings`、`merchant/machines`、`merchant/resource-groups`、`staff/settings`、`staff/players`、`merchant/shop-members`、`staff/presents`、`staff/redeem-codes`，`resource-groups` 失败时退回 `undefined` 以免误报 `unbilled`），不新增跨页请求，避免影响其它页面的接口约束。已创建 Bot 凭据但尚未接入时，每 15 秒自动复查一次，Bot 接入后自动更新；可选接口失败不阻塞工作台。
 
 仅当真正打开「开店指引」页（`ShopGuide` 组件挂载）时，页面额外以 `.catch(() => null)` 读取两项只读诊断信息：
 - `GET /api/v1/merchant/idle-power?shopId=`：判断「按需配置 → 闲置自动关机」是否已开启。

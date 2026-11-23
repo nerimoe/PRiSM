@@ -22,7 +22,7 @@ const machine = (over: Partial<Resource> = {}): Resource => ({
   hinataUrl: null,
   homeAssistant: null,
   ttlockLockId: null,
-  mahjong: null,
+  table: null,
   coinKey: 0,
   coinAfterSwipe: false,
   relayConnection: "external",
@@ -61,8 +61,29 @@ describe("dashboard metrics", () => {
         io: { version: "1.3.0", readers: 0, credit: 2 },
       }),
       machine({
+        id: "ac_on",
+        name: "空调",
+        climate: { url: "https://ha", entityId: "climate.hall", hasSwitch: false, allowModeControl: true, allowFanControl: true, tempMin: 16, tempMax: 30, tempStep: 1 },
+      }),
+      machine({
+        id: "bot_on",
+        name: "在线 Bot",
+        hasBotToken: true,
+        botOnline: true,
+        bot: {
+          playerCommands: "all",
+          readOnlyNotice: "",
+          staffCommands: true,
+          powerOffStaffOnly: false,
+          doorResourceId: null,
+          doorPasswordOnEntry: false,
+          announceGroups: [],
+          idleReminderMinutes: 5,
+        },
+      }),
+      machine({
         id: "bot_off",
-        name: "店铺 Bot",
+        name: "离线 Bot",
         hasBotToken: true,
         botOnline: false,
         bot: {
@@ -82,6 +103,10 @@ describe("dashboard metrics", () => {
     const states = {
       idle: { watching: true, power: "off" as const },
       occ: { watching: true, power: "on" as const },
+      ac_on: {
+        watching: true,
+        climate: { mode: "cool", temperature: 24, fanMode: "auto" },
+      },
     };
     const occupancy: Record<string, ResourceOccupancyView> = {
       occ: {
@@ -108,24 +133,25 @@ describe("dashboard metrics", () => {
       false,
     );
 
+    // Bot-only resources are counted in botOnline/botTotal, not physical device total/running/items.
     expect(summary.total).toBe(4);
     expect(summary.disabledCount).toBe(1);
-    // Both `occ` (powered on + occupied) and `fault` (direct IO online without power binding) are lit/running.
+    // Only powered-on hardware (`occ`) and active climate (`ac_on`) count as running; IO-only `fault` does not.
     expect(summary.running).toBe(2);
     expect(summary.poweredOn).toBe(1);
     expect(summary.occupied).toBe(1);
     expect(summary.totalOccupants).toBe(1);
     expect(summary.ioOnline).toBe(2);
     expect(summary.ioTotal).toBe(2);
-    expect(summary.botOnline).toBe(0);
-    expect(summary.botTotal).toBe(1);
-    expect(summary.alertCount).toBe(2);
+    expect(summary.botOnline).toBe(1);
+    expect(summary.botTotal).toBe(2);
+    expect(summary.alertCount).toBe(1);
     expect(summary.countingDownCount).toBe(0);
-    // Alerts come first, then occupied, then idle.
+    // Alerts come first, then occupied, then running climate, then idle.
     expect(summary.items.map((item) => item.device.id)).toEqual([
       "fault",
-      "bot_off",
       "occ",
+      "ac_on",
       "idle",
     ]);
   });

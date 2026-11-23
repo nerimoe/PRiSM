@@ -84,6 +84,97 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.close();
   });
 
+  it("imports a v6 backup with mahjong_seats and mahjong capability/session metadata into table schema",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    const now="2026-01-01T00:00:00.000Z";
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('source','p1','Alice','active',?)",[now]);
+    sqlite.run(
+      "INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted,enabled,created_at,updated_at,kind,aliases_json,capacity) VALUES ('source','m1','m1-pub','Table 1','',1,?,?,'machine','[]',4)",
+      [now,now],
+    );
+    sqlite.run(
+      "INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,credential_hash,created_at,updated_at) VALUES ('source','m1','table','{\"pricingConfigIds\":[],\"startWhen\":\"first\"}','{}',NULL,?,?)",
+      [now,now],
+    );
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,pricing_config_ids_json,payment_status,label,metadata_json) VALUES ('source','s1','p1',?,?,'closed','[]','paid',NULL,?)",
+      [now,now,JSON.stringify({tableDeviceId:"m1"})],
+    );
+    sqlite.run(
+      "INSERT INTO table_seats(shop_id,player_id,machine_id,session_id,entry_session_id,joined_at) VALUES ('source','p1','m1','s1',NULL,?)",
+      [now],
+    );
+    sqlite.run(
+      "INSERT INTO device_operations(shop_id,id,device_id,capability,action,parent_id,player_id,staff_id,status,counts_as_play,failure,payload_json,requested_at,settled_at) VALUES ('source','op1','m1','table','table.seat',NULL,'p1',NULL,'succeeded',0,NULL,'{}',?,?)",
+      [now,now],
+    );
+    sqlite.run(
+      "INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,parent_operation_id,origin,player_id,staff_id,payload_json,occurred_at,via,via_resource_id) VALUES ('source','ev1','m1','table','change','table.seat','op1',NULL,'player','p1',NULL,'{}',?,'page','m1')",
+      [now],
+    );
+    sqlite.run(
+      "INSERT INTO device_state(shop_id,device_id,capability,key,value_json,authority,event_id,changed_at) VALUES ('source','m1','table','seats','[\"p1\"]','derived','ev1',?)",
+      [now],
+    );
+
+    const url="https://prism.test/api/v1/shops";
+    const exported=await app.fetch(new Request(`${url}/source/data/export?scope=business`,{headers}),env);
+    expect(exported.status).toBe(200);
+    const current=await exported.json() as {version:number;tables:Tables;[key:string]:unknown};
+    expect(current.version).toBe(7);
+
+    const {table_seats:tableSeats,...restTables}=current.tables;
+    const v6={
+      ...current,
+      version:6,
+      tables:{
+        ...restTables,
+        mahjong_seats:tableSeats??[],
+        device_capabilities:(restTables.device_capabilities??[]).map(row=>({
+          ...row,
+          capability:row.capability==="table"?"mahjong":row.capability,
+        })),
+        device_operations:(restTables.device_operations??[]).map(row=>({
+          ...row,
+          capability:row.capability==="table"?"mahjong":row.capability,
+          action:typeof row.action==="string"&&row.action.startsWith("table.")?`mahjong.${row.action.slice(6)}`:row.action,
+        })),
+        device_events:(restTables.device_events??[]).map(row=>({
+          ...row,
+          capability:row.capability==="table"?"mahjong":row.capability,
+          name:typeof row.name==="string"&&row.name.startsWith("table.")?`mahjong.${row.name.slice(6)}`:row.name,
+        })),
+        device_state:(restTables.device_state??[]).map(row=>({
+          ...row,
+          capability:row.capability==="table"?"mahjong":row.capability,
+        })),
+        sessions:(restTables.sessions??[]).map(row=>({
+          ...row,
+          metadata_json:JSON.stringify({mahjongDeviceId:"m1"}),
+        })),
+      },
+    };
+
+    await restore(app,env,headers,"destination",v6);
+
+    const seat=sqlite.query("SELECT machine_id, player_id, session_id FROM table_seats WHERE shop_id='destination'").get() as {machine_id:string;player_id:string;session_id:string}|null;
+    expect(seat).not.toBeNull();
+    expect(seat?.player_id).toBe("p1");
+    const cap=sqlite.query("SELECT capability FROM device_capabilities WHERE shop_id='destination' AND device_id=?").get(seat!.machine_id) as {capability:string}|null;
+    expect(cap?.capability).toBe("table");
+    const op=sqlite.query("SELECT capability, action FROM device_operations WHERE shop_id='destination' AND id='op1'").get() as {capability:string;action:string}|null;
+    expect(op).toEqual({capability:"table",action:"table.seat"});
+    const ev=sqlite.query("SELECT capability, name FROM device_events WHERE shop_id='destination' AND id='ev1'").get() as {capability:string;name:string}|null;
+    expect(ev).toEqual({capability:"table",name:"table.seat"});
+    const st=sqlite.query("SELECT capability FROM device_state WHERE shop_id='destination' AND key='seats'").get() as {capability:string}|null;
+    expect(st?.capability).toBe("table");
+    const sess=sqlite.query("SELECT metadata_json FROM sessions WHERE shop_id='destination' AND id=?").get(seat!.session_id) as {metadata_json:string}|null;
+    const meta=JSON.parse(sess?.metadata_json??"{}") as Record<string,unknown>;
+    expect(meta.tableDeviceId).toBe(seat!.machine_id);
+    expect(meta.mahjongDeviceId).toBeUndefined();
+    sqlite.close();
+  });
+
   it("streams a full business backup, records completion and enforces the export quota",async()=>{
     const {sqlite,env,app,headers}=await transferFixture();
     sqlite.run(
@@ -98,7 +189,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       format:string;version:number;scope:string;tables:{players:Array<{id:string}>};
     };
     expect(backup.format).toBe("prism-shop-data");
-    expect(backup.version).toBe(6);
+    expect(backup.version).toBe(7);
     expect(backup.scope).toBe("business");
     expect(backup.tables.players.some(player=>player.id==="player-v2")).toBe(true);
 
@@ -135,7 +226,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(6);
+    expect(backup.version).toBe(7);
     const {tables,...header}=backup;
     const post=async(url:string,payload:unknown)=>{
       return app.fetch(new Request(url,{
@@ -212,9 +303,11 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     );
     const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
     const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
-    // What a v4 export of the same shop looked like: one more column per operation.
+    // What a v4 export of the same shop looked like: one more column per operation and `mahjong_seats`.
     backup.version=4;
     backup.tables.device_operations=backup.tables.device_operations!.map((row)=>({...row,confirmed_at:"2026-01-01T00:00:02.000Z"}));
+    const {table_seats:v4Seats,...v4Tables}=backup.tables;
+    backup.tables={...v4Tables,mahjong_seats:v4Seats??[]};
     expect(backup.tables.device_operations).toHaveLength(1);
     const {tables,...header}=backup;
     const destination="https://prism.test/api/v1/shops/destination/data";
@@ -251,9 +344,11 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       const backup=await exported.json() as {version:number;tables:Record<string,Array<Record<string,string|number|null>>>;[key:string]:unknown};
       expect(backup.tables.device_events).toEqual([expect.objectContaining({id:"bot-asked",via:"bot",via_resource_id:"bot-1"})]);
       if(asV5){
-        // What a v5 export of the same shop looked like: events without the two columns.
+        // What a v5 export of the same shop looked like: events without the two columns and `mahjong_seats`.
         backup.version=5;
         backup.tables.device_events=backup.tables.device_events!.map(({via:_via,via_resource_id:_resource,...row})=>row);
+        const {table_seats:v5Seats,...v5Tables}=backup.tables;
+        backup.tables={...v5Tables,mahjong_seats:v5Seats??[]};
       }
       const {tables,...header}=backup;
       const destination="https://prism.test/api/v1/shops/destination/data";
@@ -297,7 +392,7 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
       tables:Record<string,Array<Record<string,string|number|null>>>;
       [key:string]:unknown;
     };
-    expect(backup.version).toBe(6);
+    expect(backup.version).toBe(7);
     expect(backup.scope).toBe("configuration");
     const {tables,...header}=backup;
     const created=await call(`${dest}/imports`,header);
@@ -564,9 +659,10 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted) VALUES ('m3','m3-pub','source','Cabinet','')");
     const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
     const current=await exported.json() as {tables:Tables;[key:string]:unknown};
-    const {resource_groups:_g,...tables}=current.tables;
+    const {resource_groups:_g,table_seats:v3Seats,...tables}=current.tables;
     const v3={...current,version:3,tables:{
       ...tables,
+      mahjong_seats:v3Seats??[],
       machines:tables.machines!.map(({resource_group_id:_r,pricing_config_override_id:_o,capacity:_c,occupancy_minutes:_m,...row})=>row),
     }};
     await restore(app,env,headers,"destination",v3);
@@ -581,12 +677,13 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('source','p1','P','active',?)",[now]);
     const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
     const current=await exported.json() as {tables:Tables;[key:string]:unknown};
-    const {device_capabilities:_c,device_operations:_o,device_events:_e,device_state:_s,resource_groups:_g,...tables}=current.tables;
+    const {device_capabilities:_c,device_operations:_o,device_events:_e,device_state:_s,resource_groups:_g,table_seats:v2Seats,...tables}=current.tables;
     const v2={
       ...current,
       version:2,
       tables:{
         ...tables,
+        mahjong_seats:v2Seats??[],
         machines:[{
           id:"legacy-m",public_id:"legacy-pub",name:"Old Cabinet",enabled:1,created_at:now,updated_at:now,kind:"machine",
           aliases_json:"[]",hinata_url:"https://relay.example/old",hinata_password:"pw",

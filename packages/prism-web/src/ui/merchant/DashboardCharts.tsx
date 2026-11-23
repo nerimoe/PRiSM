@@ -383,13 +383,12 @@ export function RevenueTrendChart({
 export function HourlyTrafficChart({
   hourlyVisits,
   title = "时段入场分布",
-  timeZone,
   loading,
   error,
 }: {
   hourlyVisits: readonly number[];
   title?: "时段入场分布" | "时段在场分布";
-  timeZone: string;
+  timeZone?: string;
   loading: boolean;
   error: string;
 }) {
@@ -433,7 +432,7 @@ export function HourlyTrafficChart({
         {hoveredHour !== null
           ? `${String(hoveredHour).padStart(2, "0")}:00–${String(hoveredHour).padStart(2, "0")}:59 · ${hours[hoveredHour] ?? 0} ${t("人次")}`
           : peak
-            ? `${t("高峰时段 {count} 人次", { count: peak.count })} · ${timeZone || "Asia/Shanghai"}`
+            ? t("高峰时段 {count} 人次", { count: peak.count })
             : t(loading ? "加载中..." : "暂无时段客流数据")}
       </p>
 

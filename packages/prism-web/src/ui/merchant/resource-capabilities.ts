@@ -10,7 +10,7 @@ import type { Resource } from "../../api";
  * let the device card, the editor and the action list disagree about whether
  * coin was usable on a given machine.
  */
-export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "mahjong" | "bot";
+export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "table" | "bot";
 
 export const capabilityOrder: CapabilityId[] = [
   "power",
@@ -18,7 +18,7 @@ export const capabilityOrder: CapabilityId[] = [
   "hinata_io",
   "coin",
   "door",
-  "mahjong",
+  "table",
   "bot",
 ];
 
@@ -29,7 +29,7 @@ export function resourceCapabilities(
     | "homeAssistant"
     | "climate"
     | "ttlockLockId"
-    | "mahjong"
+    | "table"
     | "hasHinata"
     | "relayConnection"
     | "coinEnabled"
@@ -43,7 +43,7 @@ export function resourceCapabilities(
       !!machine.hasHinata || machine.relayConnection === "embedded",
     coin: !!machine.coin,
     door: !!machine.ttlockLockId,
-    mahjong: !!machine.mahjong,
+    table: !!machine.table,
     bot: !!machine.bot,
   };
 }
@@ -87,7 +87,7 @@ export function actionCapability(action: string): CapabilityId | null {
   if (action === "aime.scan" || action === "key.press") return "hinata_io";
   if (action === "coin") return "coin";
   if (action === "door.open") return "door";
-  if (action.startsWith("mahjong.")) return "mahjong";
+  if (action.startsWith("table.")) return "table";
   return null;
 }
 
@@ -98,7 +98,7 @@ export function deviceActionGroups(
     | "homeAssistant"
     | "climate"
     | "ttlockLockId"
-    | "mahjong"
+    | "table"
     | "hasHinata"
     | "relayConnection"
     | "coinKey"

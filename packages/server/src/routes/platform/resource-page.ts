@@ -9,13 +9,13 @@ import { coinLimit, ioConnected } from "../../resources/capabilities/cabinet.js"
 import { readDeviceState } from "../../resources/capabilities/device-state.js";
 import { pageCode, renderPage, type Page } from "../../resources/page.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
-import { mahjongState } from "./mahjong.js";
+import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
 
 type C = Context<AppBindings, any, any>;
 
-const NO_CAPABILITIES = { power: false, climate: false, card: false, coin: false, door: false, mahjong: false };
+const NO_CAPABILITIES = { power: false, climate: false, card: false, coin: false, door: false, table: false };
 
 /**
  * Reads what the page depends on and renders it. A read asks nothing it will not
@@ -38,9 +38,9 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
     const ioWaiting = !!ready && !!device && io?.transport === "embedded" && (capabilities.card || capabilities.coin)
       && state?.power !== "off" && !(await ioConnected(c.env.DB, shopId, device.id));
     const coinButton = ready && device && capabilities.coin && state?.power !== "off" && !ioWaiting;
-    const [coin, mahjong, billing] = await Promise.all([
+    const [coin, table, billing] = await Promise.all([
       coinButton ? coinLimit(c.env.DB, shopId, device) : null,
-      ready && device && capabilities.mahjong ? mahjongState(c, machine, undefined, device) : null,
+      ready && device && capabilities.table ? tableState(c, machine, undefined, device) : null,
       user
         ? c.env.DB.prepare(
             `SELECT 1 FROM shop_player_accounts a
@@ -67,7 +67,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       climate: state?.climate ?? null,
       coinFull: coin === "full",
       ioWaiting,
-      mahjong,
+      table,
     });
   });
 }

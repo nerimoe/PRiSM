@@ -205,8 +205,7 @@ function ReportsContent() {
           <span className="text-xs text-ink/50 tabular-nums">
             {valid
               ? `${from} – ${to} · ${t("{days} 天", { days: spanDays })}`
-              : t("请选择有效日期")}{" "}
-            · {displayZone}
+              : t("请选择有效日期")}
           </span>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -535,8 +534,9 @@ function ReportResults({
     if (offset && archive !== "all" && checkouts.data?.records.length === 1)
       setOffset(Math.max(0, offset - 50));
   }
+  const actionBtn = `${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-sm`;
   const open = (record: StaffReportCheckout) => (
-    <button className={button} onClick={() => setSelected(record.checkoutId)}>
+    <button className={actionBtn} onClick={() => setSelected(record.checkoutId)}>
       {t("账单详情")}
     </button>
   );
@@ -550,23 +550,33 @@ function ReportResults({
         <State empty />
       ) : (
         <>
-          <div className="divide-y divide-ink/10 rounded-xl border border-ink/10 bg-canvas/60 dark:bg-surface/60 md:hidden">
+          <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden md:hidden">
             {checkouts.data.records.map((record) => (
               <div
                 key={record.checkoutId}
-                className="grid grid-cols-[1fr_auto] gap-2 p-4"
+                className="grid gap-2 px-4 py-3.5"
               >
-                <strong>{record.playerDisplayName}</strong>
-                <strong className="tabular-nums">{money(record.total)}</strong>
-                <span className="col-span-2 text-xs text-ink/60">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <strong className="truncate text-[15px]">
+                      {record.playerDisplayName}
+                    </strong>
+                    {record.archived && (
+                      <span className="shrink-0 rounded-full bg-ink/5 px-2 py-0.5 text-xs font-medium text-ink/55">
+                        {t("已归档")}
+                      </span>
+                    )}
+                  </div>
+                  <strong className="shrink-0 text-[15px] tabular-nums">
+                    {money(record.total)}
+                  </strong>
+                </div>
+                <span className="text-xs text-ink/60 tabular-nums">
                   {displayDateTime(record.settledAt, timeZone)} ·{" "}
-                  {payment(record, t)}
+                  {payment(record, t)} · {record.sessionCount} {t("项计时")} ·{" "}
+                  {record.durationMinutes} {t("分钟")}
                 </span>
-                <span className="text-xs text-ink/60">
-                  {record.sessionCount} {t("项计时")} · {record.durationMinutes}{" "}
-                  {t("分钟")}
-                </span>
-                <div className="col-span-2 flex flex-wrap justify-end gap-2">
+                <div className="flex flex-wrap justify-end gap-2 pt-1">
                   {open(record)}
                   <ReportArchiveAction record={record} changed={changed} />
                 </div>
@@ -684,7 +694,7 @@ function ReportArchiveAction({
   return (
     <div className="grid gap-1">
       <button
-        className={button}
+        className={`${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-sm`}
         disabled={busy}
         onClick={() => void change()}
         title={t(
@@ -754,66 +764,117 @@ export function ReportDetail({
             ...receipt,
             settlementPreview: receipt.playerSettlement,
           };
-          const fields = [
-            ["玩家", record.playerDisplayName],
-            ["玩家 ID", record.playerId],
-            ["账单 ID", record.checkoutId],
+          const details: [string, string][] = [
             ["入场时间", at(record.startedAt)],
             ["结束时间", at(record.endedAt)],
-            ["结账时间", at(record.settledAt)],
-            ["累计时长", `${record.durationMinutes} ${t("分钟")}`],
-            ["收款方式", payment(record, t)],
-            ["计费小计", money(record.subtotal)],
-            ["归档状态", t(record.archived ? "已归档" : "未归档")],
             ...(record.externalPayment
               ? [
-                  ["收款员工", record.externalPayment.staffId],
-                  ["收款时间", at(record.externalPayment.collectedAt)],
+                  ["收款员工", record.externalPayment.staffId] as [string, string],
+                  ["收款时间", at(record.externalPayment.collectedAt)] as [string, string],
                 ]
               : []),
             ...(record.updatedAt
               ? [
-                  ["最近归档操作时间", at(record.updatedAt)],
-                  ["操作员工", record.updatedBy],
+                  ["最近归档操作时间", at(record.updatedAt)] as [string, string],
+                  ["操作员工", record.updatedBy ?? "—"] as [string, string],
                 ]
               : []),
-            ...(receipt.wallet
-              ? [["结账后余额", money(receipt.wallet.balanceAfter)]]
-              : []),
+            ["玩家 ID", record.playerId],
+            ["账单 ID", record.checkoutId],
           ];
           return (
             <div className="grid gap-5">
-              <dl className="grid grid-cols-2 gap-3">
-                {fields.map(([label, value]) => (
-                  <div key={String(label)} className="min-w-0">
-                    <dt className="text-xs text-ink/60">{t(String(label))}</dt>
-                    <dd className="mt-1 break-words text-sm">{value}</dd>
+              {/* Compact Receipt Header */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <strong className="text-lg font-semibold text-ink">
+                    {record.playerDisplayName}
+                  </strong>
+                  {record.archived && (
+                    <span className="inline-flex items-center rounded-full bg-ink/5 px-2.5 py-0.5 text-xs font-medium text-ink/55">
+                      {t("已归档")}
+                    </span>
+                  )}
+                </div>
+                <span className="rounded-full bg-ink/[0.045] px-2.5 py-0.5 text-xs font-medium text-ink/65">
+                  {payment(record, t)}
+                </span>
+              </div>
+
+              {/* Bento Summary Card */}
+              <div className="bill-entry !mb-0 p-4">
+                <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div>
+                    <dt className="text-xs text-ink/55">{t("计费小计")}</dt>
+                    <dd className="mt-1 text-xl font-semibold tracking-tight tabular-nums text-ink">
+                      {money(record.subtotal)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink/55">{t("结账后余额")}</dt>
+                    <dd className="mt-1 text-xl font-semibold tracking-tight tabular-nums text-ink">
+                      {receipt.wallet ? money(receipt.wallet.balanceAfter) : "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink/55">{t("累计时长")}</dt>
+                    <dd className="mt-1 text-xl font-semibold tracking-tight tabular-nums text-ink">
+                      {record.durationMinutes} {t("分钟")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-ink/55">{t("结账时间")}</dt>
+                    <dd className="mt-1 text-sm font-medium tabular-nums text-ink">
+                      {at(record.settledAt)}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+
+              {/* Pattern A Inset Metadata Rows */}
+              <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden text-sm">
+                {details.map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-3.5 py-2.5"
+                  >
+                    <span className="shrink-0 text-ink/55">{t(label)}</span>
+                    <span className="min-w-0 break-all text-right font-medium text-ink tabular-nums">
+                      {value}
+                    </span>
                   </div>
                 ))}
-              </dl>
+              </div>
+
               <BillTotal preview={bill} />
               <h3 className="font-semibold">{t("完整时间轴")}</h3>
               <BillTimeline preview={bill} timeZone={timeZone} />
-              <details className="rounded-xl border border-ink/10 p-4">
+              <details className="bill-entry !mb-0 p-4">
                 <summary className="cursor-pointer font-medium">
                   {t("计时与收费明细")}
                 </summary>
-                <div className="mt-4 grid gap-3 text-sm">
+                <div className="mt-3 divide-y divide-ink/[0.06] rounded-xl bg-panel/75 text-sm">
                   {(receipt.settlements ?? []).map(({ settlement }) => (
-                    <div key={settlement.sessionId} className="break-words">
-                      <p>
+                    <div
+                      key={settlement.sessionId}
+                      className="flex flex-wrap items-baseline justify-between gap-2 px-3.5 py-2.5 break-words"
+                    >
+                      <span className="font-medium text-ink">
                         {t("计时 ID")} · {settlement.sessionId}
-                      </p>
-                      <p className="text-ink/60">
+                      </span>
+                      <span className="text-xs text-ink/60 tabular-nums">
                         {at(settlement.startedAt)} – {at(settlement.endedAt)}
-                      </p>
+                      </span>
                     </div>
                   ))}
                   {[...receipt.chargeItems, ...receipt.adjustments].map(
                     (item, i) => (
-                      <div key={i} className="flex justify-between gap-4">
-                        <span>{item.label}</span>
-                        <span className="tabular-nums">
+                      <div
+                        key={i}
+                        className="flex items-baseline justify-between gap-4 px-3.5 py-2.5"
+                      >
+                        <span className="text-ink/80">{item.label}</span>
+                        <span className="font-medium tabular-nums text-ink">
                           {money(item.amount)}
                         </span>
                       </div>

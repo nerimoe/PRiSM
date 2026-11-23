@@ -26,7 +26,7 @@ export type PageBlock =
   | { kind: "pricing"; id: string; rules: unknown; changes: unknown }
   | { kind: "consent"; id: string; text: string }
   | { kind: "climate"; id: string; state: unknown; needsLocation: boolean }
-  | { kind: "mahjong"; id: string; title: string; status: string; capacity: number; emptyLabel: string; mineLabel: string; seats: Array<{ name: string; mine: boolean }> };
+  | { kind: "table"; id: string; title: string; status: string; capacity: number; emptyLabel: string; mineLabel: string; seats: Array<{ name: string; mine: boolean }> };
 export type Page = {
   shop: string;
   shopCode: string;

@@ -18,7 +18,7 @@ import {
   type CoinConfig,
   type DoorConfig,
   type HinataConfig,
-  type MahjongConfig,
+  type TableConfig,
 } from "./capabilities/catalog.js";
 import { logger } from "../log.js";
 
@@ -40,7 +40,7 @@ export type Resource = {
   aliases: string[];
   enabled: boolean;
   kind: string;
-  /** How many can use it at once; 0 for one nobody occupies. A mahjong table's size. */
+  /** How many can use it at once; 0 for one nobody occupies. A table's size. */
   capacity: number;
   /** How long someone counts as on it after the last sign of them. */
   occupancyMinutes: number;
@@ -232,8 +232,8 @@ export function doorConfigOf(device: Resource): DoorConfig | null {
   return (device.capabilities.get("door")?.config as DoorConfig | undefined) ?? null;
 }
 
-export function mahjongConfigOf(device: Resource): MahjongConfig | null {
-  return (device.capabilities.get("mahjong")?.config as MahjongConfig | undefined) ?? null;
+export function tableConfigOf(device: Resource): TableConfig | null {
+  return (device.capabilities.get("table")?.config as TableConfig | undefined) ?? null;
 }
 
 /** Decrypt one secret of a bound capability. Reads storage, so only call when acting. */
@@ -275,6 +275,6 @@ export function publicCapabilities(device: Resource) {
     card: can(device, "aime.scan"),
     coin: can(device, "coin"),
     door: can(device, "door.open"),
-    mahjong: has(device, "mahjong"),
+    table: has(device, "table"),
   };
 }

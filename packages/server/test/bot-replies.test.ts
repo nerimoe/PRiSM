@@ -88,7 +88,7 @@ describe("what a bot says for the rest", () => {
       text(errorReply(command, args, { code, message, status: 409 }, "https://prism.test/t/shop"));
     expect(refused("scan", ["mai"], "SCAN_IDENTITY_NOT_BOUND_TO_PLAYER")).toBe("刷卡失败，玩家未绑定 Aime 卡");
     expect(refused("off", ["mai"], "DEVICE_NOT_FOUND")).toBe("关闭失败，没有这个设备");
-    expect(refused("上桌", ["a"], "MAHJONG_TABLE_FULL")).toBe("「a」已满桌，请等待本局结束后再上桌。");
+    expect(refused("上桌", ["a"], "TABLE_FULL")).toBe("「a」已满桌，请等待本局结束后再上桌。");
     expect(refused("logout", [], "INSUFFICIENT_BALANCE")).toBe("余额不足，暂时不能结账。请先充值，或由店员在后台改价后再结账。");
     expect(refused("wallet", [], "SOMETHING_INTERNAL", "stack trace")).toBe("操作失败，请稍后再试。");
     expect(refused("bind", ["X"], "BINDING_CODE_EXPIRED", "验证码已失效，请重新生成")).toBe("验证码已失效，请重新生成");

@@ -15,7 +15,7 @@ const resource = (over: Partial<Resource> = {}): Resource => ({
   hinataUrl: null,
   homeAssistant: null,
   ttlockLockId: null,
-  mahjong: null,
+  table: null,
   coinKey: 32,
   coinEnabled: true,
   coinAfterSwipe: false,
@@ -64,8 +64,8 @@ describe("resource tile", () => {
   });
 
   it("shows seats for a resource people occupy, and the countdown only while it runs", () => {
-    const occupancy: ResourceOccupancyView = { resourceId: "m1", capacity: 4, source: "mahjong", occupants: [] };
-    const table = resource({ homeAssistant: ha, mahjong: { capacity: 4, pricingConfigIds: [] } });
+    const occupancy: ResourceOccupancyView = { resourceId: "m1", capacity: 4, source: "table", occupants: [] };
+    const table = resource({ homeAssistant: ha, table: { capacity: 4, pricingConfigIds: [] } });
     expect(tileView(table, { watching: true, power: "on" }, occupancy, "2026-11-07T22:40:00Z", false)).toMatchObject({
       seats: { capacity: 4, occupants: [] }, powerOffAt: "2026-11-07T22:40:00Z",
     });

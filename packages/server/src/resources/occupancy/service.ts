@@ -3,7 +3,7 @@
  *
  * Event-driven capabilities (a cabinet's IO) report observations through
  * `observe`; the rules in `rules.ts` turn them into stays. Capabilities that
- * hold their occupants themselves (a mahjong table's seats) are read as they
+ * hold their occupants themselves (a table's seats) are read as they
  * are, and their stays are mirrored into the same history by `syncHeld`.
  *
  * Every stay is a row of `resource_occupancies`; an open row whose

@@ -90,7 +90,7 @@ export function ResourceGroupEditor({ group, done }: { group?: ResourceGroup; do
           className={input}
           maxLength={40}
           required
-          placeholder={t("例如：休息区、麻将包间")}
+          placeholder={t("例如：休息区、桌游包间")}
           value={name}
           onChange={(e) => setName(e.target.value)}
         />

@@ -155,7 +155,7 @@ export const platformSchema = [
     capacity INTEGER NOT NULL DEFAULT 0,
     occupancy_minutes INTEGER NOT NULL DEFAULT 15
   )`,
-  `CREATE TABLE IF NOT EXISTS mahjong_seats (
+  `CREATE TABLE IF NOT EXISTS table_seats (
     shop_id TEXT NOT NULL,
     player_id TEXT NOT NULL,
     machine_id TEXT NOT NULL,
@@ -370,13 +370,39 @@ export function initializeLocalDatabase(
     db.run(statement);
   }
 
+  const legacySeatTable = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'mahjong_seats'").get();
+  const tableSeatTable = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'table_seats'").get();
+  if (legacySeatTable && !tableSeatTable) {
+    db.run("DROP TRIGGER IF EXISTS shop_export_mahjong_seats_insert");
+    db.run("DROP TRIGGER IF EXISTS shop_export_mahjong_seats_update");
+    db.run("DROP TRIGGER IF EXISTS shop_export_mahjong_seats_delete");
+    db.run("DROP TRIGGER IF EXISTS shop_import_target_mahjong_seats_insert");
+    db.run("DROP TRIGGER IF EXISTS shop_import_target_mahjong_seats_update");
+    db.run("DROP TRIGGER IF EXISTS shop_import_target_mahjong_seats_delete");
+    db.run("DROP INDEX IF EXISTS mahjong_seats_device");
+    db.run("ALTER TABLE mahjong_seats RENAME TO table_seats");
+  }
+
   for (const statement of platformSchema) {
     db.run(statement);
   }
   const reportExcluded = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('players') WHERE name='report_excluded'").get();
   if (!reportExcluded) db.run("ALTER TABLE players ADD COLUMN report_excluded INTEGER NOT NULL DEFAULT 0 CHECK (report_excluded IN (0,1))");
-  const seatOwned = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('mahjong_seats') WHERE name = 'entry_owned'").get();
-  if (!seatOwned) db.run("ALTER TABLE mahjong_seats ADD COLUMN entry_owned INTEGER NOT NULL DEFAULT 0");
+  const seatOwned = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('table_seats') WHERE name = 'entry_owned'").get();
+  if (!seatOwned) db.run("ALTER TABLE table_seats ADD COLUMN entry_owned INTEGER NOT NULL DEFAULT 0");
+  db.run("UPDATE device_capabilities SET capability = 'table' WHERE capability = 'mahjong'");
+  db.run("UPDATE resource_occupancies SET source = 'table' WHERE source = 'mahjong'");
+  db.run("UPDATE device_operations SET capability = 'table' WHERE capability = 'mahjong'");
+  db.run("UPDATE device_operations SET action = 'table.' || substr(action, 9) WHERE action LIKE 'mahjong.%'");
+  db.run("UPDATE device_events SET capability = 'table' WHERE capability = 'mahjong'");
+  db.run("UPDATE device_events SET name = 'table.' || substr(name, 9) WHERE name LIKE 'mahjong.%'");
+  db.run("UPDATE device_state SET capability = 'table' WHERE capability = 'mahjong'");
+  db.run(`UPDATE sessions
+    SET metadata_json = json_remove(
+      json_set(metadata_json, '$.tableDeviceId', json_extract(metadata_json, '$.mahjongDeviceId')),
+      '$.mahjongDeviceId'
+    )
+    WHERE json_valid(metadata_json) AND json_extract(metadata_json, '$.mahjongDeviceId') IS NOT NULL`);
   // A local database created before resource groups or occupancy lacks their columns.
   for (const [column, type] of [
     ["resource_group_id", "TEXT"],

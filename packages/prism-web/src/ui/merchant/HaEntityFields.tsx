@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api";
 import { useI18n } from "../../i18n";
-import { Field, buttonQuiet, input } from "./shared";
+import { Field, button, input } from "./shared";
 
 /** A shop Home Assistant connection as the board sees it; tokens never come back. */
 export type HaConnection = {
@@ -172,9 +172,13 @@ function LiveStateStatus({ shopId, connection, reload }: { shopId: string; conne
     }
   };
   if (connection.readAccess === "ready")
-    return <p className="text-xs text-ink/50">{t("实时状态已启用")}</p>;
+    return (
+      <p className="inline-flex items-center gap-1.5 self-start rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-[#23815d] dark:text-emerald-400">
+        {t("实时状态已启用")}
+      </p>
+    );
   return (
-    <div className="grid gap-2 rounded-lg bg-ink/5 p-3 text-xs leading-relaxed text-ink/65">
+    <div className="grid gap-2.5 rounded-xl border border-ink/10 bg-panel p-3 text-xs leading-relaxed text-ink/65">
       <p>
         {connection.readAccess === "failed"
           ? t("实时状态未启用：{reason}", { reason: connection.readError ?? t("未知原因") })
@@ -193,7 +197,7 @@ function LiveStateStatus({ shopId, connection, reload }: { shopId: string; conne
             value={adminToken}
             onChange={(e) => setAdminToken(e.target.value)}
           />
-          <button type="button" className={`${buttonQuiet} shrink-0 px-3`} disabled={busy} onClick={() => void retry()}>
+          <button type="button" className={`${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs shrink-0`} disabled={busy} onClick={() => void retry()}>
             {t(connection.readAccess === "failed" && !adminToken ? "重试" : "启用")}
           </button>
         </div>

@@ -457,8 +457,8 @@ export class ShopHub extends BaseDurableObject<Env> {
 
   /**
    * Something pages show changed. The hub computes nothing about them: it passes
-   * this on and each page reads itself. A player's change also reaches mahjong
-   * tables, whose seats live and die with sessions.
+   * this on and each page reads itself. A player's change also reaches tables,
+   * whose seats live and die with sessions.
    */
   async pagesChanged(scope: PageScope, reason: string): Promise<void> {
     if ("shop" in scope) return this.tellChanged(this.drawnPages(() => true), reason);
@@ -468,7 +468,7 @@ export class ShopHub extends BaseDurableObject<Env> {
     if (!shopId) return;
     const account = await this.env.DB.prepare("SELECT user_id FROM shop_player_accounts WHERE shop_id = ? AND player_id = ?")
       .bind(shopId, scope.player).first<{ user_id: string }>();
-    const tables = new Set((await this.env.DB.prepare("SELECT device_id FROM device_capabilities WHERE shop_id = ? AND capability = 'mahjong'")
+    const tables = new Set((await this.env.DB.prepare("SELECT device_id FROM device_capabilities WHERE shop_id = ? AND capability = 'table'")
       .bind(shopId).all<{ device_id: string }>()).results.map((row) => row.device_id));
     this.tellChanged(this.drawnPages((page) => page.userId === account?.user_id || tables.has(page.deviceId)), reason);
   }

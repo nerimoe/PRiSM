@@ -43,11 +43,13 @@ export function RotateTokenConfirm({
     setTyped("");
   };
 
+  const stepBtn = `${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs`;
+
   if (step === 0) {
     return (
       <button
         type="button"
-        className={`${button} justify-self-start`}
+        className={`${stepBtn} justify-self-start`}
         disabled={disabled}
         onClick={() => setStep(1)}
       >
@@ -57,7 +59,7 @@ export function RotateTokenConfirm({
   }
 
   return (
-    <div className="grid gap-3 rounded-lg border border-coral/40 bg-coral/[0.06] p-3">
+    <div className="grid gap-3 rounded-xl border border-coral/35 bg-coral/[0.06] p-3.5">
       <p className="text-sm font-medium text-coral">{t("这一步不可撤销")}</p>
       <p className="text-xs leading-relaxed text-ink/70">{t(warn)}</p>
 
@@ -67,10 +69,10 @@ export function RotateTokenConfirm({
             {t("确认后旧令牌立刻失效，正拿着它的 Bot 或机台会断线，要把新令牌重新填进去才能连上。")}
           </p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={button} onClick={() => setStep(2)}>
+            <button type="button" className={stepBtn} onClick={() => setStep(2)}>
               {t("我明白，继续")}
             </button>
-            <button type="button" className={button} onClick={reset}>
+            <button type="button" className={stepBtn} onClick={reset}>
               {t("取消")}
             </button>
           </div>
@@ -89,10 +91,10 @@ export function RotateTokenConfirm({
             <span>{t("我知道旧令牌取不回来，也知道该把它换到哪里。")}</span>
           </label>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={button} disabled={!accepted} onClick={() => setStep(3)}>
+            <button type="button" className={stepBtn} disabled={!accepted} onClick={() => setStep(3)}>
               {t("继续")}
             </button>
-            <button type="button" className={button} onClick={reset}>
+            <button type="button" className={stepBtn} onClick={reset}>
               {t("取消")}
             </button>
           </div>
@@ -114,7 +116,7 @@ export function RotateTokenConfirm({
           <div className="flex flex-wrap gap-2">
             {/* Rendered only when the word matches: there is no button to press before that. */}
             {typed.trim() === CONFIRM_WORD && children}
-            <button type="button" className={button} onClick={reset}>
+            <button type="button" className={stepBtn} onClick={reset}>
               {t("取消")}
             </button>
           </div>

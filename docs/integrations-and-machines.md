@@ -92,7 +92,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 
 ### 命令回复模板
 
-在「资源 → 对应 Bot → 店铺 Bot → 命令回复」中，选择命令和回复场景，编辑纯文本模板并保存资源。每个 Bot 独立设置；留空或「恢复默认」会使用当前系统文案。「填入默认模板」可开始修改，「回复预览」只使用示例数据。`login`／`入场`、`bind`／`prism.bind`、`mahjong`／`上桌` 共用模板。
+在「资源 → 对应 Bot → 店铺 Bot → 命令回复」中，选择命令和回复场景，编辑纯文本模板并保存资源。每个 Bot 独立设置；留空或「恢复默认」会使用当前系统文案。「填入默认模板」可开始修改，「回复预览」只使用示例数据。`login`／`入场`、`bind`／`prism.bind`、`table`／`上桌` 共用模板（兼容旧 `mahjong`）。
 
 模板保存在 Bot 能力的 `replyTemplates`（场景键到字符串的映射）中，复用资源创建／更新接口及 `config.changed` 刷新，无新增数据库表。省略该字段的更新保留已有模板，传 `{}` 恢复全部默认。每条最多 2000 字；未知场景、未知变量、不完整括号、消息标签以及缺少必要变量均拒绝保存。模板只进行一次变量替换，不执行表达式，变量中的花括号不会再次展开。
 
@@ -126,7 +126,7 @@ Koishi 插件（0.2 起）只用一条 WebSocket 和平台通信，不再发 HTT
 | `staff` | 自动推导：店铺负责人和在职员工的账号绑定的平台身份 `{provider, subject}` |
 | `currencyName` | 自动推导：店铺余额资产的名称 |
 | `door` | 资源上选择的门锁；没选时若店里只有一个门锁就用它 |
-| `mahjongTables` | 自动推导：带麻将能力的资源，含名称、别名和开桌人数（即资源的容量） |
+| `tables` | 自动推导：带 `table` 能力的桌游资源，含名称、别名和开桌人数（即资源的容量） |
 | `billingEnabled` | 自动推导：通过这个 Bot 入场是否计费，即 Bot 资源有专属方案或所在资源组有方案。沿用旧的整店开关字段名，供已发布的插件读取；店铺本身已没有计费开关 |
 
 机器人连上 WebSocket 后先读取这份配置，再发送 hello（名称和闲置提醒提前量取自配置）。**监听 Home Assistant 不是店家的开关**：能连上 Home Assistant 的 Bot 一律在 hello 里声明，由平台按店铺的监听名额自己挑谁在听、听哪些连接；换人、断线、停用都由平台调度，店家不用管。商家保存任何资源、修改资源组（含默认资源组）的计费方案、快速创建计费、导入店铺数据，以及员工通过机器人绑定平台身份后，Hub 会向所有在线机器人推送 `{"type":"config.changed"}`，机器人重新读取并再发一次 hello；不再允许监听时，它正在监听的 Home Assistant 会交给下一个监听者。Bot 资源被停用时该接口返回 `403 BOT_DISABLED`。
@@ -135,8 +135,8 @@ Bot 和其他资源一样属于一个资源组，也可以设置专属方案（�
 
 ### 按外部身份上下麻将桌
 
-- `POST integration/players/by-identity/mahjong`，`{identity, table, action: "join" | "leave"}`。`table` 可以是麻将桌资源的 ID、名称或别名。上桌即玩家本人的确认：等位开始资源方案，直接开局则开始对局方案，依赖与冲突统一交给计费编排器；不需要先入场。直接加入另一桌原子换桌，同方案保持计时，失败保留原桌及计费。返回 `{mahjong: {capacity, seats}, billing: {remaining}, movedFrom?: {id}}`，重复加入原桌返回 `alreadySeated: true`。错误包括 `MAHJONG_TABLE_NOT_FOUND`、`MAHJONG_TABLE_FULL`。Bot 店员可使用 `/上桌 a @玩家`、`/下桌 a @玩家` 代操作，普通玩家仅能操作自己。
-- `GET integration/mahjong-tables`：每张桌的座位 `{playerId, name, playing}`，供机器人列名单和不带桌名的下桌。
+- `POST integration/players/by-identity/table`，`{identity, table, action: "join" | "leave"}`。`table` 可以是桌游桌资源的 ID、名称或别名。上桌即玩家本人的确认：等位开始资源方案，直接开局则开始对局方案，依赖与冲突统一交给计费编排器；不需要先入场。直接加入另一桌原子换桌，同方案保持计时，失败保留原桌及计费。返回 `{table: {capacity, seats}, billing: {remaining}, movedFrom?: {id}}`，重复加入原桌返回 `alreadySeated: true`。错误包括 `TABLE_NOT_FOUND`、`TABLE_FULL`。Bot 店员可使用 `/上桌 a @玩家`、`/下桌 a @玩家` 代操作，普通玩家仅能操作自己。
+- `GET integration/tables`：每张桌的座位 `{playerId, name, playing}`，供机器人列名单和不带桌名的下桌。
 - 下桌只结束座位当前所在的 session（已开局为麻将方案，等位中为麻将桌自己的等位方案），响应带 `billing.remaining`：还在计费的方案名，机器人回复「仍在计费：…」。见 [卡片、占用与查人](occupancy.md#3-麻将等位)。
 - `GET integration/roster` 列出在店的人：每人只列一处，正在占用的资源（麻将桌和其他游戏机一样，带人数/容量）或最具体的方案；`?name=` 只列一个资源或一个方案。
 - **Bot 消息**（`@prism/core` 的 `bot-message.ts`）：平台写给 Bot 说的话是片段数组，`{"text":"..."}` 是原样文字，`{"player":{"playerId","displayName","identities"}}` 是一位玩家，由 Bot 换成它所在聊天平台上的称呼（群昵称只有 Bot 拿得到）。Bot 只做片段到聊天消息的映射，不认识的片段有 `text` 就说 `text`，否则略过，以后加片段类型（如图片）旧插件也不会出错。
@@ -255,7 +255,7 @@ await client.requestScanByIdentity(
 | `hinata_io` | `transport`（`external`/`embedded`）、`keys`（店家命名的按键）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`key.press` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
 | `coin` | `method`（目前只有 `key`）、`keyId`（按下 `hinata_io` 的哪个按键）、`cap`（投币上限，直连）、`afterSwipe`（自动投币，直连） | — | `coin` | — | — |
 | `door` | `lockId` | — | `door.open` | — | — |
-| `mahjong` | `capacity`、`pricingConfigIds`（最多一个方案） | — | —（上下桌走麻将流程） | — | — |
+| `table` | `pricingConfigIds`（最多一个方案）、`startWhen`（资源本身另有 `capacity`） | — | —（上下桌走桌游流程） | — | — |
 
 **空调（`climate`）单列一个能力，不并入电源**：它的状态是模式和温度而不是开/关；用空调不算「玩过」机台（所有空调动作 `countsAsPlay: false`，不会取消入场的免费宽限）；空调关着也不应该挡住机台投币、刷卡（那只看 `power`）。一台设备可以同时带电源和空调（例如包间：灯电源 + 空调）。
 
@@ -312,7 +312,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - **Hub 自己写的事件也走同一批订阅者**：闲置规则的关机、监听者上报的状态、Bot 命令的记录，都由 Hub 用自己的总线写入，并把自己交给订阅者（`EventContext.hub`）。订阅者要找 Hub 时（播报、释放监听、闲置计时器）直接调用它，而不是经过 Durable Object 再调回 Hub（Durable Object 不能从内部调用自己）。所以 HA 看到的开关、闲置自动关机和其他事件一样，由 `bot-announcements` 播报，不再由 Hub 另写一份。唯一的例外是闲置计时器：Hub 自己的关机（来源 `system`）由 Hub 自己结算，订阅者不再转告它，否则会在 Hub 的闲置队列里等自己。
 - **不在订阅表里的**：动作后回读设备状态（那是回答调用方的一部分）；闲置关机预告和系统维护（不是设备上发生的事，没有事件，由 Hub 在需要时按 Bot 的播报组发出）。
 - **HA 看到的开关怎样成为播报**：Hub 存下监听者上报的电源或空调状态时，只有当前监听器在完整快照之后、亲眼看到从关到开或从开到关，才在这条状态变化的 payload 里写 `switched: { from, to }`；首份快照、监听器未就绪或已过期、从 `unavailable` 恢复的都只存状态。播报目录只把带 `switched` 的变化当作「设备开机／关机」。同一个开关上的几个资源在同一批里一起变化，播报时合并成一条，比如「m1、m2 已开机」。
-- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`card.bound`（添加卡片，只在玩家于读卡器上添加卡片时发布，只带卡的种类）、`checkout.refused`、`entry.refused`、`wallet.adjust.refused`、`redeem.refused`（结账、入场、调整余额、兑换被店铺的规则拒绝，即这几个尝试的「被拒绝」：只有业务拒绝，即领域错误才算，程序故障不算，等玩家同意条款、没有可结的账单、前台预览过期也不算；调用方照样收到原来的错误）、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`seat.changed`（麻将桌上下桌，`resourceId` 是桌子，`payload.joined` 表示坐下还是离开，换桌时 `payload.left` 是原来那张桌；由 `moveMahjong` 按调用方的来源发布，扫码页、后台、Bot 各自带自己的来源）、`idle.settings.changed`（闲置自动关机的设置被保存）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
+- **业务事实也是事件**（`packages/server/src/events/shop-facts.ts`）：没有设备参与、但改变了账单、余额或店铺规则的事，记为能力 `shop` 的事件，同一批订阅者听：`session.started`（入场，`device_id` 是入场所经的资源）、`session.stopped`、`checkout.settled`、`card.bound`（添加卡片，只在玩家于读卡器上添加卡片时发布，只带卡的种类）、`checkout.refused`、`entry.refused`、`wallet.adjust.refused`、`redeem.refused`（结账、入场、调整余额、兑换被店铺的规则拒绝，即这几个尝试的「被拒绝」：只有业务拒绝，即领域错误才算，程序故障不算，等玩家同意条款、没有可结的账单、前台预览过期也不算；调用方照样收到原来的错误）、`wallet.adjusted`、`assets.adjusted`、`gift.redeemed`、`order.changed`（商品订单下单、完成、取消）、`seat.changed`（桌游桌上下桌，`resourceId` 是桌子，`payload.joined` 表示坐下还是离开，换桌时 `payload.left` 是原来那张桌；由 `moveTable` 按调用方的来源发布，扫码页、后台、Bot 各自带自己的来源）、`idle.settings.changed`（闲置自动关机的设置被保存）、`player.changed`（玩家建档、启用停用、身份绑定或解绑）、`shop.changed`（方案、价格、资产定义或设置变了，不属于某个玩家）。它们在**发放店铺服务的地方**发布：每个调用方拿到的是同一批服务的一层包装（`withOrigin`），按服务的**返回值**说出发生了什么，并带上调用方所在的来源——店铺路由按入口分为 `page`（`/player`）、`merchant`（`/staff`、`/cashier` 等）、`api`（`/integration`），扫码页与后台的设备操作路由同理，Bot 命令是 `bot` 加 Bot 的资源编号。所以经 Bot 入场、结账会出现在 Bot 的记录里，扫码页上的入场、结账也带着 `page` 来源。事实在服务提交之后写入，写入失败只记日志（`shop_fact_publish_failed`），不影响已完成的操作。已经在运行的方案再次「入场」什么都没开始，不发事实。
   **玩家的页面和手机只由这些事实通知**：没有别的地方从 URL 或响应体里反推发生了什么。新增一种会改变账单的操作时，在 `withOrigin` 里给它的服务方法加一条事实；不加，页面和 Live Activity 就不会知道。
 - **被拒绝的请求也是事件**：设备请求在发给硬件之前被挡下（未入场、投币冷却、机台币满、设备不支持、没有这个设备）时，记一条 `<动作>.refused`，带 `code`（平台的原因码）和可读的 `message`（有的话），说明谁试了、从哪来。没有 `device_operations` 行，也不算作使用。Bot、员工和接口的请求在 `capabilities/actions.ts` 记；扫码页和商户后台的在 `routes/platform/resource-actions.ts` 记，其中询问玩家确认（`CHECKIN_CONSENT_REQUIRED`）、防重复提交、限流和硬件未响应不算拒绝。请求没有指明存在的设备时 `device_id` 为空，仍按来源出现在 Bot 的记录里。
 - **Bot 命令也是事件**：对 Bot 说的每条命令在回答之后记为这个 Bot 资源自己的一条回报（能力 `bot`，名字 `bot.command`，来源是这个 Bot）。payload 是 `command`、`args`、`from`／`target`（聊天平台身份）、`channel` 和 `outcome`：`answered`（执行并回答了）、`refused`（被 Bot 设置或平台拒绝，带 `code`）、`failed`（出错）。`bind` 和 `redeem` 的参数是可以再用的码，只记 `***`。因丢失回答而重发的同一条命令只记一次；记录写入失败只记日志，不影响回答。旧插件走 `request` 帧的请求不是命令，没有这条记录，但它发起的设备请求同样带着 Bot 来源。
@@ -325,7 +325,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 
 - 设备卡片只陈述三件事：设备身份（名称、别名、启用状态）、已绑定的能力徽章、实时状态（电源、空调模式与温度、直连在线）。**每个带电源或空调的设备有一个「实时 / 非实时」标签**：「实时」表示它用到的 Home Assistant 连接有监听者订阅着并交付了完整状态，「非实时」表示没有。**标签只是显示，看板不按它做任何决定**：何时去问 Home Assistant、值从哪来，都由后端决定。值不会因为旧而变成「未知」：后端还没说的字段显示「读取…」，后端读不到（`null`）才是「未知」；一台设备变成非实时时保留它最后一次的值，直到后端说出新值。门锁、麻将桌这类没有电源和空调的设备没有标签。
 - **看板只显示后端告诉它的，自己不读。** 进入资源页后连上店铺 Hub 的一条 WebSocket：连接建立时 Hub 发整店的标签和实时设备的值，随后发它替非实时设备问到的 Home Assistant 结果；之后每次变化（电源开关、空调设定和室温）推过来。哪些设备是实时的发生变化时，Hub 重发整店的标签，并替刚变成非实时的设备问一次 Home Assistant、把结果推过来。对任何设备执行开关机或空调操作，响应里带操作后设备的状态（见下文「动作读回」），看板直接显示；非实时设备的这份结果也由 Hub 推给其它看板和该设备的玩家页。操作后只重载设备列表（名称、绑定等），不读状态。
-- **HTTP 读取只有两种用途**：页头店铺级的「刷新设备状态」按钮（一直可用，后端决定每台设备从哪里读），和 Hub 没给出状态时的兜底（连不上或连上后 3 秒内什么都没说时读一次整店；某台设备的值 20 秒后还没跟上标签时也读一次）。HTTP 的回答和推送谁新用谁：一台设备在这次请求发出之后收到过推送，就保留推送的值。连接断开后按 5、10、20、60 秒递增重连，Hub 在重连成功时重发整店，断开期间看板显示断开前的值。「操作」面板的电源和空调直接取看板已有的状态，打开时不读；麻将座位不是 Home Assistant 状态，没有推送，面板用 `GET …/machines/:id/mahjong` 单独读。卡片底部是「操作」（主按钮）、「编辑」、「操作记录」和二维码入口；有可执行能力的设备才显示「操作」，只读账号不显示。
+- **HTTP 读取只有两种用途**：页头店铺级的「刷新设备状态」按钮（一直可用，后端决定每台设备从哪里读），和 Hub 没给出状态时的兜底（连不上或连上后 3 秒内什么都没说时读一次整店；某台设备的值 20 秒后还没跟上标签时也读一次）。HTTP 的回答和推送谁新用谁：一台设备在这次请求发出之后收到过推送，就保留推送的值。连接断开后按 5、10、20、60 秒递增重连，Hub 在重连成功时重发整店，断开期间看板显示断开前的值。「操作」面板的电源和空调直接取看板已有的状态，打开时不读；桌游座位不是 Home Assistant 状态，没有推送，面板用 `GET …/machines/:id/table` 单独读。卡片底部是「操作」（主按钮）、「编辑」、「操作记录」和二维码入口；有可执行能力的设备才显示「操作」，只读账号不显示。
 - **下发操作与历史记录是两个入口**：`操作` 打开只含开机/关机/投币/开门密码的确认面板，`操作记录` 打开只读的事件时间线。两者混在一个弹窗里会让有后果的按钮看起来像记录的一部分。
 - 编辑器分两段：**设备身份**（名称、别名、启用）和**设备能力**。每项能力是一张带开关的卡片——电源、空调、刷卡（外部中继或直连）、开门密码、麻将桌；关闭的能力不渲染其表单，避免四种凭据同时铺开。提交按钮吸底，长表单无需滚到末尾才能保存。
 - 刷卡能力的连接方式里「直连本平台」排在前面，新加的刷卡能力默认直连；已经在用外部中继的资源保持原样。资源页对还在用外部中继的刷卡机台显示横幅，建议改为直连，点机台名直接打开它的编辑器。
@@ -342,7 +342,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - 空资源页说明「资源」是店里玩家扫码就能用的东西（机台、门、麻将桌，或没有硬件、只用来开始计费的二维码）；`/merchant/:shop/resources?add=1` 直接打开添加资源弹窗（开店指引使用；旧地址 `/devices` 会跳转过来）。二维码弹窗提供「打印」（新窗口只含二维码和资源名）、带「已复制」反馈的复制链接和测试扫码入口。NFC 入口就是把同一个链接写进标签的 NDEF URI 记录：iPhone 碰一下会唤起 hinata_go 里的 PRiSM Link App Clip（免安装），其它手机用浏览器或 HINATA Go 打开；弹窗下方写明了这一点。
 - 编辑器里开门密码能力会检查店铺 TTLock 账号：未连接时红字提示并链接到「设置 → 位置与设备」；麻将桌没有可选计费规则时链接到「计费」页；麻将桌所在资源没有计费方案时不要求选择对局方案，入座免费；外部中继缺连接密码时说明投币为何不可设置。
 - 能力判定集中在前端适配层 `packages/prism-web/src/ui/merchant/resource-capabilities.ts`（`resourceCapabilities`、`canOperateCoin`、`deviceActions`、`deviceSummaryKey`）。卡片徽章、操作记录里的可用动作、编辑器里的开关都读这一处，不再各自从 `ttlockLockId`/`homeAssistant`/`hasHinata` 推导。
-- 提交仍使用商户 API 的扁平字段（`homeAssistant`、`ttlockLockId`、`mahjong`、`hinataUrl`/`hinataPassword`、`relayConnection`、`keys`），投币用 `coin` 对象（`{ method, keyId, cap, afterSwipe }`，`null` 去掉投币）。旧客户端的 `coinKey`、`coinKeyId`、`coinCap`、`coinAfterSwipe` 仍然认：`coinKey` 是键码（0 表示不投币，没有这个键码的按键就加一个叫「投币」的），其余改动已有的投币。响应里的 `coin*` 扁平字段照旧，`coinEnabled` 是服务端判断的能不能投；关闭某项能力时发送 `null`（刷卡为 `relayConnection: "external"` + `hinataUrl: null`）让服务端删除对应能力行。适配层只是视图模型，不改变接口契约。
+- 提交仍使用商户 API 的扁平字段（`homeAssistant`、`ttlockLockId`、`table`、`hinataUrl`/`hinataPassword`、`relayConnection`、`keys`），投币用 `coin` 对象（`{ method, keyId, cap, afterSwipe }`，`null` 去掉投币）。旧客户端的 `coinKey`、`coinKeyId`、`coinCap`、`coinAfterSwipe` 仍然认：`coinKey` 是键码（0 表示不投币，没有这个键码的按键就加一个叫「投币」的），其余改动已有的投币。响应里的 `coin*` 扁平字段照旧，`coinEnabled` 是服务端判断的能不能投；关闭某项能力时发送 `null`（刷卡为 `relayConnection: "external"` + `hinataUrl: null`）让服务端删除对应能力行。适配层只是视图模型，不改变接口契约。
 
 **轮换令牌一律三次确认**（`ResourceEditor` 的 `RotateTokenConfirm`）。签发和轮换是两回事：签发是第一次给凭据，没有旧值可吊销，一次点击即可；**轮换**会立即吊销旧值、让正在用它的 Bot 或机台断线，因此要走三步：
 
@@ -350,7 +350,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 2. 读出后果，勾选「我知道旧令牌取不回来」才能继续；
 3. 手打确认词「轮换」，只有打对了表单真正的提交按钮才会出现在页面里。
 
-三步走完之前 DOM 里没有提交按钮，所以误点或回车都到不了服务端。后台的两处轮换——Bot 接入凭据和直连设备令牌——都走这套；`scripts/check-rotate-token-browser.cjs` 在 CI 里守住这条线：最后一步之前不发任何 PATCH，确认词不对时真实按钮不存在。
+三步走完之前 DOM 里没有提交按钮，所以误点或回车都到不了服务端。后台的两处轮换——Bot 接入凭据和直连设备令牌——都走这套。
 
 ### 「操作」面板
 
@@ -359,8 +359,8 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 - 每个分组标题右侧显示与该组操作相关的状态：电源为实时 `power`（已开机/已关机/未知），直连刷卡为链路在线状态（外部中继则显示连接方式），门锁显示 `lockId`，麻将桌显示 `已入座 / 容量`。
 - 麻将上桌的候选人来自 `staff/live-players`（已入场在店玩家），已入座的人不重复出现；上桌要求该玩家有进行中的入场，所以全量玩家列表里大多数人本来就会失败。
 - 刷卡由店员直接输入 **20 位卡号**（`cardNumber`）发送；也可以传 `playerId`，平台解密该玩家在本店最近用过的卡，这次操作同时记为该玩家占用这台机台。卡号只作为临时参数交给执行器，不落库；卡号格式不合法返回 400，玩家没有绑定卡返回 `SCAN_IDENTITY_NOT_BOUND_TO_PLAYER`。
-- `mahjong.seat` / `mahjong.unseat` 接受 `playerId`，让所选玩家上桌/下桌。上桌与玩家自身上桌走同一套校验：玩家必须启用、计费开启时必须有进行中的入场（`CHECKIN_REQUIRED`），麻将计费规则必须齐全且处于可计费时段。店员操作不校验店员自身定位，但玩家资格、封禁与牌桌容量照常校验。
-- `GET /api/v1/merchant/machines/:id/mahjong` 返回 `{ mahjong }`；`mahjong` 为 `{ capacity, seats: [{ playerId, name, playing }] }`，供操作面板显示座位并选择下桌对象。没有麻将能力的设备返回 `null`。电源和空调的状态是另一个接口 `…/:id/state`，见「读取的接口」。
+- `table.seat` / `table.unseat` 接受 `playerId`，让所选玩家上桌/下桌。上桌与玩家自身上桌走同一套校验：玩家必须启用、计费开启时必须有进行中的入场（`CHECKIN_REQUIRED`），桌游计费规则必须齐全且处于可计费时段。店员操作不校验店员自身定位，但玩家资格、封禁与牌桌容量照常校验。
+- `GET /api/v1/merchant/machines/:id/table` 返回 `{ table }`；`table` 为 `{ capacity, seats: [{ playerId, name, playing }] }`，供操作面板显示座位并选择下桌对象。没有桌游能力的设备返回 `null`。电源和空调的状态是另一个接口 `…/:id/state`，见「读取的接口」。
 
 - **按键和投币是两个能力。**
   - **按键**（`hinata_io` 的 `keys`，「刷卡 · HINATA IO」里的「按键」）：店家自己添加的按键，每个有名称和键，最多 16 个，例如「投币」「服务」「测试」。键填字母、数字、F1–F24、Enter、Space、常用未加 Shift 的符号，或直接填 Windows Virtual-Key 码；服务端换算成数字键码保存（协议只传键码，带 Shift 的符号如 `!` 无法表示），后台读回来显示成键名（如 125 显示为 F14）。每个按键在后台这台资源的操作面板里显示为一个按钮，玩家页面不显示；被选作投币的那个按键不再单独列出，它就是「投币」按钮。
@@ -483,7 +483,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 - `GET /api/v1/devices/session/device?ticket=`：玩家页的兜底读取，只在页面和 Hub 的通道 3 秒内没说话（连不上或断开）时用。后端照常读（实时读存储，否则并发问 HA，不记录），返回 `{ watching, power?, climate? }`，`watching` 只给旧版 App Clip。`/session/power` 语义相同，只返回电源。
 - `GET /api/v1/merchant/machines/states?shopId=`：看板的整店读取，用于**刷新按钮和 Hub 没给出状态时的兜底**。返回 `{ states: { [deviceId]: { watching, power?, climate? } } }`，只含带电源或空调的设备，每台只带它具备的能力：实时设备读存储，其余问 Home Assistant（并发上限 4，不记录），问不到的是 `null`。`watching` 只是标签。没有任何开关参数。店铺成员可读，非成员 403，缺 `shopId` 为 400。
 - `GET /api/v1/merchant/machines/:id/state`：单台设备，读法同上。只为动作读回之前的旧版看板保留，当前看板不再调用。
-- `GET /api/v1/merchant/machines/:id/mahjong`：返回 `{ mahjong }`（`{ capacity, seats: [{ playerId, name, playing }] }`，没有麻将能力为 `null`），给操作面板显示座位并选择下桌对象。座位不是 Home Assistant 状态，读它不会去问 HA。
+- `GET /api/v1/merchant/machines/:id/table`：返回 `{ table }`（`{ capacity, seats: [{ playerId, name, playing }] }`，没有桌游能力为 `null`），给操作面板显示座位并选择下桌对象。座位不是 Home Assistant 状态，读它不会去问 HA。
 - `GET /api/v1/merchant/machines/ws?shopId=`（WebSocket 升级）：看板的实时通道，连到该店的 Hub。只给店铺成员（非成员 403，缺 `shopId` 400，没有 `Upgrade` 头 426）；浏览器带了 `Origin` 就必须是平台自己的来源（`APP_ORIGIN` / `EXTRA_ALLOWED_ORIGINS`），否则 403，因为会话是 Cookie。路由把店铺 ID 和 `x-prism-hub-board` 交给 Hub 并去掉 `Authorization`，Hub 以 `board` 标签接受连接。帧：`{"type":"states","states":{<deviceId>:{watching,power?,climate?}},"liveConnections"?:[…]}`：连接建立时、以及哪些设备是实时的发生变化时发整店，实时设备带值，非实时设备只带标签；紧接着 Hub 把替非实时设备问到的值再以 `states` 帧发出（只含这些设备）。`{"type":"state","deviceId":…,"power"?:"on"|"off"|null,"climate"?:{…}|null}`：某台设备现在的样子（实时设备的变化，或非实时设备的动作读回），没说的键不是这次的内容。客户端对每一帧都只是把说了的键写到那台设备上，不判断是否实时。实时设备的变化要它用到的所有 HA 连接都已宣布为实时才推，所以一个连接的第一份快照不会逐台推，只在宣布之后以 `states` 整店帧发一次。客户端每 30 秒发一次 `ping`，Hub 的自动应答 `pong` 不会唤醒对象。
 - **动作读回**：玩家和店员的开关机、空调动作成功后，后端读一次设备（`readAfterAction`，读法和其它读取一样：实时读存储，否则问 HA），读到的还没体现这个动作就在 0.4 秒和 1.6 秒时再读，最后一次就是答案。响应带 `device: { power?, climate? }`。设备不是实时的，这份结果交给 Hub（`deviceRead`），推给该设备的玩家页和所有看板；实时设备的变化由监听者的事件推送，Hub 忽略读回，免得旧值盖过新事件。Hub 自己的闲置关机不读回。
 

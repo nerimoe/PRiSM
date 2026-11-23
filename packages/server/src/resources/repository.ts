@@ -86,7 +86,7 @@ export async function resourcePlanUsers(db: D1DatabaseLike, shopId: string, plan
       .bind(shopId, planId).all<{ name: string }>(),
     db.prepare(
       `SELECT m.name FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
-       WHERE c.shop_id = ? AND c.capability = 'mahjong'
+       WHERE c.shop_id = ? AND c.capability = 'table'
        AND EXISTS (SELECT 1 FROM json_each(json_extract(c.config_json, '$.pricingConfigIds')) WHERE value = ?)
        ORDER BY m.name`,
     ).bind(shopId, planId).all<{ name: string }>(),
@@ -94,6 +94,6 @@ export async function resourcePlanUsers(db: D1DatabaseLike, shopId: string, plan
   return [
     ...groups.results.map((row) => `资源组「${row.name}」`),
     ...resources.results.map((row) => `资源「${row.name}」`),
-    ...tables.results.map((row) => `麻将桌「${row.name}」`),
+    ...tables.results.map((row) => `桌游「${row.name}」`),
   ];
 }

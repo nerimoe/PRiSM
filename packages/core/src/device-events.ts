@@ -1,7 +1,7 @@
 /**
  * Device event model.
  *
- * A device carries capabilities (power, HINATA IO, door, mahjong). Everything
+ * A device carries capabilities (power, HINATA IO, door, table). Everything
  * that happens to a device is recorded as an immutable event; state and
  * operation outcomes are derived from events, never written independently.
  *

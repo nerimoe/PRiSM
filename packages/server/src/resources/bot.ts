@@ -85,7 +85,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     db.prepare(
       `SELECT m.id, m.name, m.aliases_json, m.capacity
        FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
-       WHERE c.shop_id = ? AND c.capability = 'mahjong' AND m.enabled = 1 ORDER BY m.name`,
+       WHERE c.shop_id = ? AND c.capability = 'table' AND m.enabled = 1 ORDER BY m.name`,
     ).bind(shopId).all<{ id: string; name: string; aliases_json: string; capacity: number }>(),
     db.prepare(
       `SELECT m.id, m.name FROM device_capabilities c JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
@@ -109,7 +109,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     currencyName: currency,
     staff: staff.results,
     door: door ? { id: door.id, name: door.name } : null,
-    mahjongTables: tables.results.map((row) => ({
+    tables: tables.results.map((row) => ({
       id: row.id,
       name: row.name,
       aliases: (() => { try { return JSON.parse(row.aliases_json) as string[]; } catch { return []; } })(),

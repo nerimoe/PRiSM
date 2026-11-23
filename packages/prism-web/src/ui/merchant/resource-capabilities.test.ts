@@ -22,7 +22,7 @@ const machine = (over: Partial<Resource> = {}): Resource => ({
   hinataUrl: null,
   homeAssistant: null,
   ttlockLockId: null,
-  mahjong: null,
+  table: null,
   coinKey: 32,
   coinAfterSwipe: false,
   relayConnection: "external",
@@ -53,7 +53,7 @@ describe("device capability view", () => {
       hinata_io: false,
       coin: false,
       door: false,
-      mahjong: false,
+      table: false,
       bot: false,
     });
     expect(
@@ -61,12 +61,12 @@ describe("device capability view", () => {
         machine({
           homeAssistant: { url: "https://ha", entityId: "switch.a" },
           ttlockLockId: 42,
-          mahjong: { capacity: 4, pricingConfigIds: [] },
+          table: { capacity: 4, pricingConfigIds: [] },
           relayConnection: "embedded",
           coin: { method: "key", keyId: "coin", cap: null, afterSwipe: false },
         }),
       ),
-    ).toEqual({ power: true, climate: false, hinata_io: true, coin: true, door: true, mahjong: true, bot: false });
+    ).toEqual({ power: true, climate: false, hinata_io: true, coin: true, door: true, table: true, bot: false });
   });
 
   it("treats a direct connection as HINATA IO even without an external URL", () => {
@@ -119,7 +119,7 @@ describe("device capability view", () => {
       actions: [
         { name: "power.on", capability: "power" },
         { name: "aime.scan", capability: "hinata_io" },
-        { name: "mahjong.seat", capability: "mahjong" },
+        { name: "table.seat", capability: "table" },
       ],
       hasHinata: true,
       hasPassword: true,
@@ -128,12 +128,12 @@ describe("device capability view", () => {
     expect(deviceActions(serverDriven)).toEqual([
       "power.on",
       "aime.scan",
-      "mahjong.seat",
+      "table.seat",
     ]);
     expect(deviceActionGroups(serverDriven)).toEqual([
       { capability: "power", actions: ["power.on"] },
       { capability: "hinata_io", actions: ["aime.scan"] },
-      { capability: "mahjong", actions: ["mahjong.seat"] },
+      { capability: "table", actions: ["table.seat"] },
     ]);
   });
 

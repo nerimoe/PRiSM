@@ -70,7 +70,7 @@ deactivate({ playerId, pricingConfigId, expectedRevision?, at? })
 
 直接上另一桌即为换桌，不要求先下桌。相同对局方案复用原 Session，不重新计时；不同方案按统一依赖、冲突关系转换，再释放原桌不再需要的对局和自建等位方案。还被其他方案依赖的原方案保留。目标桌未满且未开局时进入等位；相同对局方案已在原桌计费时，换桌继续计费。容量限制和满桌开局是座位规则，不是另一套计费关系。
 
-换桌和整桌开局先取店铺座位锁，再按玩家 ID 排序取得涉及玩家的计费锁。扫码确认直接提交 `mahjong.join`，不再先开始等位方案、再单独入座。预览展示本次实际开始、结束和保留的方案及相应价格，麻将预览的 `revision` 同时绑定计费与桌位状态：他人上下桌导致计费从等位变成对局时也须重新确认。重复加入自己所在桌直接返回当前座位，等位方案已因互斥结束时仍可重复请求。
+换桌和整桌开局先取店铺座位锁，再按玩家 ID 排序取得涉及玩家的计费锁。扫码确认直接提交 `table.join`，不再先开始等位方案、再单独入座。预览展示本次实际开始、结束和保留的方案及相应价格，桌游预览的 `revision` 同时绑定计费与桌位状态：他人上下桌导致计费从等位变成对局时也须重新确认。重复加入自己所在桌直接返回当前座位，等位方案已因互斥结束时仍可重复请求。
 
 管理员可在资源操作面板选择本店任一有效玩家上下桌、换桌，不要求玩家先入场。Bot 使用 `/上桌 a @玩家`、`/下桌 a @玩家`，复用 `withTarget` 的店员身份及「店员命令」开关检查，普通玩家只能操作自己。方案可用性与时段统一由编排器按玩家锁定版本、店铺时区判断，麻将入口不再另读当前启用方案或使用 UTC 特判。
 
@@ -84,7 +84,7 @@ deactivate({ playerId, pricingConfigId, expectedRevision?, at? })
 bun test packages/core/test/pricing-relations.test.ts packages/core/test/session-transition.test.ts
 bun test packages/application/test/pricing-session-orchestrator.test.ts packages/application/test/pricing-session-billing-regression.test.ts
 bun test packages/adapter-sqlite/test/session-single-plan.test.ts
-bun test packages/server/test/mahjong-pricing-sessions.test.ts
+bun test packages/server/test/table-pricing-sessions.test.ts
 ```
 
 `pricing-session-billing-regression.test.ts` 复现设计提案的例子：普通游玩 13 元/h 从 00:00 开始，01:10 开八口机 +2 元/h，02:00 结账，普通游玩始终是同一条 Session，总价 26 + 2 = 28 元；切到四口机 −2 元/h 后为 39 元。

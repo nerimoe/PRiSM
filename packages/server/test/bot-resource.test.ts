@@ -49,10 +49,10 @@ async function fixture() {
   sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at) VALUES ('shop','default','默认资源组',1,'base',?,?)", [NOW, NOW]);
   sqlite.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','currency','paid','猫粮',1,'active')");
   plan(sqlite, "base");
-  plan(sqlite, "mahjong", { requires: ["base"] });
+  plan(sqlite, "table", { requires: ["base"] });
   sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,aliases_json,capacity) VALUES ('table','table-pub','shop','A 桌','','[\"a\"]',2)");
   sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
-    VALUES ('shop','table','mahjong',?,'{}',?,?)`, [JSON.stringify({ pricingConfigIds: ["mahjong"] }), NOW, NOW]);
+    VALUES ('shop','table','table',?,'{}',?,?)`, [JSON.stringify({ pricingConfigIds: ["table"] }), NOW, NOW]);
   sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted) VALUES ('door','door-pub','shop','大门','')");
   sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
     VALUES ('shop','door','door','{"lockId":7}','{}',?,?)`, [NOW, NOW]);
@@ -155,7 +155,7 @@ describe("a bot is a resource", () => {
       staff: [{ provider: "onebot", subject: "10001" }],
       // The only door, found without being chosen.
       door: { id: "door", name: "大门" },
-      mahjongTables: [{ id: "table", name: "A 桌", aliases: ["a"], capacity: 2 }],
+      tables: [{ id: "table", name: "A 桌", aliases: ["a"], capacity: 2 }],
     });
   });
 
@@ -276,23 +276,23 @@ describe("the bot seats players through the platform", () => {
     const p2 = { identity: { provider: "onebot", subject: "2" }, autoRegister: true, displayName: "二号" };
 
     // Waiting at a table that is not full yet, a player can still leave.
-    expect((await client.post("players/by-identity/mahjong", { ...p1, table: "a", action: "join" })).status).toBe(200);
-    expect((await client.post("players/by-identity/mahjong", { ...p1, table: "a", action: "leave" })).status).toBe(200);
-    expect((await client.post("players/by-identity/mahjong", { ...p1, table: "a", action: "join" })).status).toBe(200);
-    const joined = await client.post("players/by-identity/mahjong", { ...p2, table: "A 桌", action: "join" });
-    expect(joined.body.mahjong.seats.map((seat: { name: string; playing: boolean }) => [seat.name, seat.playing]))
+    expect((await client.post("players/by-identity/table", { ...p1, table: "a", action: "join" })).status).toBe(200);
+    expect((await client.post("players/by-identity/table", { ...p1, table: "a", action: "leave" })).status).toBe(200);
+    expect((await client.post("players/by-identity/table", { ...p1, table: "a", action: "join" })).status).toBe(200);
+    const joined = await client.post("players/by-identity/table", { ...p2, table: "A 桌", action: "join" });
+    expect(joined.body.table.seats.map((seat: { name: string; playing: boolean }) => [seat.name, seat.playing]))
       .toEqual([["一号", true], ["二号", true]]);
 
     const sessions = (await client.get("sessions/active")).body.sessions as { playerDisplayName: string; pricingConfigId: string; planName: string }[];
-    expect(sessions.filter((s) => s.playerDisplayName === "一号").map((s) => s.planName).sort()).toEqual(["base", "mahjong"]);
+    expect(sessions.filter((s) => s.playerDisplayName === "一号").map((s) => s.planName).sort()).toEqual(["base", "table"]);
 
-    await client.post("players/by-identity/mahjong", { ...p1, table: "a", action: "leave" });
-    const tables = (await client.get("mahjong-tables")).body.tables;
+    await client.post("players/by-identity/table", { ...p1, table: "a", action: "leave" });
+    const tables = (await client.get("tables")).body.tables;
     expect(tables).toEqual([{ id: "table", name: "A 桌", aliases: ["a"], capacity: 2, seats: [{ playerId: expect.any(String), name: "二号", playing: true }] }]);
-    expect((await client.post("players/by-identity/mahjong", { ...p1, table: "nope", action: "join" })).status).toBe(404);
-    const notSeated = await client.post("players/by-identity/mahjong", { ...p1, table: "a", action: "leave" });
+    expect((await client.post("players/by-identity/table", { ...p1, table: "nope", action: "join" })).status).toBe(404);
+    const notSeated = await client.post("players/by-identity/table", { ...p1, table: "a", action: "leave" });
     expect(notSeated.status).toBe(409);
-    expect(notSeated.body.error.code).toBe("MAHJONG_NOT_SEATED");
+    expect(notSeated.body.error.code).toBe("TABLE_NOT_SEATED");
   });
 
   it("says whether a player was already in that plan, and which plan it is", async () => {
@@ -308,7 +308,7 @@ describe("the bot seats players through the platform", () => {
     const client = bot((await createBot()).token);
     const player = { identity: { provider: "onebot", subject: "1" }, autoRegister: true };
     await client.post("players/by-identity/session/start", player);
-    const table = await client.post("players/by-identity/session/start", { ...player, pricingConfigIds: ["mahjong"], label: "A 桌" });
+    const table = await client.post("players/by-identity/session/start", { ...player, pricingConfigIds: ["table"], label: "A 桌" });
     expect(table.status).toBe(400);
     expect(table.body.error.code).toBe("VALIDATION_FAILED");
     expect((await client.get("sessions/active")).body.sessions.map((s: any) => s.planName)).toEqual(["base"]);

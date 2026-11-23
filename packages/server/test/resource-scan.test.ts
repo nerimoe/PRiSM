@@ -119,7 +119,7 @@ describe("resource deletion", () => {
       sqlite.run("PRAGMA foreign_keys=ON");
       if (source === "occupancy") sqlite.run(
         "INSERT INTO resource_occupancies(shop_id,id,resource_id,player_id,source,started_at,last_seen_at,ended_at) VALUES ('shop','stay','cabinet','p1','hinata_io',?,?,?)", [NOW, NOW, NOW]);
-      else sqlite.run("INSERT INTO mahjong_seats(shop_id,player_id,machine_id,session_id,joined_at) VALUES ('shop','p1','cabinet','seat-session',?)", [NOW]);
+      else sqlite.run("INSERT INTO table_seats(shop_id,player_id,machine_id,session_id,joined_at) VALUES ('shop','p1','cabinet','seat-session',?)", [NOW]);
       const result = await call("DELETE", "/api/v1/merchant/machines/cabinet", OWNER);
       expect(result.status).toBe(409);
       expect(result.body.error.code).toBe("MACHINE_HAS_HISTORY");

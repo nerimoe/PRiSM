@@ -184,7 +184,7 @@ export function Modal({
     <dialog
       ref={ref}
       onCancel={event => { if (dismissDisabled) event.preventDefault(); else close(); }}
-      className={`m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35 ${xl ? "max-w-5xl" : wide ? "max-w-2xl" : "max-w-xl"}`}
+      className={`m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35 ${xl ? "max-w-7xl" : wide ? "max-w-2xl" : "max-w-xl"}`}
       aria-label={t(title)}
     >
       <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-ink/10 bg-panel px-5 py-4">
@@ -300,9 +300,9 @@ export function Table({
 }) {
   const { t } = useI18n();
   return (
-    <div className="overflow-x-auto rounded border border-ink/10 bg-panel">
+    <div className="overflow-x-auto rounded-2xl border border-ink/10 bg-panel">
       <table className="w-full min-w-[34rem] text-left text-sm tabular-nums">
-        <thead className="border-b border-ink/10 text-xs text-ink/60">
+        <thead className="border-b border-ink/10 bg-ink/[0.02] text-xs text-ink/60">
           <tr>
             {headers.map((h) => (
               <th key={h} className="whitespace-nowrap px-4 py-3 font-medium">
@@ -316,7 +316,7 @@ export function Table({
     </div>
   );
 }
-export const cell = "px-4 py-4";
+export const cell = "px-4 py-3.5 align-middle";
 /** Copy with visible feedback; `failed` keeps the value selectable when denied. */
 export function useCopy() {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
@@ -338,7 +338,7 @@ export function CopyValue({ label, value }: { label: string; value: string }) {
     <div className="grid gap-1">
       <span className="text-xs text-ink/60">{t(label)}</span>
       <div className="flex items-center gap-2">
-        <code className="min-w-0 flex-1 select-all break-all rounded border border-ink/10 bg-panel px-3 py-2 text-sm">
+        <code className="min-w-0 flex-1 select-all break-all rounded-xl border border-ink/10 bg-ink/[0.025] px-3 py-2 text-sm">
           {value}
         </code>
         <button className={button} type="button" onClick={() => copy(value)}>

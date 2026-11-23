@@ -148,6 +148,20 @@ export function summarizeDashboardDevices(
 
   enabled.forEach((device, order) => {
     const caps = resourceCapabilities(device);
+    if (caps.bot) {
+      botTotal += 1;
+      if (device.botOnline === true) botOnline += 1;
+    }
+    const isBotOnly =
+      caps.bot &&
+      !caps.power &&
+      !caps.climate &&
+      !caps.hinata_io &&
+      !caps.coin &&
+      !caps.door &&
+      !caps.table;
+    if (isBotOnly) return;
+
     const view = tileView(
       device,
       states?.[device.id] ?? null,
@@ -155,14 +169,14 @@ export function summarizeDashboardDevices(
       powerOffAt[device.id],
       stateFailed,
     );
-    const hasControls = deviceActions(device).length > 0 || !!caps.mahjong;
+    const hasControls = deviceActions(device).length > 0 || !!caps.table;
     const occupantCount = view.seats?.occupants.length ?? 0;
     const directIo = caps.hinata_io && isDirectConnect(device);
     const alert =
       view.tone === "bad" ||
       (directIo && device.relayOnline === false && view.power?.tone === "on") ||
       (caps.bot && !!device.hasBotToken && device.botOnline === false);
-    const isRunning = view.lit || occupantCount > 0;
+    const isRunning = view.power?.tone === "on" || view.climate?.tone === "on";
 
     if (isRunning) running += 1;
     if (view.power?.tone === "on") poweredOn += 1;
@@ -174,10 +188,6 @@ export function summarizeDashboardDevices(
       ioTotal += 1;
       if (device.relayOnline === true) ioOnline += 1;
     }
-    if (caps.bot) {
-      botTotal += 1;
-      if (device.botOnline === true) botOnline += 1;
-    }
     if (alert) alertCount += 1;
     if (view.powerOffAt) countingDownCount += 1;
 
@@ -187,7 +197,7 @@ export function summarizeDashboardDevices(
         ? 1
         : occupantCount > 0
           ? 2
-          : view.lit
+          : isRunning
             ? 3
             : 4;
 
@@ -209,7 +219,7 @@ export function summarizeDashboardDevices(
   ranked.sort((a, b) => a.priority - b.priority || a.order - b.order);
 
   return {
-    total: enabled.length,
+    total: ranked.length,
     disabledCount,
     running,
     poweredOn,
