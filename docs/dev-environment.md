@@ -31,11 +31,9 @@ bun run check:platform
 
 平台测试涉及 Miniflare，首次启动使用 30 秒测试超时。`check:platform` 构建 React 并进行 Worker dry-run，不部署线上。
 
-CI 还会运行浏览器检查。`scripts/check-device-board-browser.cjs` 在桌面和手机尺寸验证 HA 监听器文案，以及关机后等待心跳确认的任务不计入正常名额；修改状态或文案时须同步这些断言，单元测试和构建不能替代该检查。
-
 ## 真实 Home Assistant 与 HINATA IO 的端到端测试
 
-单元测试和浏览器脚本里的 Home Assistant、IO 都是模拟的。设备状态相关的改动（实时 / 非实时两种模式、店铺 Hub、看板、玩家页、App Clip）另有一套不模拟任何一端的端到端测试，在 `scripts/e2e-ha/`：Home Assistant 官方镜像跑在 docker，平台跑在 `wrangler dev`，HINATA IO 是固件仓库 `hinata-aimeio-rs` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件（`tools/mac-test` 的 `io_sim`），Bot 是 `packages/koishi-plugin`（独立仓库的子模块）的真实代码（`scripts/e2e-ha/bot-sim.ts`，只把 Koishi 本身换成替身），页面由 Playwright 的真实 Chromium 打开，App Clip 一侧是 `hinata_go` 里的 `PrismAPI` 与 `MachineLoginViewModel` 原样编译的 macOS 检查（`test/native/run-prism-real-check.sh`，真实 `URLSessionWebSocketTask`）。断言只看真实组件做了什么：WebSocket 收到的帧、D1 里的行，以及 Home Assistant 自己的访问日志里平台读了哪些实体。启动、造数据和各脚本的用法见 `scripts/e2e-ha/README.md`。
+单元测试里的 Home Assistant、IO 都是模拟的。设备状态相关的改动（实时 / 非实时两种模式、店铺 Hub、看板、玩家页、App Clip）另有一套不模拟任何一端的端到端测试，在 `scripts/e2e-ha/`：Home Assistant 官方镜像跑在 docker，平台跑在 `wrangler dev`，HINATA IO 是固件仓库 `hinata-aimeio-rs` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件（`tools/mac-test` 的 `io_sim`），Bot 是 `packages/koishi-plugin`（独立仓库的子模块）的真实代码（`scripts/e2e-ha/bot-sim.ts`，只把 Koishi 本身换成替身），页面由 Playwright 的真实 Chromium 打开，App Clip 一侧是 `hinata_go` 里的 `PrismAPI` 与 `MachineLoginViewModel` 原样编译的 macOS 检查（`test/native/run-prism-real-check.sh`，真实 `URLSessionWebSocketTask`）。断言只看真实组件做了什么：WebSocket 收到的帧、D1 里的行，以及 Home Assistant 自己的访问日志里平台读了哪些实体。启动、造数据和各脚本的用法见 `scripts/e2e-ha/README.md`。
 
 这套测试不进 CI（需要 docker、固件仓库和浏览器），改动设备状态、Hub 或看板 / 玩家页读取路径后在本机跑一遍。已用它验证：平台在真实 Home Assistant 上自动建只读账号（管理员令牌 `ready`，非管理员令牌 `needs_admin`）；实时设备在 HA 变化后几十毫秒内推送到看板与玩家页，且平台对它们零读取；非实时设备只在进入页面、刷新、操作后读一次；两个监听器的去重与让位；平台给监听器断电即刻让位；HA 重启与 IO 掉线后的降级与恢复；90 秒租约到期后自动转为非实时；平台自动建的只读令牌在真实 Home Assistant 上能读不能控，功能上线前存下的旧连接在 IO 上线时被自动补建；用插件真实代码跑的 Bot 当监听器（Bot 优先于机台、让位期间看板没有空窗、同一变化只推一次、平台管理员改监听器数量而店主不能）；第一个 HA 地址不可达时靠连接超时转到下一个（10 秒内实时）；空闲自动关机对实时设备和没有任何存储状态的设备都生效。
 
@@ -93,13 +91,6 @@ GitHub Actions 的 `test` job 逐文件隔离运行 Bun 测试，其中
 避免只测试单独挂载的子路由而漏掉顶层路径冲突。随后执行 TypeScript 检查、
 Web 构建和 Worker dry-run。
 
-`browser` job 首先执行原有流程检查，然后分别使用 Chromium 和 WebKit
-对访客／玩家／店员／店主／管理员执行移动端及桌面端路由矩阵。
-账号页面的模拟数据必须包含实际身份和 Passkey 条目，测试同时要求页面标题
-与具体条目渲染成功；禁止把未知 API 请求或 JS 错误当作成功。
-失败截图及扫描结果作为 `scan-first-paint` artifact 保存 7 天。
-WebKit 是对 iOS Safari 渲染行为的近似检查，不能替代真实 iPhone Safari 验收。
-
 ## 玩家列表余额回归
 
 店铺管理的 `GET /api/v1/shops/:shopCode/staff/players` 返回
@@ -112,5 +103,3 @@ WebKit 是对 iOS Safari 渲染行为的近似检查，不能替代真实 iPhone
 
 `packages/server/test/shop-billing-routes.test.ts` 通过生产 `createApp()`
 检验有余额与零余额玩家、身份、当前会话和响应 `data` 包装。
-`scripts/check-all-pages-browser.cjs` 则验证桌面和移动端列表实际显示
-`125.95` 及 `0.00`；现有 CI 在 Chromium 与 WebKit 中运行该检查。

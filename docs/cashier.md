@@ -65,5 +65,3 @@ UID 可以被复制，仅用于店员监督下的店内计时档案。卡片档�
 Cloudflare D1 部署须应用 `migrations/0029_cashier.sql`（正常 `deploy:worker` 流程会执行未应用迁移）；支持前台档案的平台身份和账号关联还须应用 `migrations/0033_cashier_player_identities.sql`；它只移除身份/登录限制并更新空资产检查触发器，可重复应用，不更改玩家、卡片、资产、计时或收款数据。本地 SQLite 运行时会通过既有 schema 初始化自动添加表、升级旧触发器，并保留资产保护。无须更改现有玩家数据或配置支付密钥。
 
 验证命令：`bun run typecheck`、`bun run build:web`、`bun test --timeout 30000`。读卡链路可单独运行 `bun test packages/prism-web/src/card-reader.test.ts packages/prism-web/src/reader-subscription.test.ts packages/prism-web/src/reader-manager.test.ts`，覆盖 report `0`/`1`、CardIO 隔离、提前响应、ACK 后等待、超时清理、固件版本握手、RF 档位、失焦、卡片存在状态、已授权枚举、初始化中拔出和重连。收银 API 可单独运行 `bun test packages/platform/test/cashier.test.ts --timeout 60000`。如果全量单进程运行中出现 Miniflare 运行器超时或共享模拟状态错误，可按测试文件使用独立 Bun 进程验证平台集成测试，保持所有断言启用。读卡协议单元测试使用模拟 HID 设备，收银接口测试使用真实 Miniflare D1；这些测试不替代实体刷卡实测。
-
-界面回归：先运行 `bun run build:web`，再启动 `bun run --cwd packages/prism-web preview --host 127.0.0.1 --port 4173`，执行 `node scripts/check-player-identities-browser.cjs`。覆盖前台玩家身份表单提交、普通/前台玩家 PRiSM 账号展示、手机端账号昵称搜索，以及 viewer 的只读权限；截图默认输出至 `.scan-check/`。`check.yml` 的 browser 任务同样执行该检查，并上传截图。
