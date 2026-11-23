@@ -49,8 +49,8 @@
 
 | 参数 | 含义 |
 | --- | --- |
-| `capacity` 容量 | 能同时用的人数。0 表示不会被占用，例如空调、门锁、Bot；柜机通常是 1，两人共用一个入口的游戏是 2。新建资源时有 HINATA IO 的默认 1，其余默认 0。麻将桌的容量就是开桌人数（2–8），麻将能力不再单独设置人数；有人在座时不能修改（`MAHJONG_IN_USE`）。迁移 `0042` 把原来麻将能力配置里的人数搬到了容量上。 |
-| `occupancy_minutes` 占用时长 | 最后一次看到这个人之后，还算他在用多久，店家按游戏时长设置，默认 15 分钟。决定占用的能力自己掌握占用者时（麻将桌的座位）不适用，见下文。 |
+| `capacity` 容量 | 能同时用的人数。0 表示不会被占用，例如空调、门锁、Bot；柜机通常是 1，两人共用一个入口的游戏是 2。新建资源时有 HINATA IO 的默认 1，其余默认 0。桌游能力（适用麻将、桌游等多人数同桌）的容量就是开桌人数（2–8），可在编辑器的「桌游」能力或「计费与占用」中调整；有人在座时不能修改（`TABLE_IN_USE`）。迁移 `0042` 把原来能力配置里的人数搬到了容量上。 |
+| `occupancy_minutes` 占用时长 | 最后一次看到这个人之后，还算他在用多久，店家按游戏时长设置，默认 15 分钟。决定占用的能力自己掌握占用者时（桌游的座位）不适用，见下文。 |
 
 每段占用是 `resource_occupancies` 的一行，记录资源、玩家、来源、开始时间、最后一次看到的时间、到期时间、结束时间和结束原因。结束原因有四种：`timeout` 超时、`replaced` 被替换、`left` 离开、`billing_ended` 计费结束。到期时间已过而结束时间还没写的行，按到期时间算作超时结束，下次读写这个资源时补写。
 
@@ -60,7 +60,7 @@
 
 | 能力 | 权威度 | 怎么判断 |
 | --- | --- | --- |
-| 麻将桌 `mahjong` | 100 | 座位就是占用，没有超时。座位跟着它当前所在的 session：等位时是麻将桌自己的方案（等位方案），开局后是麻将方案；这条 session 结束时座位就没了 |
+| 桌游 `table` | 100 | 座位就是占用，没有超时。座位跟着它当前所在的 session：等位时是桌游桌自己的方案（等位方案），开局后是对局方案；这条 session 结束时座位就没了 |
 | （以后）游戏服务器登录登出 | 介于两者之间 | 登录即开始、登出即结束，不靠超时 |
 | HINATA IO `hinata_io` | 10 | 见下表 |
 
@@ -112,14 +112,14 @@ HINATA IO 的判断：
 
 所以资源仍把玩家算作在玩时不会断电。没有资格的卡不产生占用，也不动计时器。占用提前结束（玩家下机、被别人挤掉）不会把计时器往前拉。上桌的座位没有到期时间：有人坐着时计时器暂停，最后一人下桌后从此刻重新开始。
 
-## 3. 麻将等位
+## 3. 桌游等位（`table` 能力）
 
-麻将桌资源自己的方案（专属方案，或所在资源组的方案）就是**等位方案**，麻将能力里设置的方案是**对局方案**：
+桌游桌资源自己的方案（专属方案，或所在资源组的方案）就是**等位方案**，桌游能力里设置的方案是**对局方案**：
 
-- **何时开始对局计费**（麻将能力的 `startWhen`，编辑器「麻将桌」里的单选）：
+- **何时开始对局计费**（`table` 能力的 `startWhen`，编辑器「桌游」里的单选）：
   - `full`「人满后一起开始」（默认，也是这个选项出现之前的行为）：没坐满前都算等位，按等位方案计费；坐满时所有人一起切到对局方案。
   - `seated`「上桌立即开始」：没有等位，每个人一坐下就按对局方案计费，不管桌上有几个人。
-  - 有人在座时不能修改（`MAHJONG_IN_USE`），和换对局方案、改容量一样。「在座」按还在计费的座位算（`liveSeatsSql`，和后台、扫码页显示的一致）：结账时没下桌留下的座位记录不算，不会挡住修改。只改方案、不带这个字段的旧客户端保留原来的设置。
+  - 有人在座时不能修改（`TABLE_IN_USE`），和换对局方案、改容量一样。「在座」按还在计费的座位算（`liveSeatsSql`，和后台、扫码页显示的一致）：结账时没下桌留下的座位记录不算，不会挡住修改。只改方案、不带这个字段的旧客户端保留原来的设置。
 
 - 玩家在麻将桌页面确认计费与入座，或由店员、Bot 代为确认。将直接开局时直接开始对局方案，不先创建会立即被互斥关闭的等位 Session。
 - 直接上另一桌会原子换桌：同一方案保留计时，目标满桌或计费失败保留原桌及计费。管理员网页可选本店任意有效玩家，Bot 支持 `/上桌 a @玩家`、`/下桌 a @玩家`。
@@ -151,7 +151,7 @@ HINATA IO 的判断：
 | `POST /rpc/integration/players/by-identity/presence` | 一位玩家：`{inShop, plans, occupying}` |
 | `GET /rpc/staff/live-players` | 额外带 `roster`，网页「在店」页的「按位置分组」使用它 |
 | `GET /api/v1/merchant/machines/occupancy?shopId=` | 每个可占用资源当前的占用者、人数和容量；资源页的卡片显示这些，点玩家名打开他在「在店」页的详情和账单（`/merchant/:shop/live?player=`）。另带 `powerOffAt`：正在闲置倒计时的设备何时自动关机，卡片上显示为「HH:MM 自动关机（N 分钟后）」，见 [集成与设备](integrations-and-machines.md#闲置自动关机) |
-| `GET /api/v1/merchant/machines/:id/occupancy` | 一个资源的占用记录，最新的在前，可带 `limit`、`before`；资源卡片「操作记录」里与设备操作记录一起显示 |
+| `GET /api/v1/merchant/machines/:id/occupancy` | 一个资源的占用记录，最新的在前，可带 `limit`、`before`；资源卡片「操作记录」弹窗（`xl` 宽版双栏）左侧显示占用记录、右侧显示设备操作记录，各带独立滚动区域并按本地日期分组，滚动接近底部时自动按 `before` 懒加载更早记录 |
 
 Bot 的 `list` 直接按 `roster` 输出，`list <资源或方案>` 只列这一项。
 
@@ -159,5 +159,5 @@ Bot 的 `list` 直接按 `roster` 输出，`list <资源或方案>` 只列这一
 
 ```bash
 bun test packages/server/test/occupancy.test.ts packages/server/test/roster.test.ts
-bun test packages/server/test/mahjong-pricing-sessions.test.ts packages/server/test/idle-power.test.ts packages/server/test/shop-hub-idle.test.ts
+bun test packages/server/test/table-pricing-sessions.test.ts packages/server/test/idle-power.test.ts packages/server/test/shop-hub-idle.test.ts
 ```

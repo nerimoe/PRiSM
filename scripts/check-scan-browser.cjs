@@ -85,8 +85,8 @@ const fs=require('node:fs');const assert=require('node:assert/strict');
   const seatPage=await browser.newPage({viewport:{width:390,height:844},locale:'zh-CN'});
   const writes=[];let seated=false;
   const seatPageOf=()=>({...head,billingActive:seated,blocks:seated
-    ?[{kind:'mahjong',id:'mahjong',title:'麻将桌',status:'等待玩家',capacity:4,emptyLabel:'空位',mineLabel:'你',seats:[{name:'测试玩家',mine:true}]},{kind:'button',id:'seat',label:'下桌',enabled:true,action:'mahjong.leave',needsLocation:false}]
-    :[{kind:'consent',id:'consent',text:'确认开始计费，离店前请结账。关闭页面不会停止计费。'},{kind:'button',id:'entry',label:'确认',style:'primary',enabled:true,action:'mahjong.join',payload:{expectedRevision:'seat-preview'},requires:'consent',needsLocation:false}]});
+    ?[{kind:'table',id:'table',title:'桌游',status:'等待玩家',capacity:4,emptyLabel:'空位',mineLabel:'你',seats:[{name:'测试玩家',mine:true}]},{kind:'button',id:'seat',label:'下桌',enabled:true,action:'table.leave',needsLocation:false}]
+    :[{kind:'consent',id:'consent',text:'确认开始计费，离店前请结账。关闭页面不会停止计费。'},{kind:'button',id:'entry',label:'确认',style:'primary',enabled:true,action:'table.join',payload:{expectedRevision:'seat-preview'},requires:'consent',needsLocation:false}]});
   await seatPage.routeWebSocket(/\/api\/v1\/devices\/session\/ws/,()=>{});
   await seatPage.route('**/api/**',async route=>{const req=route.request(),p=new URL(req.url()).pathname;
    if(req.method()==='POST'&&p==='/api/v1/devices/session/action'){writes.push({path:p,body:JSON.parse(req.postData())});seated=true;return reply(route,{ok:true,page:seatPageOf(),notices:[]});}
@@ -99,11 +99,11 @@ const fs=require('node:fs');const assert=require('node:assert/strict');
   await seatPage.getByRole('button',{name:'下桌',exact:true}).waitFor();
   assert.equal(writes.length,1);
   assert.equal(writes[0].path,'/api/v1/devices/session/action');
-  assert.equal(writes[0].body.action,'mahjong.join');
+  assert.equal(writes[0].body.action,'table.join');
   assert.equal(writes[0].body.payload.consent,true);
   assert.equal(writes[0].body.payload.expectedRevision,'seat-preview');
   await seatPage.close();
-  console.log('PASS scanned mahjong confirmation seats through one atomic action without an earlier session start');
+  console.log('PASS scanned table confirmation seats through one atomic action without an earlier session start');
  }
  console.log('PASS localized balance rejection retains the bill and permits manual retry');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});

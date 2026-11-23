@@ -1,5 +1,5 @@
 import { keyTextFromVk } from "@prism/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -26,9 +26,8 @@ import {
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
 import { ClimateControls, climateModeIcon, climateModeName, climateSummary } from "../ClimateControls";
 import { useI18n } from "../../i18n";
-import { billTime } from "../bill-time";
+import { billTime, groupByDate, shortDateLabel } from "../bill-time";
 import {
-  date,
   input,
   segment,
   Modal,
@@ -77,7 +76,7 @@ const capabilityLabels: Record<CapabilityId, string> = {
   hinata_io: "刷卡",
   coin: "投币",
   door: "门锁",
-  mahjong: "麻将桌",
+  table: "桌游",
   bot: "Bot",
 };
 
@@ -402,7 +401,7 @@ export function ResourcesPage() {
                 ) : (
                   <p className="rounded-xl border border-dashed border-ink/15 px-5 py-6 text-center text-sm text-ink/50">
                     {t(group.isDefault && !devices.length
-                      ? "一个资源对应店里一样玩家扫码就能用的东西：一台机台、一扇门、一张麻将桌，或者只是墙上的一张二维码。"
+                      ? "一个资源对应店里一样玩家扫码就能用的东西：一台机台、一扇门、一张桌游桌，或者只是墙上的一张二维码。"
                       : "没有资源")}
                   </p>
                 )}
@@ -427,7 +426,7 @@ export function ResourcesPage() {
         <Modal
           title={`${history.name} · ${t("记录")}`}
           close={() => setHistory(null)}
-          wide
+          xl
         >
           <ResourceRecords device={history} playerHref={(playerId) => `/merchant/${segment(shopCode)}/dashboard?player=${segment(playerId)}`} />
         </Modal>
@@ -650,10 +649,10 @@ function ResourceCard({
   const caps = resourceCapabilities(device);
   const enabled = !!device.enabled;
   const configured = Object.values(caps).some(Boolean);
-  // Seating a player is a mahjong operation even though the catalog lists no device action for it.
-  const hasControls = deviceActions(device).length > 0 || !!caps.mahjong;
+  // Seating a player is a table operation even though the catalog lists no device action for it.
+  const hasControls = deviceActions(device).length > 0 || !!caps.table;
   const view = tileView(device, state, occupancy, powerOffAt, stateFailed);
-  const TypeIcon = caps.bot ? Bot : caps.mahjong ? LayoutGrid : caps.hinata_io ? Gamepad2 : caps.door ? Lock : caps.power ? Power : caps.climate ? AirVent : QrCode;
+  const TypeIcon = caps.bot ? Bot : caps.table ? LayoutGrid : caps.hinata_io ? Gamepad2 : caps.door ? Lock : caps.power ? Power : caps.climate ? AirVent : QrCode;
   const open = canWrite && hasControls && enabled ? onAct : onHistory;
   const first = view.seats?.occupants[0];
   const stay = first ? stayLength(first.startedAt, now) : null;
@@ -983,8 +982,8 @@ function IoStatus({ io }: { io: IoFacts }) {
   );
 }
 
-type MahjongSeat = { playerId: string; name: string; playing: boolean };
-type MahjongTable = { capacity: number; seats: MahjongSeat[] };
+type TableSeat = { playerId: string; name: string; playing: boolean };
+type TableState = { capacity: number; seats: TableSeat[] };
 
 const capabilityMeta: Record<
   CapabilityId,
@@ -995,7 +994,7 @@ const capabilityMeta: Record<
   hinata_io: { icon: CreditCard, title: "刷卡 · HINATA IO" },
   coin: { icon: Coins, title: "投币" },
   door: { icon: DoorOpen, title: "开门密码" },
-  mahjong: { icon: Ungroup, title: "麻将桌" },
+  table: { icon: Ungroup, title: "桌游" },
   bot: { icon: Bot, title: "Bot" },
 };
 
@@ -1024,30 +1023,30 @@ export function ResourceActions({
   const caps = resourceCapabilities(device);
   const groups = deviceActionGroups(device);
   const players = useResource<{ players: Player[] }>(
-    caps.mahjong ? "players" : null,
+    caps.table ? "players" : null,
   );
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [cardNumber, setCardNumber] = useState("");
   const power = state?.power ?? null;
   const climate = state?.climate ?? null;
-  const [table, setTable] = useState<MahjongTable | null>(null);
+  const [table, setTable] = useState<TableState | null>(null);
   const [busy, setBusy] = useState("");
   const [result, setResult] = useState("");
   const [error, setError] = useState("");
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
-  /** The mahjong table is not Home Assistant state and nothing pushes it, so it is read on its own. */
+  /** The table is not Home Assistant state and nothing pushes it, so it is read on its own. */
   const readTable = useCallback(
     () =>
-      api<{ mahjong: MahjongTable | null }>(`/api/v1/merchant/machines/${device.id}/mahjong`)
-        .then((r) => setTable(r.mahjong))
+      api<{ table: TableState | null }>(`/api/v1/merchant/machines/${device.id}/table`)
+        .then((r) => setTable(r.table))
         .catch(() => {}),
     [device.id],
   );
   // Opening the panel reads nothing about power or the air conditioner; the board already has it.
   useEffect(() => {
-    if (caps.mahjong) void readTable();
-  }, [caps.mahjong, readTable]);
+    if (caps.table) void readTable();
+  }, [caps.table, readTable]);
   async function send(action: string, extra?: Record<string, unknown>) {
     if (busy) return;
     setBusy(action);
@@ -1057,7 +1056,7 @@ export function ResourceActions({
       const askedAt = Date.now();
       const r = await playerOperation<{
         temporaryPassword?: string;
-        mahjong?: MahjongTable;
+        table?: TableState;
         device?: Record<string, unknown>;
       }>(`/api/v1/merchant/machines/${device.id}/actions`, {
         action,
@@ -1068,8 +1067,8 @@ export function ResourceActions({
           ? `${t("开门密码")} ${r.temporaryPassword}`
           : t("已发送"),
       );
-      if (r?.mahjong) setTable(r.mahjong);
-      else if (action.startsWith("mahjong.")) void readTable();
+      if (r?.table) setTable(r.table);
+      else if (action.startsWith("table.")) void readTable();
       // A power or climate action answers with what the device shows now; the board shows it.
       if (r?.device) onStateRef.current(viewOf(r.device), askedAt);
       onChanged();
@@ -1110,7 +1109,7 @@ export function ResourceActions({
   const sections = capabilityOrder.filter(
     (id) =>
       groups.some((group) => group.capability === id) ||
-      (id === "mahjong" && caps.mahjong),
+      (id === "table" && caps.table),
   );
   return (
     <div className="grid gap-4">
@@ -1222,7 +1221,7 @@ export function ResourceActions({
                 );
               })()}
               {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}
-              {id === "mahjong" && (
+              {id === "table" && (
                 <>
                   <div className="grid gap-1">
                     {table?.seats.map((seat) => (
@@ -1236,7 +1235,7 @@ export function ResourceActions({
                           className={`${buttonQuiet} min-h-8 px-2 text-xs`}
                           disabled={!device.enabled || !!busy}
                           onClick={() =>
-                            void send("mahjong.unseat", {
+                            void send("table.unseat", {
                               playerId: seat.playerId,
                             })
                           }
@@ -1272,7 +1271,7 @@ export function ResourceActions({
                         !device.enabled || full || !selectedPlayer || !!busy
                       }
                       onClick={() =>
-                        void send("mahjong.seat", {
+                        void send("table.seat", {
                           playerId: selectedPlayer,
                         })
                       }
@@ -1314,195 +1313,486 @@ const END_REASONS: Record<NonNullable<OccupancyHistoryEntry["endReason"]>, strin
 
 /** Who was on the resource, then what the platform asked of it and what it reported. */
 function ResourceRecords({ device, playerHref }: { device: Resource; playerHref: (playerId: string) => string }) {
-  const { t } = useI18n();
+  const [hideOccupancy, setHideOccupancy] = useState(false);
+  useEffect(() => {
+    setHideOccupancy(false);
+  }, [device.id]);
   return (
-    <div className="grid gap-6">
-      <OccupancyHistory device={device} playerHref={playerHref} />
-      <section className="grid gap-2">
-        <h3 className="text-sm font-semibold">{t("操作记录")}</h3>
-        <ResourceHistory device={device} />
-      </section>
+    <div
+      className={
+        hideOccupancy
+          ? "-m-5"
+          : "-m-5 grid divide-y divide-ink/10 md:grid-cols-[minmax(19rem,22rem)_minmax(0,1fr)] md:divide-x md:divide-y-0"
+      }
+    >
+      {!hideOccupancy && (
+        <OccupancyHistory
+          device={device}
+          playerHref={playerHref}
+          onEmptyChange={(empty) => {
+            if (empty && (device.capacity ?? 0) <= 0) setHideOccupancy(true);
+          }}
+        />
+      )}
+      <ResourceHistory device={device} />
     </div>
   );
 }
 
-/** Who was on the resource and for how long, newest first. Nothing for a resource nobody occupies. */
-function OccupancyHistory({ device, playerHref }: { device: Resource; playerHref: (playerId: string) => string }) {
+const OCCUPANCY_BATCH_LIMIT = 20;
+
+/** Triggers incremental loading when a column scrolls close to its bottom sentinel. */
+function useScrollLazyLoad({
+  canLoadMore,
+  onLoadMore,
+}: {
+  canLoadMore: boolean;
+  onLoadMore: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const onLoadMoreRef = useRef(onLoadMore);
+  onLoadMoreRef.current = onLoadMore;
+
+  useEffect(() => {
+    if (!canLoadMore || typeof IntersectionObserver === "undefined") return;
+    const sentinel = sentinelRef.current;
+    const root = containerRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          onLoadMoreRef.current();
+        }
+      },
+      { root, rootMargin: "96px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [canLoadMore]);
+
+  const onScroll = useCallback(() => {
+    if (!canLoadMore) return;
+    const el = containerRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 96) {
+      onLoadMoreRef.current();
+    }
+  }, [canLoadMore]);
+
+  return { containerRef, sentinelRef, onScroll };
+}
+
+/** Scrollable pane shared by the left occupancy column and right operation history column. */
+function HistoryColumn({
+  title,
+  action,
+  canLoadMore,
+  onLoadMore,
+  loadingMore,
+  error,
+  children,
+}: {
+  title: string;
+  action?: ReactNode;
+  canLoadMore: boolean;
+  onLoadMore: () => void;
+  loadingMore: boolean;
+  error?: string;
+  children: ReactNode;
+}) {
   const { t } = useI18n();
+  const { containerRef, sentinelRef, onScroll } = useScrollLazyLoad({ canLoadMore, onLoadMore });
+  return (
+    <section className="flex min-w-0 flex-col" aria-label={t(title)}>
+      <div className="flex min-h-12 items-center justify-between gap-2 border-b border-ink/[0.06] px-5 py-2.5">
+        <h3 className="text-sm font-semibold">{t(title)}</h3>
+        {action}
+      </div>
+      <div
+        ref={containerRef}
+        className="max-h-[65dvh] overflow-y-auto px-5 py-4"
+        onScroll={onScroll}
+      >
+        {children}
+        {loadingMore && <p className="py-2 text-center text-xs text-ink/45">{t("读取中…")}</p>}
+        {error && <p role="alert" className="py-2 text-center text-xs text-coral">{error}</p>}
+        <div ref={sentinelRef} aria-hidden="true" className="h-1" />
+      </div>
+    </section>
+  );
+}
+
+/** Who was on the resource and for how long, grouped by date with scroll lazy-loading. */
+function OccupancyHistory({
+  device,
+  playerHref,
+  onEmptyChange,
+}: {
+  device: Resource;
+  playerHref: (playerId: string) => string;
+  onEmptyChange?: (empty: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const { timeZone } = useMerchant();
   const [entries, setEntries] = useState<OccupancyHistoryEntry[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const deviceRef = useRef(device.id);
+  const inFlightRef = useRef(false);
+  const onEmptyRef = useRef(onEmptyChange);
+  deviceRef.current = device.id;
+  onEmptyRef.current = onEmptyChange;
+
   useEffect(() => {
     let current = true;
-    api<{ entries: OccupancyHistoryEntry[] }>(`/api/v1/merchant/machines/${encodeURIComponent(device.id)}/occupancy`)
-      .then((r) => current && setEntries(r.entries))
-      .catch(() => current && setEntries([]));
+    inFlightRef.current = false;
+    setEntries(null);
+    setHasMore(false);
+    setBusy(false);
+    setError("");
+    api<{ entries: OccupancyHistoryEntry[] }>(
+      `/api/v1/merchant/machines/${encodeURIComponent(device.id)}/occupancy?limit=${OCCUPANCY_BATCH_LIMIT}`,
+    )
+      .then((r) => {
+        if (!current) return;
+        setEntries(r.entries);
+        setHasMore(r.entries.length >= OCCUPANCY_BATCH_LIMIT);
+        onEmptyRef.current?.(r.entries.length === 0);
+      })
+      .catch((e) => {
+        if (!current) return;
+        setEntries([]);
+        setError(e instanceof Error ? e.message : t("读取失败"));
+        onEmptyRef.current?.(false);
+      });
     return () => {
       current = false;
     };
-  }, [device.id]);
-  if (!entries?.length) return null;
+  }, [device.id, t]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || inFlightRef.current || !entries?.length) return;
+    const targetDeviceId = device.id;
+    const before = entries.at(-1)!.startedAt;
+    inFlightRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api<{ entries: OccupancyHistoryEntry[] }>(
+        `/api/v1/merchant/machines/${encodeURIComponent(targetDeviceId)}/occupancy?limit=${OCCUPANCY_BATCH_LIMIT}&before=${encodeURIComponent(before)}`,
+      );
+      if (deviceRef.current !== targetDeviceId) return;
+      const seen = new Set(entries.map((entry) => entry.id));
+      const added = r.entries.filter((entry) => !seen.has(entry.id));
+      if (added.length) {
+        setEntries((previous) => {
+          const base = previous ?? entries;
+          const baseSeen = new Set(base.map((entry) => entry.id));
+          const merged = r.entries.filter((entry) => !baseSeen.has(entry.id));
+          return merged.length ? [...base, ...merged] : base;
+        });
+      }
+      setHasMore(r.entries.length >= OCCUPANCY_BATCH_LIMIT && added.length > 0);
+    } catch (e) {
+      if (deviceRef.current === targetDeviceId) {
+        setError(e instanceof Error ? e.message : t("读取失败"));
+      }
+    } finally {
+      inFlightRef.current = false;
+      if (deviceRef.current === targetDeviceId) {
+        setBusy(false);
+      }
+    }
+  }, [device.id, entries, hasMore, t]);
+
+  const todayDate = billTime(new Date().toISOString(), timeZone || undefined).date;
+  const groups = useMemo(
+    () => (entries ? groupByDate(entries, (entry) => entry.startedAt, timeZone || undefined) : []),
+    [entries, timeZone],
+  );
+
   return (
-    <section className="grid gap-2">
-      <h3 className="text-sm font-semibold">{t("占用记录")}</h3>
-      <div className="divide-y divide-ink/10">
-        {entries.map((entry) => (
-          <div className="flex justify-between gap-3 py-2 text-sm" key={entry.id}>
-            <Link className="truncate underline-offset-2 hover:underline" to={playerHref(entry.playerId)}>
-              {entry.displayName ?? entry.playerId}
-            </Link>
-            <span className="shrink-0 text-ink/60 tabular-nums">
-              {date(entry.startedAt)} – {entry.endedAt ? date(entry.endedAt) : t("进行中")}
-              {entry.endReason && <span className="ml-2 text-ink/45">{t(END_REASONS[entry.endReason])}</span>}
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
+    <HistoryColumn
+      title="占用记录"
+      canLoadMore={hasMore && !busy && !error && Boolean(entries?.length)}
+      onLoadMore={() => void loadMore()}
+      loadingMore={Boolean(entries && busy)}
+      error={entries?.length ? error : ""}
+    >
+      {!entries ? (
+        <State error={error} />
+      ) : !entries.length ? (
+        <State empty />
+      ) : (
+        <div className="grid gap-3">
+          {groups.map((group) => (
+            <div key={group.localDate} className="grid gap-1.5">
+              <div className="px-1 text-xs font-medium text-ink/45">
+                {shortDateLabel(group.localDate, todayDate)}
+              </div>
+              <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden">
+                {group.items.map((entry) => {
+                  const startClock = billTime(entry.startedAt, timeZone || undefined);
+                  const endClock = entry.endedAt ? billTime(entry.endedAt, timeZone || undefined) : null;
+                  const timeRange = !endClock
+                    ? `${startClock.time} – ${t("进行中")}`
+                    : endClock.date === startClock.date
+                      ? `${startClock.time} – ${endClock.time}`
+                      : `${startClock.time} – ${endClock.date.slice(5)} ${endClock.time}`;
+                  return (
+                    <div
+                      className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-sm"
+                      key={entry.id}
+                    >
+                      <Link
+                        className="inline-flex min-w-0 items-center font-medium text-ink underline-offset-2 hover:underline"
+                        to={playerHref(entry.playerId)}
+                      >
+                        <i
+                          aria-hidden="true"
+                          className="bill-plan-dot !mr-2"
+                          style={{
+                            background: entry.endedAt ? "rgb(var(--color-ink) / 0.35)" : "var(--color-mint)",
+                          }}
+                        />
+                        <span className="truncate">{entry.displayName ?? entry.playerId}</span>
+                      </Link>
+                      <span className="flex shrink-0 items-center gap-2 text-xs text-ink/55 tabular-nums">
+                        <span>{timeRange}</span>
+                        {entry.endReason && (
+                          <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink/60">
+                            {t(END_REASONS[entry.endReason])}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </HistoryColumn>
   );
 }
 
 /** Read-only history: what the platform asked for and what the device reported. */
 function ResourceHistory({ device }: { device: Resource }) {
   const { t } = useI18n();
+  const { timeZone } = useMerchant();
   const [events, setEvents] = useState<DeviceEvent[] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const deviceRef = useRef(device.id);
+  const inFlightRef = useRef(false);
+  deviceRef.current = device.id;
+
   const load = useCallback(
     async (before?: string) => {
+      if (inFlightRef.current) return;
+      const targetDeviceId = device.id;
+      inFlightRef.current = true;
       setBusy(true);
       setError("");
       try {
         const r = await api<{ events: DeviceEvent[]; nextCursor: string | null }>(
-          `/api/v1/merchant/machines/${device.id}/events${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+          `/api/v1/merchant/machines/${targetDeviceId}/events${before ? `?before=${encodeURIComponent(before)}` : ""}`,
         );
-        setEvents((previous) => before ? [...(previous ?? []), ...r.events] : r.events);
-        setNextCursor(r.nextCursor);
+        if (deviceRef.current !== targetDeviceId) return;
+        if (!before) {
+          setEvents(r.events);
+          setNextCursor(r.nextCursor);
+        } else {
+          let addedCount = 0;
+          setEvents((previous) => {
+            const existing = previous ?? [];
+            const seen = new Set(existing.map((item) => item.id));
+            const added = r.events.filter((item) => !seen.has(item.id));
+            addedCount = added.length;
+            return added.length ? [...existing, ...added] : existing;
+          });
+          setNextCursor(addedCount > 0 || r.events.length > 0 ? r.nextCursor : null);
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : t("读取失败"));
+        if (deviceRef.current === targetDeviceId) {
+          setError(e instanceof Error ? e.message : t("读取失败"));
+        }
       } finally {
-        setBusy(false);
+        inFlightRef.current = false;
+        if (deviceRef.current === targetDeviceId) {
+          setBusy(false);
+        }
       }
     },
     [device.id, t],
   );
   useEffect(() => {
+    inFlightRef.current = false;
     setEvents(null);
     setNextCursor(null);
     void load();
   }, [load]);
+
+  const todayDate = billTime(new Date().toISOString(), timeZone || undefined).date;
+  const groups = useMemo(
+    () => (events ? groupByDate(timeline(events), (item) => item.event.at, timeZone || undefined) : []),
+    [events, timeZone],
+  );
+
   return (
-    <div className="grid gap-4">
+    <HistoryColumn
+      title="操作记录"
+      action={
+        <button
+          type="button"
+          className={`${button} !min-h-8 !rounded-lg !px-3 !py-1 !text-xs`}
+          disabled={busy}
+          onClick={() => {
+            inFlightRef.current = false;
+            void load();
+          }}
+        >
+          {t("刷新记录")}
+        </button>
+      }
+      canLoadMore={Boolean(nextCursor) && !busy && !error && Boolean(events?.length)}
+      onLoadMore={() => {
+        if (nextCursor) void load(nextCursor);
+      }}
+      loadingMore={Boolean(events && busy)}
+      error={events ? error : ""}
+    >
       {!events ? (
         <State error={error} />
       ) : !events.length ? (
         <State empty />
       ) : (
-        <div className="divide-y divide-ink/10">
-          {timeline(events).map(({ event: e, result }) => {
-            const inbound = e.kind === "signal";
-            const outcome = result ? String(result.payload.outcome) : null;
-            const detail: string[] = [];
-            if (e.kind === "signal" && e.name.startsWith("cabinet.")) {
-              const { coins, credits, credit, previousCredit, previousTotalCoin, totalCoin } = e.payload;
-              if (e.name === "cabinet.coin" && typeof coins === "number") detail.push(t("投入 {coins} 枚", { coins }));
-              if (e.name === "cabinet.credit" && typeof credits === "number") detail.push(t("增加 {credits} 币", { credits }));
-              if (e.name === "cabinet.consumed" && typeof credits === "number") detail.push(t("消耗 {credits} 币", { credits }));
-              if (typeof credit === "number") detail.push(typeof previousCredit === "number"
-                ? t("本次读数：{before} → {after} 币", { before: previousCredit, after: credit })
-                : t("机内剩余 {credit} 币", { credit }));
-              if (e.name === "cabinet.reset" && typeof previousTotalCoin === "number" && typeof totalCoin === "number") {
-                detail.push(t("累计投币：{before} → {after} 枚", { before: previousTotalCoin, after: totalCoin }));
-              }
-            }
-            if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
-            // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
-            if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
-            if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("自动投币"));
-            if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
-            const command = e.name === "bot.command" ? e.payload : null;
-            // A request turned away before it reached the device, and what happened at the shop itself.
-            const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;
-            const ours = e.kind === "signal" && e.origin === "platform";
-            if (e.player && !command) detail.unshift(t("玩家：{name}", { name: e.player.name ?? e.player.id }));
-            if (refusedAction) {
-              const code = String(e.payload.code ?? "");
-              const message = typeof e.payload.message === "string" ? e.payload.message : "";
-              detail.push(refusalReasons[code] ? t(refusalReasons[code]) : message || code);
-            }
-            if (command) {
-              const from = chatName(command.from);
-              const target = chatName(command.target);
-              if (from) detail.push(target ? t("{from} 代 {target}", { from, target }) : from);
-            } else {
-              // Something done through this resource happened to another one.
-              if (e.device) detail.push(t("设备：{name}", { name: e.device.name ?? e.device.id }));
-              const source = e.via && e.kind !== "change" ? viaLabels[e.via.channel] : undefined;
-              if (source) detail.push(t("来自：{source}", { source: e.via!.resource?.name ? `${t(source)} ${e.via!.resource.name}` : t(source) }));
-            }
-            return (
-              <div
-                className="flex justify-between gap-3 py-3 text-sm"
-                key={e.id}
-              >
-                <div>
-                  <span className="flex items-center gap-1.5">
-                    {/* Direction is the difference between "we asked" and
-                        "the machine reported", which is what makes a card event
-                        worth logging at all. */}
-                    {e.kind !== "change" && !command && !ours && (
-                      <span
-                        className={inbound ? "text-mint" : "text-ink/45"}
-                        title={inbound ? t("机台回报") : t("平台下发")}
-                      >
-                        {inbound ? "←" : "→"}
-                      </span>
-                    )}
-                    {command
-                      ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
-                      : refusedAction
-                      ? t("{action}被拒绝", { action: t(actionLabels[refusedAction] ?? refusedAction) })
-                      : e.kind === "change"
-                      ? changeLabel(e, t)
-                      : e.name === "card.login"
-                        ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
-                        : t(actionLabels[e.name] ?? e.name)}
-                  </span>
-                  {detail.length > 0 && <p className="mt-1 text-xs text-ink/70">{detail.join(" · ")}</p>}
-                  <p className="mt-1 text-xs text-ink/50">{date(e.at)}</p>
-                </div>
-                <span className="text-xs text-ink/55">
-                  {command
+        <div className="grid gap-3">
+          {groups.map((group) => (
+            <div key={group.localDate} className="grid gap-1.5">
+              <div className="px-1 text-xs font-medium text-ink/45">
+                {shortDateLabel(group.localDate, todayDate)}
+              </div>
+              <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden">
+                {group.items.map(({ event: e, result }) => {
+                  const inbound = e.kind === "signal";
+                  const outcome = result ? String(result.payload.outcome) : null;
+                  const detail: string[] = [];
+                  if (e.kind === "signal" && e.name.startsWith("cabinet.")) {
+                    const { coins, credits, credit, previousCredit, previousTotalCoin, totalCoin } = e.payload;
+                    if (e.name === "cabinet.coin" && typeof coins === "number") detail.push(t("投入 {coins} 枚", { coins }));
+                    if (e.name === "cabinet.credit" && typeof credits === "number") detail.push(t("增加 {credits} 币", { credits }));
+                    if (e.name === "cabinet.consumed" && typeof credits === "number") detail.push(t("消耗 {credits} 币", { credits }));
+                    if (typeof credit === "number") detail.push(typeof previousCredit === "number"
+                      ? t("本次读数：{before} → {after} 币", { before: previousCredit, after: credit })
+                      : t("机内剩余 {credit} 币", { credit }));
+                    if (e.name === "cabinet.reset" && typeof previousTotalCoin === "number" && typeof totalCoin === "number") {
+                      detail.push(t("累计投币：{before} → {after} 枚", { before: previousTotalCoin, after: totalCoin }));
+                    }
+                  }
+                  if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
+                  // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
+                  if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
+                  if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("自动投币"));
+                  if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
+                  const command = e.name === "bot.command" ? e.payload : null;
+                  // A request turned away before it reached the device, and what happened at the shop itself.
+                  const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;
+                  const ours = e.kind === "signal" && e.origin === "platform";
+                  if (e.player && !command) detail.unshift(t("玩家：{name}", { name: e.player.name ?? e.player.id }));
+                  if (refusedAction) {
+                    const code = String(e.payload.code ?? "");
+                    const message = typeof e.payload.message === "string" ? e.payload.message : "";
+                    detail.push(refusalReasons[code] ? t(refusalReasons[code]) : message || code);
+                  }
+                  if (command) {
+                    const from = chatName(command.from);
+                    const target = chatName(command.target);
+                    if (from) detail.push(target ? t("{from} 代 {target}", { from, target }) : from);
+                  } else {
+                    // Something done through this resource happened to another one.
+                    if (e.device) detail.push(t("设备：{name}", { name: e.device.name ?? e.device.id }));
+                    const source = e.via && e.kind !== "change" ? viaLabels[e.via.channel] : undefined;
+                    if (source) detail.push(t("来自：{source}", { source: e.via!.resource?.name ? `${t(source)} ${e.via!.resource.name}` : t(source) }));
+                  }
+                  const statusText = command
                     ? t(commandOutcomes[String(command.outcome)] ?? "已回复")
                     : refusedAction
-                    ? t("已拒绝")
-                    : ours
-                    ? t("已完成")
-                    : e.kind === "signal"
-                    ? t("机台回报")
-                    : e.kind === "change"
-                      ? t(e.origin === "observer" ? "检测到" : "机台回报")
-                      : outcome === "ok"
+                      ? t("已拒绝")
+                      : ours
                         ? t("已完成")
-                        : outcome === "failed"
-                          ? t("失败")
-                          : t("结果待确认")}
-                </span>
+                        : e.kind === "signal"
+                          ? t("机台回报")
+                          : e.kind === "change"
+                            ? t(e.origin === "observer" ? "检测到" : "机台回报")
+                            : outcome === "ok"
+                              ? t("已完成")
+                              : outcome === "failed"
+                                ? t("失败")
+                                : t("结果待确认");
+                  const statusBadgeTone =
+                    refusedAction || outcome === "failed"
+                      ? "bg-coral/10 text-coral"
+                      : ours || outcome === "ok"
+                        ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400"
+                        : "bg-ink/[0.05] text-ink/60";
+                  return (
+                    <div
+                      className="flex items-start justify-between gap-3 px-3.5 py-2.5 text-sm"
+                      key={e.id}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-1.5 font-medium text-ink">
+                          {/* Direction is the difference between "we asked" and
+                              "the machine reported", which is what makes a card event
+                              worth logging at all. */}
+                          {e.kind !== "change" && !command && !ours && (
+                            <span
+                              className={inbound ? "text-mint" : "text-ink/45"}
+                              title={inbound ? t("机台回报") : t("平台下发")}
+                            >
+                              {inbound ? "←" : "→"}
+                            </span>
+                          )}
+                          {command
+                            ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
+                            : refusedAction
+                            ? t("{action}被拒绝", { action: t(actionLabels[refusedAction] ?? refusedAction) })
+                            : e.kind === "change"
+                            ? changeLabel(e, t)
+                            : e.name === "card.login"
+                              ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
+                              : t(actionLabels[e.name] ?? e.name)}
+                        </span>
+                        {detail.length > 0 && (
+                          <p className="mt-0.5 text-xs text-ink/65">{detail.join(" · ")}</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusBadgeTone}`}
+                        >
+                          {statusText}
+                        </span>
+                        <time
+                          dateTime={e.at}
+                          className="text-[11px] text-ink/45 tabular-nums"
+                        >
+                          {billTime(e.at, timeZone || undefined).time}
+                        </time>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
       )}
-      {events && error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-      <div className="flex gap-2">
-        <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load()}>
-          {t("刷新记录")}
-        </button>
-        {nextCursor && (
-          <button type="button" className={buttonQuiet} disabled={busy} onClick={() => void load(nextCursor)}>
-            {t(busy ? "读取中…" : "加载更多")}
-          </button>
-        )}
-      </div>
-    </div>
+    </HistoryColumn>
   );
 }

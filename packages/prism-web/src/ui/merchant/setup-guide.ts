@@ -181,8 +181,8 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
     (ttLock.accessToken || ttLock.appAccount)
   );
   // The server asks for a shop player on every billed device, and on doors
-  // and mahjong tables everywhere.
-  const identityMatters = billing || caps.some((c) => c.door || c.mahjong);
+  // and tables everywhere.
+  const identityMatters = billing || caps.some((c) => c.door || c.table);
   const players = signals.players ?? [];
   const fundedPlayers = players.filter((player) => player.walletTotal > 0).length;
   const steps: SetupStep[] = [];

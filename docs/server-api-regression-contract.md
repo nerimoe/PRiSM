@@ -55,7 +55,7 @@ and is removed when the account is next started an activity.
   take the one player billing lease (`PLAYER_BILLING_LOCK_SCOPE`, stored as
   `player.assets`), so a start can never interleave with a checkout. The lease
   is re-entrant within one call chain: a route already holding it (cashier
-  entry, mahjong seating) may call a service that takes it again.
+  entry, table seating) may call a service that takes it again.
 - Player checkout requires the checkout location outside the configured
   geofence; arbitrary player device commands are forbidden in favour of the
   QR-scoped machine-session actions.

@@ -20,7 +20,7 @@ const shop = {
 };
 const base = {
   coinAfterSwipe: false, hasHinata: false, kind: "machine", hinataUrl: null, homeAssistant: null,
-  climate: null, ttlockLockId: null, coinKey: 32, mahjong: null, shopId: "shop",
+  climate: null, ttlockLockId: null, coinKey: 32, table: null, shopId: "shop",
   shopPublicId: "demo", aliases: [], enabled: true, hasBotToken: true, hasRelayToken: true,
   relayConnection: "embedded", relayUrl: "wss://relay.test/io", relayOnline: true, relayE2ee: false,
   bot: {

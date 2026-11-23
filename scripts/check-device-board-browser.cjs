@@ -23,7 +23,7 @@ const view = {
 };
 const base = {
   coinAfterSwipe: false, hasHinata: false, kind: "machine", hinataUrl: null, homeAssistant: null, climate: null,
-  ttlockLockId: null, coinKey: 32, mahjong: null, shopId: "shop", shopPublicId: "demo", aliases: [], enabled: true,
+  ttlockLockId: null, coinKey: 32, table: null, shopId: "shop", shopPublicId: "demo", aliases: [], enabled: true,
 };
 const machines = [
   { ...base, id: "cab", publicId: "cab", name: "机台A",
@@ -51,7 +51,7 @@ const until = async (condition, what) => {
  * and the live devices' values, then what Home Assistant says of the other one (on), and the test
  * sends it whatever frames it wants to push. An action answers with what the device shows after it.
  */
-async function openBoard(browser, { watchedIo, viewport, clock = false, silentHub = false, role = "user", mahjong = false }) {
+async function openBoard(browser, { watchedIo, viewport, clock = false, silentHub = false, role = "user", table = false }) {
   const context = await browser.newContext({ viewport, locale: "zh-CN", timezoneId: "Asia/Shanghai" });
   await context.addInitScript(() => sessionStorage.setItem("prism.active-shop", "demo"));
   const page = await context.newPage();
@@ -89,7 +89,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
   const connections = watchedIo ? ["ha_cab", "ha_io"] : ["ha_cab"];
   // What a read of the shop answers: the backend's view at the time, which the scenario moves along.
   let shopRead = { cab: snapshot.cab, io: watchedIo ? snapshot.io : { watching: false, power: "on" } };
-  let listedMachines = [...machines, ...(mahjong ? [{...base,id:"table",publicId:"table",name:"麻将桌",capacity:4,mahjong:{pricingConfigIds:["game"]}}] : [])], deletionBlocked = false;
+  let listedMachines = [...machines, ...(table ? [{...base,id:"table",publicId:"table",name:"麻将桌",capacity:4,table:{pricingConfigIds:["game"]}}] : [])], deletionBlocked = false;
   await page.routeWebSocket(/\/api\/v1\/merchant\/machines\/ws/, (ws) => {
     sockets.push({ ws, url: ws.url() });
     ws.onMessage((message) => received.push(String(message)));
@@ -108,8 +108,8 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
       if (request.method() === "PUT") puts.push({ path: p, query: url.search.slice(1), body: JSON.parse(request.postData() || "null") });
       if (p === "/api/v1/merchant/machines/table/actions") {
         const action = JSON.parse(request.postData()); actions.push(action);
-        seats = action.action === "mahjong.seat" ? [{playerId:action.playerId,name:"未入场玩家",playing:false}] : [];
-        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({data:{mahjong:{capacity:4,seats}}})});
+        seats = action.action === "table.seat" ? [{playerId:action.playerId,name:"未入场玩家",playing:false}] : [];
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({data:{table:{capacity:4,seats}}})});
       }
       // What each device shows after an action: the cabinet came on, the other one stayed off.
       const answers = {
@@ -141,7 +141,7 @@ async function openBoard(browser, { watchedIo, viewport, clock = false, silentHu
     else if (p === "/api/v1/shops/demo/staff/pricing-configs") data = { pricingConfigs: [] };
     else if (p === "/api/v1/shops/demo") data = { shop, membership: { playerId: "p", identityBound: true }, entryPricing: [] };
     else if (p === "/api/v1/shops/demo/staff/me") data = { staff: { id: "s", displayName: "店员", role: "owner", canWrite: true } };
-    else if (p === "/api/v1/merchant/machines/table/mahjong") data = {mahjong:{capacity:4,seats}};
+    else if (p === "/api/v1/merchant/machines/table/table") data = {table:{capacity:4,seats}};
     else if (p === "/api/v1/shops/demo/staff/players") data = {players:[{id:"waiting",displayName:"未入场玩家",status:"active",activeSessionId:null},{id:"disabled",displayName:"停用玩家",status:"disabled"}]};
     else if (p === "/api/v1/shops/demo/staff/live-players") data = { players: [], billingSnapshot: null };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data }) });
@@ -431,7 +431,7 @@ async function operate(page, name, button) {
     assert.deepEqual(dropped.exceptions, []);
     await dropped.context.close();
     console.log("PASS keep-alive, reconnect after a drop, and the hub's resend catching the board up without any read");
-    const seating = await openBoard(browser, {watchedIo:false,mahjong:true,viewport:{width:1280,height:900}});
+    const seating = await openBoard(browser, {watchedIo:false,table:true,viewport:{width:1280,height:900}});
     await operateButton(seating.page,"麻将桌").click();
     const panel = seating.page.getByRole("dialog");
     const chooser = panel.getByRole("combobox",{name:"选择玩家"});
@@ -440,13 +440,13 @@ async function operate(page, name, button) {
     await panel.getByRole("button",{name:"上桌",exact:true}).click();
     await panel.getByRole("button",{name:"下桌",exact:true}).waitFor();
     assert.equal(seating.actions[0].playerId,"waiting");
-    assert.equal(seating.actions[0].action,"mahjong.seat");
+    assert.equal(seating.actions[0].action,"table.seat");
     await panel.getByRole("button",{name:"下桌",exact:true}).click();
     await panel.getByText("空位",{exact:true}).waitFor();
-    assert.equal(seating.actions[1].action,"mahjong.unseat");
+    assert.equal(seating.actions[1].action,"table.unseat");
     assert.equal(seating.actions[1].playerId,"waiting");
     assert.deepEqual(seating.exceptions,[]);
-    await seating.page.screenshot({path:`${output}/mahjong-staff-seating.png`,fullPage:true});
+    await seating.page.screenshot({path:`${output}/table-staff-seating.png`,fullPage:true});
     await seating.context.close();
     console.log("PASS staff can select an active player who has not entered, then seat and unseat them");
   } finally {

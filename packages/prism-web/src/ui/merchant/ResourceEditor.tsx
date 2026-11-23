@@ -75,7 +75,7 @@ export function ResourceEditor({
       homeAssistant: null,
       climate: null,
       ttlockLockId: null,
-      mahjong: null,
+      table: null,
       hasHinata: false,
       relayConnection: "external",
       coinEnabled: false,
@@ -148,9 +148,9 @@ export function ResourceEditor({
   const [lockId, setLockId] = useState(
     value?.ttlockLockId ? String(value.ttlockLockId) : "",
   );
-  const [mahjongStart, setMahjongStart] = useState<"full" | "seated">(value?.mahjong?.startWhen ?? "full");
-  const [mahjongPricing, setMahjongPricing] = useState<string[]>(
-    value?.mahjong?.pricingConfigIds ?? [],
+  const [tableStart, setTableStart] = useState<"full" | "seated">(value?.table?.startWhen ?? "full");
+  const [tablePricing, setTablePricing] = useState<string[]>(
+    value?.table?.pricingConfigIds ?? [],
   );
   const [pricing, setPricing] = useState<
     { id: string; name: string; enabled: boolean }[]
@@ -184,13 +184,13 @@ export function ResourceEditor({
   const canCoin = embedded || !!value?.hasPassword || !!password;
 
   useEffect(() => {
-    if (!caps.mahjong) return;
+    if (!caps.table) return;
     api<{ pricingConfigs: typeof pricing }>(
       `/api/v1/shops/${encodeURIComponent(shopCode)}/staff/pricing-configs`,
     )
       .then((r) => setPricing(r.pricingConfigs))
       .catch(() => setPricing([]));
-  }, [caps.mahjong, shopCode]);
+  }, [caps.table, shopCode]);
 
   // A token that is on screen has not reached the machine yet, so the dialog
   // must stay open until the store confirms it wrote the value down.
@@ -233,7 +233,7 @@ export function ResourceEditor({
         }
       }
     }
-    if (id === "mahjong" && billed && !mahjongPricing.length) return t("请选择一条麻将计费规则");
+    if (id === "table" && billed && !tablePricing.length) return t("请选择一条桌游计费规则");
     return null;
   };
 
@@ -405,9 +405,9 @@ export function ResourceEditor({
           }
         }
         const seats = resourceCapacity.trim() === "" ? null : Number(resourceCapacity);
-        if (caps.mahjong && seats !== null && (!Number.isInteger(seats) || seats < 2 || seats > 8)) {
-          setPane("usage");
-          throw new Error(t("麻将桌容量须为 2 到 8 人"));
+        if (caps.table && seats !== null && (!Number.isInteger(seats) || seats < 2 || seats > 8)) {
+          setPane("table");
+          throw new Error(t("桌游容量须为 2 到 8 人"));
         }
         // Minting is an explicit action. A plain save on a direct-connect
         // device without a credential would silently create one, so it is
@@ -437,7 +437,7 @@ export function ResourceEditor({
             ...(caps.bot && f.get("intent") === "rotate-bot" ? { rotateBotToken: true } : {}),
             resourceGroupId: groupId,
             pricingConfigOverrideId: overrideId || null,
-            mahjong: caps.mahjong ? { pricingConfigIds: mahjongPricing, startWhen: mahjongStart } : null,
+            table: caps.table ? { pricingConfigIds: tablePricing, startWhen: tableStart } : null,
             // A capability that is switched off is removed, which the server
             // expresses as `null` for the bound fields.
             relayConnection: caps.hinata_io && embedded ? "embedded" : "external",
@@ -477,14 +477,14 @@ export function ResourceEditor({
         return saved;
       }}
     >
-      <div className="grid gap-5 sm:min-h-[26rem] sm:grid-cols-[11rem_minmax(0,1fr)]">
-        <nav aria-label={t("资源设置")} className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:self-start">
+      <div className="grid gap-5 sm:min-h-[28rem] sm:grid-cols-[12rem_minmax(0,1fr)] sm:divide-x sm:divide-ink/10">
+        <nav aria-label={t("资源设置")} className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:self-start sm:pr-3">
           {sections.map((section) => (
             <button
               key={section.id}
               type="button"
               aria-current={pane === section.id ? "page" : undefined}
-              className={`focus-ring flex shrink-0 items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm ${pane === section.id ? "bg-mint/10 font-semibold text-ink" : "text-ink/60 hover:bg-ink/5 hover:text-ink"}`}
+              className={`focus-ring flex shrink-0 items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors ${pane === section.id ? "bg-mint/10 font-semibold text-ink" : "text-ink/60 hover:bg-ink/5 hover:text-ink"}`}
               onClick={() => setPane(section.id)}
             >
               <section.icon size={16} aria-hidden="true" />
@@ -493,9 +493,11 @@ export function ResourceEditor({
             </button>
           ))}
         </nav>
-        <div className="grid min-w-0 content-start gap-4">
+        <div className="grid min-w-0 content-start gap-4 sm:pl-5">
       {pane === "basic" && (
-        <>
+        <div className="grid gap-4">
+        <PaneHeader icon={Info} title="基本信息" />
+        <div className="bill-entry !mb-0 grid gap-4">
         <Field label="资源名称">
           <input
             autoFocus
@@ -562,21 +564,23 @@ export function ResourceEditor({
             );
           })}
         </div>
-        <label className="flex items-center gap-2 text-sm">
+        </div>
+        <label className="bill-entry !mb-0 flex cursor-pointer items-center justify-between gap-3 px-3.5 py-3 text-sm font-medium">
+          <span>{t("启用")}</span>
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          {t("启用")}
         </label>
         {value && (
-          <button type="button" className={`${buttonQuiet} justify-self-start text-coral`} onClick={() => setConfirmDelete(true)}>
+          <button type="button" className={`${dangerActionBtn} justify-self-start`} onClick={() => setConfirmDelete(true)}>
             <Trash2 size={15} aria-hidden="true" />
             {t("删除资源")}
           </button>
         )}
-        </>
+        </div>
       )}
       {pane === "usage" && (
-        <>
-          <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4">
+          <PaneHeader icon={Users} title="计费与占用" />
+          <div className="bill-entry !mb-0 grid gap-3 sm:grid-cols-2">
               <Field label="所属资源组">
                 <select className={input} value={groupId} onChange={(e) => setGroupId(e.target.value)}>
                   {(groups ?? [{ id: "default", name: "默认资源组" }]).map((group) => (
@@ -596,65 +600,69 @@ export function ResourceEditor({
               </Field>
             </div>
           {!caps.bot && (
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="容量" unit="人">
-                <input
-                  className={input}
-                  type="number"
-                  min={caps.mahjong ? 2 : 0}
-                  max={caps.mahjong ? 8 : 16}
-                  placeholder={t("按能力自动")}
-                  value={resourceCapacity}
-                  onChange={(e) => setResourceCapacity(e.target.value)}
-                />
-              </Field>
-              {seatsFrom ? (
-                <div className="grid gap-2">
-                  <span className="text-sm font-medium">{t("占用时长")}</span>
-                  <p className="rounded-lg bg-ink/[0.04] px-3 py-2.5 text-sm text-ink/60">{t("不适用")}</p>
-                </div>
-              ) : (
-                <Field label="占用时长" unit="分钟">
+            <div className="bill-entry !mb-0 grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="容量" unit="人">
                   <input
                     className={input}
                     type="number"
-                    min="1"
-                    max="1440"
-                    required
-                    value={occupancyMinutes}
-                    onChange={(e) => setOccupancyMinutes(e.target.value)}
+                    min={caps.table ? 2 : 0}
+                    max={caps.table ? 8 : 16}
+                    placeholder={t("按能力自动")}
+                    value={resourceCapacity}
+                    onChange={(e) => setResourceCapacity(e.target.value)}
                   />
                 </Field>
+                {seatsFrom ? (
+                  <div className="grid gap-2">
+                    <span className="text-sm font-medium">{t("占用时长")}</span>
+                    <p className="rounded-lg border border-ink/10 bg-panel px-3 py-2.5 text-sm text-ink/60">{t("不适用")}</p>
+                  </div>
+                ) : (
+                  <Field label="占用时长" unit="分钟">
+                    <input
+                      className={input}
+                      type="number"
+                      min="1"
+                      max="1440"
+                      required
+                      value={occupancyMinutes}
+                      onChange={(e) => setOccupancyMinutes(e.target.value)}
+                    />
+                  </Field>
+                )}
+              </div>
+              {seatsFrom && (
+                <Hint>{t("{capability}按座位判断占用：入座开始，下桌结束；占用时长不适用。", { capability: t(capabilityMeta[seatsFrom].label) })}</Hint>
               )}
             </div>
           )}
-          {!caps.bot && seatsFrom && (
-            <Hint>{t("{capability}按座位判断占用：入座开始，下桌结束；占用时长不适用。", { capability: t(capabilityMeta[seatsFrom].label) })}</Hint>
-          )}
-        </>
+        </div>
       )}
       {pane === "power" && caps.power && (
-        <CapabilityPane title="电源控制" problem={incomplete("power")} remove={() => remove("power")}>
-          <HaEntityFields
-            shopId={shopId}
-            connections={ha.connections ?? []}
-            draft={power}
-            change={setPower}
-            domains={POWER_DOMAINS}
-            entityLabel="电源实体"
-            entityPlaceholder="switch.maimai"
-            tokenOptional={!!value?.homeAssistant}
-            reload={ha.reload}
-          />
-          <label className="mt-3 flex items-center gap-2 text-sm">
+        <CapabilityPane meta={capabilityMeta.power} problem={incomplete("power")} remove={() => remove("power")}>
+          <div className="bill-entry !mb-0 grid gap-3">
+            <HaEntityFields
+              shopId={shopId}
+              connections={ha.connections ?? []}
+              draft={power}
+              change={setPower}
+              domains={POWER_DOMAINS}
+              entityLabel="电源实体"
+              entityPlaceholder="switch.maimai"
+              tokenOptional={!!value?.homeAssistant}
+              reload={ha.reload}
+            />
+          </div>
+          <label className="bill-entry !mb-0 flex cursor-pointer items-center gap-2.5 px-3.5 py-3 text-sm font-medium">
             <input type="checkbox" checked={idleExclude} onChange={(e) => setIdleExclude(e.target.checked)} />
             {t("从不自动关机")}
           </label>
         </CapabilityPane>
       )}
       {pane === "climate" && caps.climate && (
-        <CapabilityPane title="空调" problem={incomplete("climate")} remove={() => remove("climate")}>
-          <div className="grid gap-3">
+        <CapabilityPane meta={capabilityMeta.climate} problem={incomplete("climate")} remove={() => remove("climate")}>
+          <div className="bill-entry !mb-0 grid gap-3">
             <HaEntityFields
               shopId={shopId}
               connections={ha.connections ?? []}
@@ -670,64 +678,80 @@ export function ResourceEditor({
               <Hint>{t("与电源控制是同一个 Home Assistant，令牌可以留空，沿用电源的令牌。")}</Hint>
             )}
             <Hint>{t("可选的模式、风速和温度范围以空调实体自己上报的为准。")}</Hint>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={idleExclude} onChange={(e) => setIdleExclude(e.target.checked)} />
-              {t("从不自动关机")}
-            </label>
           </div>
+          <label className="bill-entry !mb-0 flex cursor-pointer items-center gap-2.5 px-3.5 py-3 text-sm font-medium">
+            <input type="checkbox" checked={idleExclude} onChange={(e) => setIdleExclude(e.target.checked)} />
+            {t("从不自动关机")}
+          </label>
         </CapabilityPane>
       )}
       {pane === "hinata_io" && caps.hinata_io && (
-        <CapabilityPane title="刷卡 · HINATA IO" problem={incomplete("hinata_io")} remove={() => remove("hinata_io")}>
+        <CapabilityPane meta={capabilityMeta.hinata_io} problem={incomplete("hinata_io")} remove={() => remove("hinata_io")}>
           <div className="grid gap-4">
-            <Segmented
-              label={t("连接方式")}
-              options={[
-                ["embedded", t("直连本平台")],
-                ["external", t("外部中继")],
-              ]}
-              value={embedded ? "embedded" : "external"}
-              onChange={(next) => setEmbedded(next === "embedded")}
-            />
-            {embedded ? (
-              <DirectConnectPanel
-                live={live}
-                hasRelayToken={!!live?.hasRelayToken}
+            <div className="bill-entry !mb-0 grid gap-4">
+              <Segmented
+                label={t("连接方式")}
+                options={[
+                  ["embedded", t("直连本平台")],
+                  ["external", t("外部中继")],
+                ]}
+                value={embedded ? "embedded" : "external"}
+                onChange={(next) => setEmbedded(next === "embedded")}
               />
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="HINATA IO 地址">
-                  <input
-                    className={input}
-                    required
-                    placeholder="https://io.example.com"
-                    value={hinataUrl}
-                    onChange={(e) => setHinataUrl(e.target.value)}
-                  />
-                </Field>
-                <Field label="连接密码" unit={value?.hasPassword ? "已设置" : undefined}>
-                  <input
-                    className={input}
-                    type="password"
-                    autoComplete="new-password"
-                    value={password}
-                    placeholder={
-                      value?.hasPassword ? "••••••••" : ""
-                    }
-                    onChange={(e) => setPassword(e.target.value)}
-                  />
-                </Field>
-              </div>
-            )}
+              {embedded ? (
+                <DirectConnectPanel
+                  live={live}
+                  hasRelayToken={!!live?.hasRelayToken}
+                />
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="HINATA IO 地址">
+                    <input
+                      className={input}
+                      required
+                      placeholder="https://io.example.com"
+                      value={hinataUrl}
+                      onChange={(e) => setHinataUrl(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="连接密码" unit={value?.hasPassword ? "已设置" : undefined}>
+                    <input
+                      className={input}
+                      type="password"
+                      autoComplete="new-password"
+                      value={password}
+                      placeholder={
+                        value?.hasPassword ? "••••••••" : ""
+                      }
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </Field>
+                </div>
+              )}
+            </div>
             {/* Named keys: buttons in this cabinet's admin, never on a player's page. */}
-            <div className="grid gap-2 border-t border-ink/10 pt-4">
-              <div className="flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">{t("按键")}</span>
-                <span className="text-xs text-ink/45">{t("{count} / 16", { count: String(keys.length) })}</span>
+            <div className="bill-entry !mb-0 grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium">{t("按键")}</span>
+                  <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink/55 tabular-nums">
+                    {t("{count} / 16", { count: String(keys.length) })}
+                  </span>
+                </div>
+                {keys.length < 16 && (
+                  <button
+                    type="button"
+                    className={`${compactActionBtn} border-dashed`}
+                    onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "Space" }])}
+                  >
+                    <Plus size={14} aria-hidden="true" />
+                    {t("添加按键")}
+                  </button>
+                )}
               </div>
               {keys.length > 0 && (
-                <div className="overflow-hidden rounded-lg border border-ink/10">
-                  <div className="hidden grid-cols-[minmax(0,1fr)_9rem_2.75rem] gap-2 border-b border-ink/10 bg-ink/[0.03] px-3 py-1.5 text-xs text-ink/55 sm:grid">
+                <div className="overflow-hidden rounded-xl border border-ink/10 bg-panel">
+                  <div className="hidden grid-cols-[minmax(0,1fr)_9rem_2.75rem] gap-2 border-b border-ink/10 bg-ink/[0.02] px-3 py-2 text-xs text-ink/55 sm:grid">
                     <span>{t("名称")}</span>
                     <span>{t("键")}</span>
                     <span />
@@ -737,8 +761,8 @@ export function ResourceEditor({
                     const bad = !!one.key.trim() && code === null;
                     const set = (patch: Partial<CabinetKeyDraft>) => setKeys(keys.map((other, at) => (at === index ? { ...other, ...patch } : other)));
                     return (
-                      <div key={one.id} className="grid grid-cols-[minmax(0,1fr)_9rem_2.75rem] items-start gap-2 border-b border-ink/10 px-3 py-2 last:border-b-0">
-                        <div className="grid gap-1">
+                      <div key={one.id} className="grid grid-cols-[minmax(0,1fr)_9rem_2.75rem] items-start gap-2 border-b border-ink/[0.06] px-3 py-2.5 last:border-b-0">
+                        <div className="grid gap-1.5">
                           <input
                             className={`${input} min-h-9`}
                             aria-label={t("按键名称")}
@@ -747,7 +771,11 @@ export function ResourceEditor({
                             value={one.name}
                             onChange={(e) => set({ name: e.target.value })}
                           />
-                          {caps.coin && one.id === coinKeyId && <span className="text-xs text-ink/50">{t("用作投币按键")}</span>}
+                          {caps.coin && one.id === coinKeyId && (
+                            <span className="justify-self-start rounded-full bg-mint/10 px-2 py-0.5 text-[11px] font-medium text-mint">
+                              {t("用作投币按键")}
+                            </span>
+                          )}
                         </div>
                         <div className="grid gap-1">
                           <input
@@ -759,13 +787,13 @@ export function ResourceEditor({
                             value={one.key}
                             onChange={(e) => set({ key: e.target.value })}
                           />
-                          <span className={`text-xs ${bad ? "text-red-600" : "text-ink/45"}`}>
-                            {bad ? t("认不出这个键") : code !== null ? t("键码 {code}", { code: String(code) }) : " "}
+                          <span className={`text-xs tabular-nums ${bad ? "text-red-600" : "text-ink/45"}`}>
+                            {bad ? t("认不出这个键") : code !== null ? t("键码 {code}", { code: String(code) }) : "\u00a0"}
                           </span>
                         </div>
                         <button
                           type="button"
-                          className={`${buttonQuiet} h-9 w-9 justify-center`}
+                          className={`${buttonQuiet} h-9 w-9 justify-center text-ink/55 hover:text-coral`}
                           aria-label={t("删除按键 {name}", { name: one.name || t("未命名") })}
                           onClick={() => {
                             setKeys(keys.filter((_, at) => at !== index));
@@ -779,16 +807,6 @@ export function ResourceEditor({
                   })}
                 </div>
               )}
-              {keys.length < 16 && (
-                <button
-                  type="button"
-                  className={`${button} min-h-9 justify-self-start border-dashed`}
-                  onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "Space" }])}
-                >
-                  <Plus size={16} />
-                  {t("添加按键")}
-                </button>
-              )}
               <Hint>
                 {t("按键显示在后台这台资源的操作面板里，玩家页面不显示。键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码。")}
               </Hint>
@@ -797,42 +815,44 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "coin" && caps.coin && (
-        <CapabilityPane title="投币" problem={incomplete("coin")} remove={() => remove("coin")}>
+        <CapabilityPane meta={capabilityMeta.coin} problem={incomplete("coin")} remove={() => remove("coin")}>
           {/* How a coin goes in, and what holds every coin whichever way: the cooldown, the limit, coin events and billing. */}
-          <div className="grid gap-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="投币方式">
-                <select
-                  className={input}
-                  value={coinMethod}
-                  onChange={(e) => setCoinMethod(e.target.value as "key")}
-                >
-                  <option value="key">{t("HINATA IO 按键")}</option>
-                </select>
-              </Field>
-              <Field label="投币按键">
-                <select
-                  className={input}
-                  disabled={!caps.hinata_io}
-                  value={coinChosen ? coinKeyId! : ""}
-                  onChange={(e) => setCoinKeyId(e.target.value || null)}
-                >
-                  <option value="">{t("请选择")}</option>
-                  {keys.filter((one) => one.name.trim()).map((one) => (
-                    <option key={one.id} value={one.id}>{`${one.name} · ${one.key || "?"}`}</option>
-                  ))}
-                </select>
-              </Field>
+          <div className="grid gap-4">
+            <div className="bill-entry !mb-0 grid gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="投币方式">
+                  <select
+                    className={input}
+                    value={coinMethod}
+                    onChange={(e) => setCoinMethod(e.target.value as "key")}
+                  >
+                    <option value="key">{t("HINATA IO 按键")}</option>
+                  </select>
+                </Field>
+                <Field label="投币按键">
+                  <select
+                    className={input}
+                    disabled={!caps.hinata_io}
+                    value={coinChosen ? coinKeyId! : ""}
+                    onChange={(e) => setCoinKeyId(e.target.value || null)}
+                  >
+                    <option value="">{t("请选择")}</option>
+                    {keys.filter((one) => one.name.trim()).map((one) => (
+                      <option key={one.id} value={one.id}>{`${one.name} · ${one.key || "?"}`}</option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              {caps.hinata_io ? (
+                <Hint>{t("投币时由 HINATA IO 按下这个键。按键在「刷卡 · HINATA IO」里添加和修改。")}</Hint>
+              ) : (
+                <Hint>{t("用按键投币需要先添加「刷卡 · HINATA IO」。")}</Hint>
+              )}
+              {!canCoin && caps.hinata_io && (
+                <Hint>{t("外部中继要先填连接密码，才能投币。")}</Hint>
+              )}
             </div>
-            {caps.hinata_io ? (
-              <Hint>{t("投币时由 HINATA IO 按下这个键。按键在「刷卡 · HINATA IO」里添加和修改。")}</Hint>
-            ) : (
-              <Hint>{t("用按键投币需要先添加「刷卡 · HINATA IO」。")}</Hint>
-            )}
-            {!canCoin && caps.hinata_io && (
-              <Hint>{t("外部中继要先填连接密码，才能投币。")}</Hint>
-            )}
-            <div className="grid gap-3 border-t border-ink/10 pt-4">
+            <div className="bill-entry !mb-0 grid gap-3">
               <Field label="机台投币上限">
                 <input
                   className={input}
@@ -845,14 +865,14 @@ export function ResourceEditor({
                   onChange={(e) => setCoinCap(e.target.value)}
                 />
               </Field>
-              <label className="flex items-center gap-2 text-sm">
+              <label className={toggleRowClass}>
                 <input
                   type="checkbox"
                   disabled={!embedded || !(Number(coinCap) > 0)}
                   checked={embedded && Number(coinCap) > 0 && coinAfterSwipe}
                   onChange={(e) => setCoinAfterSwipe(e.target.checked)}
                 />
-                {t("自动投币：游戏取走玩家的卡后自动投一枚币")}
+                <span>{t("自动投币：游戏取走玩家的卡后自动投一枚币")}</span>
               </label>
               <Hint>
                 {embedded
@@ -864,8 +884,8 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "door" && caps.door && (
-        <CapabilityPane title="开门密码" problem={incomplete("door")} remove={() => remove("door")}>
-          <div className="grid gap-3">
+        <CapabilityPane meta={capabilityMeta.door} problem={incomplete("door")} remove={() => remove("door")}>
+          <div className="bill-entry !mb-0 grid gap-3">
             <Field label="TTLock 门锁 ID">
               <input
                 className={input}
@@ -878,7 +898,7 @@ export function ResourceEditor({
               />
             </Field>
             {ttLockMissing ? (
-              <p className="text-sm text-coral">
+              <p className="rounded-xl border border-coral/25 bg-coral/[0.06] px-3.5 py-2.5 text-xs font-medium text-coral">
                 {t("店铺还没有连接 TTLock 账号，开门会失败。")}{" "}
                 <Link className="underline" to={`${shopPath}/settings?group=devices`}>
                   {t("去连接")}
@@ -890,11 +910,48 @@ export function ResourceEditor({
           </div>
         </CapabilityPane>
       )}
-      {pane === "mahjong" && caps.mahjong && (
-        <CapabilityPane title="麻将桌" problem={incomplete("mahjong")} remove={() => remove("mahjong")}>
-          <div className="grid gap-3">
-            <fieldset className="grid gap-2">
-              <legend className="mb-1 text-sm font-medium">
+      {pane === "table" && caps.table && (
+        <CapabilityPane meta={capabilityMeta.table} problem={incomplete("table")} remove={() => remove("table")}>
+          <div className="grid gap-4">
+            <div className="bill-entry !mb-0 grid gap-2.5">
+              <div className="grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:items-end">
+                <Field label="桌位人数" unit="人">
+                  <input
+                    className={input}
+                    type="number"
+                    min={2}
+                    max={8}
+                    step={1}
+                    placeholder="4"
+                    value={resourceCapacity}
+                    onChange={(e) => setResourceCapacity(e.target.value)}
+                  />
+                </Field>
+                <div className="grid gap-1.5">
+                  <span className="text-xs text-ink/55">{t("常用桌型")}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[2, 3, 4, 6, 8].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        aria-pressed={resourceCapacity === String(n)}
+                        className={`focus-ring rounded-xl border px-3 py-1.5 text-xs transition-colors ${
+                          resourceCapacity === String(n)
+                            ? "border-mint bg-mint/[0.10] font-semibold text-ink"
+                            : "border-ink/10 bg-panel text-ink/70 hover:bg-ink/[0.03] hover:text-ink"
+                        }`}
+                        onClick={() => setResourceCapacity(String(n))}
+                      >
+                        {t("{count} 人桌", { count: n })}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <Hint>{t("支持 2 到 8 人同桌；留空默认按 4 人桌计算。")}</Hint>
+            </div>
+            <fieldset className="bill-entry !mb-0 grid gap-2.5">
+              <legend className="mb-0.5 text-sm font-medium">
                 {t("对局方案")}
               </legend>
               {pricing.filter((r) => r.enabled).length === 0 ? (
@@ -905,43 +962,50 @@ export function ResourceEditor({
                   </Link>
                 </p>
               ) : (
-                <div className="grid gap-1">
+                <div className="grid gap-2">
                   {pricing
                     .filter((r) => r.enabled)
                     .map((r) => (
                       <label
-                        className="flex items-center gap-2 text-sm"
+                        className={optionCardClass(tablePricing[0] === r.id)}
                         key={r.id}
                       >
                         <input
                           type="radio"
-                          name="mahjong-pricing"
-                          checked={mahjongPricing[0] === r.id}
-                          onChange={() => setMahjongPricing([r.id])}
+                          name="table-pricing"
+                          checked={tablePricing[0] === r.id}
+                          onChange={() => setTablePricing([r.id])}
                         />
-                        {r.name}
+                        <span className="truncate">{r.name}</span>
                       </label>
                     ))}
                 </div>
               )}
             </fieldset>
-            <fieldset className="grid gap-2 border-t border-ink/10 pt-4">
-              <legend className="mb-1 text-sm font-medium">{t("何时开始对局计费")}</legend>
+            <fieldset className="bill-entry !mb-0 grid gap-2.5">
+              <legend className="mb-0.5 text-sm font-medium">{t("何时开始对局计费")}</legend>
               {([
                 ["full", "人满后一起开始", "人没坐满之前算等位，按资源自己的计费方案（例如入场）计费；坐满后所有人一起切到对局方案。"],
                 ["seated", "上桌立即开始", "没有等位：每个人一坐下就按对局方案计费。"],
               ] as const).map(([mode, label, hint]) => (
-                <label key={mode} className="flex items-start gap-2 text-sm">
+                <label
+                  key={mode}
+                  className={`flex cursor-pointer items-start gap-3 rounded-xl border px-3.5 py-2.5 text-sm transition-colors ${
+                    tableStart === mode
+                      ? "border-mint bg-mint/[0.08]"
+                      : "border-ink/10 bg-panel hover:bg-ink/[0.02]"
+                  }`}
+                >
                   <input
                     type="radio"
-                    className="mt-1"
-                    name="mahjong-start"
-                    checked={mahjongStart === mode}
-                    onChange={() => setMahjongStart(mode)}
+                    className="mt-1 shrink-0"
+                    name="table-start"
+                    checked={tableStart === mode}
+                    onChange={() => setTableStart(mode)}
                   />
                   <span className="grid gap-0.5">
-                    <span>{t(label)}</span>
-                    <span className="text-xs text-ink/50">{t(hint)}</span>
+                    <span className={tableStart === mode ? "font-medium" : undefined}>{t(label)}</span>
+                    <span className="text-xs text-ink/55">{t(hint)}</span>
                   </span>
                 </label>
               ))}
@@ -950,31 +1014,33 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "bot" && caps.bot && (
-        <CapabilityPane title="店铺 Bot" problem={incomplete("bot")} remove={() => remove("bot")}>
-          <nav aria-label={t("Bot 设置")} className="flex flex-wrap gap-1 border-b border-ink/10 pb-3">
+        <CapabilityPane meta={capabilityMeta.bot} problem={incomplete("bot")} remove={() => remove("bot")}>
+          <nav aria-label={t("Bot 设置")} className="flex flex-wrap gap-1 rounded-xl border border-ink/10 bg-ink/[0.03] p-1">
             {([
               ["permissions", "使用权限"], ["broadcasts", "播报"], ["replies", "命令回复"], ["connection", "接入凭据"],
             ] as const).map(([id, label]) => (
               <button key={id} type="button" aria-pressed={botPane === id}
-                className={`focus-ring rounded-lg px-2.5 py-2 text-xs transition-colors ${botPane === id ? "bg-mint/10 font-semibold text-ink" : "text-ink/55 hover:bg-ink/5 hover:text-ink"}`}
+                className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors ${botPane === id ? "bg-panel font-medium text-ink shadow-sm" : "text-ink/60 hover:text-ink"}`}
                 onClick={() => setBotPane(id)}>{t(label)}</button>
             ))}
           </nav>
           <div hidden={botPane !== "permissions"}>
-            <div className="grid gap-6">
-            <fieldset className="grid gap-2">
-              <legend className="mb-1 text-sm font-medium">{t("玩家命令")}</legend>
-              {(["all", "readonly"] as const).map((mode) => (
-                <label key={mode} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="radio"
-                    name="bot-player-commands"
-                    checked={bot.playerCommands === mode}
-                    onChange={() => changeBot({ playerCommands: mode })}
-                  />
-                  {t(mode === "all" ? "全部命令" : "只读")}
-                </label>
-              ))}
+            <div className="grid gap-4">
+            <fieldset className="bill-entry !mb-0 grid gap-2.5">
+              <legend className="mb-0.5 text-sm font-medium">{t("玩家命令")}</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {(["all", "readonly"] as const).map((mode) => (
+                  <label key={mode} className={optionCardClass(bot.playerCommands === mode)}>
+                    <input
+                      type="radio"
+                      name="bot-player-commands"
+                      checked={bot.playerCommands === mode}
+                      onChange={() => changeBot({ playerCommands: mode })}
+                    />
+                    {t(mode === "all" ? "全部命令" : "只读")}
+                  </label>
+                ))}
+              </div>
               <p className="text-xs text-ink/55">{t("只读时，玩家在 Bot 里只能绑定身份、查余额和账单、兑换。")}</p>
               {bot.playerCommands === "readonly" && (
                 <Field label="只读提示">
@@ -987,62 +1053,68 @@ export function ResourceEditor({
                 </Field>
               )}
             </fieldset>
-            <fieldset className="grid gap-3 border-t border-ink/10 pt-4">
-              <legend className="text-sm font-semibold">{t("店员权限")}</legend>
-              {([["staffCommands", "店员代为操作"], ["powerOffStaffOnly", "仅店员可关机"]] as const).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
-                  {t(label)}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset className="grid gap-3 border-t border-ink/10 pt-4">
-              <legend className="text-sm font-semibold">{t("入场与结账")}</legend>
-              {([["doorPasswordOnEntry", "入场后自动获取门锁密码"], ["receiptsToStaff", "结账回执发给店员"]] as const).map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
-                  {t(label)}
-                </label>
-              ))}
-            <Field label="默认门锁">
-              <select
-                className={input}
-                value={bot.doorResourceId ?? ""}
-                onChange={(e) => changeBot({ doorResourceId: e.target.value || null })}
-              >
-                <option value="">{t(doors.length === 1 ? "自动" : "未设置")}</option>
-                {doors.map((door) => (
-                  <option key={door.id} value={door.id}>{door.name}</option>
+            <fieldset className="bill-entry !mb-0 grid gap-2.5">
+              <legend className="mb-0.5 text-sm font-medium">{t("店员权限")}</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {([["staffCommands", "店员代为操作"], ["powerOffStaffOnly", "仅店员可关机"]] as const).map(([key, label]) => (
+                  <label key={key} className={toggleRowClass}>
+                    <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
+                    <span>{t(label)}</span>
+                  </label>
                 ))}
-              </select>
-            </Field>
-            {bot.doorPasswordOnEntry && (
-              <p className="text-xs text-ink/55">
-                {t("玩家用 login／入场 进来时，Bot 会顺带生成一个门锁临时密码并回复；不下场也会在 3 分钟后失效。没有门锁时不生效。")}
-              </p>
-            )}
+              </div>
+            </fieldset>
+            <fieldset className="bill-entry !mb-0 grid gap-2.5">
+              <legend className="mb-0.5 text-sm font-medium">{t("入场与结账")}</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {([["doorPasswordOnEntry", "入场后自动获取门锁密码"], ["receiptsToStaff", "结账回执发给店员"]] as const).map(([key, label]) => (
+                  <label key={key} className={toggleRowClass}>
+                    <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
+                    <span>{t(label)}</span>
+                  </label>
+                ))}
+              </div>
+              <Field label="默认门锁">
+                <select
+                  className={input}
+                  value={bot.doorResourceId ?? ""}
+                  onChange={(e) => changeBot({ doorResourceId: e.target.value || null })}
+                >
+                  <option value="">{t(doors.length === 1 ? "自动" : "未设置")}</option>
+                  {doors.map((door) => (
+                    <option key={door.id} value={door.id}>{door.name}</option>
+                  ))}
+                </select>
+              </Field>
+              {bot.doorPasswordOnEntry && (
+                <p className="text-xs text-ink/55">
+                  {t("玩家用 login／入场 进来时，Bot 会顺带生成一个门锁临时密码并回复；不下场也会在 3 分钟后失效。没有门锁时不生效。")}
+                </p>
+              )}
             </fieldset>
             </div>
           </div>
           <div hidden={botPane !== "broadcasts"}>
             <div className="grid gap-4">
               <BotAnnouncementGroups value={bot.announceGroups ?? []} onChange={(announceGroups) => changeBot({ announceGroups })} />
-              <Field label="闲置关机提醒提前量" unit="分钟">
-                <input
-                  className={input}
-                  type="number"
-                  min="0"
-                  max="120"
-                  value={bot.idleReminderMinutes}
-                  onChange={(e) => changeBot({ idleReminderMinutes: Number(e.target.value) || 0 })}
-                />
-              </Field>
-              <details className="border-t border-ink/10 pt-3 text-xs text-ink/55">
-                <summary className="cursor-pointer">{t("播报说明")}</summary>
-                <p className="mt-2 leading-relaxed">
-                {t("「尝试」是有人要求做某件事，以及结果：已发出表示机器接受了命令，不代表真的完成。「事实」是真的发生了的事，比如机器开了、游戏读到了卡。同时勾选会各播报一次。每个播报组各自决定播什么、怎么说、发到哪里；同一个地方被两个组都选中时只说一次。本 Bot 自己执行的命令不会再播报。提前量为 0 时不发闲置关机提醒。")}
-                </p>
-              </details>
+              <div className="bill-entry !mb-0 grid gap-3">
+                <Field label="闲置关机提醒提前量" unit="分钟">
+                  <input
+                    className={input}
+                    type="number"
+                    min="0"
+                    max="120"
+                    value={bot.idleReminderMinutes}
+                    onChange={(e) => changeBot({ idleReminderMinutes: Number(e.target.value) || 0 })}
+                  />
+                </Field>
+                <details className="border-t border-ink/[0.06] pt-3 text-xs text-ink/55">
+                  <summary className="cursor-pointer font-medium text-ink/70">{t("播报说明")}</summary>
+                  <p className="mt-2 leading-relaxed">
+                  {t("「尝试」是有人要求做某件事，以及结果：已发出表示机器接受了命令，不代表真的完成。「事实」是真的发生了的事，比如机器开了、游戏读到了卡。同时勾选会各播报一次。每个播报组各自决定播什么、怎么说、发到哪里；同一个地方被两个组都选中时只说一次。本 Bot 自己执行的命令不会再播报。提前量为 0 时不发闲置关机提醒。")}
+                  </p>
+                </details>
+              </div>
             </div>
           </div>
           <div hidden={botPane !== "replies"}>
@@ -1054,32 +1126,44 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "add" && (
-        <ul className="grid gap-2">
-          {capabilityList.filter((id) => !caps[id]).map((id) => {
-            const item = capabilityMeta[id];
-            return (
-              <li key={id} className="flex items-center gap-3 rounded-xl border border-ink/10 p-3">
-                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-ink/5 text-ink/50">
-                  <item.icon size={18} aria-hidden="true" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium">{t(item.label)}</span>
-                  <span className="block text-xs text-ink/55">{t(item.description)}</span>
-                </span>
-                <button type="button" className={`${button} min-h-9 px-3 py-1 text-xs`} onClick={() => enable(id)}>
-                  <Plus size={14} aria-hidden="true" />
-                  {t("添加")}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="grid gap-4">
+          <PaneHeader icon={Plus} title="添加能力" />
+          <ul className="grid gap-2.5">
+            {capabilityList.filter((id) => !caps[id]).map((id) => {
+              const item = capabilityMeta[id];
+              return (
+                <li key={id} className="flex items-center gap-3.5 rounded-2xl border border-ink/10 bg-ink/[0.015] p-3.5 transition-colors hover:border-ink/20 hover:bg-ink/[0.03]">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint">
+                    <item.icon size={18} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium">{t(item.label)}</span>
+                    <span className="mt-0.5 block text-xs text-ink/55">{t(item.description)}</span>
+                  </span>
+                  <button type="button" className={compactActionBtn} onClick={() => enable(id)}>
+                    <Plus size={14} aria-hidden="true" />
+                    {t("添加")}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
         </div>
       </div>
     </ActionForm>
   );
 }
+
+const compactActionBtn = `${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs`;
+const dangerActionBtn = `${compactActionBtn} border-coral/25 text-coral hover:bg-coral/5`;
+const toggleRowClass = "flex cursor-pointer items-center gap-2.5 rounded-xl border border-ink/10 bg-panel px-3.5 py-2.5 text-sm";
+const optionCardClass = (selected: boolean) =>
+  `flex cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-2.5 text-sm transition-colors ${
+    selected ? "border-mint bg-mint/[0.08] font-medium" : "border-ink/10 bg-panel hover:bg-ink/[0.02]"
+  }`;
+const statusPill = "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium";
 
 const defaultBotSettings: BotSettings = {
   playerCommands: "all",
@@ -1093,7 +1177,7 @@ const defaultBotSettings: BotSettings = {
   idleReminderMinutes: 5,
 };
 
-const capabilityList = ["power", "climate", "hinata_io", "coin", "door", "mahjong", "bot"] as const satisfies readonly CapabilityId[];
+const capabilityList = ["power", "climate", "hinata_io", "coin", "door", "table", "bot"] as const satisfies readonly CapabilityId[];
 
 /** `seats`: the capability holds its occupants itself, so the occupancy time does not apply. */
 const capabilityMeta: Record<CapabilityId, { icon: LucideIcon; label: string; description: string; seats?: true }> = {
@@ -1102,33 +1186,72 @@ const capabilityMeta: Record<CapabilityId, { icon: LucideIcon; label: string; de
   hinata_io: { icon: CreditCard, label: "刷卡 · HINATA IO", description: "刷卡、按键，记录谁在玩。" },
   coin: { icon: Coins, label: "投币", description: "怎么投币，投币上限和自动投币。" },
   door: { icon: DoorOpen, label: "开门密码", description: "通过 TTLock 生成一次性开门密码。" },
-  mahjong: { icon: Ungroup, label: "麻将桌", description: "按座位开桌计费。", seats: true },
+  table: { icon: Ungroup, label: "桌游", description: "按座位开桌计费，适用麻将、桌游等多人同桌场景。", seats: true },
   bot: { icon: Bot, label: "店铺 Bot", description: "Koishi 等聊天机器人。" },
 };
 
+/** Shared section heading inside ResourceEditor right-hand panes. */
+function PaneHeader({
+  icon: Icon,
+  title,
+  description,
+  action,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  const { t } = useI18n();
+  return (
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/10 pb-3.5">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint">
+          <Icon size={18} aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold">{t(title)}</h3>
+          {description && (
+            <p className="mt-0.5 text-xs text-ink/55">{t(description)}</p>
+          )}
+        </div>
+      </div>
+      {action}
+    </header>
+  );
+}
+
 /** One enabled capability: its settings, why it cannot be saved yet, and removing it. */
 function CapabilityPane({
-  title,
+  meta,
   problem,
   remove,
   children,
 }: {
-  title: string;
+  meta: { icon: LucideIcon; label: string; description: string };
   problem: string | null;
   remove: () => void;
   children: ReactNode;
 }) {
   const { t } = useI18n();
   return (
-    <section className="grid gap-4" aria-label={t(title)}>
-      <header className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">{t(title)}</h3>
-        <button type="button" className={`${buttonQuiet} min-h-9 px-2 text-xs text-coral`} onClick={remove}>
-          <Trash2 size={14} aria-hidden="true" />
-          {t("移除")}
-        </button>
-      </header>
-      {problem && <p role="alert" className="text-sm text-coral">{problem}</p>}
+    <section className="grid gap-4" aria-label={t(meta.label)}>
+      <PaneHeader
+        icon={meta.icon}
+        title={meta.label}
+        description={meta.description}
+        action={
+          <button type="button" className={dangerActionBtn} onClick={remove}>
+            <Trash2 size={14} aria-hidden="true" />
+            {t("移除")}
+          </button>
+        }
+      />
+      {problem && (
+        <p role="alert" className="rounded-xl border border-coral/25 bg-coral/[0.06] px-3.5 py-2.5 text-xs font-medium text-coral">
+          {problem}
+        </p>
+      )}
       {children}
     </section>
   );
@@ -1163,29 +1286,27 @@ function BotTokenPanel({
 }) {
   const { t } = useI18n();
   return (
-    <div className="grid gap-3 rounded-lg border border-ink/10 bg-ink/[0.02] p-3">
-      <p className="text-sm">
-        <span className="text-ink/60">{t("接入凭据")}：</span>
-        {hasBotToken ? (
-          <span className="text-mint">{t("已签发")}</span>
-        ) : (
-          <span className="text-ink/50">{t("未签发")}</span>
-        )}
-      </p>
+    <div className="bill-entry !mb-0 grid gap-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-ink/60">{t("接入凭据")}</span>
+        <span className={`${statusPill} ${hasBotToken ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400" : "bg-ink/[0.05] text-ink/60"}`}>
+          {t(hasBotToken ? "已签发" : "未签发")}
+        </span>
+      </div>
       <p className="text-xs leading-relaxed text-ink/60">
         {t("凭据自己指明店铺，Koishi 里只需要接口地址和凭据。")}
       </p>
       {hasBotToken ? (
         <RotateTokenConfirm
           label="轮换 Bot 凭据"
-          warn="轮换后旧凭据立即失效，正在用它的 Koishi 会断线，需要把新凭据重新填进去才能连上。"
+          warn="轮换后旧凭据立刻失效，正在用它的 Koishi 会断线，需要把新凭据重新填进去才能连上。"
         >
-          <button type="submit" name="intent" value="rotate-bot" className={`${primary} justify-self-start`}>
+          <button type="submit" name="intent" value="rotate-bot" className={`${primary} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs justify-self-start`}>
             {t("确认轮换 Bot 凭据")}
           </button>
         </RotateTokenConfirm>
       ) : (
-        <button type="submit" name="intent" value="rotate-bot" className={`${button} justify-self-start`}>
+        <button type="submit" name="intent" value="rotate-bot" className={`${compactActionBtn} justify-self-start`}>
           {t("签发 Bot 凭据")}
         </button>
       )}
@@ -1207,39 +1328,44 @@ function DirectConnectPanel({
   hasRelayToken: boolean;
 }) {
   const { t } = useI18n();
+  const statusTone =
+    live?.relayOnline === true
+      ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400"
+      : live?.relayOnline === false
+        ? "bg-coral/10 text-coral"
+        : "bg-ink/[0.05] text-ink/60";
   return (
-    <div className="grid gap-3 rounded-lg border border-ink/10 bg-ink/[0.02] p-3">
+    <div className="grid gap-3 rounded-xl border border-ink/10 bg-panel p-3.5">
       {live && (
-        <p className="text-sm">
-          <span className="text-ink/60">{t("连接状态")}：</span>
-          {live.relayOnline === true ? (
-            <span className="text-mint">{t("已连接")}</span>
-          ) : live.relayOnline === false ? (
-            <span className="text-coral">{t("未连接")}</span>
-          ) : (
-            <span className="text-ink/50">{t("未知")}</span>
-          )}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-ink/60">{t("连接状态")}</span>
+          <span className={`${statusPill} ${statusTone}`}>
+            {t(live.relayOnline === true ? "已连接" : live.relayOnline === false ? "未连接" : "未知")}
+          </span>
+        </div>
       )}
       {live?.relayUrl && (
-        <p className="break-all text-xs text-ink/60">{`serverUrl=${live.relayUrl}`}</p>
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-ink/10 bg-ink/[0.025] px-2.5 py-1.5">
+          <code className="min-w-0 flex-1 break-all font-mono text-xs text-ink/70">{`serverUrl=${live.relayUrl}`}</code>
+          <CopyButton value={`serverUrl=${live.relayUrl}`} label="复制" />
+        </div>
       )}
       {hasRelayToken ? (
         <RotateTokenConfirm
           label="轮换设备令牌"
           warn="轮换后机台上的旧令牌立即失效，机台会掉线，需要把新令牌重新写进 INI 并重启才能连上。"
         >
-          <button type="submit" name="intent" value="issue" className={`${primary} justify-self-start`}>
+          <button type="submit" name="intent" value="issue" className={`${primary} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs justify-self-start`}>
             {t("确认轮换设备令牌")}
           </button>
         </RotateTokenConfirm>
       ) : (
-        <button type="submit" name="intent" value="issue" className={`${button} justify-self-start`}>
+        <button type="submit" name="intent" value="issue" className={`${compactActionBtn} justify-self-start`}>
           {t("签发设备令牌")}
         </button>
       )}
       {live?.relayE2ee === true && (
-        <p className="text-sm text-coral">
+        <p className="rounded-xl border border-coral/25 bg-coral/[0.06] px-3 py-2 text-xs font-medium text-coral">
           {t(
             "该机台仍在发送加密消息：请把机台 INI 里的 remotePassword 清空后重启，否则平台无法下发指令。",
           )}
@@ -1256,7 +1382,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   return (
     <button
       type="button"
-      className={`${buttonQuiet} min-h-9 px-2 text-xs`}
+      className={`${buttonQuiet} min-h-8 shrink-0 px-2.5 text-xs`}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(value);
@@ -1287,7 +1413,7 @@ function Segmented({
     <div className="grid gap-2">
       <span className="text-sm font-medium">{label}</span>
       <div
-        className="grid grid-cols-2 gap-1 rounded-lg bg-ink/5 p-1"
+        className="grid grid-cols-2 gap-1 rounded-xl border border-ink/10 bg-panel p-1"
         role="radiogroup"
         aria-label={label}
       >
@@ -1297,9 +1423,9 @@ function Segmented({
             type="button"
             role="radio"
             aria-checked={value === key}
-            className={`focus-ring rounded-md px-3 py-2 text-sm transition-colors ${
+            className={`focus-ring rounded-lg px-3 py-2 text-sm transition-colors ${
               value === key
-                ? "bg-panel font-medium shadow-sm"
+                ? "bg-mint/12 font-medium text-ink shadow-xs"
                 : "text-ink/60 hover:text-ink"
             }`}
             onClick={() => onChange(key)}

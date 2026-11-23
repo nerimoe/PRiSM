@@ -1,4 +1,3 @@
-import { formatLocalDate } from "@prism/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -240,7 +239,6 @@ export function DashboardPage() {
     ? deltaIndicator(analytics.today.revenueTotal, analytics.today.yesterdayRevenueTotal)
     : null;
   const displayZone = analytics?.range.timeZone || timeZone || "Asia/Shanghai";
-  const todayDateLabel = analytics?.range.endDate ?? formatLocalDate(new Date(), displayZone);
 
   const scrollTo = (id: string) => {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -254,9 +252,6 @@ export function DashboardPage() {
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/12 px-2 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
             <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" aria-hidden="true" />
             {t("实时状态")}
-          </span>
-          <span className="text-xs text-ink/50 tabular-nums">
-            {todayDateLabel} · {displayZone}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -552,7 +547,7 @@ export function DashboardPage() {
       {/* Merged Live On-Site Players Workspace */}
       <section
         id="dashboard-live-players"
-        className="scroll-mt-6 rounded-2xl border border-ink/10 bg-ink/[0.02] p-4 dark:bg-panel/45 sm:p-5"
+        className="scroll-mt-6"
         aria-label={t("在店玩家")}
       >
         <PlayerWorkspace
@@ -598,7 +593,7 @@ function CompactDeviceTile({
   const { device, caps, view, hasControls, alert } = item;
   const TypeIcon = caps.bot
     ? Bot
-    : caps.mahjong
+    : caps.table
       ? LayoutGrid
       : caps.hinata_io
         ? Gamepad2

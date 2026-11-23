@@ -324,7 +324,7 @@ const operatingModes: [OperatingMode, string, string][] = [
   [
     "devices",
     "不使用计费",
-    "只用 PRiSM 的设备功能：扫码或碰 NFC 开机、调空调、刷卡、投币、开门或开麻将桌。收费在你自己的其它经营平台完成。以后给哪个资源组设置计费方案，哪里就开始计费。",
+    "只用 PRiSM 的设备功能：扫码或碰 NFC 开机、调空调、刷卡、投币、开门或开桌游桌。收费在你自己的其它经营平台完成。以后给哪个资源组设置计费方案，哪里就开始计费。",
   ],
 ];
 function ShopWizard({ done }: { done: (shop: Shop) => Promise<void> }) {

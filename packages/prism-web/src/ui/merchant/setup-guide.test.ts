@@ -24,7 +24,7 @@ const machine = (over: Partial<Resource> = {}): Resource => ({
   hinataUrl: null,
   homeAssistant: null,
   ttlockLockId: null,
-  mahjong: null,
+  table: null,
   coinKey: 0,
   coinAfterSwipe: false,
   relayConnection: "external",

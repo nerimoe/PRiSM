@@ -29,7 +29,7 @@ export type PublicResource = {
   /** A card can be added at this cabinet's reader. */
   cardCapture?: boolean;
   kind: "machine" | "door";
-  capabilities: { power: boolean; climate?: boolean; coin: boolean; card: boolean; door: boolean; mahjong?: boolean };
+  capabilities: { power: boolean; climate?: boolean; coin: boolean; card: boolean; door: boolean; table?: boolean };
   webOnly?: boolean;
   /** Using it needs its pricing plan running; a free resource needs nothing. */
   billed?: boolean;
@@ -124,7 +124,7 @@ export type DeviceEvent = {
 export type ResourceOccupancyView = {
   resourceId: string;
   capacity: number;
-  /** The capability that decides who is on it, e.g. `hinata_io` or `mahjong`. */
+  /** The capability that decides who is on it, e.g. `hinata_io` or `table`. */
   source: string;
   /** `billing`: the player has a bill running at the shop; a seat can be held before one starts. */
   occupants: Array<{ playerId: string; displayName: string | null; startedAt: string; lastSeenAt: string; expiresAt: string | null; billing?: boolean }>;
@@ -144,8 +144,8 @@ export type OccupancyHistoryEntry = {
 
 export type Resource = {
   /** `startWhen`: the game plan starts once the table is full (`full`, the default) or as each player sits down (`seated`). */
-  mahjong?: { capacity: number; pricingConfigIds: string[]; startWhen?: "full" | "seated" } | null;
-  /** How many people can use it at once; 0 for one nobody occupies. A mahjong table's is its size. */
+  table?: { capacity: number; pricingConfigIds: string[]; startWhen?: "full" | "seated" } | null;
+  /** How many people can use it at once; 0 for one nobody occupies. A table's is its size. */
   capacity?: number;
   /** How long someone counts as on it after the last sign of them; also its idle time. */
   occupancyMinutes?: number;
