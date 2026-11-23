@@ -129,11 +129,12 @@ describe("a bot is a resource", () => {
       expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { announceGroups } })).status).toBe(422);
     }
     // What a bot had before groups is no setting any more.
-    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }, { announceRules: [] }]) {
+    for (const old of [{ announceChannelIds: ["onebot:1"] }, { announceEvents: ["card"] }, { announceCards: true }, { announceRules: [] }, { receiptsToStaff: true }]) {
       expect((await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: old })).status).toBe(422);
     }
     expect((await bot(created.token).get("bot")).body.settings.announceGroups).toEqual(groups);
     expect((await bot(created.token).get("bot")).body.settings).not.toHaveProperty("announceChannelIds");
+    expect((await bot(created.token).get("bot")).body.settings).not.toHaveProperty("receiptsToStaff");
   });
 
   it("issues its token once and tells it its settings and what the shop knows", async () => {

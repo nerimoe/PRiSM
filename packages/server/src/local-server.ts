@@ -386,6 +386,8 @@ export function initializeLocalDatabase(
   for (const statement of platformSchema) {
     db.run(statement);
   }
+  const reportExcluded = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('players') WHERE name='report_excluded'").get();
+  if (!reportExcluded) db.run("ALTER TABLE players ADD COLUMN report_excluded INTEGER NOT NULL DEFAULT 0 CHECK (report_excluded IN (0,1))");
   const seatOwned = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('table_seats') WHERE name = 'entry_owned'").get();
   if (!seatOwned) db.run("ALTER TABLE table_seats ADD COLUMN entry_owned INTEGER NOT NULL DEFAULT 0");
   db.run("UPDATE device_capabilities SET capability = 'table' WHERE capability = 'mahjong'");

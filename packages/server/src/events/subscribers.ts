@@ -43,6 +43,8 @@ export type EventContext = {
   hub?: HubCalls;
   /** The client that asked for what happened: it shows it already and is not pushed its own news. */
   initiatorClientId?: string | null;
+  /** Destination where the initiating bot already answered this command, so announcements skip only that chat. */
+  botChannel?: string | null;
   /** Runs work after the caller is answered (the request's `waitUntil`), apart from the other listeners. */
   later?: (work: Promise<unknown>) => void;
 };
@@ -184,8 +186,10 @@ export const announcementSubscriber: AfterSubscriber<EventContext> = {
         resourceName: ids.map((id) => names.get(id) ?? id).join("、"),
         player: who,
         via: event.via?.channel ?? null,
-        // A bot has answered its own command already and does not announce it again.
-        ...(event.via?.channel === "bot" && event.via.resourceId ? { botId: event.via.resourceId } : {}),
+        // A bot has answered its own command already and does not announce it again in that chat.
+        ...(event.via?.channel === "bot" && event.via.resourceId
+          ? { botId: event.via.resourceId, ...(context.botChannel ? { botChannel: context.botChannel } : {}) }
+          : {}),
         ...(Object.keys(values).length ? { values } : {}),
       }, context.hub, event.occurredAt);
     }

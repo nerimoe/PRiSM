@@ -65,7 +65,7 @@ const bot = (over: Partial<Resource> = {}) => machine({
   id: "bot", hasBotToken: true, botLastUsedAt: "2026-10-20T00:00:00Z",
   bot: {
     playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false,
-    doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false, announceGroups: [],
+    doorResourceId: null, doorPasswordOnEntry: false, announceGroups: [],
     idleReminderMinutes: 5,
   },
   ...over,
@@ -195,7 +195,7 @@ describe("setup guide", () => {
         bot({
           bot: {
             playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false,
-            doorResourceId: null, receiptsToStaff: false, doorPasswordOnEntry: false,
+            doorResourceId: null, doorPasswordOnEntry: false,
             announceGroups: [{ id: "g1", name: "群", to: ["onebot:1"], events: {}, templates: {} }],
             idleReminderMinutes: 5,
           },

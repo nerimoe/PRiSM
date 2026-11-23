@@ -1065,15 +1065,15 @@ export function ResourceEditor({
               </div>
             </fieldset>
             <fieldset className="bill-entry !mb-0 grid gap-2.5">
-              <legend className="mb-0.5 text-sm font-medium">{t("入场与结账")}</legend>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {([["doorPasswordOnEntry", "入场后自动获取门锁密码"], ["receiptsToStaff", "结账回执发给店员"]] as const).map(([key, label]) => (
-                  <label key={key} className={toggleRowClass}>
-                    <input type="checkbox" checked={bot[key]} onChange={(e) => changeBot({ [key]: e.target.checked })} />
-                    <span>{t(label)}</span>
-                  </label>
-                ))}
-              </div>
+              <legend className="mb-0.5 text-sm font-medium">{t("入场与门锁")}</legend>
+              <label className={toggleRowClass}>
+                <input
+                  type="checkbox"
+                  checked={bot.doorPasswordOnEntry}
+                  onChange={(e) => changeBot({ doorPasswordOnEntry: e.target.checked })}
+                />
+                <span>{t("入场后自动获取门锁密码")}</span>
+              </label>
               <Field label="默认门锁">
                 <select
                   className={input}
@@ -1171,7 +1171,6 @@ const defaultBotSettings: BotSettings = {
   staffCommands: true,
   powerOffStaffOnly: false,
   doorResourceId: null,
-  receiptsToStaff: false,
   doorPasswordOnEntry: false,
   announceGroups: [],
   idleReminderMinutes: 5,

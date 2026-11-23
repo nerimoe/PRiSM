@@ -2055,6 +2055,50 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(source.checkoutRows.filter(row => row.settled_at >= source.range.from).reduce((sum, row) => sum + row.total, 0)).toBe(1000);
     expect(source.sessionRows.every(row => "ended_at" in row)).toBe(true);
 
+    const settingsUrl = `https://prism.test/api/v1/shops/${publicId}/staff/players/p_b/report-settings`;
+    const deniedSettings = await app.fetch(new Request(settingsUrl, { method: "PUT", headers: { Authorization: `Bearer ${viewerToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ excluded: true }) }), env);
+    expect(deniedSettings.status).toBe(403);
+    const writeSettings = await app.fetch(new Request(settingsUrl, { method: "PUT", headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ excluded: true }) }), env);
+    expect(writeSettings.status).toBe(200);
+    const persisted = await app.fetch(new Request(settingsUrl, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    expect(await persisted.json() as { excluded: boolean; isStaff: boolean }).toEqual({ excluded: true, isStaff: false });
+    await app.fetch(new Request(settingsUrl, { method: "PUT", headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ excluded: false }) }), env);
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,CURRENT_TIMESTAMP)", [shopId, viewerUserId, "p_a"]);
+    const optionsRes = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/player-options`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    expect(optionsRes.status).toBe(200);
+    const options = await optionsRes.json() as { players: { id: string; isStaff: boolean }[] };
+    expect(options.players.find(p => p.id === "p_a")?.isStaff).toBe(true);
+    expect(options.players.find(p => p.id === "p_b")?.isStaff).toBe(false);
+    const exclusions = encodeURIComponent(JSON.stringify(["p_a"]));
+    const filteredRes = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?source=1&days=7&excludePlayers=${exclusions}`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    const filtered = await filteredRes.json() as { source: import("@prism/application").StaffReportsAnalyticsSource };
+    expect(filteredRes.status).toBe(200);
+    expect(filtered.source.checkoutRows.every(r => r.player_id !== "p_a")).toBe(true);
+    expect(filtered.source.sessionRows.every(r => r.player_id !== "p_a")).toBe(true);
+    expect(filtered.source.assetGrantCount).toBe(0);
+    const from = parseLocalDateTime(addLocalDays(todayLocal, -6), "00:00", "Asia/Shanghai").toISOString();
+    const to = parseLocalDateTime(addLocalDays(todayLocal, 1), "00:00", "Asia/Shanghai").toISOString();
+    const recordsRes = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/checkouts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&excludePlayers=${exclusions}&limit=1`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    const records = await recordsRes.json() as { records: { playerId: string }[]; page: { hasMore: boolean } };
+    expect(recordsRes.status).toBe(200);
+    expect(records.records).toHaveLength(1);
+    expect(records.records[0]?.playerId).toBe("p_b");
+    expect(records.page.hasMore).toBe(true);
+    const page2Res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/checkouts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&excludePlayers=${exclusions}&limit=1&offset=1`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    const page2 = await page2Res.json() as typeof records;
+    expect(page2.records).toHaveLength(1);
+    expect(page2.records[0]?.playerId).toBe("p_b");
+    expect(page2.page.hasMore).toBe(false);
+    const allRecordsRes = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/checkouts?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&archive=all`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    const allRecords = await allRecordsRes.json() as { records: { playerId: string; archived: boolean }[] };
+    expect(allRecords.records.some(r => r.playerId === "p_a")).toBe(true);
+    expect(allRecords.records.some(r => r.archived)).toBe(true);
+
+    expect(filtered.source.operationRows).toHaveLength(1);
+    expect(filtered.source.operationRows[0]?.device_id).toBe("cab_2");
+    const invalidFilter = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?source=1&excludePlayers=invalid`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
+    expect(invalidFilter.status).toBe(400);
+
     // 4. Reject invalid or over-long custom ranges with 400 INVALID_REPORT_RANGE
     for (const qs of [
       `startDate=${yesterdayLocal}`,

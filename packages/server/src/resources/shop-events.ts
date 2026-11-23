@@ -25,6 +25,8 @@ export type EventPlayer = {
  * One thing a bot may say. `key` is its entry in the catalog; `values` fills
  * the words' `{…}` beyond the player, the device and where it came from.
  * `botId`: the bot whose command this was, which has answered it already.
+ * `botChannel`: the destination where `botId` answered that command, so it is
+ * not announced again in that chat while other destinations still hear it.
  */
 export type Announcement = {
   key: string;
@@ -34,6 +36,7 @@ export type Announcement = {
   /** Where what it tells came into the platform (`DeviceEventChannel`); a bot's rules may ask. */
   via?: string | null;
   botId?: string;
+  botChannel?: string;
   values?: Record<string, string | BotMessage>;
 };
 

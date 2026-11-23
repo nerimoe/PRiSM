@@ -374,8 +374,6 @@ const botConfig = z.object({
   powerOffStaffOnly: z.boolean().default(false),
   /** The door `开门` opens; a resource with the door capability. */
   doorResourceId: z.string().min(1).nullable().default(null),
-  /** Staff receive checkout receipts privately. */
-  receiptsToStaff: z.boolean().default(false),
   /**
    * `login`/`入场` also hands out the door code, so a player who comes in
    * through the bot needs one command. Off by default: a code lives three

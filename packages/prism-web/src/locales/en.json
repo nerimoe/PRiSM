@@ -1799,7 +1799,6 @@
   "提醒提前量": "Reminder lead",
   "店员代为操作": "Staff act for players",
   "仅店员可关机": "Power off by staff only",
-  "结账回执发给店员": "Receipts to staff",
   "监听 Home Assistant": "Watch Home Assistant",
   "依赖方案": "Required plan",
   "日期": "Date",
@@ -2019,7 +2018,7 @@
   "Bot 设置": "Bot settings",
   "使用权限": "Permissions",
   "播报设置": "Announcements",
-  "入场与结账": "Entry and checkout",
+  "入场与门锁": "Entry and door lock",
   "播报说明": "About announcements",
   "发到": "Send to",
   "每行一个目的地，群和人写法一样：群写 平台:群号，个人写 平台:private:用户号。": "One destination per line; groups and people are written alike: platform:group for a group, platform:private:user for a person.",
@@ -2232,5 +2231,15 @@
   "按资源组看实时状态磁贴、点磁贴远程操作（含后台自定义按键、免冷却投币、上下桌游桌）、查占用和完整操作记录。": "View live resource tiles by group, click a tile to operate it (including admin keys, cooldown-free coins, and tabletop seats), and check occupancy and full history.",
   "开门或上桌游桌前，平台需要确认玩家是本店玩家。": "Before opening a door or taking a tabletop seat, PRiSM needs to know the player belongs to this store.",
   "资源是玩家扫码使用的对象：机台、空调、门锁、桌游桌，或没有硬件、只用来开始计费的二维码（Bot 资源单独用于机器人，不供扫码）。给资源加上「电源控制」「空调」「刷卡 · HINATA IO」「投币」「开门密码」或「桌游」等能力即可联动硬件；想只用二维码计费时，把它放进有计费方案的资源组即可。": "A resource is what players scan: a cabinet, air conditioner, door, tabletop game table, or a billing-only QR (bot resources serve chat bots and are never scanned). Add Power, Climate, Card · HINATA IO, Coin, Door passcode, or Tabletop capabilities for hardware; for billing-only QR codes, simply place the resource in a billed group.",
-  "按区域建资源组（如游戏区、休息区、桌游包间）并设置不同方案，配合规则「依赖 / 冲突」实现换区切换计费或叠加计费。": "Create resource groups per zone (e.g. arcade, lounge, board game room) with distinct plans, and combine with rule requires/conflicts to switch or stack plans as players move."
+  "按区域建资源组（如游戏区、休息区、桌游包间）并设置不同方案，配合规则「依赖 / 冲突」实现换区切换计费或叠加计费。": "Create resource groups per zone (e.g. arcade, lounge, board game room) with distinct plans, and combine with rule requires/conflicts to switch or stack plans as players move.",
+  "排除玩家": "Exclude players",
+  "自动排除店员（含店主）": "Automatically exclude staff (including the owner)",
+  "已排除 {count} 位玩家": "{count} players excluded",
+  "同时作用于统计、图表、结账记录和 Excel。店员按本店账号关联识别，未关联的档案可手动排除。": "Applies to statistics, charts, checkout records and Excel. Staff are identified by linked store accounts; unlinked profiles can be excluded manually.",
+  "指定排除玩家": "Choose players to exclude",
+  "已排除玩家": "Excluded players",
+  "移除 {name}": "Remove {name}",
+  "按昵称或玩家 ID 搜索；勾选玩家加入排除名单。": "Search by name or player ID; select a player to exclude them.",
+  "排除经营统计": "Exclude from analytics",
+  "店员自动排除统计": "Staff excluded from analytics"
 }

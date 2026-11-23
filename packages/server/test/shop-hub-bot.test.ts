@@ -98,7 +98,7 @@ async function fixture(options: { databaseLatency?: boolean } = {}) {
     await hub.webSocketMessage(ws as any, JSON.stringify(frame));
     return JSON.parse(ws.sent.at(-1) ?? "null");
   };
-  return { sqlite, hub, ws, send, state, sockets, env };
+  return { sqlite, hub, ws, send, state, sockets, env, tasks };
 }
 
 describe("bot connection", () => {
@@ -549,6 +549,75 @@ describe("a bot's commands", () => {
       ["onebot:staff", "✅ 店员 在扫码页开启了 舞萌"], ["onebot:private:20001", "✅ 店员 在扫码页开启了 舞萌"],
       ["onebot:42", "💳 未绑定的卡 在 舞萌 刷卡"],
     ]);
+    sqlite.close();
+  });
+
+  it("skips only the chat where this bot answered its own command, and still tells other destinations", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    botResource(sqlite, {
+      announceGroups: groupsOf([
+        { events: ["checkout.settled"], sources: ["bot"], to: ["onebot:staff", "onebot:private:20001"] },
+      ]),
+    });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    await hub.shopEvent({
+      key: "checkout.settled", resourceId: "", resourceName: "", player: null, via: "bot",
+      botId: "bot-res", botChannel: "onebot:staff", values: { bill: "🧾 结算账单" },
+    });
+    expect(says(ws).map((frame) => [frame.to, text(frame)])).toEqual([
+      ["onebot:private:20001", "🧾 结算账单"],
+    ]);
+    sqlite.close();
+  });
+
+  it("delivers checkout broadcasts from a bot's own /logout to staff and other groups, without repeating in the answering chat", async () => {
+    const { sqlite, hub, ws, tasks } = await fixture();
+    sqlite.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','currency','paid','猫粮',1,'active'),('shop','currency','free','赠送',1,'active')");
+    sqlite.run(
+      "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES ('shop','base','time.priority','base',1,'active',?,'2026-01-01','2026-01-01')",
+      [JSON.stringify({ id: "base", timeZone: "UTC", rules: [{ id: "r", label: "全天", priority: 0, timeRange: { start: "00:00", end: "00:00" }, pricing: { unitMinutes: 60, unitPrice: 100, roundGraceMinutes: 0, priceCap: 100000 } }] })],
+    );
+    sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at) VALUES ('shop','default','默认',1,'base','2026-01-01','2026-01-01')");
+    botResource(sqlite, {
+      announceGroups: groupsOf([
+        { events: ["checkout.settled"], sources: [], to: ["onebot:42", "onebot:private:20001", "onebot:private:20002"] },
+      ]),
+    });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+
+    // 1) Group chat /logout: command reply stays in onebot:42; broadcasts go only to the two staff DMs.
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("in-1", "login")));
+    await Promise.all(tasks.splice(0));
+    ws.sent.length = 0;
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("out-1", "logout")));
+    await Promise.all(tasks.splice(0));
+
+    const groupSays = says(ws);
+    const groupReplies = groupSays.filter((frame) => frame.replyTo === "out-1");
+    const groupBroadcasts = groupSays.filter((frame) => !frame.replyTo);
+    expect(groupReplies).toHaveLength(1);
+    expect(groupReplies[0]!.to).toBeUndefined();
+    expect(text(groupReplies[0]!)).toContain("✅ 退场成功 · 结算账单");
+    expect(groupBroadcasts.map((frame) => frame.to)).toEqual(["onebot:private:20001", "onebot:private:20002"]);
+    for (const frame of groupBroadcasts) expect(text(frame).startsWith("🧾 结算账单")).toBe(true);
+
+    // 2) Staff private chat /logout (channel "private:20001"): skips onebot:private:20001, broadcasts to onebot:42 & onebot:private:20002.
+    const staff = { provider: "onebot", subject: "20001", name: "店员一" };
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "in-2", name: "login", args: [], from: staff, channel: "private:20001" }));
+    await Promise.all(tasks.splice(0));
+    ws.sent.length = 0;
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "out-2", name: "logout", args: [], from: staff, channel: "private:20001" }));
+    await Promise.all(tasks.splice(0));
+
+    const dmSays = says(ws);
+    const dmReplies = dmSays.filter((frame) => frame.replyTo === "out-2");
+    const dmBroadcasts = dmSays.filter((frame) => !frame.replyTo);
+    expect(dmReplies).toHaveLength(1);
+    expect(dmReplies[0]!.to).toBeUndefined();
+    expect(text(dmReplies[0]!)).toContain("✅ 退场成功 · 结算账单");
+    expect(dmBroadcasts.map((frame) => frame.to)).toEqual(["onebot:42", "onebot:private:20002"]);
+    for (const frame of dmBroadcasts) expect(text(frame).startsWith("🧾 结算账单")).toBe(true);
+
     sqlite.close();
   });
 

@@ -112,6 +112,9 @@ function mock(request, role, unknown, mutations) {
     if (action === "redeem-codes") return { redeemCodes: [] };
     if (action === "settings") return { settings: storeSettings };
     if (action === "api-tokens") return { apiTokens: [] };
+    if (action === "reports/exclusions") return { excludedPlayerIds: [] };
+    if (action.endsWith("/report-settings")) return { excluded: false, isStaff: false };
+    if (action === "reports/player-options") return { players: [] };
     if (action === "reports/summary") return { summary: {
       revenueTotal: 0, sessionCount: 0, assetGrantTotal: 0, coinCommandCount: 0,
     }};
@@ -122,6 +125,7 @@ function mock(request, role, unknown, mutations) {
       const to = new Date(new Date(`${endDate}T00:00:00+08:00`).getTime() + 86400000);
       return { source: {
         range: { days: Math.round((to - from) / 86400000), timeZone: "Asia/Shanghai", from: from.toISOString(), to: to.toISOString(), startDate, endDate },
+        excludedPlayerIds: JSON.parse(url.searchParams.get("excludePlayers") || "[]"),
         asOf: new Date().toISOString(), checkoutRows: [], sessionRows: [], playerRows: [], operationRows: [], assetGrantCount: 0,
       } };
     }

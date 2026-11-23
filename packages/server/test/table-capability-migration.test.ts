@@ -5,14 +5,14 @@ import { resolve } from "node:path";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
 
 const migrationDir = resolve(import.meta.dir, "../../../migrations");
-const migration0058 = resolve(migrationDir, "0058_table_capability.sql");
+const migration0061 = resolve(migrationDir, "0061_table_capability.sql");
 
-describe("migration 0058: rename mahjong capability and mahjong_seats to table/table_seats", () => {
+describe("migration 0061: rename mahjong capability and mahjong_seats to table/table_seats", () => {
   it("migrates tables, triggers, indexes, capabilities, events, operations, state, occupancies, and session metadata", () => {
     const sqlite = new Database(":memory:");
     sqlite.run("PRAGMA foreign_keys=OFF");
     for (const filename of readdirSync(migrationDir)
-      .filter((name) => name.endsWith(".sql") && !name.startsWith("0058_"))
+      .filter((name) => name.endsWith(".sql") && !name.startsWith("0061_"))
       .sort()) {
       for (const statement of splitD1MigrationStatements(readFileSync(resolve(migrationDir, filename), "utf8"))) {
         sqlite.run(statement);
@@ -74,7 +74,7 @@ describe("migration 0058: rename mahjong capability and mahjong_seats to table/t
       [now, future],
     );
 
-    for (const sql of splitD1MigrationStatements(readFileSync(migration0058, "utf8"))) {
+    for (const sql of splitD1MigrationStatements(readFileSync(migration0061, "utf8"))) {
       sqlite.run(sql);
     }
 

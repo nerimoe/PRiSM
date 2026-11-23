@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { centsOf as moneyFixture, centsOfInteger as integerFixture } from "@prism/core";
 import { centsOf, yuanOf } from "@prism/core";
 import { describe, expect, it } from "bun:test";
@@ -235,11 +236,31 @@ describe("importPrismNeoMigrationPlan", () => {
     };
 
     await importPrismNeoMigrationPlan({ executor, plan });
+    await importPrismNeoMigrationPlan({ executor, plan });
+    expect(db.query("SELECT COUNT(*) AS n FROM player_checkouts").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT total FROM player_checkouts").get()).toEqual({ total: 9000 });
+    // Simulate databases imported before checkouts were written, then apply the
+    // upgrade twice. Existing item settlements and their amounts stay intact.
+    db.run("UPDATE settlements SET checkout_id=NULL");
+    db.run("DELETE FROM player_checkouts");
+    const repair = readFileSync(new URL("../../../migrations/0058_legacy_settlement_checkouts.sql", import.meta.url), "utf8");
+    db.exec(repair);
+    db.exec(repair);
+    expect(db.query("SELECT COUNT(*) AS n FROM player_checkouts").get()).toEqual({ n: 1 });
+    expect(db.query("SELECT COUNT(*) AS n FROM settlements WHERE checkout_id IS NULL").get()).toEqual({ n: 0 });
+
 
     const queries = createRuntimeQueries({
       executor,
       now: () => new Date("2026-06-01T00:00:00.000Z"),
     });
+    const report = await queries.staffQueries.listReportCheckouts!({ from: new Date("2026-01-01T00:00:00Z"), to: new Date("2026-02-01T00:00:00Z"), limit: 50 });
+    expect(report).toHaveLength(1);
+    expect(report[0]!.total).toBe(90);
+    expect(report[0]!.sessionCount).toBe(1);
+    const analytics = await queries.staffQueries.getReportsAnalytics!({ startDate: "2026-01-01", endDate: "2026-01-31", timeZone: "Asia/Shanghai" });
+    expect(analytics.period.revenueTotal).toBe(integerFixture(9000));
+    expect(analytics.period.checkoutCount).toBe(1);
     const [player, identityPlayer, holdings, ledger, session, settlement, pricingConfigs, redeemCodes, present, records, commands] =
       await Promise.all([
         repositories.players.findById("legacy:user:7"),

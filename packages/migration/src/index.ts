@@ -375,19 +375,39 @@ export async function importPrismNeoMigrationPlan(input: ImportPrismNeoMigration
          payment_status = excluded.payment_status`,
   );
 
+  // Legacy sessions each contain one final bill. Persist the checkout as well as
+  // its item settlement so imported history uses the same reporting path.
+  const existingCheckouts = new Map((await executor.all<{ session_id: string; checkout_id: string }>(
+    `SELECT session_id, checkout_id FROM settlements WHERE shop_id=${sqlShop(executor)} AND checkout_id IS NOT NULL`, []
+  )).map(row => [row.session_id, row.checkout_id]));
+  const sessionPlayers = new Map(plan.sessions.map(session => [session.id, session.playerId]));
+  await runSqlValuesInBatches(executor, plan.settlements.filter(({ settlement }) => {
+    const existing = existingCheckouts.get(settlement.sessionId);
+    return !existing || existing === `legacy:checkout:legacy:settlement:${settlement.sessionId}`;
+  }).map(({ settlement }) => {
+    const playerId = sessionPlayers.get(settlement.sessionId);
+    if (!playerId) throw new Error(`Missing session for imported settlement: ${settlement.sessionId}`);
+    return [`legacy:checkout:legacy:settlement:${settlement.sessionId}`, playerId,
+      settlement.subtotal, settlement.total, "settled", settlement.settledAt.toISOString()];
+  }), values => `INSERT INTO player_checkouts (shop_id, id, player_id, subtotal, total, status, settled_at)
+    VALUES ${shopValues(executor, values)}
+    ON CONFLICT(shop_id, id) DO UPDATE SET subtotal=excluded.subtotal,total=excluded.total,settled_at=excluded.settled_at`);
+
   await runSqlValuesInBatches(
     executor,
     plan.settlements.map(({ settlement }) => [
       `legacy:settlement:${settlement.sessionId}`,
       settlement.sessionId,
+      existingCheckouts.get(settlement.sessionId) ?? `legacy:checkout:legacy:settlement:${settlement.sessionId}`,
       settlement.subtotal,
       settlement.total,
       settlement.status,
       settlement.settledAt.toISOString(),
     ]),
-    (values) => `INSERT INTO settlements (shop_id, id, session_id, subtotal, total, status, settled_at)
+    (values) => `INSERT INTO settlements (shop_id, id, session_id, checkout_id, subtotal, total, status, settled_at)
        VALUES ${shopValues(executor, values)}
        ON CONFLICT(shop_id, session_id) DO UPDATE SET
+         checkout_id = COALESCE(settlements.checkout_id, excluded.checkout_id),
          subtotal = excluded.subtotal,
          total = excluded.total,
          status = excluded.status,

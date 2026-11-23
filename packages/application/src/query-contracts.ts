@@ -177,6 +177,7 @@ export type StaffReportsSummary = StaffReportsSummaryInput & {
 };
 
 export type StaffReportsAnalyticsInput = {
+  excludedPlayerIds?: readonly string[];
   days?: number;
   startDate?: string;
   endDate?: string;
@@ -185,6 +186,7 @@ export type StaffReportsAnalyticsInput = {
 
 /** Batch facts for browser-side historical reporting. Monetary totals are integer cents. */
 export type StaffReportsAnalyticsSource = {
+  excludedPlayerIds?: string[];
   range: { days: number; timeZone: string; from: string; to: string; startDate: string; endDate: string };
   asOf: string;
   checkoutRows: { id: string; player_id: string; total: number; settled_at: string; duration_minutes: number; payment_method: string | null }[];
@@ -314,7 +316,7 @@ export type StaffQueries = {
   getReportsAnalyticsSource?(input: StaffReportsAnalyticsInput): Promise<StaffReportsAnalyticsSource>;
   getReportsAnalytics?(input: StaffReportsAnalyticsInput): Promise<StaffReportsAnalytics>;
   /** Checkouts settled in a range, or every checkout of one player when `playerId` is given. */
-  listReportCheckouts?(input: (StaffReportsSummaryInput | { playerId: string }) & { limit: number; offset?: number; archive?: ReportArchiveFilter }): Promise<StaffReportCheckout[]>;
+  listReportCheckouts?(input: (StaffReportsSummaryInput | { playerId: string }) & { limit: number; offset?: number; archive?: ReportArchiveFilter; excludedPlayerIds?: readonly string[] }): Promise<StaffReportCheckout[]>;
   getReportCheckout?(checkoutId: string): Promise<StaffReportCheckoutDetail | null>;
   listReportSettlements?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportSettlementListItem[]>;
   listReportPlayers?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportPlayerListItem[]>;

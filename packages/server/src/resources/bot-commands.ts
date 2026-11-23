@@ -128,18 +128,10 @@ const botOrigin = (ctx: BotCommandContext) => ({ via: { channel: "bot" as const,
 
 /* ------------------------------ commands --------------------------------- */
 
-/** A bill sent where the command was said, and privately to staff on the same platform when the bot is set to. */
-function receipt(ctx: BotCommandContext, message: BotMessage): Say[] {
-  const staff = ctx.view.settings.receiptsToStaff
-    ? [...new Set(ctx.view.staff.filter((identity) => identity.provider === ctx.who.provider).map((identity) => `private:${identity.subject}`))]
-    : [];
-  return [{ message }, ...staff.map((to) => ({ to, message }))];
-}
-
 async function settled(ctx: BotCommandContext, result: Parameters<typeof toPlayerCheckoutResultView>[0], title: string): Promise<Say[]> {
   const view = toPlayerCheckoutResultView(result) as Record<string, any>;
   const who = await addressee(ctx, view.playerSettlement?.playerId ?? null);
-  return receipt(ctx, messageFor(ctx, "success", receiptMessage(settledAsPreview(view), { title, preview: false, who, currency: ctx.view.currencyName, timeZone: ctx.shop.time_zone || "UTC" })));
+  return answer(ctx, "success", receiptMessage(settledAsPreview(view), { title, preview: false, who, currency: ctx.view.currencyName, timeZone: ctx.shop.time_zone || "UTC" }));
 }
 
 async function deviceAction(

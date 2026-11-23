@@ -81,6 +81,7 @@ export function validateBackup(backup: ShopBackup): string[] {
     const columns = schema.columns.map(column => column.name).sort().join(",");
     const unique = schema.keys.map(() => new Set<string>());
     for (const [index, row] of rows.entries()) {
+      if (table === "players" && row.report_excluded === undefined) row.report_excluded = 0;
       const label = `${table} 第 ${index + 1} 行`;
       if (new TextEncoder().encode(JSON.stringify(row)).length + 3 > maxChunkBytes) add(`${label} 超出单条 128 KiB 限制`);
       if (Object.keys(row).sort().join(",") !== columns) { add(`${label} 字段不完整或包含未知字段`); continue; }

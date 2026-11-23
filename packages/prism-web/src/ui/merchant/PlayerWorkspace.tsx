@@ -21,6 +21,7 @@ import {
   money,
   primary,
   segment,
+  staffMessage,
   State,
   useMerchant,
   useResource,
@@ -1079,6 +1080,7 @@ function PlayerPanel({
   const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
+  const reportSettings = useResource<{ excluded: boolean; isStaff: boolean }>(`${base}/report-settings`);
   const assets = useResource<Holdings>(`${base}/assets`);
   const definitions = useResource<{ assetDefinitions: Asset[] }>("asset-definitions");
   const plans = useResource<{ pricingConfigs: EntryPlan[] }>("pricing-configs");
@@ -1092,7 +1094,17 @@ function PlayerPanel({
   );
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reportSaving, setReportSaving] = useState(false);
   const [error, setError] = useState("");
+  async function toggleReportExclusion(excluded: boolean) {
+    setReportSaving(true);
+    setError("");
+    try {
+      await request(`${base}/report-settings`, "PUT", { excluded });
+      reportSettings.reload();
+    } catch (e) { setError(staffMessage(e instanceof Error ? e : new Error(String(e)))); }
+    finally { setReportSaving(false); }
+  }
   const [overrideTotal, setOverrideTotal] = useState("");
   const [rechargeAmount, setRechargeAmount] = useState("");
   const [walletDirection, setWalletDirection] = useState<"plus" | "minus">("plus");
@@ -1731,6 +1743,38 @@ function PlayerPanel({
             </p>
           </ActionForm>
         </Modal>
+      )}
+
+      {(reportSettings.data || reportSettings.error) && (
+        <div className="px-5 pb-3 sm:px-6">
+          <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm">
+            {reportSettings.data ? (
+              <label className="flex w-full cursor-pointer items-center justify-between gap-3">
+                <span className="text-ink">
+                  {t(reportSettings.data.isStaff ? "店员自动排除统计" : "排除经营统计")}
+                </span>
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[var(--color-mint)]"
+                  checked={reportSettings.data.excluded}
+                  disabled={!canWrite || reportSaving || reportSettings.data.isStaff}
+                  onChange={(e) => void toggleReportExclusion(e.target.checked)}
+                />
+              </label>
+            ) : (
+              <>
+                <span className="text-xs text-ink/60">{t("排除经营统计")}</span>
+                <button
+                  type="button"
+                  className={compactButton}
+                  onClick={reportSettings.reload}
+                >
+                  {t("重试")}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Layer 3: Top-Docked Single-Line Underline Tabs (always above timeline) */}

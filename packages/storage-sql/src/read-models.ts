@@ -544,6 +544,7 @@ async function getReportsAnalyticsSource(
   input: CreateSqlReadModelsInput,
   query: StaffReportsAnalyticsInput,
 ): Promise<StaffReportsAnalyticsSource> {
+  const excluded = JSON.stringify(query.excludedPlayerIds ?? []);
   const timeZone = query.timeZone;
   const actualToday = formatLocalDate(input.now(), timeZone);
   const actualYesterday = addLocalDays(actualToday, -1);
@@ -590,20 +591,21 @@ async function getReportsAnalyticsSource(
        LEFT JOIN cashier_payments payment ON payment.shop_id = c.shop_id AND payment.checkout_id = c.id
        WHERE c.settled_at >= ? AND c.settled_at < ?
          AND COALESCE(a.archived, 0) = 0
+         AND c.player_id NOT IN (SELECT value FROM json_each(?))
        GROUP BY c.id`,
-      [prevFromIso, endExclusiveIso],
+      [prevFromIso, endExclusiveIso, excluded],
     ),
     input.executor.all<{ player_id: string; started_at: string; ended_at: string | null }>(
       `SELECT player_id, started_at, ended_at
        FROM (SELECT * FROM sessions WHERE shop_id = ${shop})
-       WHERE (ended_at IS NULL OR ended_at > ?) AND started_at < ?`,
-      [prevFromIso, endExclusiveIso],
+       WHERE (ended_at IS NULL OR ended_at > ?) AND started_at < ? AND player_id NOT IN (SELECT value FROM json_each(?))`,
+      [prevFromIso, endExclusiveIso, excluded],
     ),
     input.executor.all<{ created_at: string }>(
       `SELECT created_at
        FROM (SELECT * FROM players WHERE shop_id = ${shop})
-       WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?)`,
-      [periodFromIso, endExclusiveIso],
+       WHERE datetime(created_at) >= datetime(?) AND datetime(created_at) < datetime(?) AND id NOT IN (SELECT value FROM json_each(?))`,
+      [periodFromIso, endExclusiveIso, excluded],
     ),
     input.executor.all<{
       device_id: string | null;
@@ -614,19 +616,20 @@ async function getReportsAnalyticsSource(
     }>(
       `SELECT device_id, action, status, counts_as_play, requested_at
        FROM (SELECT * FROM device_operations WHERE shop_id = ${shop})
-       WHERE requested_at >= ? AND requested_at < ?`,
-      [periodFromIso, endExclusiveIso],
+       WHERE requested_at >= ? AND requested_at < ? AND (player_id IS NULL OR player_id NOT IN (SELECT value FROM json_each(?)))`,
+      [periodFromIso, endExclusiveIso, excluded],
     ),
     input.executor.first<{ asset_grant_count: number }>(
       `SELECT COUNT(*) AS asset_grant_count
        FROM (SELECT * FROM asset_ledger_entries WHERE shop_id = ${shop})
-       WHERE delta > 0 AND created_at >= ? AND created_at < ?`,
-      [periodFromIso, endExclusiveIso],
+       WHERE delta > 0 AND created_at >= ? AND created_at < ? AND player_id NOT IN (SELECT value FROM json_each(?))`,
+      [periodFromIso, endExclusiveIso, excluded],
     ),
   ]);
 
   return {
     range: { days, timeZone, from: periodFromIso, to: endExclusiveIso, startDate, endDate },
+    excludedPlayerIds: [...(query.excludedPlayerIds ?? [])],
     asOf: input.now().toISOString(), checkoutRows, sessionRows, playerRows, operationRows,
     assetGrantCount: assetRow?.asset_grant_count ?? 0,
   };
@@ -1451,6 +1454,7 @@ async function listReportCheckouts(
     playerId?: string;
     limit: number;
     offset?: number;
+    excludedPlayerIds?: readonly string[];
     archive?: import("@prism/application").ReportArchiveFilter;
   },
 ): Promise<import("@prism/application").StaffReportCheckout[]> {
@@ -1485,6 +1489,7 @@ async function listReportCheckouts(
     LEFT JOIN cashier_payments payment ON payment.shop_id=c.shop_id AND payment.checkout_id=c.id
     WHERE c.shop_id=${shop} AND ${query.checkoutId ? "c.id=?" : query.playerId ? "c.player_id=?" : "c.settled_at>=? AND c.settled_at<?"}
       ${archive === "all" ? "" : `AND COALESCE(a.archived,0)=${archive === "archived" ? 1 : 0}`}
+      AND c.player_id NOT IN (SELECT value FROM json_each(?))
     GROUP BY c.id ORDER BY c.settled_at DESC,c.id DESC LIMIT ? OFFSET ?`,
     [
       ...(query.checkoutId
@@ -1492,6 +1497,7 @@ async function listReportCheckouts(
         : query.playerId
           ? [query.playerId]
           : [query.from!.toISOString(), query.to!.toISOString()]),
+      JSON.stringify(query.excludedPlayerIds ?? []),
       query.limit,
       query.offset ?? 0,
     ],

@@ -216,7 +216,6 @@ export type BotSettings = {
   staffCommands: boolean;
   powerOffStaffOnly: boolean;
   doorResourceId: string | null;
-  receiptsToStaff: boolean;
   /** `login`/`入场` also hands out the door code. */
   doorPasswordOnEntry: boolean;
   /** Everything the bot announces, where and in which words, one group at a time; with none it announces nothing. */

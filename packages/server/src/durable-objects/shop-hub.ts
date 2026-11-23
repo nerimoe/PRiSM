@@ -696,8 +696,9 @@ export class ShopHub extends BaseDurableObject<Env> {
    * Something happened at the shop that bots may announce (`Announcement`).
    * Each bot says it once per announcement group that hears it, in that group's
    * words at its destinations (`announcementDeliveries`),
-   * in its own words when it has any, and not at all when it came of the bot's
-   * own command: it answered that already.
+   * in its own words when it has any. When it came of this bot's own command,
+   * the chat where it already answered (`botChannel`) is skipped while other
+   * destinations still receive it; commands without `botChannel` skip the bot.
    */
   async shopEvent(event: Record<string, unknown>): Promise<void> {
     const announcement = event as unknown as Announcement;
@@ -707,9 +708,13 @@ export class ShopHub extends BaseDurableObject<Env> {
       if (!attachment?.commands) continue;
       try {
         const found = await this.botOf(shopId, attachment.token);
-        if (!found || announcement.botId === found.bot.id) continue;
+        if (!found) continue;
+        const sameBot = announcement.botId === found.bot.id;
+        if (sameBot && !announcement.botChannel) continue;
+        const skip = sameBot ? announcement.botChannel : undefined;
         for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null })) {
-          this.sayTo(ws, to, announcementMessage(announcement, templates));
+          const destinations = skip ? to.filter((one) => one !== skip) : to;
+          if (destinations.length) this.sayTo(ws, destinations, announcementMessage(announcement, templates));
         }
       } catch {
         // A bot that left misses it.
@@ -905,8 +910,10 @@ export class ShopHub extends BaseDurableObject<Env> {
       }
       const shop = tenantShop(shopRow);
       // What the command's services do is published as coming through this bot.
+      const botChannel = frame.channel.startsWith("private:") ? `${frame.from.provider}:${frame.channel}` : frame.channel;
       const origin: FactOrigin = {
         via: { channel: "bot", resourceId: found.bot.id },
+        botChannel,
         defer: (work) => this.ctx.waitUntil(work),
       };
       const { says, outcome } = found.bot.enabled
@@ -916,7 +923,7 @@ export class ShopHub extends BaseDurableObject<Env> {
           shop,
           deps: withOrigin(
             getOrCreateShopDependencies(this.env.DB, shop, this.env.URL_ENCRYPTION_KEY, this.env),
-            { db: this.env.DB, env: this.env, shopId },
+            { db: this.env.DB, env: this.env, shopId, hub: this },
             origin,
           ),
           bot: found.bot,
