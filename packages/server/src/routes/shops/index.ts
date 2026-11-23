@@ -335,13 +335,19 @@ shopRouter.get("/platform-binding", async (c) => {
   const user = requireUser(c);
   const shop = getShop(c);
   const bindings = await c.env.DB.prepare(
-    `SELECT a.player_id AS playerId, b.provider, b.subject, b.verified_at AS verifiedAt
+    `SELECT a.player_id AS playerId, b.provider, b.subject, i.display_name AS displayName, b.verified_at AS verifiedAt
      FROM shop_platform_bindings b
      JOIN shop_player_accounts a ON a.shop_id=b.shop_id AND a.user_id=b.user_id
-     WHERE b.shop_id=? AND b.user_id=? ORDER BY b.provider`,
+     LEFT JOIN player_identities i ON i.shop_id=b.shop_id AND i.provider=b.provider AND i.subject=b.subject
+     WHERE b.shop_id=? AND b.user_id=? ORDER BY b.provider, b.subject`,
   )
     .bind(shop.id, user.id)
-    .all();
+    .all<{ playerId: string; provider: string; subject: string; displayName: string | null; verifiedAt: string }>();
 
-  return c.json({ bindings: bindings.results });
+  return c.json({
+    bindings: bindings.results.map(({ displayName, ...row }) => ({
+      ...row,
+      ...(displayName ? { displayName } : {}),
+    })),
+  });
 });

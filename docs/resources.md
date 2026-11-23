@@ -55,7 +55,8 @@
 
 设置了方案的资源，其方案必须在玩家这里处于计费中，才能使用该资源，无论有没有硬件；免费资源直接可用（门锁、麻将桌仍要求是本店玩家）。设备动作的同一校验是 `resourceBilling.admits`：免费，或方案正在计费。
 
-1. 玩家扫码，页面读取 `GET /api/v1/devices/session/bootstrap`。只读，不会开始任何计费。
+1. 玩家扫码后，经 `/t/:shopCode/:publicId`（无登录态、不写库）拿到导航 ticket 后访问 `/api/v1/devices/session/bootstrap`、`/session/page`、`/session/state` 或 `/machines/session*`；只要是**已登录账号**对**有效可用资源**（未停用、非 Bot、ticket 有效）的访问，会在 `device_events` 中写入一条 `resource.visited`（`capability = 'shop'`、`kind = 'signal'`、`via = 'page'`），并按同一 `(shop, resource, user, ticket)` 去重（页面轮询与重刷同票据不重复写入；尚未在本店建立玩家档案时 `player_id` 为空并在 `payload.userId` 留存用户 ID）。该事件可在资源「操作记录」中查看，并计入经营统计热门资源的综合热度。
+2. 玩家扫码，页面读取 `GET /api/v1/devices/session/bootstrap`。只读，不会开始任何计费。
 2. 方案未在计费时，`state.gate` 为 `entry`，`state.billing.preview` 给出确认后会开始、结束和继续的方案，以及 `revision`。资源无法计费时，`state.billing.error` 给出原因，页面不提供确认。页面标题为「计费规则」，下面是一张卡片，内容见下文「扫码页的计费规则」。没有 `rules` 时（旧接口）按「新增方案」「结束方案」「保留方案」三行显示。无法计费时标题为「暂时无法使用」。确认按钮统一为「确认」。计费已开始后的操作页面不再显示计费规则。
 3. 玩家确认，调用 `POST /api/v1/shops/:shopCode/player/session/start`，带上 `expectedRevision`。服务端重新计算；状态已变化时返回 `PRICING_STATE_REVISION_MISMATCH`，不按过期的预览执行。
 4. 计费开始后，`gate` 变为 `ready`，页面显示该资源的硬件操作。方案已在计费时直接是 `ready`。
@@ -109,7 +110,7 @@
 
 ## 6. 管理接口与界面
 
-Bot 按消息的 `provider + subject`（如 `onebot:QQ号`）匹配平台下发的员工名单，不使用 Koishi 的管理员等级。名单来自本店的 `shop_platform_bindings` 已验证绑定，账号须在本店 `shop_members` 中，或关联本店启用的账务员工。仅在玩家档案中添加 `player_identities` 不会授予员工权限；网页账号须通过 Bot 验证码完成平台绑定。负责人不需要手动填写 QQ 管理员列表。Bot 会缓存名单，店铺成员新增、角色变更或移除成功后，平台通知本店在线 Bot 重新读取配置，避免新增负责人仍被拒绝或已移除成员继续使用旧名单。具体命令仍受 Bot 的「店员命令」、只读模式与关机权限设置限制。
+Bot 按消息的 `provider + subject`（如 `onebot:QQ号`）匹配平台下发的员工名单，不使用 Koishi 的管理员等级。名单来自本店的 `shop_platform_bindings` 已验证绑定（一名店员在同一平台也可绑定多个身份，全部已验证绑定都会同步给 Bot），账号须在本店 `shop_members` 中，或关联本店启用的账务员工。仅在玩家档案中添加 `player_identities` 不会授予员工权限；网页账号须通过 Bot 验证码完成平台绑定。负责人不需要手动填写 QQ 管理员列表。Bot 会缓存名单，店铺成员新增、角色变更或移除成功后，平台通知本店在线 Bot 重新读取配置，避免新增负责人仍被拒绝或已移除成员继续使用旧名单。具体命令仍受 Bot 的「店员命令」、只读模式与关机权限设置限制。
 
 商户接口挂在 `/api/v1/merchant`，权限与资源配置相同：
 

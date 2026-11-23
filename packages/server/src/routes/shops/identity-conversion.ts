@@ -28,14 +28,12 @@ async function snapshot(c: C, shopId: string, source: string, target: string) {
   const sourceOwners = new Map(rows.map(row => [row.subject,row.playerId]));
   const targetBindings = bindings.results.filter(row => row.provider === target);
   const targetBySubject = new Map(targetBindings.map(row => [row.subject,row.userId]));
-  const targetByUser = new Map(targetBindings.map(row => [row.userId,row.subject]));
   const conflicts = rows.filter(row => targets.has(row.subject) && targets.get(row.subject) !== row.playerId)
     .map(row => ({ subject:row.subject,reason:"目标身份已属于其他玩家" }));
   for (const row of bindings.results.filter(row => row.provider === source)) {
     if (sourceOwners.get(row.subject) !== row.playerId)
       conflicts.push({ subject:row.subject,reason:"绑定与玩家身份不一致，请先修复" });
-    if (targetBySubject.has(row.subject) && targetBySubject.get(row.subject) !== row.userId
-      || targetByUser.has(row.userId) && targetByUser.get(row.userId) !== row.subject)
+    if (targetBySubject.has(row.subject) && targetBySubject.get(row.subject) !== row.userId)
       conflicts.push({ subject:row.subject,reason:"目标平台已有不同账号绑定" });
   }
   const sourceBindings = bindings.results.filter(row => row.provider === source);

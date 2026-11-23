@@ -43,9 +43,9 @@ UID 可以被复制，仅用于店员监督下的店内计时档案。卡片档�
 
 ## 玩家身份展示
 
-所有店铺玩家（含前台档案）的玩家列表和「在店」资料均显示已登记平台身份。已有 PRiSM 账号关联直接从 `shop_player_accounts` 读取，显示为「PRiSM 账号：账号显示名 · 账号编号」，不依赖是否在旧 `player_identities` 中存在 `web-account` 记录，不需要重新绑定；有旧记录时去重。未在当前环境验证匹配的导入账号不视为已绑定账号。
+所有店铺玩家（含前台档案）的玩家列表和「在店」资料均显示已登记平台身份；「身份与状态」左侧展示平台标识与该身份同步到的名称（无名称时不带多余冒号，支持 `onebot` 等外部身份的平台昵称），右侧直接显示身份值本身（不重复前缀 `provider:`）。已有 PRiSM 账号关联直接从 `shop_player_accounts` 读取，显示为「PRiSM 账号：账号显示名 · 账号编号」，不依赖是否在旧 `player_identities` 中存在 `web-account` 记录，不需要重新绑定；有旧记录时去重。未在当前环境验证匹配的导入账号不视为已绑定账号。
 
-商户 `GET /staff/players` 和 `GET /staff/live-players` 的 `identities` 包含 `{provider:"web-account",subject:"当前环境账号 ID",displayName:"账号显示名"}`；普通平台身份的格式保持不变。账号身份是只读关联，通用身份添加/删除接口拒绝 `web-account`（`ACCOUNT_IDENTITY_READ_ONLY`），须使用已有绑定码验证流程，不能手工指定账号编号。owner 和 manager 可以登记平台身份，viewer 只有查看权限。
+商户 `GET /staff/players` 和 `GET /staff/live-players` 的 `identities` 对 `web-account` 与外部平台身份（如 `onebot`）均在存在已同步昵称时附带 `displayName`。账号身份是只读关联，通用身份添加/删除接口拒绝 `web-account`（`ACCOUNT_IDENTITY_READ_ONLY`），须使用已有绑定码验证流程，不能手工指定账号编号。owner 和 manager 可以登记平台身份，viewer 只有查看权限。
 
 ## API 与数据
 

@@ -3,7 +3,7 @@ import { ShopDataTransfer } from "./ShopDataTransfer";
 import { IdentityConverter } from "./IdentityConverter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Store, Receipt, Users, MapPin, ShieldCheck, Database } from "lucide-react";
+import { Store, Receipt, Users, MapPin, ShieldCheck, Database, BarChart3 } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { BillingSettings, shopApi, type Settings as ShopSettings } from "../BillingPages";
 import { BindingPrompt } from "../SessionContent";
@@ -77,6 +77,12 @@ const groups = [
     label: "位置与设备",
     description: "到店位置校验、投币冷却、闲置自动关机与门锁连接。",
     icon: MapPin,
+  },
+  {
+    id: "reports",
+    label: "经营统计",
+    description: "历史页有效在店时长的计算方式。",
+    icon: BarChart3,
   },
   {
     id: "data",
@@ -307,6 +313,9 @@ export function SettingsPage({
               )}
             </div>
           </div>
+          <div hidden={group.id !== "reports"}>
+            <ReportSettings key={shopCode} saved={() => saved("reports")} />
+          </div>
           <div hidden={group.id !== "data"}><ShopDataTransfer key={shopCode} /></div>
           <div hidden={group.id !== "members"}>{members}</div>
         </div>
@@ -314,6 +323,50 @@ export function SettingsPage({
     </div>
   );
 }
+/**
+ * How long a stay counts as effective time. Every stay counts in full up to
+ * this cap; what runs past it is treated as a forgotten checkout.
+ */
+function ReportSettings({ saved }: { saved: () => void }) {
+  const { t } = useI18n();
+  const request = useStaffApi();
+  const current = useResource<{ settings: { stayCapHours: number } }>("reports/settings");
+  if (!current.data) return <State error={current.error} />;
+  return (
+    <section className="rounded-xl border border-ink/10 bg-panel p-5">
+      <h4 className="mb-1 font-semibold">{t("有效在店时长")}</h4>
+      <p className="mb-4 text-sm leading-relaxed text-ink/60">
+        {t("每次计时从入场起整段计入有效时长，超过下面上限的部分视为忘记结账的挂机时间。历史页以中位数为主要指标，个别忘记结账的单子影响很小。")}
+      </p>
+      <ActionForm
+        label="保存统计设置"
+        done={() => {
+          current.reload();
+          saved();
+        }}
+        submit={(f) =>
+          request("reports/settings", "PUT", {
+            stayCapHours: Number(f.get("stayCapHours")),
+          })
+        }
+      >
+        <Field label="单次有效在店时长上限" unit="小时">
+          <input
+            className={input}
+            type="number"
+            min="1"
+            max="72"
+            step="1"
+            name="stayCapHours"
+            defaultValue={current.data.settings.stayCapHours}
+            required
+          />
+        </Field>
+      </ActionForm>
+    </section>
+  );
+}
+
 /** What a player who must bind an identity is told to send, and where. */
 function BindingPromptSettings({ shopCode }: { shopCode: string }) {
   const { t } = useI18n();

@@ -419,12 +419,14 @@ describe("createStaffRedeemService", () => {
     await expect(service.listRedeemCodes()).resolves.toEqual([revoked]);
   });
 
-  it("creates redeem codes in batches for CDK workflows", async () => {
+  it("creates redeem codes in batches for CDK workflows without raw UUID codes or leading dashes", async () => {
     const redeems = new MemoryRedeemRepository();
-    const ids = ["code-1", "code-2"];
+    const ids = ["id-1", "id-2", "id-3", "id-4"];
+    const tokens = ["ABCD-EFGH-JKLM", "NPQR-STUV-WXYZ", "2345-6789-ABCD", "EFGH-JKLM-NPQR"];
     const service = createStaffRedeemService({
       redeems,
       id: () => ids.shift() ?? "unexpected",
+      generateCode: () => tokens.shift() ?? "Z9Z9-Z9Z9-Z9Z9",
     });
     await redeems.savePresent({
       id: "present-1",
@@ -434,33 +436,107 @@ describe("createStaffRedeemService", () => {
       grants: [],
     });
 
-    const codes = await service.createRedeemCodeBatch({
-      prefix: "PRISM",
+    const withPrefix = await service.createRedeemCodeBatch({
+      prefix: "PRISM-",
       presentId: "present-1",
       activeAt: null,
       expiresAt: null,
       maxUseCount: 1,
       count: 2,
     });
-
-    expect(codes).toEqual([
+    expect(withPrefix).toEqual([
       {
-        id: "code-1",
-        code: "PRISM-code-1",
+        id: "id-1",
+        code: "PRISM-ABCD-EFGH-JKLM",
         presentId: "present-1",
         activeAt: null,
         expiresAt: null,
         maxUseCount: 1,
       },
       {
-        id: "code-2",
-        code: "PRISM-code-2",
+        id: "id-2",
+        code: "PRISM-NPQR-STUV-WXYZ",
         presentId: "present-1",
         activeAt: null,
         expiresAt: null,
         maxUseCount: 1,
       },
     ]);
-    expect(redeems.savedCodes).toEqual(codes);
+
+    const withoutPrefix = await service.createRedeemCodeBatch({
+      prefix: "",
+      presentId: "present-1",
+      activeAt: null,
+      expiresAt: null,
+      maxUseCount: 2,
+      count: 2,
+    });
+    expect(withoutPrefix.map((c) => c.code)).toEqual(["2345-6789-ABCD", "EFGH-JKLM-NPQR"]);
+    expect(withoutPrefix.every((c) => !c.code.startsWith("-"))).toBe(true);
+    expect(redeems.savedCodes).toEqual([...withPrefix, ...withoutPrefix]);
+  });
+
+  it("validates custom codes, rejects duplicates, and validates usage/window params", async () => {
+    const redeems = new MemoryRedeemRepository();
+    const service = createStaffRedeemService({
+      redeems,
+      id: () => `id-${redeems.savedCodes.length + 1}`,
+    });
+    await redeems.savePresent({
+      id: "present-1",
+      name: "口令礼物",
+      oncePerPlayer: false,
+      status: "active",
+      grants: [],
+    });
+
+    const custom = await service.createRedeemCode({
+      code: "  WELCOME2026 ",
+      presentId: "present-1",
+      activeAt: null,
+      expiresAt: null,
+      maxUseCount: 3,
+    });
+    expect(custom.code).toBe("WELCOME2026");
+
+    await expect(
+      service.createRedeemCode({
+        code: "WELCOME2026",
+        presentId: "present-1",
+        activeAt: null,
+        expiresAt: null,
+        maxUseCount: 1,
+      }),
+    ).rejects.toMatchObject({ code: "REDEEM_CODE_ALREADY_EXISTS" });
+
+    await expect(
+      service.createRedeemCode({
+        code: "BAD CODE",
+        presentId: "present-1",
+        activeAt: null,
+        expiresAt: null,
+        maxUseCount: 1,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_REDEEM_CODE" });
+
+    await expect(
+      service.createRedeemCode({
+        code: "ZERO_USE",
+        presentId: "present-1",
+        activeAt: null,
+        expiresAt: null,
+        maxUseCount: 0,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_REDEEM_CODE_MAX_USE_COUNT" });
+
+    await expect(
+      service.createRedeemCode({
+        code: "BAD_WINDOW",
+        presentId: "present-1",
+        activeAt: new Date("2026-08-01T00:00:00.000Z"),
+        expiresAt: new Date("2026-07-01T00:00:00.000Z"),
+        maxUseCount: 1,
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_REDEEM_CODE_WINDOW" });
   });
 });

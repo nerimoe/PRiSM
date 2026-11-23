@@ -92,7 +92,7 @@ export type LiveSummary = {
 };
 
 type QuickFilter = "all" | "funded" | "disabled";
-type ProfileTab = "bill" | "assets" | "checkouts" | "ledger" | "identity";
+type ProfileTab = "bill" | "assets" | "checkouts" | "ledger" | "identity" | "settings";
 type StatusTone = "mint" | "emerald" | "amber" | "coral" | "neutral";
 type Translate = ReturnType<typeof useI18n>["t"];
 
@@ -112,11 +112,11 @@ function identityValueLabel(identity: NonNullable<Player["identities"]>[number])
   return identity.displayName ? `${identity.displayName} · ${identity.subject}` : identity.subject;
 }
 
-function formatIdentityText(identity: NonNullable<Player["identities"]>[number], t: Translate): string {
-  if (identity.provider === "web-account") {
-    return `${t("PRiSM 账号")}: ${identityValueLabel(identity)}`;
-  }
-  return `${identity.provider}:${identity.subject}`;
+function formatIdentityText(
+  identity: NonNullable<Player["identities"]>[number],
+  t: Translate,
+): string {
+  return `${identityProviderLabel(identity.provider, t)}: ${identityValueLabel(identity)}`;
 }
 
 function shortfallAmount(player: Row, livePlayer: LivePlayer | null): number {
@@ -442,7 +442,7 @@ export function PlayerWorkspace({
         }
       }
       if (!needle) return true;
-      return `${player.displayName} ${player.id} ${player.identities?.map(identityText).join(" ")}`
+      return `${player.displayName} ${player.id} ${player.identities?.map((i) => `${identityText(i)} ${i.provider}:${i.subject}`).join(" ")}`
         .toLowerCase()
         .includes(needle);
     });
@@ -1212,6 +1212,7 @@ function PlayerPanel({
     ["checkouts", "消费记录", null],
     ["ledger", "资产流水", ledgerEntries.length],
     ["identity", "身份与状态", identities.length],
+    ["settings", "设置", null],
   ];
 
   return (
@@ -1745,43 +1746,11 @@ function PlayerPanel({
         </Modal>
       )}
 
-      {(reportSettings.data || reportSettings.error) && (
-        <div className="px-5 pb-3 sm:px-6">
-          <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-sm">
-            {reportSettings.data ? (
-              <label className="flex w-full cursor-pointer items-center justify-between gap-3">
-                <span className="text-ink">
-                  {t(reportSettings.data.isStaff ? "店员自动排除统计" : "排除经营统计")}
-                </span>
-                <input
-                  type="checkbox"
-                  className="size-4 accent-[var(--color-mint)]"
-                  checked={reportSettings.data.excluded}
-                  disabled={!canWrite || reportSaving || reportSettings.data.isStaff}
-                  onChange={(e) => void toggleReportExclusion(e.target.checked)}
-                />
-              </label>
-            ) : (
-              <>
-                <span className="text-xs text-ink/60">{t("排除经营统计")}</span>
-                <button
-                  type="button"
-                  className={compactButton}
-                  onClick={reportSettings.reload}
-                >
-                  {t("重试")}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Layer 3: Top-Docked Single-Line Underline Tabs (always above timeline) */}
       <div
         role="tablist"
         aria-label={t("资料分类")}
-        className="scroll-fade flex gap-1 overflow-x-auto border-b border-ink/10 px-5 sm:px-6"
+        className="flex gap-1 overflow-x-auto overflow-y-hidden px-5 shadow-[inset_0_-1px_0_rgb(var(--color-ink)/0.1)] sm:px-6"
       >
         {tabItems.map(([key, label, count]) => {
           const activeTab = effectiveTab === key;
@@ -1793,7 +1762,7 @@ function PlayerPanel({
               aria-selected={activeTab}
               aria-label={t(label)}
               onClick={() => setProfileTab(key)}
-              className={`focus-ring -mb-px inline-flex shrink-0 items-center gap-1 whitespace-nowrap border-b-2 px-2.5 py-2.5 text-sm transition-colors sm:gap-1.5 sm:px-3 sm:py-3 ${
+              className={`focus-ring inline-flex shrink-0 items-center gap-1 whitespace-nowrap border-b-2 px-2.5 py-2.5 text-sm transition-colors sm:gap-1.5 sm:px-3 sm:py-3 ${
                 activeTab
                   ? "border-mint font-semibold text-ink"
                   : "border-transparent font-medium text-ink/55 hover:text-ink"
@@ -2000,14 +1969,13 @@ function PlayerPanel({
                   >
                     <span className="inline-flex items-center gap-2 font-medium text-ink">
                       <span className="text-xs font-medium text-ink/55">
-                        {identityProviderLabel(i.provider, t)}:
+                        {identityProviderLabel(i.provider, t)}
+                        {i.displayName ? ":" : ""}
                       </span>
                       {i.displayName && <span>{i.displayName}</span>}
                     </span>
                     <code className="select-all break-all text-xs text-ink/60">
-                      {i.provider === "web-account"
-                        ? i.subject
-                        : `${i.provider}:${i.subject}`}
+                      {i.subject}
                     </code>
                   </div>
                 ))
@@ -2076,6 +2044,46 @@ function PlayerPanel({
                     </Field>
                   </ActionForm>
                 </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {effectiveTab === "settings" && (
+          <div role="tabpanel" className="grid gap-3">
+            {reportSettings.error ? (
+              <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                <span className="text-xs text-ink/60">{t("排除经营统计")}</span>
+                <button
+                  type="button"
+                  className={compactButton}
+                  onClick={reportSettings.reload}
+                >
+                  {t("重试")}
+                </button>
+              </div>
+            ) : !reportSettings.data ? (
+              <State />
+            ) : (
+              <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                <label className="flex w-full cursor-pointer items-center justify-between gap-3">
+                  <span className="text-ink">
+                    {t(
+                      reportSettings.data.isStaff
+                        ? "店员自动排除统计"
+                        : "排除经营统计",
+                    )}
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-[var(--color-mint)]"
+                    checked={reportSettings.data.excluded}
+                    disabled={
+                      !canWrite || reportSaving || reportSettings.data.isStaff
+                    }
+                    onChange={(e) => void toggleReportExclusion(e.target.checked)}
+                  />
+                </label>
               </div>
             )}
           </div>

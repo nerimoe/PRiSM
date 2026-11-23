@@ -276,7 +276,7 @@ function createTestEnvironment(): {
       provider TEXT NOT NULL,
       subject TEXT NOT NULL,
       verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (shop_id, user_id, provider)
+      PRIMARY KEY (shop_id, provider, subject)
     );
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,

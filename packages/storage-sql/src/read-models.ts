@@ -5,9 +5,14 @@ import {
   addLocalDays,
   assetQuantityFromStored,
   centsOfInteger,
+  computeCheckoutDurationBreakdown,
+  computeMedian,
+  normalizeStayCapHours,
+  rankReportDevices,
   formatLocalDate,
   formatOffsetTimestamp,
   parseLocalDateTime,
+  parseReportTimestampMs,
   sumCents,
   timestampDisplayParts,
   yuanOf,
@@ -29,6 +34,8 @@ import type {
   StaffDeviceCommandListItem,
   StaffPlayerListItem,
   StaffQueries,
+  StaffRedeemCodePageInput,
+  StaffRedeemCodePageResult,
   StaffRedeemCodeRedemptionListItem,
   StaffRedeemQueries,
   StaffReportPlayerListItem,
@@ -287,6 +294,7 @@ function createStaffQueries(input: CreateSqlReadModelsInput): StaffQueries {
            active_sessions.has_unpaid_session,
            i.provider AS identity_provider,
            i.subject AS identity_subject,
+           i.display_name AS identity_display_name,
            i.created_at AS identity_created_at
          FROM (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p
          LEFT JOIN wallet_rows ON wallet_rows.player_id = p.id
@@ -449,6 +457,120 @@ function createStaffRedeemQueries(input: CreateSqlReadModelsInput): StaffRedeemQ
         redeemedAt: new Date(row.redeemed_at),
       }));
     },
+
+    async listRedeemCodesPage(query: StaffRedeemCodePageInput): Promise<StaffRedeemCodePageResult> {
+      const limit = Math.max(1, Math.min(100, Math.floor(query.limit)));
+      const offset = Math.max(0, Math.floor(query.offset ?? 0));
+      const nowIso = (query.now ?? input.now()).toISOString();
+
+      const cteConditions: string[] = [];
+      const cteParams: Array<string | number> = [];
+      const presentId = query.presentId?.trim();
+      if (presentId) {
+        cteConditions.push("rc.present_id = ?");
+        cteParams.push(presentId);
+      }
+      const search = query.search?.trim().toLowerCase();
+      if (search) {
+        const escaped = search.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+        cteConditions.push("LOWER(rc.code) LIKE ? ESCAPE '\\'");
+        cteParams.push(`%${escaped}%`);
+      }
+
+      const outerConditions: string[] = [];
+      const outerParams: Array<string | number> = [];
+      if (query.usage === "revoked") {
+        outerConditions.push("max_use_count <= 0");
+      } else if (query.usage === "exhausted") {
+        outerConditions.push("max_use_count > 0 AND usage_count >= max_use_count");
+      } else if (query.usage === "partial") {
+        outerConditions.push("max_use_count > 0 AND usage_count > 0 AND usage_count < max_use_count");
+      } else if (query.usage === "unused") {
+        outerConditions.push("max_use_count > 0 AND usage_count = 0");
+      }
+
+      if (query.validity === "expired") {
+        outerConditions.push("expires_at IS NOT NULL AND expires_at <= ?");
+        outerParams.push(nowIso);
+      } else if (query.validity === "pending") {
+        outerConditions.push("(expires_at IS NULL OR expires_at > ?) AND active_at IS NOT NULL AND active_at > ?");
+        outerParams.push(nowIso, nowIso);
+      } else if (query.validity === "valid") {
+        outerConditions.push("(expires_at IS NULL OR expires_at > ?) AND (active_at IS NULL OR active_at <= ?)");
+        outerParams.push(nowIso, nowIso);
+      }
+
+      const cteSql = `WITH code_rows AS (
+        SELECT
+          rc.rowid AS seq,
+          rc.id,
+          rc.code,
+          rc.present_id,
+          rc.active_at,
+          rc.expires_at,
+          rc.max_use_count,
+          COUNT(rr.id) AS usage_count
+        FROM (SELECT rowid, * FROM redeem_codes WHERE shop_id = ${sqlShop(input.executor)}) rc
+        LEFT JOIN (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) rr ON rr.code_id = rc.id
+        ${cteConditions.length ? `WHERE ${cteConditions.join(" AND ")}` : ""}
+        GROUP BY rc.rowid, rc.id, rc.code, rc.present_id, rc.active_at, rc.expires_at, rc.max_use_count
+      )`;
+      const outerWhere = outerConditions.length ? `WHERE ${outerConditions.join(" AND ")}` : "";
+      const filterParams = [...cteParams, ...outerParams];
+
+      const [countRow, rows] = await Promise.all([
+        input.executor.first<{ total: number }>(
+          `${cteSql} SELECT COUNT(*) AS total FROM code_rows ${outerWhere}`,
+          filterParams,
+        ),
+        input.executor.all<RedeemCodePageRow>(
+          `${cteSql}
+           SELECT id, code, present_id, active_at, expires_at, max_use_count, usage_count
+           FROM code_rows
+           ${outerWhere}
+           ORDER BY seq DESC
+           LIMIT ? OFFSET ?`,
+          [...filterParams, limit + 1, offset],
+        ),
+      ]);
+
+      const pageRows = rows.slice(0, limit);
+      const codeIds = pageRows.map((row) => row.id);
+      const redemptionRows = codeIds.length
+        ? await input.executor.all<StaffRedeemCodeRedemptionRow>(
+            `SELECT
+               rr.code_id,
+               rr.player_id,
+               p.display_name AS player_display_name,
+               rr.redeemed_at
+             FROM (SELECT * FROM redeem_records WHERE shop_id = ${sqlShop(input.executor)}) rr
+             INNER JOIN (SELECT * FROM players WHERE shop_id = ${sqlShop(input.executor)}) p ON p.id = rr.player_id
+             WHERE rr.code_id IN (SELECT value FROM json_each(?))
+             ORDER BY rr.redeemed_at DESC, rr.code_id`,
+            [JSON.stringify(codeIds)],
+          )
+        : [];
+
+      return {
+        codes: pageRows.map((row) => ({
+          id: row.id,
+          code: row.code,
+          presentId: row.present_id,
+          activeAt: row.active_at ? new Date(row.active_at) : null,
+          expiresAt: row.expires_at ? new Date(row.expires_at) : null,
+          maxUseCount: row.max_use_count,
+          usageCount: Number(row.usage_count ?? 0),
+        })),
+        redemptions: redemptionRows.map((row) => ({
+          codeId: row.code_id,
+          playerId: row.player_id,
+          playerDisplayName: row.player_display_name,
+          redeemedAt: new Date(row.redeemed_at),
+        })),
+        total: Number(countRow?.total ?? 0),
+        hasMore: rows.length > limit,
+      };
+    },
   };
 }
 
@@ -566,9 +688,10 @@ async function getReportsAnalyticsSource(
   const prevFromIso = prevFrom.toISOString();
   const periodFromIso = periodFrom.toISOString();
   const endExclusiveIso = endExclusive.toISOString();
+  const asOfIso = input.now().toISOString();
   const shop = sqlShop(input.executor);
 
-  const [checkoutRows, sessionRows, playerRows, operationRows, assetRow] = await Promise.all([
+  const [checkoutRows, sessionRows, playerRows, operationRows, assetRow, reportSettingsRow] = await Promise.all([
     input.executor.all<{
       id: string;
       player_id: string;
@@ -595,11 +718,27 @@ async function getReportsAnalyticsSource(
        GROUP BY c.id`,
       [prevFromIso, endExclusiveIso, excluded],
     ),
-    input.executor.all<{ player_id: string; started_at: string; ended_at: string | null }>(
-      `SELECT player_id, started_at, ended_at
-       FROM (SELECT * FROM sessions WHERE shop_id = ${shop})
-       WHERE (ended_at IS NULL OR ended_at > ?) AND started_at < ? AND player_id NOT IN (SELECT value FROM json_each(?))`,
-      [prevFromIso, endExclusiveIso, excluded],
+    input.executor.all<{
+      player_id: string;
+      started_at: string;
+      ended_at: string | null;
+      checkout_id: string | null;
+    }>(
+      `SELECT
+         s.player_id,
+         s.started_at,
+         s.ended_at,
+         st.checkout_id
+       FROM (SELECT * FROM sessions WHERE shop_id = ${shop}) s
+       LEFT JOIN settlements st ON st.shop_id = s.shop_id AND st.session_id = s.id
+       LEFT JOIN player_checkouts c ON c.shop_id = st.shop_id AND c.id = st.checkout_id
+       LEFT JOIN checkout_report_states a ON a.shop_id = c.shop_id AND a.checkout_id = c.id
+       WHERE s.player_id NOT IN (SELECT value FROM json_each(?))
+         AND (
+           ((s.ended_at IS NULL OR s.ended_at > ?) AND s.started_at < ?)
+           OR (c.settled_at >= ? AND c.settled_at < ? AND COALESCE(a.archived, 0) = 0)
+         )`,
+      [excluded, prevFromIso, endExclusiveIso, prevFromIso, endExclusiveIso],
     ),
     input.executor.all<{ created_at: string }>(
       `SELECT created_at
@@ -609,15 +748,33 @@ async function getReportsAnalyticsSource(
     ),
     input.executor.all<{
       device_id: string | null;
+      player_id: string | null;
       action: string;
       status: string;
       counts_as_play: number;
       requested_at: string;
     }>(
-      `SELECT device_id, action, status, counts_as_play, requested_at
+      `SELECT device_id, player_id, action, status, counts_as_play, requested_at
        FROM (SELECT * FROM device_operations WHERE shop_id = ${shop})
-       WHERE requested_at >= ? AND requested_at < ? AND (player_id IS NULL OR player_id NOT IN (SELECT value FROM json_each(?)))`,
-      [periodFromIso, endExclusiveIso, excluded],
+       WHERE requested_at >= ? AND requested_at < ? AND (player_id IS NULL OR player_id NOT IN (SELECT value FROM json_each(?)))
+       UNION ALL
+       SELECT
+         device_id,
+         player_id,
+         CASE WHEN name = 'resource.visited' THEN 'resource.visited' ELSE 'aime.scan' END AS action,
+         'succeeded' AS status,
+         CASE WHEN name = 'resource.visited' THEN 0 ELSE 1 END AS counts_as_play,
+         occurred_at AS requested_at
+       FROM (SELECT * FROM device_events WHERE shop_id = ${shop})
+       WHERE device_id IS NOT NULL
+         AND kind = 'signal'
+         AND (
+           (capability = 'hinata_io' AND name = 'card.consumed' AND operation_id IS NULL)
+           OR (capability = 'shop' AND name = 'resource.visited')
+         )
+         AND occurred_at >= ? AND occurred_at < ?
+         AND (player_id IS NULL OR player_id NOT IN (SELECT value FROM json_each(?)))`,
+      [periodFromIso, endExclusiveIso, excluded, periodFromIso, endExclusiveIso, excluded],
     ),
     input.executor.first<{ asset_grant_count: number }>(
       `SELECT COUNT(*) AS asset_grant_count
@@ -625,13 +782,29 @@ async function getReportsAnalyticsSource(
        WHERE delta > 0 AND created_at >= ? AND created_at < ? AND player_id NOT IN (SELECT value FROM json_each(?))`,
       [periodFromIso, endExclusiveIso, excluded],
     ),
+    input.executor.first<{ value_json: string }>(
+      `SELECT value_json FROM app_settings WHERE shop_id = ${shop} AND key = 'reports.settings'`,
+      [],
+    ),
   ]);
+
+  let stayCapHours = normalizeStayCapHours(undefined);
+  try {
+    if (reportSettingsRow) {
+      stayCapHours = normalizeStayCapHours(
+        (JSON.parse(reportSettingsRow.value_json) as { stayCapHours?: unknown }).stayCapHours,
+      );
+    }
+  } catch {
+    // A malformed setting falls back to the default cap.
+  }
 
   return {
     range: { days, timeZone, from: periodFromIso, to: endExclusiveIso, startDate, endDate },
     excludedPlayerIds: [...(query.excludedPlayerIds ?? [])],
-    asOf: input.now().toISOString(), checkoutRows, sessionRows, playerRows, operationRows,
+    asOf: asOfIso, checkoutRows, sessionRows, playerRows, operationRows,
     assetGrantCount: assetRow?.asset_grant_count ?? 0,
+    stayCapHours,
   };
 }
 
@@ -659,17 +832,35 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
     dailyMap.set(date, point);
   }
 
+  const sessionsByCheckout = new Map<
+    string,
+    { startedAtMs: number; endedAtMs: number }[]
+  >();
+  for (const row of sessionRows) {
+    if (!row.checkout_id || !row.ended_at) continue;
+    const startedAtMs = parseReportTimestampMs(row.started_at);
+    const endedAtMs = parseReportTimestampMs(row.ended_at);
+    if (startedAtMs === null || endedAtMs === null) continue;
+    const list = sessionsByCheckout.get(row.checkout_id) ?? [];
+    list.push({ startedAtMs, endedAtMs });
+    sessionsByCheckout.set(row.checkout_id, list);
+  }
+
   let todayRevenueTotal = ZERO_CENTS;
   let yesterdayRevenueTotal = ZERO_CENTS;
   let todayCheckoutCount = 0;
   let yesterdayCheckoutCount = 0;
-  let todayDurationSum = 0;
+  const todayEffectiveDurations: number[] = [];
 
   let periodRevenueTotal = ZERO_CENTS;
   let previousRevenueTotal = ZERO_CENTS;
   let periodCheckoutCount = 0;
   let previousCheckoutCount = 0;
-  let periodDurationSum = 0;
+  const periodEffectiveDurations: number[] = [];
+  const periodTickets: number[] = [];
+  let totalEffectiveDurationMinutes = 0;
+  let totalInactiveDurationMinutes = 0;
+  let inactiveCheckoutCount = 0;
 
   const paymentTotals = new Map<StaffReportsAnalyticsPaymentMethod["method"], { revenue: Cents; count: number }>();
 
@@ -677,13 +868,17 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
     const parts = localPartsOf(row.settled_at, timeZone);
     if (!parts) continue;
     const total = centsOfInteger(row.total);
-    const duration = Math.max(0, Math.round(row.duration_minutes ?? 0));
+    const breakdown = computeCheckoutDurationBreakdown(
+      sessionsByCheckout.get(row.id) ?? [],
+      row.duration_minutes ?? 0,
+      { capMs: normalizeStayCapHours(facts.stayCapHours) * 3_600_000 },
+    );
     const { date } = parts;
 
     if (date === actualToday) {
       todayRevenueTotal = addCents(todayRevenueTotal, total);
       todayCheckoutCount += 1;
-      todayDurationSum += duration;
+      if (breakdown.hasTimedSession) todayEffectiveDurations.push(breakdown.effectiveMinutes);
     } else if (date === actualYesterday) {
       yesterdayRevenueTotal = addCents(yesterdayRevenueTotal, total);
       yesterdayCheckoutCount += 1;
@@ -692,7 +887,11 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
     if (date >= startDate && date <= endDate) {
       periodRevenueTotal = addCents(periodRevenueTotal, total);
       periodCheckoutCount += 1;
-      periodDurationSum += duration;
+      periodTickets.push(total as number);
+      totalEffectiveDurationMinutes += breakdown.effectiveMinutes;
+      totalInactiveDurationMinutes += breakdown.inactiveMinutes;
+      if (breakdown.inactiveMinutes > 0) inactiveCheckoutCount += 1;
+      if (breakdown.hasTimedSession) periodEffectiveDurations.push(breakdown.effectiveMinutes);
       const point = dailyMap.get(date);
       if (point) {
         point.revenue = addCents(point.revenue, total);
@@ -750,7 +949,7 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
 
   let todayCoinCount = 0;
   let periodCoinCount = 0;
-  const deviceMap = new Map<string, StaffReportsAnalyticsDeviceActivity>();
+  const periodSignals: (typeof operationRows)[number][] = [];
 
   for (const row of operationRows) {
     const parts = localPartsOf(row.requested_at, timeZone);
@@ -763,26 +962,7 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
       if (point) point.coins += 1;
     }
 
-    if (
-      row.device_id &&
-      row.status !== "failed" &&
-      (row.counts_as_play === 1 ||
-        row.action === "coin" ||
-        row.action === "aime.scan" ||
-        row.action === "power.on" ||
-        row.action === "table.seat")
-    ) {
-      const activity = deviceMap.get(row.device_id) ?? {
-        deviceId: row.device_id,
-        operations: 0,
-        coins: 0,
-        swipes: 0,
-      };
-      activity.operations += 1;
-      if (row.action === "coin") activity.coins += 1;
-      if (row.action === "aime.scan") activity.swipes += 1;
-      deviceMap.set(row.device_id, activity);
-    }
+    periodSignals.push(row);
   }
 
   const paymentMethods: StaffReportsAnalyticsPaymentMethod[] = [...paymentTotals.entries()]
@@ -795,9 +975,10 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
         PAYMENT_METHOD_ORDER.indexOf(a.method) - PAYMENT_METHOD_ORDER.indexOf(b.method),
     );
 
-  const topDevices = [...deviceMap.values()]
-    .sort((a, b) => b.operations - a.operations || b.coins - a.coins || a.deviceId.localeCompare(b.deviceId))
-    .slice(0, 5);
+  const { topDevices, topDevicesByHeat } = rankReportDevices(periodSignals);
+
+  const todayDurationSum = todayEffectiveDurations.reduce((sum, value) => sum + value, 0);
+  const periodDurationSum = periodEffectiveDurations.reduce((sum, value) => sum + value, 0);
 
   return {
     range: {
@@ -817,7 +998,8 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
       yesterdayVisitCount: dailyVisits.get(actualYesterday)?.size ?? 0,
       newPlayerCount: todayNewPlayerCount,
       coinCount: todayCoinCount,
-      avgDurationMinutes: todayCheckoutCount > 0 ? Math.round(todayDurationSum / todayCheckoutCount) : 0,
+      avgDurationMinutes: todayEffectiveDurations.length > 0 ? Math.round(todayDurationSum / todayEffectiveDurations.length) : 0,
+      medianDurationMinutes: todayEffectiveDurations.length > 0 ? Math.round(computeMedian(todayEffectiveDurations)) : 0,
     },
     period: {
       revenueTotal: periodRevenueTotal,
@@ -830,7 +1012,14 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
       avgTicket: periodCheckoutCount > 0
         ? centsOfInteger(Math.round((periodRevenueTotal as number) / periodCheckoutCount))
         : ZERO_CENTS,
-      avgDurationMinutes: periodCheckoutCount > 0 ? Math.round(periodDurationSum / periodCheckoutCount) : 0,
+      medianTicket: periodTickets.length > 0
+        ? centsOfInteger(Math.round(computeMedian(periodTickets)))
+        : ZERO_CENTS,
+      avgDurationMinutes: periodEffectiveDurations.length > 0 ? Math.round(periodDurationSum / periodEffectiveDurations.length) : 0,
+      medianDurationMinutes: periodEffectiveDurations.length > 0 ? Math.round(computeMedian(periodEffectiveDurations)) : 0,
+      totalEffectiveDurationMinutes,
+      totalInactiveDurationMinutes,
+      inactiveCheckoutCount,
       coinCount: periodCoinCount,
       assetGrantCount: facts.assetGrantCount,
     },
@@ -838,6 +1027,7 @@ async function getReportsAnalytics(input: CreateSqlReadModelsInput, query: Staff
     hourlyVisits: hourlyVisitsSets.map((set) => set.size),
     paymentMethods,
     topDevices,
+    topDevicesByHeat,
   };
 }
 
@@ -1259,6 +1449,7 @@ function groupStaffPlayers(
       player.identities.push({
         provider: row.identity_provider,
         subject: row.identity_subject,
+        ...(row.identity_display_name ? { displayName: row.identity_display_name } : {}),
         createdAt: new Date(row.identity_created_at),
       });
     }
@@ -1373,6 +1564,7 @@ type StaffPlayerWithIdentityRow = StaffPlayerRow & {
   cashier?: number;
   identity_provider: string | null;
   identity_subject: string | null;
+  identity_display_name?: string | null;
   identity_created_at: string | null;
 };
 
@@ -1381,6 +1573,16 @@ type StaffRedeemCodeRedemptionRow = {
   player_id: string;
   player_display_name: string;
   redeemed_at: string;
+};
+
+type RedeemCodePageRow = {
+  id: string;
+  code: string;
+  present_id: string;
+  active_at: string | null;
+  expires_at: string | null;
+  max_use_count: number;
+  usage_count: number;
 };
 
 type PlayerRedeemRecordRow = {

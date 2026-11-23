@@ -12,6 +12,7 @@ import { hinataConfigOf, loadResource, publicCapabilities } from "../../resource
 import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
+import { recordResourceVisit } from "./resource-visit.js";
 
 type C = Context<AppBindings, any, any>;
 
@@ -118,7 +119,9 @@ export function createResourcePageRouter(
   const router = new Hono<AppBindings>();
 
   router.get("/session/page", async (c) => {
-    const machine = await resolveResourceTicket(c, c.req.query("ticket") ?? "");
+    const ticket = c.req.query("ticket") ?? "";
+    const machine = await resolveResourceTicket(c, ticket);
+    await recordResourceVisit(c, machine, ticket);
     return c.json(await readPage(c, machine));
   });
 

@@ -519,6 +519,7 @@ export function toStaffPlayerListView(player: StaffPlayerListItem) {
     identities: (player.identities ?? []).map((identity) => ({
       provider: identity.provider,
       subject: identity.subject,
+      ...(identity.displayName ? { displayName: identity.displayName } : {}),
       createdAt: identity.createdAt.toISOString(),
     })),
   };
@@ -776,6 +777,7 @@ export function toStaffReportsAnalyticsView(
         revenueTotal: yuanOf(analytics.period.revenueTotal),
         previousRevenueTotal: yuanOf(analytics.period.previousRevenueTotal),
         avgTicket: yuanOf(analytics.period.avgTicket),
+        medianTicket: yuanOf(analytics.period.medianTicket),
       },
       daily: analytics.daily.map((point) => ({
         ...point,
@@ -787,6 +789,7 @@ export function toStaffReportsAnalyticsView(
         revenue: yuanOf(entry.revenue),
       })),
       topDevices: analytics.topDevices.map((entry) => ({ ...entry })),
+      topDevicesByHeat: analytics.topDevicesByHeat.map((entry) => ({ ...entry })),
     },
   };
 }

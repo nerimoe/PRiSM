@@ -1,6 +1,14 @@
 import { centsOf, yuanOf } from "@prism/core";
 import { describe, expect, it } from "bun:test";
-import { PrismDomainError, redeemGift } from "../src/index";
+import {
+  formatGeneratedRedeemCode,
+  generateRedeemCodeToken,
+  normalizeCustomRedeemCode,
+  normalizeRedeemCodePrefix,
+  PrismDomainError,
+  REDEEM_CODE_ALPHABET,
+  redeemGift,
+} from "../src/index";
 
 describe("redeemGift", () => {
   it("applies gift and per-item limits to repository counts as well as history records", () => {
@@ -404,6 +412,41 @@ describe("redeemGift", () => {
         idFactory: () => "asset-new",
       });
       expect(result.assetLedgerEntries.map((e) => e.assetCode)).toEqual(["welcome"]);
+    });
+  });
+
+  describe("redeem code formatting and validation helpers", () => {
+    it("generates uppercase grouped CDK tokens without ambiguous characters", () => {
+      const token = generateRedeemCodeToken();
+      expect(token).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}(?:-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}){2}$/);
+      for (const ch of token.replaceAll("-", "")) {
+        expect(REDEEM_CODE_ALPHABET.includes(ch)).toBe(true);
+      }
+    });
+
+    it("normalizes optional prefixes without adding leading hyphens", () => {
+      expect(normalizeRedeemCodePrefix("")).toBe("");
+      expect(normalizeRedeemCodePrefix("   ")).toBe("");
+      expect(normalizeRedeemCodePrefix("---")).toBe("");
+      expect(normalizeRedeemCodePrefix(" PRISM-- ")).toBe("PRISM");
+      expect(formatGeneratedRedeemCode(undefined, "A2B3-C4D5-E6F7")).toBe("A2B3-C4D5-E6F7");
+      expect(formatGeneratedRedeemCode("", "A2B3-C4D5-E6F7")).toBe("A2B3-C4D5-E6F7");
+      expect(formatGeneratedRedeemCode("PRISM-", "A2B3-C4D5-E6F7")).toBe("PRISM-A2B3-C4D5-E6F7");
+      expect(() => normalizeRedeemCodePrefix("PRISM VIP")).toThrow(
+        expect.objectContaining({ code: "INVALID_REDEEM_CODE_PREFIX" }),
+      );
+      expect(() => normalizeRedeemCodePrefix("A".repeat(25))).toThrow(
+        expect.objectContaining({ code: "INVALID_REDEEM_CODE_PREFIX" }),
+      );
+    });
+
+    it("validates custom redeem codes cleanly", () => {
+      expect(normalizeCustomRedeemCode(" WELCOME2026 ")).toBe("WELCOME2026");
+      for (const bad of ["", "   ", "HAS SPACE", "X".repeat(65)]) {
+        expect(() => normalizeCustomRedeemCode(bad)).toThrow(
+          expect.objectContaining({ code: "INVALID_REDEEM_CODE" }),
+        );
+      }
     });
   });
 });

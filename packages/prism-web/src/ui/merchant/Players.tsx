@@ -57,9 +57,9 @@ export function Players({ live = false }: { live?: boolean }) {
   const { t } = useI18n();
   const { canWrite, shopCode, cashierEnabled } = useMerchant();
   const identityText = (identity: NonNullable<Player["identities"]>[number]) =>
-    identity.provider === "web-account"
-      ? `${t("PRiSM 账号")}: ${identity.displayName ? `${identity.displayName} · ` : ""}${identity.subject}`
-      : `${identity.provider}:${identity.subject}`;
+    `${identity.provider === "web-account" ? t("PRiSM 账号") : identity.provider}: ${
+      identity.displayName ? `${identity.displayName} · ` : ""
+    }${identity.subject}`;
   const request = useStaffApi();
   const list = useResource<{ players: Player[] }>(live ? null : "players");
   const onSite = useResource<{ players: LivePlayer[]; billingSnapshot?: unknown }>(live ? "live-players" : null);
@@ -80,7 +80,7 @@ export function Players({ live = false }: { live?: boolean }) {
   };
   const rows = players?.filter(
     (player) =>
-      `${player.displayName} ${player.identities?.map(identityText).join(" ")}`
+      `${player.displayName} ${player.identities?.map((i) => `${identityText(i)} ${i.provider}:${i.subject}`).join(" ")}`
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
@@ -561,8 +561,8 @@ function PlayerDetail({
           </summary>
           {player.identities?.map((i) => (
             <p className="my-2 text-sm" key={`${i.provider}:${i.subject}`}>
-              {i.provider === "web-account" ? t("PRiSM 账号") : i.provider}:
-              {i.displayName && <span> {i.displayName} · </span>}{i.subject}
+              {i.provider === "web-account" ? t("PRiSM 账号") : i.provider}:{" "}
+              {i.displayName && <span>{i.displayName} · </span>}{i.subject}
             </p>
           ))}
           {canWrite && (

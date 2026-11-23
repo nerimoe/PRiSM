@@ -1,13 +1,26 @@
 import type { StaffReportsAnalyticsSource } from "@prism/application";
-import { addLocalDays, formatLocalDate, formatOffsetTimestamp, timestampDisplayParts } from "@prism/core";
-import type { DashboardAnalytics, DashboardAnalyticsDailyPoint, DashboardAnalyticsPaymentMethod, DashboardAnalyticsDeviceActivity } from "./dashboard-metrics";
+import {
+  addLocalDays,
+  computeCheckoutDurationBreakdown,
+  computeMedian,
+  normalizeStayCapHours,
+  rankReportDevices,
+  formatLocalDate,
+  formatOffsetTimestamp,
+  parseReportTimestampMs,
+  timestampDisplayParts,
+} from "@prism/core";
+import type {
+  DashboardAnalytics,
+  DashboardAnalyticsDailyPoint,
+  DashboardAnalyticsPaymentMethod,
+} from "./dashboard-metrics";
+
 const addAmounts = (a: number, b: number) => a + b;
+
 function parseStoredInstant(value: string): Date | null {
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
-    ? `${value.replace(" ", "T")}Z`
-    : value;
-  const parsed = new Date(normalized);
-  return Number.isFinite(parsed.getTime()) ? parsed : null;
+  const ms = parseReportTimestampMs(value);
+  return ms === null ? null : new Date(ms);
 }
 
 function localPartsOf(raw: string, timeZone: string): { date: string; hour: number } | null {
@@ -56,17 +69,38 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
     dailyMap.set(date, point);
   }
 
+  const sessionsByCheckout = new Map<
+    string,
+    { startedAtMs: number; endedAtMs: number }[]
+  >();
+  for (const row of sessionRows) {
+    if (!row.checkout_id || !row.ended_at) continue;
+    const startedAtMs = parseReportTimestampMs(row.started_at);
+    const endedAtMs = parseReportTimestampMs(row.ended_at);
+    if (startedAtMs === null || endedAtMs === null) continue;
+    const list = sessionsByCheckout.get(row.checkout_id) ?? [];
+    list.push({
+      startedAtMs,
+      endedAtMs,
+    });
+    sessionsByCheckout.set(row.checkout_id, list);
+  }
+
   let todayRevenueTotal = 0;
   let yesterdayRevenueTotal = 0;
   let todayCheckoutCount = 0;
   let yesterdayCheckoutCount = 0;
-  let todayDurationSum = 0;
+  const todayEffectiveDurations: number[] = [];
 
   let periodRevenueTotal = 0;
   let previousRevenueTotal = 0;
   let periodCheckoutCount = 0;
   let previousCheckoutCount = 0;
-  let periodDurationSum = 0;
+  const periodEffectiveDurations: number[] = [];
+  const periodTickets: number[] = [];
+  let totalEffectiveDurationMinutes = 0;
+  let totalInactiveDurationMinutes = 0;
+  let inactiveCheckoutCount = 0;
 
   const paymentTotals = new Map<DashboardAnalyticsPaymentMethod["method"], { revenue: number; count: number }>();
 
@@ -74,13 +108,17 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
     const parts = localPartsOf(row.settled_at, timeZone);
     if (!parts) continue;
     const total = Math.round(row.total);
-    const duration = Math.max(0, Math.round(row.duration_minutes ?? 0));
+    const breakdown = computeCheckoutDurationBreakdown(
+      sessionsByCheckout.get(row.id) ?? [],
+      row.duration_minutes ?? 0,
+      { capMs: normalizeStayCapHours(facts.stayCapHours) * 3_600_000 },
+    );
     const { date } = parts;
 
     if (date === actualToday) {
       todayRevenueTotal = addAmounts(todayRevenueTotal, total);
       todayCheckoutCount += 1;
-      todayDurationSum += duration;
+      if (breakdown.hasTimedSession) todayEffectiveDurations.push(breakdown.effectiveMinutes);
     } else if (date === actualYesterday) {
       yesterdayRevenueTotal = addAmounts(yesterdayRevenueTotal, total);
       yesterdayCheckoutCount += 1;
@@ -89,7 +127,11 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
     if (date >= startDate && date <= endDate) {
       periodRevenueTotal = addAmounts(periodRevenueTotal, total);
       periodCheckoutCount += 1;
-      periodDurationSum += duration;
+      periodTickets.push(total);
+      totalEffectiveDurationMinutes += breakdown.effectiveMinutes;
+      totalInactiveDurationMinutes += breakdown.inactiveMinutes;
+      if (breakdown.inactiveMinutes > 0) inactiveCheckoutCount += 1;
+      if (breakdown.hasTimedSession) periodEffectiveDurations.push(breakdown.effectiveMinutes);
       const point = dailyMap.get(date);
       if (point) {
         point.revenue = addAmounts(point.revenue, total);
@@ -147,7 +189,7 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
 
   let todayCoinCount = 0;
   let periodCoinCount = 0;
-  const deviceMap = new Map<string, DashboardAnalyticsDeviceActivity>();
+  const periodSignals: (typeof operationRows)[number][] = [];
 
   for (const row of operationRows) {
     const parts = localPartsOf(row.requested_at, timeZone);
@@ -160,26 +202,7 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
       if (point) point.coins += 1;
     }
 
-    if (
-      row.device_id &&
-      row.status !== "failed" &&
-      (row.counts_as_play === 1 ||
-        row.action === "coin" ||
-        row.action === "aime.scan" ||
-        row.action === "power.on" ||
-        row.action === "table.seat")
-    ) {
-      const activity = deviceMap.get(row.device_id) ?? {
-        deviceId: row.device_id,
-        operations: 0,
-        coins: 0,
-        swipes: 0,
-      };
-      activity.operations += 1;
-      if (row.action === "coin") activity.coins += 1;
-      if (row.action === "aime.scan") activity.swipes += 1;
-      deviceMap.set(row.device_id, activity);
-    }
+    periodSignals.push(row);
   }
 
   const paymentMethods: DashboardAnalyticsPaymentMethod[] = [...paymentTotals.entries()]
@@ -192,9 +215,10 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
         PAYMENT_METHOD_ORDER.indexOf(a.method) - PAYMENT_METHOD_ORDER.indexOf(b.method),
     );
 
-  const topDevices = [...deviceMap.values()]
-    .sort((a, b) => b.operations - a.operations || b.coins - a.coins || a.deviceId.localeCompare(b.deviceId))
-    .slice(0, 5);
+  const { topDevices, topDevicesByHeat } = rankReportDevices(periodSignals);
+
+  const todayDurationSum = todayEffectiveDurations.reduce((sum, value) => sum + value, 0);
+  const periodDurationSum = periodEffectiveDurations.reduce((sum, value) => sum + value, 0);
 
   return {
     range: {
@@ -214,7 +238,8 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
       yesterdayVisitCount: dailyVisits.get(actualYesterday)?.size ?? 0,
       newPlayerCount: todayNewPlayerCount,
       coinCount: todayCoinCount,
-      avgDurationMinutes: todayCheckoutCount > 0 ? Math.round(todayDurationSum / todayCheckoutCount) : 0,
+      avgDurationMinutes: todayEffectiveDurations.length > 0 ? Math.round(todayDurationSum / todayEffectiveDurations.length) : 0,
+      medianDurationMinutes: todayEffectiveDurations.length > 0 ? Math.round(computeMedian(todayEffectiveDurations)) : 0,
     },
     period: {
       revenueTotal: periodRevenueTotal / 100,
@@ -227,13 +252,21 @@ export function calculateHistoryAnalytics(facts: StaffReportsAnalyticsSource): D
       avgTicket: periodCheckoutCount > 0
         ? Math.round((periodRevenueTotal as number) / periodCheckoutCount) / 100
         : 0,
-      avgDurationMinutes: periodCheckoutCount > 0 ? Math.round(periodDurationSum / periodCheckoutCount) : 0,
+      medianTicket: periodTickets.length > 0
+        ? Math.round(computeMedian(periodTickets)) / 100
+        : 0,
+      avgDurationMinutes: periodEffectiveDurations.length > 0 ? Math.round(periodDurationSum / periodEffectiveDurations.length) : 0,
+      medianDurationMinutes: periodEffectiveDurations.length > 0 ? Math.round(computeMedian(periodEffectiveDurations)) : 0,
+      totalEffectiveDurationMinutes,
+      totalInactiveDurationMinutes,
+      inactiveCheckoutCount,
       coinCount: periodCoinCount,
       assetGrantCount: facts.assetGrantCount,
     },
-    daily: daily.map(p => ({ ...p, revenue: p.revenue / 100 })),
+    daily: daily.map((p) => ({ ...p, revenue: p.revenue / 100 })),
     hourlyVisits: hourlyVisitsSets.map((set) => set.size),
-    paymentMethods: paymentMethods.map(p => ({ ...p, revenue: p.revenue / 100 })),
+    paymentMethods: paymentMethods.map((p) => ({ ...p, revenue: p.revenue / 100 })),
     topDevices,
+    topDevicesByHeat,
   };
 }

@@ -13,7 +13,7 @@ import {
   type CodeUsage,
   type CodeValidity,
 } from "./redeem-code-export";
-import { Field, Modal, button, input, primary } from "./shared";
+import { Field, Modal, State, button, input, primary, useResource } from "./shared";
 
 const usageOptions: [CodeUsage, string][] = [
   ["unused", "未使用"],
@@ -79,24 +79,31 @@ function download(content: string, filename: string, type: string) {
 }
 
 export function RedeemCodeExport({
-  codes,
+  codes: codesProp,
+  initialFilter,
   presents,
   timeZone,
   close,
 }: {
-  codes: RedeemCode[];
+  codes?: RedeemCode[];
+  initialFilter?: Partial<CodeExportFilter>;
   presents: Present[];
   timeZone: string;
   close: () => void;
 }) {
   const { t } = useI18n();
-  const [filter, setFilter] = useState<CodeExportFilter>(emptyCodeExportFilter);
+  const fetched = useResource<{ redeemCodes: RedeemCode[] }>(codesProp ? null : "redeem-codes");
+  const codes = codesProp ?? fetched.data?.redeemCodes ?? null;
+  const [filter, setFilter] = useState<CodeExportFilter>(() => ({
+    ...emptyCodeExportFilter,
+    ...initialFilter,
+  }));
   const [format, setFormat] = useState<"csv" | "txt">("csv");
   const [columns, setColumns] = useState<CodeExportColumn[]>([...codeExportColumns]);
   const patch = (next: Partial<CodeExportFilter>) => setFilter((current) => ({ ...current, ...next }));
 
   const now = new Date();
-  const matches = filterRedeemCodes(codes, filter, now, timeZone);
+  const matches = codes ? filterRedeemCodes(codes, filter, now, timeZone) : [];
   const rangeInverted = !!filter.expiresFrom && !!filter.expiresTo && filter.expiresFrom > filter.expiresTo;
   const shown = (value: string | null | undefined) => (value ? displayDateTime(value, timeZone) : "");
 
@@ -131,7 +138,10 @@ export function RedeemCodeExport({
 
   return (
     <Modal title="导出兑换码" close={close} wide>
-      <div className="grid gap-5">
+      {!codes ? (
+        <State error={fetched.error} />
+      ) : (
+        <div className="grid gap-5">
         <CheckGroup
           legend="绑定礼物"
           options={presents.map((present) => [
@@ -228,7 +238,8 @@ export function RedeemCodeExport({
             </button>
           </div>
         </div>
-      </div>
+        </div>
+      )}
     </Modal>
   );
 }

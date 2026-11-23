@@ -142,8 +142,7 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       provider TEXT NOT NULL,
       subject TEXT NOT NULL,
       verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, provider, subject),
-      UNIQUE(shop_id, user_id, provider)
+      PRIMARY KEY(shop_id, provider, subject)
     );
     CREATE TABLE IF NOT EXISTS platform_binding_codes (
       shop_id TEXT NOT NULL REFERENCES shops(id),
@@ -2022,8 +2021,8 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     ]);
 
     // Failed op_3 excluded from topDevices
-    expect(analytics.topDevices).toEqual([
-      { deviceId: "cab_1", operations: 2, coins: 1, swipes: 1 },
+    expect(analytics.topDevices).toMatchObject([
+      { deviceId: "cab_1", operations: 2, coins: 1, swipes: 1, visits: 0 },
     ]);
 
     // 3. Custom local date range (e.g. single yesterday day) scopes period, daily, and paymentMethods accurately
@@ -2114,5 +2113,464 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       );
       expect(invalidRes.status).toBe(400);
     }
+  });
+
+  it("clips forgotten checkouts at the 12h stay cap, computes medians, and ranks devices", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+
+    const { formatLocalDate, parseLocalDateTime } = await import("@prism/core");
+    const now = new Date();
+    const todayLocal = formatLocalDate(now, "Asia/Shanghai");
+    const todayStartMs = parseLocalDateTime(todayLocal, "10:00", "Asia/Shanghai").getTime();
+    const isoAt = (ms: number) => new Date(ms).toISOString();
+
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)", [shopId, "p_norm", "Normal", isoAt(todayStartMs - 86_400_000)]);
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)", [shopId, "p_zomb", "Zombie", isoAt(todayStartMs - 5 * 86_400_000)]);
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)", [shopId, "p_short", "Short", isoAt(todayStartMs - 86_400_000)]);
+
+    // 1) Normal 90m session with a coin at +40m and a valid resource.visited at +45m -> 90m effective, 0 inactive
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')", [shopId, "s_norm", "p_norm", isoAt(todayStartMs), isoAt(todayStartMs + 90 * 60_000)]);
+    sqlite.run("INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,'op_norm','cab_high','coin','coin','p_norm','succeeded',1,?)", [shopId, isoAt(todayStartMs + 40 * 60_000)]);
+    sqlite.run("INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at,via) VALUES (?,'ev_visit','cab_high','shop','signal','resource.visited','platform','p_norm','{}',?,'page')", [shopId, isoAt(todayStartMs + 45 * 60_000)]);
+    sqlite.run("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)", [shopId, "co_norm", "p_norm", 3000, 3000, isoAt(todayStartMs + 90 * 60_000)]);
+    sqlite.run("INSERT INTO settlements(shop_id,id,session_id,checkout_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,?,'settled',?)", [shopId, "st_norm", "s_norm", "co_norm", 3000, 3000, isoAt(todayStartMs + 90 * 60_000)]);
+
+    // 2) Forgotten 50h (3000m) session starting 2 days ago (events don't matter any more) -> 720m effective (12h cap), 2280m inactive
+    const zombEndMs = todayStartMs + 60 * 60_000;
+    const zombStartMs = zombEndMs - 50 * 60 * 60_000;
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')", [shopId, "s_zomb", "p_zomb", isoAt(zombStartMs), isoAt(zombEndMs)]);
+    sqlite.run(
+      "INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at) VALUES (?,'ev_card','cab_low','hinata_io','signal','card.consumed','device','p_zomb','{}',?)",
+      [shopId, isoAt(zombStartMs + 30 * 60_000)],
+    );
+    sqlite.run(
+      "INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,staff_id,payload_json,occurred_at) VALUES (?,'ev_settle',NULL,'shop','signal','checkout.settled','platform','p_zomb',NULL,'{}',?)",
+      [shopId, isoAt(zombEndMs - 5 * 60_000)],
+    );
+    sqlite.run(
+      "INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,staff_id,payload_json,occurred_at) VALUES (?,'ev_staff',NULL,'shop','signal','wallet.adjusted','platform','p_zomb','staff_1','{}',?)",
+      [shopId, isoAt(zombEndMs - 2 * 60_000)],
+    );
+    sqlite.run("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)", [shopId, "co_zomb", "p_zomb", 12000, 12000, isoAt(zombEndMs)]);
+    sqlite.run("INSERT INTO settlements(shop_id,id,session_id,checkout_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,?,'settled',?)", [shopId, "st_zomb", "s_zomb", "co_zomb", 12000, 12000, isoAt(zombEndMs)]);
+
+    // 3) Short 30m session with zero events -> 30m effective, 0 inactive
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')", [shopId, "s_short", "p_short", isoAt(todayStartMs), isoAt(todayStartMs + 30 * 60_000)]);
+    sqlite.run("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)", [shopId, "co_short", "p_short", 1500, 1500, isoAt(todayStartMs + 30 * 60_000)]);
+    sqlite.run("INSERT INTO settlements(shop_id,id,session_id,checkout_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,?,'settled',?)", [shopId, "st_short", "s_short", "co_short", 1500, 1500, isoAt(todayStartMs + 30 * 60_000)]);
+
+    // Operations for Top Devices: cab_high (3 coins), cab_low (1 coin, 5 swipes), cab_zero (4 swipes, 0 coins)
+    for (let i = 0; i < 2; i += 1) {
+      sqlite.run("INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,?, 'cab_high','coin','coin','p_norm','succeeded',1,?)", [shopId, `op_hi_${i}`, isoAt(todayStartMs + (41 + i) * 60_000)]);
+    }
+    sqlite.run("INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,'op_lo_c','cab_low','coin','coin','p_short','succeeded',1,?)", [shopId, isoAt(todayStartMs + 5 * 60_000)]);
+    for (let i = 0; i < 5; i += 1) {
+      sqlite.run("INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,?, 'cab_low','hinata_io','aime.scan','p_short','succeeded',1,?)", [shopId, `op_lo_s_${i}`, isoAt(todayStartMs + (6 + i) * 60_000)]);
+    }
+    for (let i = 0; i < 4; i += 1) {
+      sqlite.run("INSERT INTO device_operations(shop_id,id,device_id,capability,action,player_id,status,counts_as_play,requested_at) VALUES (?,?, 'cab_zero','hinata_io','aime.scan','p_norm','succeeded',1,?)", [shopId, `op_zr_s_${i}`, isoAt(todayStartMs + (10 + i) * 60_000)]);
+    }
+    // Physical reader card.consumed (operation_id IS NULL) counts in swipes, while virtual op-linked card.consumed does not double-count
+    for (let i = 0; i < 3; i += 1) {
+      sqlite.run("INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,player_id,payload_json,occurred_at) VALUES (?,?,'cab_zero','hinata_io','signal','card.consumed',NULL,'device','p_norm','{}',?)", [shopId, `ev_zr_phy_${i}`, isoAt(todayStartMs + (15 + i) * 60_000)]);
+    }
+    sqlite.run("INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,operation_id,origin,player_id,payload_json,occurred_at) VALUES (?,'ev_zr_virt','cab_zero','hinata_io','signal','card.consumed','op_zr_s_0','device','p_norm','{}',?)", [shopId, isoAt(todayStartMs + 10 * 60_000)]);
+    // Valid resource link visits (both linked and unlinked) feed the heat ranking without inflating hardware operations
+    sqlite.run("INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at,via) VALUES (?,'ev_qr_1','qr_entry','shop','signal','resource.visited','platform','p_short','{}',?,'page')", [shopId, isoAt(todayStartMs + 50 * 60_000)]);
+    sqlite.run("INSERT INTO device_events(shop_id,id,device_id,capability,kind,name,origin,player_id,payload_json,occurred_at,via) VALUES (?,'ev_qr_2','qr_entry','shop','signal','resource.visited','platform',NULL,'{\"userId\":\"u_unlinked\"}',?,'page')", [shopId, isoAt(todayStartMs + 51 * 60_000)]);
+
+    const [analyticsRes, sourceRes] = await Promise.all([
+      app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?days=7`, {
+          headers: { Authorization: `Bearer ${staffSessionToken}` },
+        }),
+        env,
+      ),
+      app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?source=1&days=7`, {
+          headers: { Authorization: `Bearer ${staffSessionToken}` },
+        }),
+        env,
+      ),
+    ]);
+    expect(analyticsRes.status).toBe(200);
+    expect(sourceRes.status).toBe(200);
+
+    const { analytics } = (await analyticsRes.json()) as { analytics: any };
+    const { source } = (await sourceRes.json()) as { source: import("@prism/application").StaffReportsAnalyticsSource };
+
+    // The fact batch carries the cap, and no per-session activity lookups.
+    expect(source.stayCapHours).toBe(12);
+    expect(source.sessionRows.find((r) => r.checkout_id === "co_zomb")).not.toHaveProperty("last_event_at");
+
+    // Effective durations: [30, 90, 720] -> median 90 (the outlier doesn't move it), avg 280; inactive: 2280 across 1 checkout
+    expect(analytics.period.medianDurationMinutes).toBe(90);
+    expect(analytics.period.avgDurationMinutes).toBe(280);
+    expect(analytics.period.totalEffectiveDurationMinutes).toBe(840);
+    expect(analytics.period.totalInactiveDurationMinutes).toBe(2280);
+    expect(analytics.period.inactiveCheckoutCount).toBe(1);
+    expect(analytics.period.medianTicket).toBe(30);
+    expect(analytics.period.avgTicket).toBe(55);
+
+    // Top devices sorted strictly by coins descending, excluding 0-coin devices
+    expect(analytics.topDevices).toMatchObject([
+      { deviceId: "cab_high", operations: 3, coins: 3, swipes: 0, visits: 1 },
+      { deviceId: "cab_low", operations: 7, coins: 1, swipes: 6, visits: 0 },
+    ]);
+    // Heat folds each player's signals within 3 minutes into one play: cab_high's coin burst + visit = 2 plays,
+    // cab_low's coin + swipes from p_short (2) plus p_zomb's physical card (1) = 3 plays by 2 players.
+    expect(analytics.topDevicesByHeat.map((d: { deviceId: string; plays: number; players: number }) => [d.deviceId, d.plays, d.players])).toEqual([
+      ["cab_low", 3, 2],
+      ["cab_zero", 3, 1],
+      ["cab_high", 2, 1],
+      ["qr_entry", 2, 1],
+    ]);
+  });
+
+  it("counts stays in full up to the shop's configurable cap", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const headers = { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" };
+    const { formatLocalDate, parseLocalDateTime } = await import("@prism/core");
+    const startMs = parseLocalDateTime(formatLocalDate(new Date(Date.now() - 86_400_000), "Asia/Shanghai"), "10:00", "Asia/Shanghai").getTime();
+    const isoAt = (ms: number) => new Date(ms).toISOString();
+
+    // A 5h stay, e.g. one mahjong table round on the platform and then arcade games it never sees.
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)", [shopId, "p_desk", "Desk", isoAt(startMs - 86_400_000)]);
+    sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,ended_at,status,payment_status) VALUES (?,?,?,?,?,'closed','paid')", [shopId, "s_desk", "p_desk", isoAt(startMs), isoAt(startMs + 5 * 3_600_000)]);
+    sqlite.run("INSERT INTO player_checkouts(shop_id,id,player_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,'settled',?)", [shopId, "co_desk", "p_desk", 9000, 9000, isoAt(startMs + 5 * 3_600_000)]);
+    sqlite.run("INSERT INTO settlements(shop_id,id,session_id,checkout_id,subtotal,total,status,settled_at) VALUES (?,?,?,?,?,?,'settled',?)", [shopId, "st_desk", "s_desk", "co_desk", 9000, 9000, isoAt(startMs + 5 * 3_600_000)]);
+
+    const period = async () => {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?days=7`, { headers }), env);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { analytics: { period: { medianDurationMinutes: number; totalInactiveDurationMinutes: number } } }).analytics.period;
+    };
+    const settingsUrl = `https://prism.test/api/v1/shops/${publicId}/staff/reports/settings`;
+
+    // Default 12h cap: the whole stay is effective.
+    expect((await (await app.fetch(new Request(settingsUrl, { headers }), env)).json()) as unknown).toEqual({ settings: { stayCapHours: 12 } });
+    expect(await period()).toMatchObject({ medianDurationMinutes: 300, totalInactiveDurationMinutes: 0 });
+
+    // The shop lowers the cap to 2h: the rest becomes inactive time.
+    const put = await app.fetch(new Request(settingsUrl, { method: "PUT", headers, body: JSON.stringify({ stayCapHours: 2 }) }), env);
+    expect(put.status).toBe(200);
+    expect(await period()).toMatchObject({ medianDurationMinutes: 120, totalInactiveDurationMinutes: 180 });
+
+    // The source batch carries the cap so the History page computes the same.
+    const source = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/analytics?source=1&days=7`, { headers }), env);
+    expect(((await source.json()) as { source: { stayCapHours: number } }).source.stayCapHours).toBe(2);
+
+    // Out-of-range values are rejected.
+    const bad = await app.fetch(new Request(settingsUrl, { method: "PUT", headers, body: JSON.stringify({ stayCapHours: 0 }) }), env);
+    expect(bad.status).toBe(422);
+    sqlite.close();
+  });
+
+  it("supports binding multiple same-provider identities, propagates displayName, and converts identities safely", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken, botToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const futureExpiry = new Date(Date.now() + 86400000 * 7).toISOString();
+
+    for (const [uid, token, playerId, name] of [
+      ["u_multi", "tok_multi", "p_multi", "多号玩家"],
+      ["u_other", "tok_other", "p_other", "其他玩家"],
+    ] as const) {
+      sqlite.run("INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", [uid]);
+      sqlite.run("INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", [`sess_${uid}`, uid, await sha256(token), futureExpiry]);
+      sqlite.run("INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP)", [shopId, playerId, name]);
+      sqlite.run("INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)", [shopId, uid, playerId]);
+    }
+
+    const genCode = async (token: string) => {
+      const res = await app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        }),
+        env,
+      );
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { code: string }).code;
+    };
+
+    const confirm = (body: Record<string, unknown>) =>
+      app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/integration/platform-binding/confirm`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${botToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        env,
+      );
+
+    // 1. Bind two different onebot accounts with displayNames to the same user/player
+    const code1 = await genCode("tok_multi");
+    const res1 = await confirm({ code: code1, provider: "onebot", subject: "10002", displayName: "二号QQ" });
+    expect(res1.status).toBe(200);
+
+    const code2 = await genCode("tok_multi");
+    const res2 = await confirm({ code: code2, provider: "onebot", subject: "10001", displayName: "一号QQ" });
+    expect(res2.status).toBe(200);
+
+    // 2. GET /platform-binding lists both bindings sorted by (provider, subject) with displayNames
+    const bindingsRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, {
+        headers: { Authorization: `Bearer tok_multi` },
+      }),
+      env,
+    );
+    expect(bindingsRes.status).toBe(200);
+    const bindingsBody = (await bindingsRes.json()) as {
+      bindings: Array<{ playerId: string; provider: string; subject: string; displayName?: string }>;
+    };
+    expect(bindingsBody.bindings.map((b) => [b.provider, b.subject, b.displayName])).toEqual([
+      ["onebot", "10001", "一号QQ"],
+      ["onebot", "10002", "二号QQ"],
+    ]);
+
+    // 3. GET /staff/players propagates displayName on onebot identities
+    const staffPlayersRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/players`, {
+        headers: { Authorization: `Bearer ${staffSessionToken}` },
+      }),
+      env,
+    );
+    expect(staffPlayersRes.status).toBe(200);
+    const staffPlayersBody = (await staffPlayersRes.json()) as {
+      players: Array<{ id: string; identities: Array<{ provider: string; subject: string; displayName?: string }> }>;
+    };
+    const multiPlayer = staffPlayersBody.players.find((p) => p.id === "p_multi");
+    expect(multiPlayer).toBeDefined();
+    expect(
+      multiPlayer!.identities
+        .filter((i) => i.provider === "onebot")
+        .map((i) => [i.subject, i.displayName] as const)
+        .sort((a, b) => a[0].localeCompare(b[0])),
+    ).toEqual([
+      ["10001", "一号QQ"],
+      ["10002", "二号QQ"],
+    ]);
+
+    // 4. Another user claiming an already-bound subject gets 409 and retains their binding code
+    const otherCode = await genCode("tok_other");
+    const conflictRes = await confirm({ code: otherCode, provider: "onebot", subject: "10001", displayName: "冒充" });
+    expect(conflictRes.status).toBe(409);
+    const retryRes = await confirm({ code: otherCode, provider: "onebot", subject: "20001", displayName: "合法" });
+    expect(retryRes.status).toBe(200);
+
+    // 5. Identity conversion from qq -> onebot succeeds even when u_multi already owns onebot bindings
+    const codeQq = await genCode("tok_multi");
+    expect((await confirm({ code: codeQq, provider: "qq", subject: "30001", displayName: "旧QQ" })).status).toBe(200);
+
+    const previewRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/identity-conversion/preview`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceProvider: "qq", targetProvider: "onebot" }),
+      }),
+      env,
+    );
+    expect(previewRes.status).toBe(200);
+    const preview = (await previewRes.json()) as { fingerprint: string; conflicts: unknown[]; bindingCount: number };
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.bindingCount).toBe(1);
+
+    const applyRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/identity-conversion/apply`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceProvider: "qq",
+          targetProvider: "onebot",
+          fingerprint: preview.fingerprint,
+          operationId: crypto.randomUUID(),
+        }),
+      }),
+      env,
+    );
+    expect(applyRes.status).toBe(200);
+
+    const convertedRows = sqlite
+      .query("SELECT subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = 'u_multi' AND provider = 'onebot' ORDER BY subject")
+      .all(shopId) as { subject: string }[];
+    expect(convertedRows.map((r) => r.subject)).toEqual(["10001", "10002", "30001"]);
+
+    sqlite.close();
+  });
+
+  it("supports custom redeem codes, prefix-free CDK batch generation, and paginated/filtered redeem-code listing", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const headers = { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" };
+
+    sqlite.run(
+      "INSERT INTO presents(shop_id, id, name, once_per_player, grants_json, status) VALUES (?, 'pres-a', '礼物A', 0, '[]', 'active'), (?, 'pres-b', '礼物B', 0, '[]', 'active')",
+      [shopId, shopId],
+    );
+    sqlite.run(
+      "INSERT INTO players(shop_id, id, display_name, status, created_at) VALUES (?, 'p_redeemer', '领奖玩家', 'active', CURRENT_TIMESTAMP)",
+      [shopId],
+    );
+
+    // 1. Custom redeem code creation & validation
+    const createCustom = (body: Record<string, unknown>) =>
+      app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+        env,
+      );
+
+    const okCustom = await createCustom({
+      code: "  WELCOME2026 ",
+      presentId: "pres-a",
+      maxUseCount: 2,
+      activeAt: null,
+      expiresAt: null,
+    });
+    expect(okCustom.status).toBe(201);
+    const createdCustom = (await okCustom.json()) as { redeemCode: { id: string; code: string } };
+    expect(createdCustom.redeemCode.code).toBe("WELCOME2026");
+
+    const dupCustom = await createCustom({
+      code: "WELCOME2026",
+      presentId: "pres-a",
+      maxUseCount: 1,
+      activeAt: null,
+      expiresAt: null,
+    });
+    expect(dupCustom.status).toBe(409);
+    expect(await dupCustom.json()).toMatchObject({ error: { code: "REDEEM_CODE_ALREADY_EXISTS" } });
+
+    const spaceCustom = await createCustom({
+      code: "BAD CODE",
+      presentId: "pres-a",
+      maxUseCount: 1,
+      activeAt: null,
+      expiresAt: null,
+    });
+    expect(spaceCustom.status).toBe(400);
+    expect(await spaceCustom.json()).toMatchObject({ error: { code: "INVALID_REDEEM_CODE" } });
+
+    // 2. Batch generation without prefix (no leading '-') and with prefix ending in '-'
+    const createBatch = (body: Record<string, unknown>) =>
+      app.fetch(
+        new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes/batch`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+        env,
+      );
+
+    const noPrefixRes = await createBatch({
+      presentId: "pres-a",
+      prefix: "",
+      count: 2,
+      maxUseCount: 1,
+      activeAt: null,
+      expiresAt: null,
+    });
+    expect(noPrefixRes.status).toBe(200);
+    const noPrefixCodes = ((await noPrefixRes.json()) as { redeemCodes: { id: string; code: string }[] }).redeemCodes;
+    expect(noPrefixCodes).toHaveLength(2);
+    for (const row of noPrefixCodes) {
+      expect(row.code).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}(?:-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}){2}$/);
+      expect(row.code.startsWith("-")).toBe(false);
+    }
+
+    const withPrefixRes = await createBatch({
+      presentId: "pres-b",
+      prefix: "VIP-",
+      count: 2,
+      maxUseCount: 1,
+      activeAt: null,
+      expiresAt: "2020-01-01T00:00:00.000Z",
+    });
+    expect(withPrefixRes.status).toBe(200);
+    const withPrefixCodes = ((await withPrefixRes.json()) as { redeemCodes: { id: string; code: string }[] }).redeemCodes;
+    for (const row of withPrefixCodes) {
+      expect(row.code).toMatch(/^VIP-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}(?:-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}){2}$/);
+      expect(row.code.startsWith("VIP--")).toBe(false);
+    }
+
+    // Add a redemption on WELCOME2026 so it becomes "partial", and revoke one noPrefix code
+    sqlite.run(
+      "INSERT INTO redeem_records(shop_id, id, player_id, code_id, present_id, redeemed_at) VALUES (?, 'rr-1', 'p_redeemer', ?, 'pres-a', '2026-01-01T00:00:00.000Z')",
+      [shopId, createdCustom.redeemCode.id],
+    );
+    const revokeRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes/${noPrefixCodes[0]!.id}/revoke`, {
+        method: "POST",
+        headers,
+        body: "{}",
+      }),
+      env,
+    );
+    expect(revokeRes.status).toBe(200);
+
+    // 3. Unfiltered parameterless GET preserves existing array payload (no page property)
+    const fullRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes`, { headers }),
+      env,
+    );
+    expect(fullRes.status).toBe(200);
+    const fullBody = (await fullRes.json()) as { redeemCodes: unknown[]; page?: unknown };
+    expect(fullBody.page).toBeUndefined();
+    expect(fullBody.redeemCodes).toHaveLength(5);
+
+    // 4. Paginated newest-first listing
+    const page1Res = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes?limit=2&offset=0`, { headers }),
+      env,
+    );
+    expect(page1Res.status).toBe(200);
+    const page1 = (await page1Res.json()) as {
+      redeemCodes: Array<{ code: string }>;
+      page: { limit: number; offset: number; total: number; hasMore: boolean };
+    };
+    expect(page1.page).toEqual({ limit: 2, offset: 0, total: 5, hasMore: true });
+    expect(page1.redeemCodes.map((r) => r.code)).toEqual([withPrefixCodes[1]!.code, withPrefixCodes[0]!.code]);
+
+    // 5. Filtered queries (usage, validity, presentId, search)
+    const partialRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes?limit=10&offset=0&usage=partial&search=welcome`, { headers }),
+      env,
+    );
+    expect(partialRes.status).toBe(200);
+    const partialBody = (await partialRes.json()) as {
+      redeemCodes: Array<{ code: string; redemptions?: Array<{ playerDisplayName: string }> }>;
+      page: { total: number; hasMore: boolean };
+    };
+    expect(partialBody.page.total).toBe(1);
+    expect(partialBody.redeemCodes[0]?.code).toBe("WELCOME2026");
+    expect(partialBody.redeemCodes[0]?.redemptions?.map((r) => r.playerDisplayName)).toEqual(["领奖玩家"]);
+
+    const expiredRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes?limit=10&offset=0&validity=expired&presentId=pres-b`, { headers }),
+      env,
+    );
+    expect(expiredRes.status).toBe(200);
+    const expiredBody = (await expiredRes.json()) as { page: { total: number } };
+    expect(expiredBody.page.total).toBe(2);
+
+    const revokedRes = await app.fetch(
+      new Request(`https://prism.test/api/v1/shops/${publicId}/staff/redeem-codes?limit=10&offset=0&usage=revoked`, { headers }),
+      env,
+    );
+    expect(revokedRes.status).toBe(200);
+    const revokedBody = (await revokedRes.json()) as { redeemCodes: Array<{ id: string }>; page: { total: number } };
+    expect(revokedBody.page.total).toBe(1);
+    expect(revokedBody.redeemCodes[0]?.id).toBe(noPrefixCodes[0]!.id);
+
+    sqlite.close();
   });
 });

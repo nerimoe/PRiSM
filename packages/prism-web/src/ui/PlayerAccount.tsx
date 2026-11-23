@@ -18,8 +18,16 @@ import {
   type Assets,
 } from "./BillingPages";
 
-export type Section = "账单" | "兑换" | "记录" | "钱包";
-export const playerSections: Section[] = ["账单", "兑换", "记录", "钱包"];
+export type Section = "账单" | "兑换" | "记录" | "钱包" | "平台身份";
+export const playerSections: Section[] = ["账单", "兑换", "记录", "钱包", "平台身份"];
+
+type PlatformBindingItem = {
+  playerId: string;
+  provider: string;
+  subject: string;
+  displayName?: string;
+  verifiedAt: string;
+};
 
 export function PlayerDialog({
   title,
@@ -82,6 +90,7 @@ export function AccountContent({
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [assets, setAssets] = useState<Assets | null>(null);
+  const [bindings, setBindings] = useState<PlatformBindingItem[] | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   /** Why a code was not accepted, under the code field; the section itself loaded fine. */
@@ -117,7 +126,12 @@ export function AccountContent({
         } else if (section === "钱包") {
           const current = await api<Assets>(shopApi(code, "player/assets"));
           if (!cancelled) setAssets(current);
-
+        } else if (section === "平台身份") {
+          const current = await api<{ bindings: PlatformBindingItem[] }>(
+            shopApi(code, "platform-binding"),
+            { signal: controller.signal },
+          );
+          if (!cancelled) setBindings(current.bindings);
         }
       } catch (e) {
         if (!cancelled)
@@ -218,6 +232,31 @@ export function AccountContent({
           ) : (
             <p>{t("暂无资产")}</p>
           ))}
+        {section === "平台身份" && bindings && (
+          <>
+            {bindings.length ? (
+              bindings.map((row) => (
+                <div className="account-row" key={`${row.provider}:${row.subject}`}>
+                  <span>
+                    {row.provider}
+                    {row.displayName ? ` · ${row.displayName}` : ""}
+                  </span>
+                  <code className="select-all break-all text-xs opacity-70">{row.subject}</code>
+                </div>
+              ))
+            ) : (
+              <p>{t("暂无绑定身份")}</p>
+            )}
+            <button
+              type="button"
+              className="session-action"
+              disabled={busy}
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              {t("刷新")}
+            </button>
+          </>
+        )}
 
       </div>
       {section === "账单" && !done && preview && (
