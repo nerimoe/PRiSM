@@ -312,17 +312,27 @@ export function MembersPanel({
           </button>
         </div>
       </form>
-      <div className="mt-5 divide-y divide-ink/10">
+      <div className="bill-entry !mb-0 !p-0 mt-5 divide-y divide-ink/[0.06] overflow-hidden">
         {members.map((member) => (
           <div
             key={member.id}
-            className="flex flex-wrap items-center justify-between gap-3 py-4"
+            className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5"
           >
             <div className="min-w-0">
-              <p className="truncate font-medium">{member.displayName}</p>
-              <p className="text-sm text-ink/60">
-                @{member.username} ·{" "}
-                {member.role === "owner" ? t("负责人") : t("店员")}
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="truncate font-medium text-ink">{member.displayName}</p>
+                <span
+                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    member.role === "owner"
+                      ? "bg-mint/12 text-mint"
+                      : "bg-ink/[0.05] text-ink/65"
+                  }`}
+                >
+                  {member.role === "owner" ? t("负责人") : t("店员")}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-ink/55">
+                @{member.username}
               </p>
             </div>
             <div className="flex items-center gap-3">

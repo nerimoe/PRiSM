@@ -33,6 +33,44 @@ import {
   type Asset,
 } from "./shared";
 
+const tableBtn = `${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-sm`;
+
+function StatusPill({
+  item,
+}: {
+  item: { activeAt?: string | null; expiresAt?: string | null; status?: string };
+}) {
+  const { t } = useI18n();
+  const label = availabilityLabel(item, t);
+  const archived = item.status === "archived";
+  const expired =
+    !archived && Boolean(item.expiresAt && Date.parse(item.expiresAt) <= Date.now());
+  const pending =
+    !archived && !expired && Boolean(item.activeAt && Date.parse(item.activeAt) > Date.now());
+  const tone = archived
+    ? "bg-ink/5 text-ink/50"
+    : expired
+      ? "bg-coral/10 text-coral"
+      : pending
+        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+        : "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400";
+  const dot = archived
+    ? "bg-ink/35"
+    : expired
+      ? "bg-coral"
+      : pending
+        ? "bg-amber-500"
+        : "bg-[#23815d] dark:bg-emerald-400";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${tone}`}
+    >
+      <span className={`size-1.5 rounded-full ${dot}`} aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
 export function AssetsPage() {
   const { t } = useI18n();
   const { canWrite, timeZone } = useMerchant();
@@ -225,11 +263,11 @@ export function AssetsPage() {
                       {a.expiresAt ? date(a.expiresAt) : t("永久有效")}
                     </p>
                   </td>
-                  <td className={cell}>{availabilityLabel(a, t)}</td>
+                  <td className={cell}><StatusPill item={a} /></td>
                   <td className={cell}>
                     <div className="flex flex-wrap gap-2">
                       <button
-                        className={button}
+                        className={tableBtn}
                         onClick={() => setDetail({ kind: "asset", item: a })}
                       >
                         {t("详情")}
@@ -238,7 +276,7 @@ export function AssetsPage() {
                         <>
                           {a.status !== "archived" && (
                             <button
-                              className={button}
+                              className={tableBtn}
                               onClick={() => {
                                 setCreatingAsset(false);
                                 setEditing(a);
@@ -248,7 +286,7 @@ export function AssetsPage() {
                             </button>
                           )}
                           <button
-                            className={button}
+                            className={tableBtn}
                             onClick={() =>
                               setConfirmation({
                                 name: a.name,
@@ -294,11 +332,11 @@ export function AssetsPage() {
                         : t("每日最多 {count} 次", { count: e.limitPerDay })}
                     </p>
                   </td>
-                  <td className={cell}>{availabilityLabel(e, t)}</td>
+                  <td className={cell}><StatusPill item={e} /></td>
                   <td className={cell}>
                     <div className="flex flex-wrap gap-2">
                       <button
-                        className={button}
+                        className={tableBtn}
                         onClick={() => setDetail({ kind: "effect", item: e })}
                       >
                         {t("详情")}
@@ -307,14 +345,14 @@ export function AssetsPage() {
                         <>
                           {e.status !== "archived" && (
                             <button
-                              className={button}
+                              className={tableBtn}
                               onClick={() => setEffect(e)}
                             >
                               {t("编辑")}
                             </button>
                           )}
                           <button
-                            className={button}
+                            className={tableBtn}
                             onClick={() =>
                               setConfirmation({
                                 name: e.name,
@@ -362,18 +400,18 @@ export function AssetsPage() {
                   <td className={cell}>
                     {t(p.oncePerPlayer ? "每位玩家仅限一次" : "可重复领取")}
                   </td>
-                  <td className={cell}>{availabilityLabel(p, t)}</td>
+                  <td className={cell}><StatusPill item={p} /></td>
                   <td className={cell}>
                     <div className="flex flex-wrap gap-2">
                       <button
-                        className={button}
+                        className={tableBtn}
                         onClick={() => setDetail({ kind: "present", item: p })}
                       >
                         {t("详情")}
                       </button>
                       {canWrite && (
                         <button
-                          className={button}
+                          className={tableBtn}
                           onClick={() =>
                             setConfirmation({
                               name: p.name,
@@ -413,14 +451,24 @@ export function AssetsPage() {
                   <code className="select-all">{c.code}</code>
                   {c.redemptions?.length ? (
                     <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer">
+                      <summary className="cursor-pointer font-medium text-ink/65">
                         {t("兑换记录")}
                       </summary>
-                      {c.redemptions.map((r, i) => (
-                        <p className="mt-2" key={i}>
-                          {r.playerDisplayName} · {date(r.redeemedAt)}
-                        </p>
-                      ))}
+                      <div className="bill-entry !mb-0 !mt-1.5 !p-0 divide-y divide-ink/[0.06] overflow-hidden">
+                        {c.redemptions.map((r, i) => (
+                          <div
+                            key={i}
+                            className="flex items-baseline justify-between gap-3 px-2.5 py-1.5"
+                          >
+                            <span className="font-medium text-ink">
+                              {r.playerDisplayName}
+                            </span>
+                            <span className="text-ink/55 tabular-nums">
+                              {date(r.redeemedAt)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     </details>
                   ) : null}
                 </td>
@@ -437,14 +485,14 @@ export function AssetsPage() {
                 <td className={cell}>
                   <div className="flex flex-wrap gap-2">
                     <button
-                      className={button}
+                      className={tableBtn}
                       onClick={() => setDetail({ kind: "code", item: c })}
                     >
                       {t("详情")}
                     </button>
                     {canWrite && (
                       <button
-                        className={button}
+                        className={tableBtn}
                         onClick={() =>
                           setConfirmation({
                             name: c.code,

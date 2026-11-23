@@ -48,11 +48,16 @@ export function effectSummary(effect: Effect, t: Translate): string {
 export function DetailRows({ rows }: { rows: [string, ReactNode][] }) {
   const { t } = useI18n();
   return (
-    <dl className="grid gap-3 text-sm">
+    <dl className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden text-sm">
       {rows.map(([label, value]) => (
-        <div key={label} className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3">
-          <dt className="text-ink/60">{t(label)}</dt>
-          <dd className="min-w-0 whitespace-pre-wrap break-words">{value}</dd>
+        <div
+          key={label}
+          className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-3.5 py-2.5"
+        >
+          <dt className="shrink-0 text-ink/55">{t(label)}</dt>
+          <dd className="min-w-0 whitespace-pre-wrap break-words text-right font-medium text-ink">
+            {value}
+          </dd>
         </div>
       ))}
     </dl>
@@ -91,11 +96,11 @@ function ExtraInfo({
   const { t } = useI18n();
   if (!value || !Object.keys(value).length) return null;
   return (
-    <details className="rounded-lg border border-ink/10 p-3 text-sm">
+    <details className="bill-entry !mb-0 p-3.5 text-sm">
       <summary className="cursor-pointer font-medium">
         {t("其他保存信息")}
       </summary>
-      <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">
+      <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs text-ink/75">
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
@@ -257,7 +262,7 @@ function GrantDetails({ grant, assets }: { grant: Grant; assets: Asset[] }) {
     replace: "替换持有",
   };
   return (
-    <div className="grid gap-3 rounded-lg border border-ink/10 p-4">
+    <div className="grid gap-2.5">
       <DetailRows
         rows={[
           ["资产", asset?.name ?? grant.assetCode],
@@ -348,11 +353,26 @@ export function RedeemCodeDetails({
       </Section>
       <Section title="兑换记录">
         {code.redemptions?.length ? (
-          code.redemptions.map((r, i) => (
-            <p key={i} className="text-sm">
-              {r.playerDisplayName} · {displayDateTime(r.redeemedAt, timeZone)}
-            </p>
-          ))
+          <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden text-sm">
+            {code.redemptions.map((r, i) => (
+              <div
+                key={i}
+                className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5"
+              >
+                <span className="inline-flex min-w-0 items-center font-medium text-ink">
+                  <i
+                    aria-hidden="true"
+                    className="bill-plan-dot !mr-2"
+                    style={{ background: "var(--color-mint)" }}
+                  />
+                  <span className="truncate">{r.playerDisplayName}</span>
+                </span>
+                <span className="shrink-0 text-xs text-ink/55 tabular-nums">
+                  {displayDateTime(r.redeemedAt, timeZone)}
+                </span>
+              </div>
+            ))}
+          </div>
         ) : (
           <p className="text-sm text-ink/60">{t("暂无兑换记录")}</p>
         )}

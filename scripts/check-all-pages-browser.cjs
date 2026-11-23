@@ -249,8 +249,6 @@ const cases = [
               await page.getByRole("heading", { name: "在店玩家" }).first().waitFor();
               await page.getByRole("region", { name: "设备概览" }).first().waitFor();
               await page.getByText(live.displayName, { exact: true }).first().waitFor();
-              await page.getByRole("combobox", { name: "玩家分组" }).selectOption("status");
-              await page.getByRole("combobox", { name: "玩家分组" }).selectOption("none");
               if (testCase.role === "owner" && viewport.width === 390) {
                 await page.screenshot({ path: path.join(output, `on-site-mobile-${browserEngine}.png`), fullPage: true });
               }
