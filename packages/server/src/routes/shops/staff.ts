@@ -1,6 +1,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { addLocalDays, formatLocalDate, parseLocalDateTime, ZERO_CENTS } from "@prism/core";
+import {
+  addLocalDays,
+  formatLocalDate,
+  MAX_STAY_CAP_HOURS,
+  MIN_STAY_CAP_HOURS,
+  normalizeStayCapHours,
+  parseLocalDateTime,
+  ZERO_CENTS,
+} from "@prism/core";
 import type { AppBindings } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -513,6 +521,42 @@ function diffLocalDays(startDate: string, endDate: string): number {
   );
 }
 
+// Report settings: how long a stay counts as effective before the rest is a forgotten checkout.
+const REPORT_SETTINGS_KEY = "reports.settings";
+
+async function readReportSettings(db: AppBindings["Bindings"]["DB"], shopId: string) {
+  const row = await db.prepare("SELECT value_json FROM app_settings WHERE shop_id = ? AND key = ?")
+    .bind(shopId, REPORT_SETTINGS_KEY).first<{ value_json: string }>();
+  let stored: { stayCapHours?: unknown } = {};
+  try {
+    stored = row ? JSON.parse(row.value_json) : {};
+  } catch {
+    // A malformed row reads as the defaults.
+  }
+  return { stayCapHours: normalizeStayCapHours(stored.stayCapHours) };
+}
+
+staffRouter.get("/reports/settings", async (c) => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  return c.json({ settings: await readReportSettings(c.env.DB, shop.id) });
+});
+
+staffRouter.put("/reports/settings", async (c) => {
+  const shop = getShop(c);
+  const principal = await staffPrincipal(c, shop);
+  if (principal.staffRole !== "owner") jsonError(403, "只有店铺负责人可以修改统计设置", "FORBIDDEN");
+  const body = z.object({
+    stayCapHours: z.number().int().min(MIN_STAY_CAP_HOURS).max(MAX_STAY_CAP_HOURS),
+  }).parse(await c.req.json());
+  const settings = { stayCapHours: body.stayCapHours };
+  await c.env.DB.prepare(
+    `INSERT INTO app_settings(shop_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(shop_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+  ).bind(shop.id, REPORT_SETTINGS_KEY, JSON.stringify(settings), new Date().toISOString()).run();
+  return c.json({ settings });
+});
+
 // Reports Analytics (Dashboard & History)
 staffRouter.get("/reports/analytics", async (c) => {
   const shop = getShop(c);
@@ -577,6 +621,7 @@ staffRouter.get("/reports/analytics", async (c) => {
         newPlayerCount: 0,
         coinCount: 0,
         avgDurationMinutes: 0,
+        medianDurationMinutes: 0,
       },
       period: {
         revenueTotal: ZERO_CENTS,
@@ -587,7 +632,12 @@ staffRouter.get("/reports/analytics", async (c) => {
         uniquePlayerCount: 0,
         newPlayerCount: 0,
         avgTicket: ZERO_CENTS,
+        medianTicket: ZERO_CENTS,
         avgDurationMinutes: 0,
+        medianDurationMinutes: 0,
+        totalEffectiveDurationMinutes: 0,
+        totalInactiveDurationMinutes: 0,
+        inactiveCheckoutCount: 0,
         coinCount: 0,
         assetGrantCount: 0,
       },
@@ -601,6 +651,7 @@ staffRouter.get("/reports/analytics", async (c) => {
       hourlyVisits: Array.from({ length: 24 }, () => 0),
       paymentMethods: [],
       topDevices: [],
+      topDevicesByHeat: [],
     }));
   }
   const analytics = await deps.staffQueries.getReportsAnalytics({ ...queryInput, excludedPlayerIds: await reportExclusions(c.env.DB, shop.id) });

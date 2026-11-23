@@ -260,7 +260,18 @@ const entry = async (ctx: BotCommandContext): Promise<Say[]> => {
 export const botCommands: Record<string, BotCommand> = {
   bind: {
     async run(ctx, [code]) {
-      await confirmBinding(runtime(ctx), ctx.shop, ctx.deps, { code, provider: ctx.from.provider, subject: ctx.from.subject }, "integration");
+      await confirmBinding(
+        runtime(ctx),
+        ctx.shop,
+        ctx.deps,
+        {
+          code,
+          provider: ctx.from.provider,
+          subject: ctx.from.subject,
+          ...(ctx.from.name ? { displayName: ctx.from.name } : {}),
+        },
+        "integration",
+      );
       // A staff member binding an identity changes who the bots treat as staff.
       notifyBotsChanged(ctx.env, ctx.shop.id, { waitUntil: ctx.waitUntil });
       return answer(ctx, "success", botMessage("绑定成功，请返回网页继续操作"));

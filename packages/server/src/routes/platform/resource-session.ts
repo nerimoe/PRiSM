@@ -9,6 +9,7 @@ import type { ResourceBillingPreview } from "../../resources/activation.js";
 import { toPricingConfigManagementView } from "../shops/views.js";
 import { getShopForMachine, requireShopPlayer } from "./machine-login.js";
 import { publicResource, resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
+import { recordResourceVisit } from "./resource-visit.js";
 import { executeResourceAction, actionSchema, resourceClimateState, resourcePowerState } from "./resource-actions.js";
 import { has, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
 import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
@@ -149,7 +150,9 @@ export async function readGate(c:C,machine:ScannedResource,device:Resource|null)
 }
 
 resourceSessionRouter.get("/session/state", async c=>{
-  const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
+  const ticket=c.req.query("ticket")??"";
+  const machine=await resolveResourceTicket(c,ticket);
+  await recordResourceVisit(c,machine,ticket);
   return c.json(await withReadScope(()=>sessionState(c,machine,{
     includePower:c.req.query("includePower")!=="0",
     includeClimate:c.req.query("includeClimate")!=="0",
@@ -161,7 +164,9 @@ resourceSessionRouter.get("/session/state", async c=>{
  * the page state, in one request instead of two in sequence.
  */
 resourceSessionRouter.get("/session/bootstrap", async c=>{
-  const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
+  const ticket=c.req.query("ticket")??"";
+  const machine=await resolveResourceTicket(c,ticket);
+  await recordResourceVisit(c,machine,ticket);
   return c.json({
     machine:await publicResource(c,machine),
     state:optionalUser(c)?await withReadScope(()=>sessionState(c,machine,{includePower:false,includeClimate:false})):null,

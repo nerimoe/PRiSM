@@ -33,6 +33,52 @@ export type RedeemCode = {
   usageCount?: number;
 };
 
+/** Unambiguous uppercase alphabet for generated CDK redeem codes (omits 0/O/1/I/L). */
+export const REDEEM_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+export const REDEEM_CODE_MAX_LENGTH = 64;
+export const REDEEM_CODE_PREFIX_MAX_LENGTH = 24;
+
+/** Generates an uppercase grouped token such as `A2B3-C4D5-E6F7`. */
+export function generateRedeemCodeToken(groups = 3, groupLength = 4): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(groups * groupLength));
+  const chars = Array.from(bytes, (b) => REDEEM_CODE_ALPHABET[b % REDEEM_CODE_ALPHABET.length]!);
+  return Array.from({ length: groups }, (_, i) =>
+    chars.slice(i * groupLength, (i + 1) * groupLength).join(""),
+  ).join("-");
+}
+
+/** Normalizes an optional batch prefix; strips trailing hyphens and rejects spaces. */
+export function normalizeRedeemCodePrefix(prefix?: string | null): string {
+  const trimmed = (prefix ?? "").trim();
+  if (!trimmed) return "";
+  if (trimmed.length > REDEEM_CODE_PREFIX_MAX_LENGTH || /\s/.test(trimmed)) {
+    throw new PrismDomainError(
+      "Redeem code prefix must be up to 24 characters without spaces.",
+      "INVALID_REDEEM_CODE_PREFIX",
+    );
+  }
+  const clean = trimmed.replace(/-+$/, "");
+  return clean;
+}
+
+/** Joins an optional normalized prefix with a generated token without producing a leading dash. */
+export function formatGeneratedRedeemCode(prefix: string | null | undefined, token: string): string {
+  const cleanPrefix = normalizeRedeemCodePrefix(prefix);
+  return cleanPrefix ? `${cleanPrefix}-${token}` : token;
+}
+
+/** Validates and normalizes a custom redeem code entered by staff. */
+export function normalizeCustomRedeemCode(code: string): string {
+  const trimmed = (code ?? "").trim();
+  if (!trimmed || trimmed.length > REDEEM_CODE_MAX_LENGTH || /\s/.test(trimmed)) {
+    throw new PrismDomainError(
+      "Redeem code must be 1 to 64 characters without spaces.",
+      "INVALID_REDEEM_CODE",
+    );
+  }
+  return trimmed;
+}
+
 export type RedeemRecord = {
   playerId: string;
   codeId: string;

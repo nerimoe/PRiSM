@@ -221,9 +221,9 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/business-item-orders` | 查看全场玩家的商品订单列表。 |
 | `POST` | `/rpc/staff/business-item-orders/:orderId/fulfill` | 确认订单核销履行（Fulfill）。 |
 | `POST` | `/rpc/staff/business-item-orders/:orderId/cancel` | 取消已支付商品订单，不执行物理删除，不包含自动退款。 |
-| `GET` | `/rpc/staff/redeem-codes` | 获取 CDK 码清单，返回每个码绑定的礼物、使用上限、已使用次数，以及已使用码的兑换人和兑换时间。已使用次数由 `redeem_records` 聚合而来，因此迁移过来的已兑换记录会在 Staff Web 中显示为已用。Staff Web 不会把全量结果一次性铺开，只展示汇总和最近少量预览，并支持按绑定礼物和使用状态筛选；大量码的查询/导出应走专门筛选或批次工具。Staff Web「资产与兑换 → 兑换码」页的「导出兑换码」基于这份清单在浏览器本地导出，不新增接口：可按绑定礼物、使用状态（未使用/部分使用/已用完/已撤销）、有效状态（有效/未生效/已过期）、兑换码包含的文字（如批次前缀）、到期日期范围（按店铺时区、含首尾两天，永不过期的码不在范围内）和最多导出数量组合筛选，格式为 CSV（可选列，带 UTF-8 BOM 便于 Excel 打开）或纯文本（每行一个兑换码）；CSV 中以 `=`、`+`、`-`、`@` 开头的礼物名会加前缀避免被当作公式，兑换码列保持原样。 |
-| `POST` | `/rpc/staff/redeem-codes` | 生成单个 CDK。 |
-| `POST` | `/rpc/staff/redeem-codes/batch` | 批量生成 CDK 兑换码，可指定前缀、数量、礼物、可用次数和有效期。 |
+| `GET` | `/rpc/staff/redeem-codes` | 获取 CDK 码清单，返回每个码绑定的礼物、使用上限、已使用次数，以及已使用码的兑换人和兑换时间。已使用次数由 `redeem_records` 聚合而来，因此迁移过来的已兑换记录会在 Staff Web 中显示为已用。支持可选分页与筛选查询参数（`limit` 默认 30、上限 100，`offset`、`presentId`、`usage`=`unused\|partial\|exhausted\|revoked`、`validity`=`valid\|pending\|expired`、`search`）：带任一查询参数时按最新创建倒序返回当前页的 `{ redeemCodes, page: { limit, offset, total, hasMore } }`，未传参数时仍返回全量 `{ redeemCodes }`。Staff Web「资产与兑换 → 兑换码」页仅在切换到该页签时才请求接口，并提供关键词、绑定礼物、使用状态、有效状态显示筛选与滚动懒加载（每次 30 条）；点击「导出兑换码」时才按需读取全量清单并在浏览器本地按筛选导出 CSV（带 UTF-8 BOM，礼物名防公式注入）或纯文本（每行一个码）。 |
+| `POST` | `/rpc/staff/redeem-codes` | 创建单个自定义 CDK 兑换码（请求 `{ code, presentId, maxUseCount, activeAt, expiresAt }`）；`code` 去除首尾空白后须为 1–64 个非空字符且不能包含空格（`INVALID_REDEEM_CODE`），同店重复返回 `409 REDEEM_CODE_ALREADY_EXISTS`。 |
+| `POST` | `/rpc/staff/redeem-codes/batch` | 批量随机生成 CDK 兑换码，接收 `{ prefix?, count, presentId, maxUseCount, activeAt, expiresAt }`；生成结果采用与内部主键解耦的大写去歧义分组编码（`XXXX-XXXX-XXXX`，不含 `0/O/1/I/L`），`prefix` 为可选项（留空时不带前导 `-`，末尾多余 `-` 自动清理，不能包含空格）。 |
 | `POST` | `/rpc/staff/redeem-codes/:codeId/revoke` | 作废指定的 CDK 兑换码。 |
 | `GET` | `/rpc/staff/pricing-configs` | 获取系统已创建的计费规则配置，包含按时计费和固定收费方案。 |
 | `GET` | `/rpc/staff/pricing-extensions` | 获取已注册的运行时插件扩展（展示其需要资产的状态）。 |
@@ -240,8 +240,9 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |
 | `GET` | `/rpc/staff/device-commands?limit=50` | 审计近期所有硬件发送指令的流水。失败命令会在 `payload.executorFailure.message` 中返回执行器原因，设备看板会直接展示。 |
 | `GET` | `/rpc/staff/reports/summary?from=<iso>&to=<iso>` | 查询特定时段内未归档账单的收入；消费笔数、分发道具数和投币次数仍含归档账单。 |
-| `GET` | `/rpc/staff/reports/analytics?days=7\|14\|30` 或 `?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 商户「历史」页与首页「仪表板」共用的经营统计汇总：支持 `days=7\|14\|30` 预设或自定义本地日期区间（含首尾最多 366 天，非法范围返回 400 `INVALID_REPORT_RANGE`）。按店铺时区归属自然日与小时，返回今日/昨日、当前周期/上一周期对比、每日趋势（营收、结账笔数、到店人次、投币次数）、24 小时客流分布、收款方式分布（余额结算及前台微信/支付宝/现金/其他，均排除已归档账单）以及热门活跃设备 Top 5。 |
-| `GET` | `/rpc/staff/reports/analytics?source=1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 历史页批量事实模式，复用员工只读权限与 1–366 天校验，返回 `{ source: { range, asOf, checkoutRows, sessionRows, playerRows, operationRows, assetGrantCount } }`。`range` 为门店自然日对应的 UTC 左闭右开范围；结账数据包含所选区间及等长上期并排除归档，计时查询覆盖上期起点至期末的所有重叠计时（含此前开始、未结束计时），新玩家/设备操作/资产入账限定所选区间。`checkoutRows.total` 明确为整数分，其余原汇总接口金额仍为元；计时包含 `player_id/started_at/ended_at`。前端负责汇总、排名、时段去重与 Excel 生成。未支持此查询的适配器返回 503 `REPORT_SOURCE_UNAVAILABLE`。 |
+| `GET` | `/rpc/staff/reports/analytics?days=7\|14\|30` 或 `?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 商户「历史」页与首页「仪表板」共用的经营统计汇总：支持 `days=7\|14\|30` 预设或自定义本地日期区间（含首尾最多 366 天，非法范围返回 400 `INVALID_REPORT_RANGE`）。按店铺时区归属自然日与小时，返回今日/昨日、当前周期/上一周期对比（含按店铺「单次有效在店时长上限」（默认 12 小时）截断计算的 `medianDurationMinutes`、`avgDurationMinutes`、`totalEffectiveDurationMinutes`、`totalInactiveDurationMinutes`、`inactiveCheckoutCount` 与 `medianTicket`/`avgTicket`）、每日趋势（营收、结账笔数、到店人次、投币次数）、24 小时客流分布、收款方式分布（余额结算及前台微信/支付宝/现金/其他，均排除已归档账单），以及按综合热度降序的 `topDevicesByHeat`（`plays > 0`；同一玩家在同一资源 3 分钟内的投币/刷卡/访问/游玩操作合并为一次游玩 `plays`，平局依次比较参与玩家数 `players` 与原始信号总数）。为兼容已有调用方仍返回按投币降序的 `topDevices`（`coins > 0`）。每个资源条目均含 `operations`、`coins`、`swipes`、`visits`、`plays`、`players`。 |
+| `GET` / `PUT` | `/api/v1/shops/:shopCode/staff/reports/settings` | 店铺统计设置 `{ settings: { stayCapHours } }`：每次计时从入场起最多计入多少小时有效在店时长，超出部分视为忘记结账（默认 12，整数 1–72，超出范围返回 422）。读取需店员身份，修改仅限店铺负责人；保存在 `app_settings` 的 `reports.settings`，统计汇总与 `source=1` 事实批次（返回 `stayCapHours`）均使用该值。 |
+| `GET` | `/rpc/staff/reports/analytics?source=1&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 历史页批量事实模式，复用员工只读权限与 1–366 天校验，返回 `{ source: { range, asOf, checkoutRows, sessionRows, playerRows, operationRows, assetGrantCount } }`。`range` 为门店自然日对应的 UTC 左闭右开范围；结账数据包含所选区间及等长上期并排除归档，计时查询覆盖上期起点至期末的所有重叠计时或对应结账计时（含此前开始、未结束计时），新玩家/设备操作/资产入账限定所选区间，`operationRows` 同时并入实体读卡器 `card.consumed` 事件（仅 `operation_id IS NULL`，不与虚拟刷卡重复计数）及已登录有效访问事件 `resource.visited`。`checkoutRows.total` 明确为整数分，其余原汇总接口金额仍为元；计时包含 `player_id/started_at/ended_at/checkout_id`，并返回店铺的 `stayCapHours`。前端负责有效/无效在店时长截断与汇总、中位数/均值、按小时日均/中位数分布、综合热度排名与 Excel 生成。未支持此查询的适配器返回 503 `REPORT_SOURCE_UNAVAILABLE`。 |
 | `GET` | `/rpc/staff/reports/settlements?from=<iso>&to=<iso>&limit=50&offset=0` | 分页查询特定时段内结账流水；返回 `settlements` 和 `{ limit, offset, hasMore }`。 |
 | `GET` | `/rpc/staff/reports/checkouts?from=<iso>&to=<iso>&archive=active&limit=50&offset=0` | 整张账单分页，筛选 active / archived / all；返回 records 和 page。 |
 | `GET` | `/rpc/staff/reports/checkouts/:checkoutId` | 店铺范围完整历史账单，返回 record 与玩家同源的 receipt/时间轴。 |
@@ -455,9 +456,9 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 ### 店家手动绑定玩家账号
 
-`POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 接收 `{ code, provider, subject }`，由拥有该店玩家管理权限的负责人或管理员调用。Bot 使用对应的 `integration/platform-binding/confirm`，身份来自实际适配器。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, verifiedAt }] }`。
+`POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 与 `integration/platform-binding/confirm` 接收 `{ code, provider, subject, displayName? }`，分别由拥有该店玩家管理权限的负责人/管理员或店铺 Bot 调用；Bot 命令 `/bind` 也会将发送者昵称（`displayName`）一并记录到对应身份的 `player_identities.display_name`（并在玩家仍为占位昵称时补全玩家名称）。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, displayName?, verifiedAt }] }`，按 `provider, subject` 排序；玩家端右上角账号菜单「平台身份」只读展示当前全部已绑定身份，玩家不能在此自行追加绑定；新增身份由店员在玩家资料「身份与状态」中处理。
 
-同一网页账号在同店可绑定多个平台，每个平台最多一个身份，均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。同一外部身份不能被其他网页账号认领，已有不同玩家档案不自动合并。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
+同一网页账号在同店可绑定多个平台，也可在同一平台绑定多个身份（如多个 `onebot` 账号，需应用迁移 `migrations/0062_multi_platform_bindings.sql`），均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。同一 `(provider, subject)` 在同店只能归属一个网页账号，不能被其他网页账号认领，已有不同玩家档案不自动合并。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
 
 ### 店铺绑定要求与身份转换
 
@@ -465,9 +466,7 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 `settings.botContact` 是玩家绑定身份时看到的**绑定提示**（最多 500 字）：逐行显示，包含 `{code}` 的那一行替换为绑定码并作为可复制的命令；为空时客户端显示「向店铺 Bot 发送 bind 绑定码」（Koishi 插件的绑定命令是 `bind`，旧命令 `prism.bind` 仍可用）。旧数据里不含 `{code}` 的联系文字照常保存与显示（客户端在其后补上标准命令）；修改为新的非空内容时必须包含 `{code}`，否则返回 `400 BINDING_PROMPT_CODE_REQUIRED`。`POST /api/v1/shops/:shopCode/platform-binding` 的响应同样带 `botContact`，网页和 App Clip 按同一规则渲染。
 
-店铺 `settings` 的 `identityBindingRequired` 默认 `true`，省略时保留原设置。开启后入场和设备操作须有任意一个已验证的平台绑定；关闭后登录网页账号即可创建店内玩家档案，之后可追加外部身份。已在店玩家仍可读取账单和结账，避免重新开启开关后无法离场。该开关独立于 Bot 的自动注册设置和店铺位置校验。
-
-仅店主可以调用 `POST /api/v1/shops/:shopCode/identity-conversion/preview`，输入 `{ sourceProvider, targetProvider }`。返回玩家数、身份数、网页绑定数、样例、冲突和数据 `fingerprint`。`apply` 接收同样标识及预览的 `fingerprint`、UUID `operationId`，检查预览未过期且无冲突后，在一笔 D1 事务内转换身份表和绑定表，保留身份值、玩家 ID、余额、会话及账单。相同玩家已拥有相同目标身份时去重；其他玩家／账号的冲突阻止整批写入。重复操作编号返回原结果，数据变化必须重新预览。
+仅店主可以调用 `POST /api/v1/shops/:shopCode/identity-conversion/preview`，输入 `{ sourceProvider, targetProvider }`。返回玩家数、身份数、网页绑定数、样例、冲突和数据 `fingerprint`。`apply` 接收同样标识及预览的 `fingerprint`、UUID `operationId`，检查预览未过期且无冲突后，在一笔 D1 事务内转换身份表和绑定表，保留身份值、玩家 ID、余额、会话及账单。相同玩家已拥有相同目标身份时去重，同一用户在目标平台拥有其他身份不再视为冲突；其他玩家／账号占用同一目标 `(targetProvider, subject)` 的冲突阻止整批写入。重复操作编号返回原结果，数据变化必须重新预览。
 
 `0030_platform_identity_bindings.sql` 只升级绑定结构，保留历史 `qq` 标识。需要适配 OneBot 的店家可以在「设置 → 玩家与身份 → 平台身份转换」主动执行 `qq → onebot`。升级不会自动改标识，也不会跨店合并。
 

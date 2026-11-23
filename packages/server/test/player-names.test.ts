@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { createD1Executor } from "@prism/adapter-d1";
 import { isPlaceholderPlayerName } from "@prism/core";
+import { createSqlReadModels } from "@prism/storage-sql";
+import { sha256 } from "../src/crypto.js";
 import { createD1DatabaseFromSqlite, initializeLocalDatabase } from "../src/local-server.js";
+import { getOrCreateShopDependencies } from "../src/middleware/tenant.js";
+import { runBotCommand } from "../src/resources/bot-commands.js";
+import { capabilities } from "../src/resources/capabilities/catalog.js";
 import { chatNames, recordChatNames } from "../src/resources/player-names.js";
 import { parseBotFrame } from "../src/durable-objects/shop-hub-bot.js";
 import { eventPlayer } from "../src/resources/shop-events.js";
@@ -82,5 +88,72 @@ describe("what chat platforms call a shop's players", () => {
     ])).toEqual([{ provider: "onebot", subject: "1", name: "一号改" }]);
     expect(parseBotFrame(JSON.stringify({ type: "names", names: [{ provider: "onebot", subject: "1", name: "一号" }] })))
       .toEqual({ type: "names", names: [{ provider: "onebot", subject: "1", name: "一号" }] });
+  });
+
+  it("saves the sender's chat name on /bind and exposes it from staffQueries.listPlayers", async () => {
+    const { sqlite, db, player, name, identityName } = fixture();
+    const now = "2026-01-01T00:00:00.000Z";
+    const future = "2099-01-01T00:00:00.000Z";
+    const code = "23456789";
+    sqlite.run("INSERT INTO users(id, role, created_at, updated_at) VALUES ('u1', 'user', ?, ?)", [now, now]);
+    player("p1", "Player 1", []);
+    sqlite.run("INSERT INTO shop_player_accounts(shop_id, user_id, player_id, verified_at) VALUES (?, 'u1', 'p1', ?)", [SHOP, now]);
+    sqlite.run("INSERT INTO platform_binding_codes(shop_id, id, user_id, code_hash, expires_at, created_at) VALUES (?, 'c1', 'u1', ?, ?, ?)", [
+      SHOP,
+      await sha256(code),
+      future,
+      now,
+    ]);
+
+    const shop = {
+      id: SHOP,
+      public_id: SHOP,
+      name: "Test Shop",
+      latitude: 31.23,
+      longitude: 121.47,
+      radius_meters: 100,
+      cashier_enabled: 0,
+      auto_register: 1,
+      identity_binding_required: 1,
+      checkin_geo: 0,
+      checkout_geo: 0,
+      machine_geo: 0,
+      bot_contact: "",
+      time_zone: "Asia/Shanghai",
+      hero_url: null,
+    };
+    const botConfig = capabilities.bot.config.parse({ tokenId: "tok1" });
+    const { tokenId: _tok, doorResourceId: _door, ...settings } = botConfig;
+
+    await runBotCommand({
+      env: { DB: db, APP_ORIGIN: "https://prism.test" } as never,
+      waitUntil: () => {},
+      shop,
+      deps: getOrCreateShopDependencies(db, shop),
+      bot: { id: "bot1", name: "Shop Bot", enabled: true, config: botConfig },
+      view: {
+        bot: { id: "bot1", name: "Shop Bot" },
+        settings,
+        billingEnabled: true,
+        currencyName: "点券",
+        staff: [],
+        door: null,
+        tables: [],
+      },
+      from: { provider: "onebot", subject: "1015929452", name: "雾雪" },
+      channel: "private:1015929452",
+      name: "bind",
+      args: [code],
+    });
+
+    expect(identityName("onebot", "1015929452")).toBe("雾雪");
+    expect(name("p1")).toBe("雾雪");
+
+    const queries = createSqlReadModels({ executor: createD1Executor(db, SHOP), now: () => new Date() });
+    const players = await queries.staffQueries.listPlayers({ playerIds: ["p1"] });
+    expect(players[0]?.identities?.map((i) => ({ provider: i.provider, subject: i.subject, displayName: i.displayName }))).toEqual([
+      { provider: "onebot", subject: "1015929452", displayName: "雾雪" },
+    ]);
+    sqlite.close();
   });
 });

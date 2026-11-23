@@ -1,7 +1,6 @@
-import { parseLocalDateTime } from "@prism/core";
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Download, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { displayDateTime } from "../bill-time";
 import { useScrollFade } from "../use-scroll-fade";
@@ -15,7 +14,7 @@ import {
   effectSummary,
 } from "./AssetDetails";
 import type { Effect, Grant, Present, RedeemCode } from "./asset-types";
-import { RedeemCodeExport } from "./RedeemCodeExport";
+import { RedeemCodeCreateModal, RedeemCodesTab } from "./RedeemCodesTab";
 import {
   ActionForm,
   Field,
@@ -80,7 +79,7 @@ export function AssetsPage() {
   );
   const effects = useResource<{ pricingEffects: Effect[] }>("pricing-effects");
   const presents = useResource<{ presents: Present[] }>("presents");
-  const codes = useResource<{ redeemCodes: RedeemCode[] }>("redeem-codes");
+  const [codesRevision, setCodesRevision] = useState(0);
   // The tab is in the URL so other pages can link straight to gifts or codes.
   const [params, setParams] = useSearchParams();
   const tabs = ["assets", "effects", "gifts", "codes"];
@@ -97,7 +96,6 @@ export function AssetsPage() {
   const [effect, setEffect] = useState<Effect | null>(null);
   const [gift, setGift] = useState(false);
   const [code, setCode] = useState(false);
-  const [exportingCodes, setExportingCodes] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [detail, setDetail] = useState<
     | { kind: "asset"; item: Asset }
@@ -116,7 +114,7 @@ export function AssetsPage() {
     assets.reload();
     effects.reload();
     presents.reload();
-    codes.reload();
+    setCodesRevision((value) => value + 1);
   };
   const visibleAssets =
     assets.data?.assetDefinitions.filter(
@@ -130,7 +128,6 @@ export function AssetsPage() {
     presents.data?.presents.filter(
       (p) => showArchived || p.status !== "archived",
     ) ?? [];
-  const visibleCodes = codes.data?.redeemCodes ?? [];
   const createLabel =
     tab === "assets"
       ? "新建资产"
@@ -138,7 +135,7 @@ export function AssetsPage() {
         ? "新建优惠"
         : tab === "gifts"
           ? "新建礼物"
-          : "生成兑换码";
+          : "新建兑换码";
   function startCreate() {
     if (tab === "assets") {
       setCreatingAsset(true);
@@ -166,7 +163,6 @@ export function AssetsPage() {
     else if (tab === "gifts") setGift(true);
     else setCode(true);
   }
-  const activePresents = presents.data?.presents.some((p) => p.status !== "archived") ?? false;
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -214,12 +210,6 @@ export function AssetsPage() {
             />
             {t("显示已归档")}
           </label>
-        )}
-        {tab === "codes" && visibleCodes.length > 0 && (
-          <button className={button} onClick={() => setExportingCodes(true)}>
-            <Download size={16} />
-            {t("导出兑换码")}
-          </button>
         )}
       </div>
       {tab === "assets" &&
@@ -428,93 +418,21 @@ export function AssetsPage() {
               ))}
           </Table>
         ))}
-      {tab === "codes" &&
-        (!codes.data ? (
-          <State error={codes.error} />
-        ) : !visibleCodes.length ? (
-          <Empty
-            title="还没有兑换码"
-            hint={activePresents ? "兑换码让玩家自己领取礼物。" : "兑换码让玩家自己领取礼物，先创建一个礼物。"}
-            action={
-              !canWrite
-                ? undefined
-                : activePresents
-                  ? { label: createLabel, run: startCreate }
-                  : { label: "创建礼物", run: () => setTab("gifts") }
-            }
-          />
-        ) : (
-          <Table headers={["兑换码", "礼物", "使用次数", "到期", "操作"]}>
-            {visibleCodes.map((c) => (
-              <tr key={c.id}>
-                <td className={cell}>
-                  <code className="select-all">{c.code}</code>
-                  {c.redemptions?.length ? (
-                    <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer font-medium text-ink/65">
-                        {t("兑换记录")}
-                      </summary>
-                      <div className="bill-entry !mb-0 !mt-1.5 !p-0 divide-y divide-ink/[0.06] overflow-hidden">
-                        {c.redemptions.map((r, i) => (
-                          <div
-                            key={i}
-                            className="flex items-baseline justify-between gap-3 px-2.5 py-1.5"
-                          >
-                            <span className="font-medium text-ink">
-                              {r.playerDisplayName}
-                            </span>
-                            <span className="text-ink/55 tabular-nums">
-                              {date(r.redeemedAt)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  ) : null}
-                </td>
-                <td className={cell}>
-                  {presents.data?.presents.find((p) => p.id === c.presentId)
-                    ?.name ?? "—"}
-                </td>
-                <td className={cell}>
-                  {c.usageCount} / {c.maxUseCount}
-                </td>
-                <td className={`${cell} whitespace-nowrap`}>
-                  {date(c.expiresAt)}
-                </td>
-                <td className={cell}>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className={tableBtn}
-                      onClick={() => setDetail({ kind: "code", item: c })}
-                    >
-                      {t("详情")}
-                    </button>
-                    {canWrite && (
-                      <button
-                        className={tableBtn}
-                        onClick={() =>
-                          setConfirmation({
-                            name: c.code,
-                            path: `redeem-codes/${segment(c.id)}/revoke`,
-                          })
-                        }
-                      >
-                        {t("撤销")}
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </Table>
-        ))}
-      {exportingCodes && (
-        <RedeemCodeExport
-          codes={visibleCodes}
+      {tab === "codes" && (
+        <RedeemCodesTab
           presents={presents.data?.presents ?? []}
+          canWrite={canWrite}
           timeZone={timeZone}
-          close={() => setExportingCodes(false)}
+          reloadKey={codesRevision}
+          onCreate={() => setCode(true)}
+          onOpenGifts={() => setTab("gifts")}
+          onViewDetail={(c) => setDetail({ kind: "code", item: c })}
+          onRevoke={(c) =>
+            setConfirmation({
+              name: c.code,
+              path: `redeem-codes/${segment(c.id)}/revoke`,
+            })
+          }
         />
       )}
       {detail && (
@@ -749,77 +667,15 @@ export function AssetsPage() {
         </Modal>
       )}
       {code && (
-        <Modal title="生成兑换码" close={() => setCode(false)}>
-          <ActionForm
-            done={() => {
-              setCode(false);
-              reload();
-            }}
-            label="生成"
-            submit={(f) =>
-              request("redeem-codes/batch", "POST", {
-                presentId: f.get("present"),
-                prefix: f.get("prefix"),
-                count: Number(f.get("count")),
-                maxUseCount: Number(f.get("uses")),
-                activeAt: null,
-                expiresAt: f.get("expires")
-                  ? parseLocalDateTime(
-                      String(f.get("expires")).slice(0, 10),
-                      String(f.get("expires")).slice(11, 16),
-                      timeZone,
-                    ).toISOString()
-                  : null,
-              })
-            }
-          >
-            <Field label="礼物">
-              <select className={input} required name="present" defaultValue="">
-                <option value="" disabled>
-                  {t("请选择")}
-                </option>
-                {presents.data?.presents
-                  .filter((p) => p.status !== "archived")
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-              </select>
-            </Field>
-            <Field label="前缀">
-              <input className={input} name="prefix" maxLength={24} />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="生成数量">
-                <input
-                  className={input}
-                  name="count"
-                  type="number"
-                  min="1"
-                  max="100"
-                  step="1"
-                  defaultValue="1"
-                  required
-                />
-              </Field>
-              <Field label="每码可用次数">
-                <input
-                  className={input}
-                  name="uses"
-                  type="number"
-                  min="1"
-                  step="1"
-                  defaultValue="1"
-                  required
-                />
-              </Field>
-            </div>
-            <Field label="到期时间">
-              <input className={input} type="datetime-local" name="expires" />
-            </Field>
-          </ActionForm>
-        </Modal>
+        <RedeemCodeCreateModal
+          presents={presents.data?.presents ?? []}
+          timeZone={timeZone}
+          onClose={() => setCode(false)}
+          onDone={() => {
+            setCode(false);
+            reload();
+          }}
+        />
       )}
       {confirmation && (
         <Modal title="确认操作" close={() => setConfirmation(null)}>

@@ -31,11 +31,17 @@ export type DashboardAnalyticsPaymentMethod = {
   count: number;
 };
 
+
 export type DashboardAnalyticsDeviceActivity = {
   deviceId: string;
   operations: number;
   coins: number;
   swipes: number;
+  visits: number;
+  /** Deduplicated plays across coin, swipe, visit and play signals. */
+  plays: number;
+  /** Distinct identified players. */
+  players: number;
 };
 
 export type DashboardAnalytics = {
@@ -50,6 +56,7 @@ export type DashboardAnalytics = {
     newPlayerCount: number;
     coinCount: number;
     avgDurationMinutes: number;
+    medianDurationMinutes: number;
   };
   period: {
     revenueTotal: number;
@@ -60,7 +67,12 @@ export type DashboardAnalytics = {
     uniquePlayerCount: number;
     newPlayerCount: number;
     avgTicket: number;
+    medianTicket: number;
     avgDurationMinutes: number;
+    medianDurationMinutes: number;
+    totalEffectiveDurationMinutes: number;
+    totalInactiveDurationMinutes: number;
+    inactiveCheckoutCount: number;
     coinCount: number;
     assetGrantCount: number;
   };
@@ -68,6 +80,7 @@ export type DashboardAnalytics = {
   hourlyVisits: number[];
   paymentMethods: DashboardAnalyticsPaymentMethod[];
   topDevices: DashboardAnalyticsDeviceActivity[];
+  topDevicesByHeat: DashboardAnalyticsDeviceActivity[];
 };
 
 export type DeltaIndicator = {

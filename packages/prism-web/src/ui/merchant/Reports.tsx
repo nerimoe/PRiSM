@@ -42,7 +42,7 @@ import {
 
 import { historyPresetRange, type HistoryPreset as RangePreset } from "./history-range";
 import { calculateHistoryAnalytics } from "./history-analytics";
-import { historyTraffic } from "./history-traffic";
+import { historyTraffic, type HistoryTrafficResult } from "./history-traffic";
 
 // Explicit state assignment is idempotent; it is not a debit operation.
 const setReportArchive = (
@@ -120,7 +120,7 @@ function ReportsContent() {
   const source = analyticsPath && analyticsResource.data?.source.range.startDate === from && analyticsResource.data.source.range.endDate === to && JSON.stringify(analyticsResource.data.source.excludedPlayerIds ?? []) === exclusionKey
     ? analyticsResource.data.source : null;
   const analytics = useMemo(() => source ? calculateHistoryAnalytics(source) : null, [source]);
-  const traffic = useMemo(() => source ? historyTraffic(source) : null, [source]);
+  const traffic = useMemo<HistoryTrafficResult | null>(() => source ? historyTraffic(source) : null, [source]);
   const analyticsError = playerOptions.error ? errorText(playerOptions.error) : analyticsTooLong
     ? t("自定义图表最多支持 366 天，结账记录不受限制。")
     : analyticsPath && analyticsResource.error
@@ -165,10 +165,28 @@ function ReportsContent() {
   const periodDelta = analytics
     ? deltaIndicator(analytics.period.revenueTotal, analytics.period.previousRevenueTotal)
     : null;
+  const medianDuration = analytics
+    ? formatDurationSummary(analytics.period.medianDurationMinutes)
+    : null;
   const avgDuration = analytics
     ? formatDurationSummary(analytics.period.avgDurationMinutes)
     : null;
-  const peak = analytics ? peakHourSummary(analytics.hourlyVisits) : null;
+  const totalStayMinutes = analytics
+    ? analytics.period.totalEffectiveDurationMinutes + analytics.period.totalInactiveDurationMinutes
+    : 0;
+  const inactiveShare =
+    totalStayMinutes > 0 && analytics && analytics.period.totalInactiveDurationMinutes > 0
+      ? Math.round((analytics.period.totalInactiveDurationMinutes / totalStayMinutes) * 100)
+      : 0;
+  const peak = traffic
+    ? peakHourSummary(
+        traffic.presence.totals.some((value) => value > 0)
+          ? traffic.presence.averages
+          : traffic.entries.averages,
+      )
+    : analytics
+      ? peakHourSummary(analytics.hourlyVisits)
+      : null;
 
   async function exportSelected() {
     if (!analytics || !traffic || exporting) return;
@@ -331,7 +349,7 @@ function ReportsContent() {
               </div>
               <p className="truncate text-xs text-ink/55 tabular-nums">
                 {analytics
-                  ? `${t("均单")} ¥${money(analytics.period.avgTicket)} · ${analytics.period.checkoutCount} ${t("笔")}`
+                  ? `${t("中位")} ¥${money(analytics.period.medianTicket)} · ${t("均单")} ¥${money(analytics.period.avgTicket)} · ${analytics.period.checkoutCount} ${t("笔")}`
                   : "—"}
               </p>
             </div>
@@ -360,7 +378,7 @@ function ReportsContent() {
 
             <div className="grid content-between gap-2.5 rounded-2xl border border-ink/10 bg-panel p-4 shadow-soft">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium text-ink/60">{t("平均在店时长")}</span>
+                <span className="text-xs font-medium text-ink/60">{t("中位有效在店时长")}</span>
                 <span className="grid size-7 place-items-center rounded-full bg-sky-500/10 text-sky-600 dark:text-sky-400">
                   <Clock size={15} aria-hidden="true" />
                 </span>
@@ -368,17 +386,37 @@ function ReportsContent() {
               <div className="flex items-baseline gap-1.5 tabular-nums">
                 <strong className="text-2xl font-semibold tracking-tight sm:text-3xl">
                   {analytics
-                    ? avgDuration
-                      ? avgDuration.hours
-                        ? t("{hours} 时 {minutes} 分", avgDuration)
-                        : t("{minutes} 分", avgDuration)
+                    ? medianDuration
+                      ? medianDuration.hours
+                        ? t("{hours} 时 {minutes} 分", medianDuration)
+                        : t("{minutes} 分", medianDuration)
                       : "—"
                     : "—"}
                 </strong>
               </div>
-              <p className="truncate text-xs text-ink/55 tabular-nums">
+              <p
+                className="truncate text-xs text-ink/55 tabular-nums"
+                title={
+                  analytics
+                    ? t(
+                        "有效 {effective} 分钟 · 无效 {inactive} 分钟（涉及 {checkouts} 笔结账，超过单次时长上限的部分）",
+                        {
+                          effective: analytics.period.totalEffectiveDurationMinutes,
+                          inactive: analytics.period.totalInactiveDurationMinutes,
+                          checkouts: analytics.period.inactiveCheckoutCount,
+                        },
+                      )
+                    : undefined
+                }
+              >
                 {analytics
-                  ? `${t("资产入账")} ${analytics.period.assetGrantCount} ${t("笔")}`
+                  ? avgDuration
+                    ? `${t("均值")} ${
+                        avgDuration.hours
+                          ? t("{hours} 时 {minutes} 分", avgDuration)
+                          : t("{minutes} 分", avgDuration)
+                      }${inactiveShare > 0 ? ` · ${t("无效占比")} ${inactiveShare}%` : ""}`
+                    : `${t("资产入账")} ${analytics.period.assetGrantCount} ${t("笔")}`
                   : "—"}
               </p>
             </div>
@@ -426,14 +464,14 @@ function ReportsContent() {
 
           <div className="grid gap-4 lg:grid-cols-2">
             <HourlyTrafficChart
-              hourlyVisits={traffic?.entries ?? []}
+              series={traffic?.entries ?? null}
               title="时段入场分布"
               timeZone={displayZone}
               loading={analyticsLoading}
               error={analyticsError}
             />
             <HourlyTrafficChart
-              hourlyVisits={traffic?.presence ?? []}
+              series={traffic?.presence ?? null}
               title="时段在场分布"
               timeZone={displayZone}
               loading={analyticsLoading}
@@ -441,7 +479,7 @@ function ReportsContent() {
             />
             <div className="lg:col-span-2">
             <TopDevicesCard
-              topDevices={analytics?.topDevices ?? []}
+              topDevicesByHeat={analytics?.topDevicesByHeat ?? []}
               devices={devices}
               shopCode={shopCode}
               loading={analyticsLoading}
@@ -779,8 +817,6 @@ export function ReportDetail({
                   ["操作员工", record.updatedBy ?? "—"] as [string, string],
                 ]
               : []),
-            ["玩家 ID", record.playerId],
-            ["账单 ID", record.checkoutId],
           ];
           return (
             <div className="grid gap-5">
@@ -854,19 +890,36 @@ export function ReportDetail({
                   {t("计时与收费明细")}
                 </summary>
                 <div className="mt-3 divide-y divide-ink/[0.06] rounded-xl bg-panel/75 text-sm">
-                  {(receipt.settlements ?? []).map(({ settlement }) => (
-                    <div
-                      key={settlement.sessionId}
-                      className="flex flex-wrap items-baseline justify-between gap-2 px-3.5 py-2.5 break-words"
-                    >
-                      <span className="font-medium text-ink">
-                        {t("计时 ID")} · {settlement.sessionId}
-                      </span>
-                      <span className="text-xs text-ink/60 tabular-nums">
-                        {at(settlement.startedAt)} – {at(settlement.endedAt)}
-                      </span>
-                    </div>
-                  ))}
+                  {(receipt.settlements ?? []).map(({ settlement }, index, list) => {
+                    const trackNames = [
+                      ...new Set(
+                        (receipt.timeline?.tracks ?? [])
+                          .filter(
+                            (track) =>
+                              track.id === settlement.sessionId ||
+                              track.id.startsWith(`${settlement.sessionId}:`),
+                          )
+                          .map((track) => track.name)
+                          .filter(Boolean),
+                      ),
+                    ];
+                    const sessionLabel = trackNames.length
+                      ? trackNames.join(" + ")
+                      : list.length > 1
+                        ? `${t("计时")} #${index + 1}`
+                        : t("计时");
+                    return (
+                      <div
+                        key={settlement.sessionId}
+                        className="flex flex-wrap items-baseline justify-between gap-2 px-3.5 py-2.5 break-words"
+                      >
+                        <span className="font-medium text-ink">{sessionLabel}</span>
+                        <span className="text-xs text-ink/60 tabular-nums">
+                          {at(settlement.startedAt)} – {at(settlement.endedAt)}
+                        </span>
+                      </div>
+                    );
+                  })}
                   {[...receipt.chargeItems, ...receipt.adjustments].map(
                     (item, i) => (
                       <div

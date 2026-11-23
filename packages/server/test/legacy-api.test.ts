@@ -154,8 +154,7 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       provider TEXT NOT NULL,
       subject TEXT NOT NULL,
       verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, provider, subject),
-      UNIQUE(shop_id, user_id, provider)
+      PRIMARY KEY(shop_id, provider, subject)
     );
     CREATE TABLE IF NOT EXISTS platform_binding_codes (
       shop_id TEXT NOT NULL REFERENCES shops(id),

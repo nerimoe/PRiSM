@@ -875,6 +875,7 @@ const actionLabels: Record<string, string> = {
   "session.stopped": "停止计费",
   "checkout.settled": "结账",
   "checkout.refused": "结账失败",
+  "resource.visited": "访问资源链接",
   "wallet.adjusted": "调整余额",
   "assets.adjusted": "调整资产",
   "gift.redeemed": "兑换礼物",

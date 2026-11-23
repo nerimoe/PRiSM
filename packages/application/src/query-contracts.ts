@@ -6,6 +6,7 @@ import type {
   DeviceCommandType,
   DeviceState,
   MachineConnection,
+  RedeemCode,
 } from "@prism/core";
 
 export type PlayerSummary = {
@@ -128,6 +129,7 @@ export type StaffPlayerListItem = {
   identities?: Array<{
     provider: string;
     subject: string;
+    displayName?: string;
     createdAt: Date;
   }>;
 };
@@ -190,10 +192,12 @@ export type StaffReportsAnalyticsSource = {
   range: { days: number; timeZone: string; from: string; to: string; startDate: string; endDate: string };
   asOf: string;
   checkoutRows: { id: string; player_id: string; total: number; settled_at: string; duration_minutes: number; payment_method: string | null }[];
-  sessionRows: { player_id: string; started_at: string; ended_at: string | null }[];
+  sessionRows: { player_id: string; started_at: string; ended_at: string | null; checkout_id?: string | null }[];
   playerRows: { created_at: string }[];
-  operationRows: { device_id: string | null; action: string; status: string; counts_as_play: number; requested_at: string }[];
+  operationRows: { device_id: string | null; player_id?: string | null; action: string; status: string; counts_as_play: number; requested_at: string }[];
   assetGrantCount: number;
+  /** Shop setting: every stay is effective up to this many hours after it starts (default 12). */
+  stayCapHours?: number;
 };
 
 export type StaffReportsAnalyticsDailyPoint = {
@@ -215,6 +219,11 @@ export type StaffReportsAnalyticsDeviceActivity = {
   operations: number;
   coins: number;
   swipes: number;
+  visits: number;
+  /** Deduplicated plays (see `rankReportDevices` in core): the heat ranking's value. */
+  plays: number;
+  /** Distinct identified players on the device. */
+  players: number;
 };
 
 export type StaffReportsAnalytics = {
@@ -236,6 +245,7 @@ export type StaffReportsAnalytics = {
     newPlayerCount: number;
     coinCount: number;
     avgDurationMinutes: number;
+    medianDurationMinutes: number;
   };
   period: {
     revenueTotal: Cents;
@@ -246,7 +256,12 @@ export type StaffReportsAnalytics = {
     uniquePlayerCount: number;
     newPlayerCount: number;
     avgTicket: Cents;
+    medianTicket: Cents;
     avgDurationMinutes: number;
+    medianDurationMinutes: number;
+    totalEffectiveDurationMinutes: number;
+    totalInactiveDurationMinutes: number;
+    inactiveCheckoutCount: number;
     coinCount: number;
     assetGrantCount: number;
   };
@@ -254,6 +269,7 @@ export type StaffReportsAnalytics = {
   hourlyVisits: number[];
   paymentMethods: StaffReportsAnalyticsPaymentMethod[];
   topDevices: StaffReportsAnalyticsDeviceActivity[];
+  topDevicesByHeat: StaffReportsAnalyticsDeviceActivity[];
 };
 
 export type StaffReportSettlementListItem = {
@@ -322,8 +338,29 @@ export type StaffQueries = {
   listReportPlayers?(input: StaffReportsSummaryInput & { limit: number; offset?: number }): Promise<StaffReportPlayerListItem[]>;
 };
 
+export type StaffRedeemCodeUsageFilter = "unused" | "partial" | "exhausted" | "revoked";
+export type StaffRedeemCodeValidityFilter = "valid" | "pending" | "expired";
+
+export type StaffRedeemCodePageInput = {
+  limit: number;
+  offset?: number;
+  presentId?: string;
+  usage?: StaffRedeemCodeUsageFilter;
+  validity?: StaffRedeemCodeValidityFilter;
+  search?: string;
+  now?: Date;
+};
+
+export type StaffRedeemCodePageResult = {
+  codes: RedeemCode[];
+  redemptions: StaffRedeemCodeRedemptionListItem[];
+  total: number;
+  hasMore: boolean;
+};
+
 export type StaffRedeemQueries = {
   listRedeemCodeRedemptions?(): Promise<StaffRedeemCodeRedemptionListItem[]>;
+  listRedeemCodesPage?(input: StaffRedeemCodePageInput): Promise<StaffRedeemCodePageResult>;
 };
 
 export type ApplicationQueries = {

@@ -35,6 +35,7 @@ export const SHOP_FACTS = [
   "session.started",
   "session.stopped",
   "checkout.settled",
+  "resource.visited",
   /** A player added a card at one of the shop's readers: its type, never its number. */
   "card.bound",
   /**

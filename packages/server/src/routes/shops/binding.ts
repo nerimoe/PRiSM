@@ -1,5 +1,6 @@
 import { type Context } from "hono";
 import { z } from "zod";
+import { chatName } from "@prism/core";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
@@ -9,6 +10,7 @@ import { notifyUserPages } from "../../durable-objects/shop-hub-client.js";
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { getShopDeps } from "../../middleware/tenant.js";
 import type { PrismAppDependencies } from "../../bindings.js";
+import { recordChatNames } from "../../resources/player-names.js";
 
 /** What binding needs of where it runs: a route's context, or the shop hub for a bot's command. */
 export type BindingRuntime = Pick<Context<AppBindings>, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
@@ -26,6 +28,7 @@ export const confirmBindingSchema = z.object({
     .regex(/^[a-z][a-z0-9_-]{0,63}$/)
     .refine((value) => value !== "web-account", "网页账号身份不可由 Bot 绑定"),
   subject: z.string().trim().min(1).max(256),
+  displayName: z.string().optional(),
 });
 
 export async function confirmPlatformBinding(
@@ -48,6 +51,7 @@ export async function confirmBinding(
 ) {
   await enforceRateLimits(c, [{ key: `bind-confirm:${shop.id}`, limit: 20, windowSeconds: 60 }]);
   const body = confirmBindingSchema.parse(input);
+  const displayName = chatName(body.displayName);
 
   const codeHash = await sha256(body.code);
   const nowIso = new Date().toISOString();
@@ -88,14 +92,14 @@ export async function confirmBinding(
                 jsonError(410, "验证码已失效，请重新生成", "BINDING_CODE_EXPIRED");
               }
 
-              const conflicts = await c.env.DB.prepare(
-                "SELECT user_id, subject FROM shop_platform_bindings WHERE shop_id = ? AND provider = ? AND (user_id = ? OR subject = ?)",
+              const existingBinding = await c.env.DB.prepare(
+                "SELECT user_id FROM shop_platform_bindings WHERE shop_id = ? AND provider = ? AND subject = ?",
               )
-                .bind(shop.id, body.provider, code.user_id, body.subject)
-                .all<{ user_id: string; subject: string }>();
+                .bind(shop.id, body.provider, body.subject)
+                .first<{ user_id: string }>();
 
-              if (conflicts.results.some((r) => r.user_id !== code.user_id || r.subject !== body.subject)) {
-                jsonError(409, "账号或平台身份已有其他绑定", "PLATFORM_BINDING_CONFLICT");
+              if (existingBinding && existingBinding.user_id !== code.user_id) {
+                jsonError(409, "该平台身份已绑定其他账号", "PLATFORM_BINDING_CONFLICT");
               }
 
               const membership = await c.env.DB.prepare(
@@ -117,6 +121,7 @@ export async function confirmBinding(
                 player = await deps.integrationCommands.resolveOrRegisterPlayerByIdentity({
                   identity: { provider: body.provider, subject: body.subject },
                   autoRegister: true,
+                  ...(displayName ? { displayName } : {}),
                 });
               }
 
@@ -149,6 +154,11 @@ export async function confirmBinding(
                   "DELETE FROM platform_binding_codes WHERE shop_id = ? AND user_id = ? AND code_hash = ?",
                 ).bind(shop.id, code.user_id, codeHash),
               ]);
+              if (displayName) {
+                await recordChatNames(c.env.DB, shop.id, [
+                  { provider: body.provider, subject: body.subject, name: displayName },
+                ]);
+              }
 
               return player;
             },

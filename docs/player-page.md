@@ -95,7 +95,7 @@ WebSocket 不保证送达，所以页面在回到前台时、以及可见期间�
 
 ## 开销
 
-测试数据下，确认页 15 次查询，可操作页 13 次（`test/resource-page.test.ts` 里有上限）。比 `/session/state` 多的是 IO 是否在线、投币上限和「有没有在计费」，省下的是客户端原本要单独请求的 `/player/me`。
+测试数据下，确认页 16 次查询（含首次有效访问写入 `resource.visited`），同票据再次读取的可操作页 13 次（`test/resource-page.test.ts` 里有上限）。比 `/session/state` 多的是 IO 是否在线、投币上限和「有没有在计费」，省下的是客户端原本要单独请求的 `/player/me`。
 
 设备没有 Home Assistant 连接在线时，读页面会当场问 Home Assistant，每项最多等 3 秒。问不到就当状态未知，不挡玩家操作。
 

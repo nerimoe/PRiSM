@@ -5,6 +5,7 @@ import { decryptSecret, encryptSecret, sha256 } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { resourceBilledSql } from "../../resources/billed-sql.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
+import { recordResourceVisit } from "./resource-visit.js";
 
 export const resourceTicketRouter = new Hono<AppBindings>();
 export const resourceQrRouter = new Hono<AppBindings>();
@@ -136,16 +137,22 @@ resourceTicketRouter.post("/session/start", async (c) => {
   const machine = await findMachine(c, body.publicId);
   if (!machine || machine.enabled !== 1 || machine.shop_public_id !== body.shopCode)
     jsonError(404, "机台不可用", "MACHINE_NOT_FOUND");
+  if (machine.is_bot) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
   const navigation = await mintResourceTicket(c.env.SESSION_SECRET, body.shopCode, body.publicId);
+  await recordResourceVisit(c, machine, navigation.ticket);
   return c.json({ ...navigation, machine: await publicResource(c, machine) });
 });
 
 resourceTicketRouter.get("/session", async (c) => {
-  const machine = await resolveResourceTicket(c, c.req.query("ticket") ?? "");
+  const ticket = c.req.query("ticket") ?? "";
+  const machine = await resolveResourceTicket(c, ticket);
+  await recordResourceVisit(c, machine, ticket);
   return c.json({ machine: await publicResource(c, machine) });
 });
 resourceTicketRouter.get("/:publicId", async (c) => {
-  const machine = await resolveResourceTicket(c, c.req.query("ticket") || c.req.param("publicId"), c.req.param("publicId"));
+  const ticket = c.req.query("ticket") || c.req.param("publicId");
+  const machine = await resolveResourceTicket(c, ticket, c.req.param("publicId"));
+  await recordResourceVisit(c, machine, ticket);
   return c.json({ machine: await publicResource(c, machine) });
 });
 

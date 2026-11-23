@@ -82,7 +82,8 @@ routes/
 - `POST /checkout/confirm`: 店员代为发起结算。
 - `POST /checkout/override`: 店员权限人工调整金额并结算。
 - `GET /reports/summary`: 查询指定时段营收报表汇总（营业额、人次、赠送总额）。
-- `GET /reports/analytics`: 查询店铺经营趋势与统计分析（支持 `days=7|14|30` 或自定义 `startDate`/`endDate` 最长 366 天，含今日/上期对比、每日趋势、时段客流、收款方式与活跃设备），原汇总模式供首页「仪表板」与兼容调用使用；`source=1` 返回区间事实批次（结账总额为整数分、计时含结束时间与跨边界重叠行），历史页在前端汇总并导出 Excel，不按日／小时循环查库。
+- `GET /reports/analytics`: 查询店铺经营趋势与统计分析（支持 `days=7|14|30` 或自定义 `startDate`/`endDate` 最长 366 天，含今日/上期对比、按店铺「单次有效在店时长上限」（默认 12 小时）截止的有效/无效时长及中位数、每日趋势、时段客流、收款方式与按综合热度排序的热门资源 `topDevicesByHeat`（另保留兼容用的按投币 `topDevices`），热度为同一玩家 3 分钟内多种信号去重后的游玩次数），原汇总模式供首页「仪表板」与兼容调用使用；`source=1` 返回区间事实批次（结账总额为整数分、`operationRows` 含 `player_id` 并入实体 `card.consumed` 刷卡与 `resource.visited` 访问、计时含 `checkout_id`/结束时间与跨边界重叠行，并返回 `stayCapHours`），历史页在前端汇总日均/中位数分布并导出 Excel，不按日／小时循环查库。
+- `GET/PUT /reports/settings`: 读取或修改店铺统计设置 `stayCapHours`（单次计时的有效在店时长上限，默认 12，整数 1–72；修改仅限负责人）。
 - `GET /reports/settlements`: 查询结算流水明细报表。
 - `GET /reports/checkouts`: 查询出场结算订单报表。
 - `GET /reports/players`: 查询玩家消费频次与累计支出统计。

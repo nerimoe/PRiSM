@@ -330,13 +330,67 @@ describe("reading and acting on the page", () => {
     const { sqlite, page, act, books } = await fixture();
     books(0);
     const entering = await page();
-    expect(entering.queries).toBeLessThanOrEqual(15);
+    expect(entering.queries).toBeLessThanOrEqual(16);
     const button = entering.page.blocks.at(-1);
     await act("entry", { ...button.payload, consent: true });
     clearShopDependenciesCache();
     const ready = await page();
     expect(blockIds(ready.page)).toEqual(["cards", "coin"]);
     expect(ready.queries).toBeLessThanOrEqual(13);
+    sqlite.close();
+  });
+
+  it("records one resource.visited event per valid signed-in ticket, ignores invalid or signed-out visits, and handles unlinked accounts", async () => {
+    const { sqlite, app, env, ticket, headers, page } = await fixture();
+
+    // 1. Signed-out visit and expired ticket record nothing
+    await page(false);
+    const invalid = await app.fetch(new Request("https://prism.test/api/v1/devices/session/page?ticket=bad-ticket", { headers: headers() }), env);
+    expect(invalid.status).toBe(410);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE name='resource.visited'").get()).toEqual({ n: 0 });
+
+    // 2. Signed-in valid visit via /session/page records one event with player_id
+    const first = await page(true);
+    expect(first.status).toBe(200);
+    const visits1 = sqlite.query("SELECT id, device_id, capability, kind, name, origin, player_id, via, payload_json FROM device_events WHERE name='resource.visited'").all() as any[];
+    expect(visits1).toHaveLength(1);
+    expect(visits1[0]).toMatchObject({
+      device_id: "cab",
+      capability: "shop",
+      kind: "signal",
+      name: "resource.visited",
+      origin: "platform",
+      player_id: "p1",
+      via: "page",
+      payload_json: "{}",
+    });
+
+    // 3. Repeated polls on /session/page and /session/bootstrap with the same ticket deduplicate
+    await page(true);
+    const boot = await app.fetch(new Request(`https://prism.test/api/v1/devices/session/bootstrap?ticket=${encodeURIComponent(ticket)}`, { headers: headers() }), env);
+    expect(boot.status).toBe(200);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE name='resource.visited'").get()).toEqual({ n: 1 });
+
+    // 4. Disabled resource records nothing on a fresh ticket
+    const { ticket: freshTicket } = await mintResourceTicket(SECRET, "shop-code", "cab-pub");
+    sqlite.run("UPDATE machines SET enabled=0 WHERE id='cab'");
+    const disabledRes = await app.fetch(new Request(`https://prism.test/api/v1/devices/session/bootstrap?ticket=${encodeURIComponent(freshTicket)}`, { headers: headers() }), env);
+    expect(disabledRes.status).toBe(404);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE name='resource.visited'").get()).toEqual({ n: 1 });
+    sqlite.run("UPDATE machines SET enabled=1 WHERE id='cab'");
+
+    // 5. Fresh valid ticket records a second visit; unlinked user records userId in payload
+    const validRes = await app.fetch(new Request(`https://prism.test/api/v1/devices/session/bootstrap?ticket=${encodeURIComponent(freshTicket)}`, { headers: headers() }), env);
+    expect(validRes.status).toBe(200);
+    expect(sqlite.query("SELECT COUNT(*) AS n FROM device_events WHERE name='resource.visited'").get()).toEqual({ n: 2 });
+
+    sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES ('u_new','user',?,?)", [NOW, NOW]);
+    sqlite.run("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES ('auth_new','u_new',?,?)", [await sha256("new-token"), new Date(Date.now() + 86_400_000).toISOString()]);
+    const { ticket: newUserTicket } = await mintResourceTicket(SECRET, "shop-code", "cab-pub");
+    const unlinkedRes = await app.fetch(new Request(`https://prism.test/api/v1/devices/session/page?ticket=${encodeURIComponent(newUserTicket)}`, { headers: { authorization: "Bearer new-token" } }), env);
+    expect(unlinkedRes.status).toBe(200);
+    const unlinkedVisit = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE name='resource.visited' AND player_id IS NULL").get() as any;
+    expect(unlinkedVisit).toEqual({ player_id: null, payload_json: JSON.stringify({ userId: "u_new" }) });
     sqlite.close();
   });
 });

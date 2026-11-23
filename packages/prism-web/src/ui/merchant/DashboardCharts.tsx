@@ -19,6 +19,7 @@ import {
   type DashboardAnalyticsDeviceActivity,
   type DashboardAnalyticsPaymentMethod,
 } from "./dashboard-metrics";
+import type { HistoryTrafficSeries } from "./history-traffic";
 import { money, segment } from "./shared";
 
 type TrendMetric = "revenue" | "visits" | "coins";
@@ -380,33 +381,59 @@ export function RevenueTrendChart({
   );
 }
 
+function formatHourlyStat(value: number): string {
+  if (Math.abs(value - Math.round(value)) < 0.05) return String(Math.round(value));
+  return value.toFixed(1);
+}
+
 export function HourlyTrafficChart({
-  hourlyVisits,
+  series,
   title = "时段入场分布",
   loading,
   error,
 }: {
-  hourlyVisits: readonly number[];
+  series: HistoryTrafficSeries | null;
   title?: "时段入场分布" | "时段在场分布";
   timeZone?: string;
   loading: boolean;
   error: string;
 }) {
   const { t } = useI18n();
+  const [mode, setMode] = useState<"avg" | "median">("avg");
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
-  const hours = hourlyVisits.length === 24 ? hourlyVisits : Array.from({ length: 24 }, () => 0);
-  const peak = peakHourSummary(hours);
-  const max = Math.max(1, ...hours);
+  const days = series?.days ?? 0;
+  const isMultiDay = days > 1;
+  const buckets =
+    series?.buckets.length === 24
+      ? series.buckets
+      : Array.from({ length: 24 }, (_, hour) => ({
+          hour,
+          total: 0,
+          avg: 0,
+          median: 0,
+          max: 0,
+          activeDays: 0,
+        }));
+  const displayValues = buckets.map((bucket) =>
+    !isMultiDay ? bucket.total : mode === "median" ? bucket.median : bucket.avg,
+  );
+  const peak = peakHourSummary(displayValues);
+  const totalPeak = peakHourSummary(buckets.map((bucket) => bucket.total));
+  const max = Math.max(1, ...displayValues);
 
-  const width = 420;
-  const height = 148;
-  const padX = 8;
+  const width = 440;
+  const height = 160;
+  const padLeft = 32;
+  const padRight = 8;
   const padTop = 12;
   const padBottom = 24;
-  const plotW = width - padX * 2;
+  const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
   const slotW = plotW / 24;
-  const barW = slotW * 0.66;
+  const barW = slotW * 0.64;
+
+  const hoveredBucket = hoveredHour !== null ? buckets[hoveredHour] ?? null : null;
+  const peakBucket = peak !== null ? buckets[peak.hour] ?? null : null;
 
   return (
     <section
@@ -418,23 +445,98 @@ export function HourlyTrafficChart({
           <Clock size={17} className="text-mint" aria-hidden="true" />
           <h3 className="text-base font-semibold">{t(title)}</h3>
         </div>
-        {peak ? (
-          <span className="rounded-full bg-mint/10 px-2.5 py-0.5 text-xs font-medium text-mint tabular-nums">
-            {t("高峰")} {peak.label}
-          </span>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {isMultiDay && (
+            <div
+              role="group"
+              aria-label={t("时段口径")}
+              className="inline-flex rounded-xl bg-ink/[0.05] p-0.5 text-xs"
+            >
+              {(
+                [
+                  ["avg", "日均"],
+                  ["median", "中位数"],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={mode === key}
+                  onClick={() => setMode(key)}
+                  className={`focus-ring rounded-[10px] px-2.5 py-1 font-medium transition-colors ${
+                    mode === key
+                      ? "bg-panel text-ink shadow-sm"
+                      : "text-ink/60 hover:text-ink"
+                  }`}
+                >
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+          )}
+          {peak ? (
+            <span className="rounded-full bg-mint/10 px-2.5 py-0.5 text-xs font-medium text-mint tabular-nums">
+              {t("高峰")} {peak.label}
+            </span>
+          ) : null}
+        </div>
       </header>
 
-      <p className="text-xs text-ink/60">{t(title === "时段在场分布"
-        ? "各时段内有计时在场的玩家，按玩家和自然日去重；跨小时计入各时段。"
-        : "各时段内开始计时的玩家，按玩家和自然日去重。")}</p>
-      <p className="text-xs text-ink/60 tabular-nums">
-        {hoveredHour !== null
-          ? `${String(hoveredHour).padStart(2, "0")}:00–${String(hoveredHour).padStart(2, "0")}:59 · ${hours[hoveredHour] ?? 0} ${t("人次")}`
-          : peak
-            ? t("高峰时段 {count} 人次", { count: peak.count })
-            : t(loading ? "加载中..." : "暂无时段客流数据")}
+      <p className="text-xs text-ink/60">
+        {t(
+          title === "时段在场分布"
+            ? "按有效在店区间统计（每次计时超过店铺设定上限的部分视为挂机，不计入），每日按玩家去重。"
+            : "按各小时开始计时的玩家数统计，每日按玩家去重。",
+        )}
       </p>
+      <div className="rounded-xl bg-ink/[0.03] px-3 py-2 text-xs text-ink/75 tabular-nums">
+        {hoveredBucket !== null && hoveredHour !== null ? (
+          isMultiDay ? (
+            <span>
+              <strong className="font-semibold text-ink">
+                {String(hoveredHour).padStart(2, "0")}:00–{String(hoveredHour).padStart(2, "0")}:59
+              </strong>
+              {" · "}
+              {t("日均 {avg} 人 · 中位 {median} 人 · 最高 {max} 人 · 累计 {total} 人次", {
+                avg: formatHourlyStat(hoveredBucket.avg),
+                median: formatHourlyStat(hoveredBucket.median),
+                max: hoveredBucket.max,
+                total: hoveredBucket.total,
+              })}
+            </span>
+          ) : (
+            <span>
+              <strong className="font-semibold text-ink">
+                {String(hoveredHour).padStart(2, "0")}:00–{String(hoveredHour).padStart(2, "0")}:59
+              </strong>
+              {" · "}
+              {hoveredBucket.total} {t("人次")}
+            </span>
+          )
+        ) : peak && peakBucket ? (
+          isMultiDay ? (
+            <span>
+              {t("高峰")} <strong className="font-semibold text-ink">{peak.label}</strong>
+              {" · "}
+              {t("日均 {avg} 人 · 中位 {median} 人 · 最高 {max} 人", {
+                avg: formatHourlyStat(peakBucket.avg),
+                median: formatHourlyStat(peakBucket.median),
+                max: peakBucket.max,
+              })}
+            </span>
+          ) : (
+            <span>{t("高峰时段 {count} 人次", { count: peak.count })}</span>
+          )
+        ) : totalPeak && isMultiDay && mode === "median" ? (
+          <span className="text-ink/55">
+            {t("多数日期该时段中位数为 0，可切换日均查看")}
+          </span>
+        ) : (
+          <span className="text-ink/50">
+            {t(loading ? "加载中..." : "暂无时段客流数据")}
+          </span>
+        )}
+      </div>
 
       {error ? (
         <p role="alert" className="py-8 text-center text-sm text-coral">
@@ -443,25 +545,48 @@ export function HourlyTrafficChart({
       ) : (
         <svg
           viewBox={`0 0 ${width} ${height}`}
-          className="h-[148px] w-full"
+          className="h-[160px] w-full overflow-visible"
           role="img"
           aria-label={t(title)}
         >
-          <line
-            x1={padX}
-            y1={padTop + plotH}
-            x2={width - padX}
-            y2={padTop + plotH}
-            stroke="currentColor"
-            strokeOpacity="0.14"
-          />
-          {hours.map((count, hour) => {
+          {[0, 0.5, 1].map((ratio) => {
+            const y = padTop + plotH * (1 - ratio);
+            const tickValue = max * ratio;
+            return (
+              <g key={ratio}>
+                <line
+                  x1={padLeft}
+                  y1={y}
+                  x2={width - padRight}
+                  y2={y}
+                  stroke="currentColor"
+                  strokeOpacity={ratio === 0 ? 0.14 : 0.08}
+                  strokeDasharray={ratio === 0 ? undefined : "3 4"}
+                />
+                <text
+                  x={padLeft - 6}
+                  y={y + 3}
+                  textAnchor="end"
+                  fontSize="10"
+                  fill="currentColor"
+                  fillOpacity="0.48"
+                >
+                  {formatHourlyStat(tickValue)}
+                </text>
+              </g>
+            );
+          })}
+          {buckets.map((bucket, hour) => {
+            const count = displayValues[hour] ?? 0;
             const barH = count > 0 ? Math.max(4, (count / max) * plotH) : 2;
-            const x = padX + hour * slotW + (slotW - barW) / 2;
+            const x = padLeft + hour * slotW + (slotW - barW) / 2;
             const y = padTop + plotH - barH;
             const isPeak = peak !== null && count === peak.count && count > 0;
             const isHovered = hoveredHour === hour;
             const showLabel = hour === 0 || hour === 6 || hour === 12 || hour === 18 || hour === 23;
+            const ariaDetail = isMultiDay
+              ? `${String(hour).padStart(2, "0")}:00 · ${t("日均")} ${formatHourlyStat(bucket.avg)} · ${t("中位")} ${formatHourlyStat(bucket.median)}`
+              : `${String(hour).padStart(2, "0")}:00 · ${bucket.total} ${t("人次")}`;
             return (
               <g key={hour}>
                 <rect
@@ -483,7 +608,7 @@ export function HourlyTrafficChart({
                 />
                 {showLabel && (
                   <text
-                    x={padX + hour * slotW + slotW / 2}
+                    x={padLeft + hour * slotW + slotW / 2}
                     y={height - 6}
                     textAnchor="middle"
                     fontSize="10"
@@ -494,14 +619,14 @@ export function HourlyTrafficChart({
                   </text>
                 )}
                 <rect
-                  x={padX + hour * slotW}
+                  x={padLeft + hour * slotW}
                   y={padTop}
                   width={slotW}
                   height={plotH}
                   fill="transparent"
                   tabIndex={0}
                   role="button"
-                  aria-label={`${String(hour).padStart(2, "0")}:00 · ${count} ${t("人次")}`}
+                  aria-label={ariaDetail}
                   className="cursor-pointer outline-none"
                   onMouseEnter={() => setHoveredHour(hour)}
                   onMouseLeave={() => setHoveredHour((cur) => (cur === hour ? null : cur))}
@@ -528,6 +653,7 @@ export function PaymentBreakdownCard({
 }) {
   const { t } = useI18n();
   const shares = paymentShares(analytics?.paymentMethods ?? []);
+  const medianDuration = analytics ? formatDurationSummary(analytics.period.medianDurationMinutes) : null;
   const avgDuration = analytics ? formatDurationSummary(analytics.period.avgDurationMinutes) : null;
 
   return (
@@ -602,14 +728,22 @@ export function PaymentBreakdownCard({
             </strong>
           </div>
           <div>
-            <span className="block text-ink/55">{t("平均在店时长")}</span>
+            <span className="block text-ink/55">{t("中位有效时长")}</span>
             <strong className="mt-1 block text-base font-semibold tabular-nums">
-              {avgDuration
-                ? avgDuration.hours
-                  ? t("{hours} 时 {minutes} 分", avgDuration)
-                  : t("{minutes} 分", avgDuration)
+              {medianDuration
+                ? medianDuration.hours
+                  ? t("{hours} 时 {minutes} 分", medianDuration)
+                  : t("{minutes} 分", medianDuration)
                 : "—"}
             </strong>
+            {avgDuration && (
+              <span className="mt-0.5 block text-[11px] text-ink/50 tabular-nums">
+                {t("均值")}{" "}
+                {avgDuration.hours
+                  ? t("{hours} 时 {minutes} 分", avgDuration)
+                  : t("{minutes} 分", avgDuration)}
+              </span>
+            )}
           </div>
           <div>
             <span className="block text-ink/55">{t("资产入账")}</span>
@@ -624,13 +758,14 @@ export function PaymentBreakdownCard({
 }
 
 export function TopDevicesCard({
-  topDevices,
+  topDevicesByHeat,
   devices,
   shopCode,
   loading,
   error,
 }: {
-  topDevices: readonly DashboardAnalyticsDeviceActivity[];
+  /** Devices ranked by deduplicated plays (`rankReportDevices` in core). */
+  topDevicesByHeat: readonly DashboardAnalyticsDeviceActivity[];
   devices: readonly Resource[] | null;
   shopCode: string;
   loading: boolean;
@@ -641,14 +776,14 @@ export function TopDevicesCard({
     () => new Map((devices ?? []).map((device) => [device.id, device.name])),
     [devices],
   );
-  const maxOps = Math.max(1, ...topDevices.map((item) => item.operations));
+  const maxPlays = Math.max(1, ...topDevicesByHeat.map((item) => item.plays));
 
   return (
     <section
       className="grid min-w-0 content-start gap-3.5 rounded-2xl border border-ink/10 bg-panel p-5 shadow-soft"
       aria-label={t("热门资源活跃度")}
     >
-      <header className="flex items-center justify-between gap-2">
+      <header className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Gamepad2 size={17} className="text-mint" aria-hidden="true" />
           <h3 className="text-base font-semibold">{t("热门资源活跃度")}</h3>
@@ -666,42 +801,29 @@ export function TopDevicesCard({
         <p role="alert" className="py-6 text-center text-sm text-coral">
           {error}
         </p>
-      ) : !topDevices.length ? (
+      ) : !topDevicesByHeat.length ? (
         <p className="py-8 text-center text-sm text-ink/50">
-          {t(loading ? "加载中..." : "所选时段暂无设备使用记录")}
+          {t(loading ? "加载中..." : "所选时段暂无活跃资源")}
         </p>
       ) : (
         <ol className="grid gap-3">
-          {topDevices.map((item, index) => {
+          {topDevicesByHeat.map((item, index) => {
             const name = deviceNameById.get(item.deviceId) ?? item.deviceId;
-            const widthPct = Math.max(8, Math.round((item.operations / maxOps) * 100));
+            const widthPct = Math.max(8, Math.round((item.plays / maxPlays) * 100));
             return (
               <li key={item.deviceId} className="grid gap-1.5 text-sm">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-ink/[0.06] text-[11px] font-semibold text-ink/70 tabular-nums">
-                      {index + 1}
-                    </span>
-                    <span className="truncate font-medium">{name}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="grid size-5 shrink-0 place-items-center rounded-full bg-ink/[0.06] text-[11px] font-semibold text-ink/70 tabular-nums">
+                    {index + 1}
                   </span>
-                  <span className="shrink-0 font-semibold tabular-nums">
-                    {item.operations} <span className="text-xs font-normal text-ink/50">{t("次")}</span>
-                  </span>
-                </div>
+                  <span className="truncate font-medium">{name}</span>
+                </span>
                 <div className="h-1.5 overflow-hidden rounded-full bg-ink/[0.06]">
                   <div
                     className="h-full rounded-full bg-mint/80"
                     style={{ width: `${widthPct}%` }}
                   />
                 </div>
-                <p className="flex gap-3 text-xs text-ink/55 tabular-nums">
-                  <span>
-                    {item.swipes} {t("刷卡")}
-                  </span>
-                  <span>
-                    {item.coins} {t("投币")}
-                  </span>
-                </p>
               </li>
             );
           })}
