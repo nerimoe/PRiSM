@@ -4,6 +4,7 @@ import type { AppBindings, AuthUser } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { passkeyNameSchema } from "./passkeys.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 export function publicUser(user: AuthUser) {
   return {
@@ -121,7 +122,7 @@ userRouter.get("/me/shops", async (c) => {
   const user = requireUser(c);
   const shops = await c.env.DB.prepare(
     `SELECT s.public_id AS publicId,s.name,COUNT(active.id) AS activeSessions
-    FROM shop_player_accounts a JOIN shops s ON s.id=a.shop_id
+    FROM ${ACCOUNT_PROFILES_SQL} a JOIN shops s ON s.id=a.shop_id
     LEFT JOIN sessions active ON active.shop_id=a.shop_id AND active.player_id=a.player_id AND active.status='active'
     WHERE a.user_id=? GROUP BY s.id ORDER BY activeSessions DESC,s.name`,
   ).bind(user.id).all();

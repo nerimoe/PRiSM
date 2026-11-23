@@ -23,15 +23,6 @@ export function accountLinkStatements(
     statements.push(
       db
         .prepare(
-          `INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?)
-      ON CONFLICT(shop_id,user_id) DO UPDATE SET player_id=CASE WHEN shop_player_accounts.player_id=excluded.player_id
-        THEN shop_player_accounts.player_id ELSE NULL END`,
-        )
-        .bind(shopId, userId, link.player_id, link.verified_at ?? now),
-    );
-    statements.push(
-      db
-        .prepare(
           `INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES (?,?,'web-account',?,?)
       ON CONFLICT(shop_id,provider,subject) DO UPDATE SET player_id=CASE WHEN player_identities.player_id=excluded.player_id
         THEN player_identities.player_id ELSE NULL END`,

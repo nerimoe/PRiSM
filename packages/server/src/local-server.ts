@@ -113,14 +113,6 @@ export const platformSchema = [
     staff_id TEXT NOT NULL,
     PRIMARY KEY(shop_id, user_id)
   )`,
-  `CREATE TABLE IF NOT EXISTS shop_player_accounts (
-    shop_id TEXT NOT NULL REFERENCES shops(id),
-    user_id TEXT NOT NULL REFERENCES users(id),
-    player_id TEXT NOT NULL,
-    verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY(shop_id, user_id),
-    UNIQUE(shop_id, player_id)
-  )`,
   `CREATE TABLE IF NOT EXISTS platform_binding_codes (
     shop_id TEXT NOT NULL,
     id TEXT PRIMARY KEY,
@@ -411,19 +403,41 @@ export function initializeLocalDatabase(
   const identityNamed = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('player_identities') WHERE name = 'display_name'").get();
   if (!identityNamed) db.run("ALTER TABLE player_identities ADD COLUMN display_name TEXT");
 
-  // Platform identities live only in player_identities (migration 0063).
-  const bindingTable = db
-    .query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'shop_platform_bindings'")
-    .get();
-  if (bindingTable) {
+  // Every profile identity lives in player_identities, the web account
+  // included (migration 0063).
+  const hasTable = (name: string) =>
+    !!db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+  const notCashier = (alias: string) =>
+    `NOT EXISTS (SELECT 1 FROM cashier_profiles c WHERE c.shop_id = ${alias}.shop_id AND c.player_id = ${alias}.player_id)`;
+  if (hasTable("shop_platform_bindings") && hasTable("shop_player_accounts")) {
     db.run(`INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at)
       SELECT b.shop_id, a.player_id, b.provider, b.subject, b.verified_at
       FROM shop_platform_bindings b
       JOIN shop_player_accounts a ON a.shop_id = b.shop_id AND a.user_id = b.user_id
-      WHERE NOT EXISTS (SELECT 1 FROM cashier_profiles c WHERE c.shop_id = b.shop_id AND c.player_id = a.player_id)
+      WHERE ${notCashier("a")}
       ON CONFLICT(shop_id, provider, subject) DO NOTHING`);
-    db.run("DROP TABLE shop_platform_bindings");
   }
+  if (hasTable("shop_platform_bindings")) db.run("DROP TABLE shop_platform_bindings");
+  if (hasTable("shop_player_accounts")) {
+    db.run(`DELETE FROM player_identities
+      WHERE provider = 'web-account' AND EXISTS (
+        SELECT 1 FROM shop_player_accounts a
+        WHERE a.shop_id = player_identities.shop_id AND a.player_id = player_identities.player_id
+          AND a.user_id <> player_identities.subject)`);
+    db.run(`INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at)
+      SELECT a.shop_id, a.player_id, 'web-account', a.user_id, a.verified_at
+      FROM shop_player_accounts a
+      WHERE ${notCashier("a")}
+      ON CONFLICT(shop_id, provider, subject) DO UPDATE SET player_id = excluded.player_id`);
+    db.run("DROP TABLE shop_player_accounts");
+  }
+  db.run(`DELETE FROM player_identities
+    WHERE provider = 'web-account' AND rowid NOT IN (
+      SELECT MIN(rowid) FROM player_identities WHERE provider = 'web-account' GROUP BY shop_id, player_id)`);
+  db.run(
+    "CREATE UNIQUE INDEX IF NOT EXISTS player_identities_one_account ON player_identities(shop_id, player_id) WHERE provider = 'web-account'",
+  );
+  db.run("CREATE INDEX IF NOT EXISTS player_identities_account ON player_identities(subject) WHERE provider = 'web-account'");
 
   db.run("PRAGMA foreign_keys = ON;");
 

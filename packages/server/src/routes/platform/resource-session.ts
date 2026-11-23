@@ -23,6 +23,7 @@ import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
 import { tableState, operateTable, previewTable } from "./table.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 export const resourceSessionRouter=new Hono<AppBindings>();
 export const merchantResourceActionRouter=new Hono<AppBindings>();
@@ -110,7 +111,7 @@ export async function readGate(c:C,machine:ScannedResource,device:Resource|null)
       `SELECT a.player_id AS playerId,p.status,
        ${ACCOUNT_HAS_PLATFORM_IDENTITY_SQL} AS identityBound
        FROM (SELECT 1) x
-       LEFT JOIN shop_player_accounts a ON a.shop_id=? AND a.user_id=?
+       LEFT JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=? AND a.user_id=?
        LEFT JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id`,
     ).bind(shop.id,user.id,shop.id,user.id).first<{playerId:string|null;status:string|null;identityBound:number}>();
     if(shop.identity_binding_required&&!player?.identityBound)gate="binding";

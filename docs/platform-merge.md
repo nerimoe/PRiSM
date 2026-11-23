@@ -83,7 +83,7 @@ A bare shop code with no device segment is the standalone, device-independent sh
 
 - It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m#ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
 - `GET /api/v1/shops/:shopCode` returns `shop.heroUrl` (the same versioned `…/hero?v=<hash>` path the machine payload uses, or `null`) so the shop card matches a device card. It is derived from `hero_data`/`hero_hash`, so a shop without cover art reports `null` rather than a broken path.
-- It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
+- It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus the profile's `web-account` identity (`player_identities`; migration 0063 folded the former `shop_player_accounts` table into it).
 - Players needing verification see the platform-binding command. When binding is optional, Web can create a membership directly; any later adapter binding reuses the same player.
 
 **Admission is deliberately absent here.** Only a scanned machine ticket proves the player is at a machine, and a shop URL carries no such proof, so this page never starts a session: it settles bills. A player who has not checked in is told to tap the machine NFC tag or scan its QR code. This is the one capability a shop link does not share with a device link; bill, checkout, redeem, history and wallet are identical on both.

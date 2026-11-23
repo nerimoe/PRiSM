@@ -38,6 +38,7 @@ import {
   toStaffReportsSummaryView,
   toStoppedSessionView,
 } from "./views.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 export const staffRouter = new Hono<AppBindings>();
 
@@ -52,7 +53,7 @@ function reportExcludedPlayers(raw: string | undefined): string[] {
 
 async function reportPlayerFlags(db: import("@prism/adapter-d1").D1DatabaseLike, shopId: string, playerId?: string) {
   const result = await db.prepare(`SELECT p.id, p.display_name AS displayName, p.report_excluded AS excluded,
-    EXISTS (SELECT 1 FROM shop_player_accounts a
+    EXISTS (SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} a
       WHERE a.shop_id=p.shop_id AND a.player_id=p.id AND (
         EXISTS (SELECT 1 FROM shop_members m WHERE m.shop_id=a.shop_id AND m.user_id=a.user_id)
         OR EXISTS (SELECT 1 FROM shops sh WHERE sh.id=a.shop_id AND sh.created_by=a.user_id)

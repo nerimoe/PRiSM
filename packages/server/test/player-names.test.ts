@@ -97,7 +97,7 @@ describe("what chat platforms call a shop's players", () => {
     const code = "23456789";
     sqlite.run("INSERT INTO users(id, role, created_at, updated_at) VALUES ('u1', 'user', ?, ?)", [now, now]);
     player("p1", "Player 1", []);
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id, user_id, player_id, verified_at) VALUES (?, 'u1', 'p1', ?)", [SHOP, now]);
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, 'u1', 'p1', ?, 'web-account')", [SHOP, now]);
     sqlite.run("INSERT INTO platform_binding_codes(shop_id, id, user_id, code_hash, expires_at, created_at) VALUES (?, 'c1', 'u1', ?, ?, ?)", [
       SHOP,
       await sha256(code),
@@ -151,7 +151,9 @@ describe("what chat platforms call a shop's players", () => {
 
     const queries = createSqlReadModels({ executor: createD1Executor(db, SHOP), now: () => new Date() });
     const players = await queries.staffQueries.listPlayers({ playerIds: ["p1"] });
+    // The account link is the profile's `web-account` identity; the chat identity keeps its name.
     expect(players[0]?.identities?.map((i) => ({ provider: i.provider, subject: i.subject, displayName: i.displayName }))).toEqual([
+      { provider: "web-account", subject: "u1", displayName: undefined },
       { provider: "onebot", subject: "1015929452", displayName: "雾雪" },
     ]);
     sqlite.close();

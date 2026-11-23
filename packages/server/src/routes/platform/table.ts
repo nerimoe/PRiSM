@@ -17,6 +17,7 @@ import { loadResource, tableConfigOf, type Resource } from "../../resources/reso
 import { liveSeatsSql } from "../../resources/capabilities/table-occupancy.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { logger } from "../../log.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 const log = logger("table");
 
@@ -42,7 +43,7 @@ export async function tableState(c: Pick<C, "env"> | C, machine: ScannedResource
     CASE WHEN s.status='active' THEN 1 ELSE 0 END AS playing
     FROM (${liveSeats}) ts
     JOIN players p ON p.shop_id=ts.shop_id AND p.id=ts.player_id
-    LEFT JOIN shop_player_accounts a ON a.shop_id=ts.shop_id AND a.player_id=ts.player_id
+    LEFT JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=ts.shop_id AND a.player_id=ts.player_id
     LEFT JOIN sessions s ON s.shop_id=ts.shop_id AND s.id=ts.session_id
     WHERE ts.machine_id=? ORDER BY ts.joined_at,ts.player_id`)
     .bind(viewer?.playerId ?? requireUser(c as C).id,machine.id).all<{playerId:string;name:string;mine:number;playing:number}>();

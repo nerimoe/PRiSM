@@ -18,6 +18,7 @@ import {
   type MaintenanceWait,
 } from "./alarm-budget.js";
 import { logger } from "../log.js";
+import { ACCOUNT_PROFILES_SQL } from "../resources/account-profiles.js";
 
 const log = logger("live-activity");
 
@@ -159,7 +160,7 @@ export class LiveBilling extends BaseDurableObject<Env> {
       await this.env.DB.prepare(
         `SELECT t.id,t.token,t.environment,t.bundle_id,t.session_id,t.created_at,t.client_id,t.user_id,s.started_at,s.ended_at,s.payment_status,
         pc.total AS checkout_total,pc.settled_at
-        FROM live_activity_tokens t JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+        FROM live_activity_tokens t JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
         JOIN sessions s ON s.shop_id=t.shop_id AND s.id=t.session_id AND s.player_id=a.player_id
         LEFT JOIN settlements st ON st.shop_id=s.shop_id AND st.session_id=s.id
         LEFT JOIN player_checkouts pc ON pc.shop_id=st.shop_id AND pc.id=st.checkout_id

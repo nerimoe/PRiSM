@@ -1,4 +1,5 @@
 import type { D1DatabaseLike } from "@prism/adapter-d1";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 type PlayerWithIdentities = {
   id?: string;
@@ -31,7 +32,7 @@ export async function withPrismAccountIdentities(
   const accounts = await db
     .prepare(
       `SELECT a.player_id, a.user_id, i.display_name, i.username
-     FROM shop_player_accounts a
+     FROM ${ACCOUNT_PROFILES_SQL} a
      LEFT JOIN auth_identities i ON i.user_id=a.user_id AND i.provider='munet'
      WHERE a.shop_id=? AND a.player_id IN (SELECT value FROM json_each(?))`,
     )

@@ -32,6 +32,7 @@ import {
 } from "./views.js";
 import { logger } from "../../log.js";
 import { accountHasPlatformIdentity } from "../../resources/platform-identities.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 const log = logger("player");
 
@@ -72,7 +73,7 @@ export async function requireShopPlayer(
 
   const find = () =>
     c.env.DB.prepare(
-      `SELECT p.id, p.status FROM shop_player_accounts a
+      `SELECT p.id, p.status FROM ${ACCOUNT_PROFILES_SQL} a
        JOIN players p ON p.shop_id = a.shop_id AND p.id = a.player_id
        WHERE a.shop_id = ? AND a.user_id = ?`,
     )
@@ -111,11 +112,7 @@ export async function requireShopPlayer(
           autoRegister: true,
           displayName: user.displayName || user.username || "玩家",
         });
-        await c.env.DB.prepare(
-          "INSERT INTO shop_player_accounts(shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, ?)",
-        )
-          .bind(shop.id, user.id, created.id, new Date().toISOString())
-          .run();
+        // Registering by the `web-account` identity is what links the account.
         return created;
       },
     );

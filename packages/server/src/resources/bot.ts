@@ -11,6 +11,7 @@ import { randomToken } from "../crypto.js";
 import { resourceBilledSql } from "./billed-sql.js";
 import { capabilities, type BotConfig } from "./capabilities/catalog.js";
 import { platformIdentitySql } from "./platform-identities.js";
+import { ACCOUNT_PROFILES_SQL } from "./account-profiles.js";
 
 export type BotResource = { id: string; name: string; enabled: boolean; config: BotConfig };
 
@@ -75,7 +76,7 @@ export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: Bot
     // profile their web account owns there.
     db.prepare(
       `SELECT DISTINCT i.provider, i.subject
-       FROM shop_player_accounts pa
+       FROM ${ACCOUNT_PROFILES_SQL} pa
        JOIN player_identities i ON i.shop_id = pa.shop_id AND i.player_id = pa.player_id
        WHERE pa.shop_id = ? AND ${platformIdentitySql("i")} AND (
          pa.user_id IN (SELECT user_id FROM shop_members WHERE shop_id = ?)

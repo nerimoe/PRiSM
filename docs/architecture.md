@@ -166,7 +166,7 @@ APNs 实时活动推送由 `@prism/server` 的 `durable-objects` 模块协调。
 
 UTC 升级的数据部分由 `storage-sql/utc-pricing-migration.ts` 生成事务计划，在 SQLite 启动、D1 首次请求和活动账单后台读取之前执行。完成标记与转换一起提交，版本和发布防篡改触发器仅在事务内临时开放，随后恢复。统一平台在此之后以 `shop-location-time-zone-v1` 补齐已有店铺的展示时区，并在位置保存时原子更新 `store.profile.timeZone`；前后端共用 `core/location-time-zone.ts` 的离线 WGS84 → IANA 地理查询。位置变化只更新展示时区，不影响 UTC 规则与历史金额。独立旧版 runtime 没有店铺位置表，保留手动展示设置。
 
-平台的 `shop_player_accounts` 关联网页账号与店内玩家，玩家档案上的平台身份（`player_identities` 中除 `web-account`、`aime` 以外的行，见 `packages/server/src/resources/platform-identities.ts`）即该账号的平台身份；绑定码只用来证明账号控制某个平台身份，从而认领该身份所在的档案。同一账号在同一平台可有多个 `subject`，在同店 `(provider, subject)` 唯一。账号拥有的档案上有任意平台身份即满足店铺的 `identityBindingRequired`，同值不同平台不合并。店主主动转换平台标识，迁移不自动重命名。D1 本地夹具和预览脚本通过 `splitD1MigrationStatements` 解析触发器，避免按分号截断 SQL。
+网页账号与店内玩家的关联是档案上的一条 `web-account` 身份（`player_identities`，见 `packages/server/src/resources/account-profiles.ts`），玩家档案上的平台身份（`player_identities` 中除 `web-account`、`aime` 以外的行，见 `packages/server/src/resources/platform-identities.ts`）即该账号的平台身份；绑定码只用来证明账号控制某个平台身份，从而认领该身份所在的档案。同一账号在同一平台可有多个 `subject`，在同店 `(provider, subject)` 唯一。账号拥有的档案上有任意平台身份即满足店铺的 `identityBindingRequired`，同值不同平台不合并。店主主动转换平台标识，迁移不自动重命名。D1 本地夹具和预览脚本通过 `splitD1MigrationStatements` 解析触发器，避免按分号截断 SQL。
 
 ### 扫码注册与可选 Passkey
 

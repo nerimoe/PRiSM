@@ -52,7 +52,7 @@ APNs 令牌和通知属于服务端传输层，`application` / `core` 不依赖 
 - 入场返回 `session.playerId`；
 - 结账返回 `playerSettlement.playerId`。
 
-Bot 渠道用 `identity` / `identityKey`（平台身份、卡号）识别玩家，本身不含账号 id，但**响应里的 `session.playerId` 是全渠道统一的**，再由 `shop_player_accounts(shop_id, player_id)` 反查 `user_id` 即可定位该玩家的设备令牌。这正是让 Bot 渠道无需特殊处理的原因。
+Bot 渠道用 `identity` / `identityKey`（平台身份、卡号）识别玩家，本身不含账号 id，但**响应里的 `session.playerId` 是全渠道统一的**，再由档案上的 `web-account` 身份（`player_identities(shop_id, player_id)` 中 `provider='web-account'` 的 `subject`）反查账号 ID 即可定位该玩家的设备令牌。这正是让 Bot 渠道无需特殊处理的原因。
 
 ## 数据库
 

@@ -1,15 +1,17 @@
 /**
  * Platform identities: the chat accounts (QQ, OneBot, …) on a shop player's
  * profile, kept in `player_identities` like every other identity. A PRiSM web
- * account owns a profile through `shop_player_accounts`; the platform
- * identities on that profile are the account's. Nothing else records the pair:
- * the binding code only proves an account controls a chat account so it may
- * claim the profile that identity belongs to.
+ * account owns a profile through its own `web-account` identity there (see
+ * `account-profiles.ts`); the platform identities on that profile are the
+ * account's. Nothing else records the pair: the binding code only proves an
+ * account controls a chat account so it may claim the profile that identity
+ * belongs to.
  *
  * Neither the PRiSM account itself (`web-account`) nor a physical card
  * (`aime`) is a platform identity.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
+import { ACCOUNT_PROFILES_SQL } from "./account-profiles.js";
 
 export const NON_PLATFORM_PROVIDERS = ["web-account", "aime"] as const;
 
@@ -23,7 +25,7 @@ export function platformIdentitySql(alias: string): string {
  * platform identity in the shop. Binds `shopId, userId` in that order.
  */
 export const ACCOUNT_HAS_PLATFORM_IDENTITY_SQL = `EXISTS(
-  SELECT 1 FROM shop_player_accounts pa
+  SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} pa
   JOIN player_identities pi ON pi.shop_id = pa.shop_id AND pi.player_id = pa.player_id
   WHERE pa.shop_id = ? AND pa.user_id = ? AND ${platformIdentitySql("pi")})`;
 
@@ -56,7 +58,7 @@ export async function listAccountPlatformIdentities(
   const rows = await db
     .prepare(
       `SELECT pa.player_id AS playerId, pi.provider, pi.subject, pi.display_name AS displayName, pi.created_at AS verifiedAt
-       FROM shop_player_accounts pa
+       FROM ${ACCOUNT_PROFILES_SQL} pa
        JOIN player_identities pi ON pi.shop_id = pa.shop_id AND pi.player_id = pa.player_id
        WHERE pa.shop_id = ? AND pa.user_id = ? AND ${platformIdentitySql("pi")}
        ORDER BY pi.provider, pi.subject`,

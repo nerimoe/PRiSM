@@ -49,6 +49,7 @@ import { getOrCreateShopDependencies, readTenantShop, tenantShop } from "../midd
 import type { PageScope } from "./shop-hub-client.js";
 import { app } from "../app.js";
 import { logger } from "../log.js";
+import { profileAccountId } from "../resources/account-profiles.js";
 
 const log = logger("shop-hub");
 
@@ -466,11 +467,10 @@ export class ShopHub extends BaseDurableObject<Env> {
     if (!this.drawnPages(() => true).length) return;
     const shopId = await this.shopId();
     if (!shopId) return;
-    const account = await this.env.DB.prepare("SELECT user_id FROM shop_player_accounts WHERE shop_id = ? AND player_id = ?")
-      .bind(shopId, scope.player).first<{ user_id: string }>();
+    const accountId = await profileAccountId(this.env.DB, shopId, scope.player);
     const tables = new Set((await this.env.DB.prepare("SELECT device_id FROM device_capabilities WHERE shop_id = ? AND capability = 'table'")
       .bind(shopId).all<{ device_id: string }>()).results.map((row) => row.device_id));
-    this.tellChanged(this.drawnPages((page) => page.userId === account?.user_id || tables.has(page.deviceId)), reason);
+    this.tellChanged(this.drawnPages((page) => page.userId === accountId || tables.has(page.deviceId)), reason);
   }
 
   /** Only the page of the player waiting to add a card at this device. */

@@ -40,7 +40,7 @@ async function fixture() {
   sqlite.run("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('m1','shop','owner-user','owner')");
   // The owner plays here too and bound their QQ identity, as staff do.
   sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','owner-player','店主','active',?)", [NOW]);
-  sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','owner-user','owner-player',?)", [NOW]);
+  sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop','owner-user','owner-player',?, 'web-account')", [NOW]);
   sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','owner-player','onebot','10001',?)", [NOW]);
   sqlite.run(`INSERT INTO shop_billing_settings(shop_id,billing_enabled,auto_register,identity_binding_required)
     VALUES ('shop',1,1,0)`);
@@ -163,7 +163,7 @@ describe("a bot is a resource", () => {
     const client = bot((await createBot()).token);
     sqlite.run("INSERT INTO users(id,role) VALUES ('new-owner','user')");
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','new-player','新负责人','active',?)", [NOW]);
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','new-owner','new-player',?)", [NOW]);
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop','new-owner','new-player',?, 'web-account')", [NOW]);
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','new-player','onebot','20002',?)", [NOW]);
     const staff = async () => (await client.get("bot")).body.staff;
     expect(await staff()).not.toContainEqual({ provider: "onebot", subject: "20002" });

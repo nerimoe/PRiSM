@@ -257,13 +257,6 @@ function createTestEnvironment(): {
       status TEXT NOT NULL DEFAULT 'active',
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE IF NOT EXISTS shop_player_accounts (
-      shop_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      player_id TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (shop_id, user_id)
-    );
     CREATE TABLE IF NOT EXISTS shop_staff_accounts (
       shop_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -520,7 +513,7 @@ describe("Worker Entrypoint & Root Application Suite", () => {
         [shopId, playerId],
       );
       sqlite.run(
-        "INSERT INTO shop_player_accounts (shop_id, user_id, player_id) VALUES (?, ?, ?)",
+        "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
         [shopId, userId, playerId],
       );
 

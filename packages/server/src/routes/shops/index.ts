@@ -36,6 +36,7 @@ export * from "./assets.js";
 export * from "./cashier.js";
 import { cashierResourceId } from "./cashier.js";
 import { ACCOUNT_HAS_PLATFORM_IDENTITY_SQL, listAccountPlatformIdentities } from "../../resources/platform-identities.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 export * from "./redeem.js";
 export * from "./binding.js";
 export * from "./views.js";
@@ -123,7 +124,7 @@ shopRouter.get("/", async (c) => {
   const membership = user
     ? await c.env.DB.prepare(
         `SELECT player_id AS playerId, ${ACCOUNT_HAS_PLATFORM_IDENTITY_SQL} AS identityBound
-         FROM shop_player_accounts a WHERE shop_id=? AND user_id=?`,
+         FROM ${ACCOUNT_PROFILES_SQL} a WHERE shop_id=? AND user_id=?`,
       )
         .bind(shop.id, user.id, shop.id, user.id)
         .first<{ playerId: string; identityBound: number }>()

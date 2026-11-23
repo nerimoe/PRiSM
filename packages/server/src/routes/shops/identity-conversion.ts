@@ -7,6 +7,7 @@ import { sha256 } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "./player-operation.js";
 import type { AppBindings } from "../../bindings.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 type C = Context<AppBindings>;
 const provider = z.string().trim().toLowerCase().regex(/^[a-z][a-z0-9_-]{0,63}$/)
@@ -16,7 +17,7 @@ const conversionSchema = z.object({ sourceProvider: provider, targetProvider: pr
 
 async function snapshot(c: C, shopId: string, source: string, target: string) {
   const identities = await c.env.DB.prepare(`SELECT i.player_id AS playerId,i.provider,i.subject,p.display_name AS displayName,
-      EXISTS(SELECT 1 FROM shop_player_accounts a WHERE a.shop_id=i.shop_id AND a.player_id=i.player_id) AS owned
+      EXISTS(SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} a WHERE a.shop_id=i.shop_id AND a.player_id=i.player_id) AS owned
     FROM player_identities i JOIN players p ON p.shop_id=i.shop_id AND p.id=i.player_id
     WHERE i.shop_id=? AND i.provider IN (?,?) ORDER BY i.provider,i.subject`).bind(shopId,source,target)
     .all<{ playerId:string;provider:string;subject:string;displayName:string;owned:number }>();

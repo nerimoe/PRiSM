@@ -644,7 +644,7 @@ describe("what a page drawn from /session/page hears", () => {
     );
     sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at) VALUES ('shop','default','默认',1,'base','2026-01-01','2026-01-01')");
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p1','一号','active','2026-01-01')");
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop','u1','p1','2026-01-01')");
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop','u1','p1','2026-01-01', 'web-account')");
     sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");
     sqlite.run("INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at) VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')", [JSON.stringify({ tokenId: "t1" })]);
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','p1','onebot','1','2026-01-01')");

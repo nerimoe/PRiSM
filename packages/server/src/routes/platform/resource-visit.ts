@@ -4,6 +4,7 @@ import { sha256Hex } from "../../crypto.js";
 import { logger } from "../../log.js";
 import { optionalUser } from "../../middleware/auth.js";
 import type { ScannedResource } from "./resource-ticket.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 const log = logger("resource-visit");
 const MAX_CACHED_VISITS = 2048;
@@ -43,7 +44,7 @@ export async function recordResourceVisit(
            CASE WHEN a.player_id IS NOT NULL THEN '{}' ELSE json_object('userId', ?) END,
            ?, 'page', NULL
          FROM (SELECT 1) AS _
-         LEFT JOIN shop_player_accounts a ON a.shop_id = ? AND a.user_id = ?`,
+         LEFT JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id = ? AND a.user_id = ?`,
       )
         .bind(
           machine.shop_id,
