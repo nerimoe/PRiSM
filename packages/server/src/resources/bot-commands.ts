@@ -17,7 +17,7 @@ import { jsonError } from "../http.js";
 import { domainErrorStatus } from "../http-errors.js";
 import type { ChatIdentity } from "../durable-objects/shop-hub-bot.js";
 import { confirmBinding } from "../routes/shops/binding.js";
-import { mahjongState, moveMahjong } from "../routes/platform/mahjong.js";
+import { tableState, moveTable } from "../routes/platform/table.js";
 import { loadScannedResource } from "../routes/platform/resource-ticket.js";
 import { assertNotBanned } from "../routes/platform/machine-login.js";
 import {
@@ -38,9 +38,9 @@ import {
   historyMessage,
   itemsMessage,
   forPlayer,
-  mahjongJoinedMessage,
-  mahjongLeftMessage,
-  mahjongTablesMessage,
+  tableJoinedMessage,
+  tableLeftMessage,
+  tableListMessage,
   receiptMessage,
   redeemMessage,
   settledAsPreview,
@@ -207,14 +207,14 @@ function adjust(direction: 1 | -1): BotCommand {
   };
 }
 
-async function mahjongTables(ctx: BotCommandContext) {
+async function listTables(ctx: BotCommandContext) {
   return (await loadResources(ctx.env.DB, ctx.shop.id, ctx.env.URL_ENCRYPTION_KEY))
-    .filter((resource) => resource.capabilities.has("mahjong") && resource.enabled);
+    .filter((resource) => resource.capabilities.has("table") && resource.enabled);
 }
 
-async function mahjongTable(ctx: BotCommandContext, ref: string) {
-  const table = (await mahjongTables(ctx)).find((resource) => matchesRef(resource, ref));
-  if (!table) jsonError(404, "没有找到这张麻将桌", "MAHJONG_TABLE_NOT_FOUND");
+async function findTable(ctx: BotCommandContext, ref: string) {
+  const table = (await listTables(ctx)).find((resource) => matchesRef(resource, ref));
+  if (!table) jsonError(404, "没有找到这张桌游桌", "TABLE_NOT_FOUND");
   return (await loadScannedResource(runtime(ctx), ctx.shop.id, table.id))!;
 }
 
@@ -233,11 +233,11 @@ const join: BotCommand = {
   target: "optional",
   async run(ctx, [raw]) {
     const ref = raw?.trim();
-    if (!ref) return notice(ctx, "请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。");
-    const table = await mahjongTable(ctx, ref);
+    if (!ref) return notice(ctx, "请指定桌游桌，例如 /上桌 a；可先使用 /桌游列表 查看可用桌位。");
+    const table = await findTable(ctx, ref);
     const player = await seatedPlayer(ctx, table.id, true);
-    const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: true, onBehalf: true, body: {}, viewer: { playerId: player.id }, origin: botOrigin(ctx) });
-    const message = mahjongJoinedMessage({ name: table.name, ...moved.mahjong! });
+    const moved = await moveTable(runtime(ctx), ctx.shop, table, player, { joining: true, onBehalf: true, body: {}, viewer: { playerId: player.id }, origin: botOrigin(ctx) });
+    const message = tableJoinedMessage({ name: table.name, ...moved.table! });
     return answer(ctx, "success", ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
   },
 };
@@ -360,13 +360,14 @@ export const botCommands: Record<string, BotCommand> = {
   },
   麻将列表: {
     async run(ctx) {
-      const tables = await Promise.all((await mahjongTables(ctx)).map(async (resource) => {
-        const state = await mahjongState(runtime(ctx), (await loadScannedResource(runtime(ctx), ctx.shop.id, resource.id))!, { playerId: "" });
+      const tables = await Promise.all((await listTables(ctx)).map(async (resource) => {
+        const state = await tableState(runtime(ctx), (await loadScannedResource(runtime(ctx), ctx.shop.id, resource.id))!, { playerId: "" });
         return { name: resource.name, aliases: resource.aliases, capacity: state?.capacity ?? 0, seats: state?.seats ?? [] };
       }));
-      return answer(ctx, "success", mahjongTablesMessage(tables));
+      return answer(ctx, "success", tableListMessage(tables));
     },
   },
+  table: join,
   mahjong: join,
   上桌: join,
   下桌: {
@@ -374,19 +375,19 @@ export const botCommands: Record<string, BotCommand> = {
     target: "optional",
     async run(ctx, [raw]) {
       const ref = raw?.trim();
-      const named = ref ? await mahjongTable(ctx, ref) : null;
+      const named = ref ? await findTable(ctx, ref) : null;
       const player = await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx));
       // The table the player sits at: the one named, or any.
-      const candidates = named ? [named] : await Promise.all((await mahjongTables(ctx)).map(async (resource) => (await loadScannedResource(runtime(ctx), ctx.shop.id, resource.id))!));
+      const candidates = named ? [named] : await Promise.all((await listTables(ctx)).map(async (resource) => (await loadScannedResource(runtime(ctx), ctx.shop.id, resource.id))!));
       for (const table of candidates) {
-        const seat = (await mahjongState(runtime(ctx), table, { playerId: player.id }))?.seats.find((candidate) => candidate.playerId === player.id);
+        const seat = (await tableState(runtime(ctx), table, { playerId: player.id }))?.seats.find((candidate) => candidate.playerId === player.id);
         if (!seat) continue;
         await seatedPlayer(ctx, table.id, false);
-        const moved = await moveMahjong(runtime(ctx), ctx.shop, table, player, { joining: false, onBehalf: true, body: {}, origin: botOrigin(ctx), viewer: { playerId: player.id } });
-        const message = mahjongLeftMessage({ name: table.name, ...moved.mahjong! }, seat.playing, moved.billing?.remaining ?? []);
+        const moved = await moveTable(runtime(ctx), ctx.shop, table, player, { joining: false, onBehalf: true, body: {}, origin: botOrigin(ctx), viewer: { playerId: player.id } });
+        const message = tableLeftMessage({ name: table.name, ...moved.table! }, seat.playing, moved.billing?.remaining ?? []);
         return answer(ctx, "success", ctx.onBehalf ? forPlayer(await addressee(ctx, player.id), message) : message);
       }
-      return notice(ctx, named ? `你当前不在 ${named.name}。` : "你当前未在任何麻将桌上。");
+      return notice(ctx, named ? `你当前不在 ${named.name}。` : "你当前未在任何桌游桌上。");
     },
   },
   lock: {
@@ -424,6 +425,7 @@ export const botCommands: Record<string, BotCommand> = {
   },
 };
 botCommands["prism.bind"] = botCommands.bind!;
+botCommands["桌游列表"] = botCommands["麻将列表"]!;
 
 /* ------------------------------ running ---------------------------------- */
 

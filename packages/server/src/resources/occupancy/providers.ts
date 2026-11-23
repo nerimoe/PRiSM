@@ -3,7 +3,7 @@
  *
  * Each capability that can tell who is on a resource provides its own
  * reading of its events; this module only picks, per resource, the most
- * authoritative one it carries. A mahjong table's seats outrank anything a
+ * authoritative one it carries. A table's seats outrank anything a
  * cabinet's IO infers, and a game server's sign-ins (later) will outrank the
  * IO too. Capabilities that cannot tell (power, climate, a door) provide
  * nothing.
@@ -11,7 +11,7 @@
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { ActionName, CapabilityId } from "../capabilities/catalog.js";
 import { coinOccupancy, hinataOccupancy } from "../capabilities/hinata-io-occupancy.js";
-import { mahjongOccupancy } from "../capabilities/mahjong-occupancy.js";
+import { tableOccupancy } from "../capabilities/table-occupancy.js";
 import type { OccupancyObservation } from "./rules.js";
 
 /** Someone a capability itself holds on a resource, such as a seat. */
@@ -37,7 +37,7 @@ export type OccupancyProvider = {
   held?(db: D1DatabaseLike, shopId: string): Promise<HeldOccupant[]>;
 };
 
-const providers: readonly OccupancyProvider[] = [hinataOccupancy, coinOccupancy, mahjongOccupancy];
+const providers: readonly OccupancyProvider[] = [hinataOccupancy, coinOccupancy, tableOccupancy];
 
 /** The provider that decides who occupies a resource with these capabilities, or null. */
 export function occupancyProviderFor(capabilities: Iterable<CapabilityId>): OccupancyProvider | null {

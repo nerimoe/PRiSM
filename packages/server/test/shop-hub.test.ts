@@ -22,7 +22,7 @@ async function fixture(options: { climate?: boolean; legacy?: boolean } = {}) {
   sqlite.run(`CREATE TABLE app_settings(shop_id TEXT, key TEXT, value_json TEXT, updated_at TEXT, PRIMARY KEY(shop_id, key))`);
   // What the idle timers read when the hub takes stock: open bills and taken seats.
   sqlite.run(`CREATE TABLE sessions(shop_id TEXT, id TEXT, player_id TEXT, status TEXT)`);
-  sqlite.run(`CREATE TABLE mahjong_seats(shop_id TEXT, player_id TEXT, machine_id TEXT, session_id TEXT, entry_session_id TEXT, joined_at TEXT)`);
+  sqlite.run(`CREATE TABLE table_seats(shop_id TEXT, player_id TEXT, machine_id TEXT, session_id TEXT, entry_session_id TEXT, joined_at TEXT)`);
   for (const statement of deviceEventSchema) sqlite.run(statement);
   const db = createD1DatabaseFromSqlite(sqlite);
   const made = {

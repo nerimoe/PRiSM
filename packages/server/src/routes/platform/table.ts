@@ -13,38 +13,38 @@ import { jsonError } from "../../http.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
-import { loadResource, mahjongConfigOf, type Resource } from "../../resources/resource.js";
-import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
+import { loadResource, tableConfigOf, type Resource } from "../../resources/resource.js";
+import { liveSeatsSql } from "../../resources/capabilities/table-occupancy.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { logger } from "../../log.js";
 
-const log = logger("mahjong");
+const log = logger("table");
 
 type C = Context<AppBindings, any, any>;
 /** What seating needs of where it runs: a route's context, or the shop hub for a bot's command. */
-export type MahjongRuntime = Pick<C, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
-export type { MahjongConfig } from "../../resources/capabilities/catalog.js";
+export type TableRuntime = Pick<C, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
+export type { TableConfig } from "../../resources/capabilities/catalog.js";
 /** The table's plan and size; its size is the resource's capacity. */
-async function mahjongConfig(c: Pick<C, "env">, machine: ScannedResource, known?: Resource | null) {
+async function tableConfig(c: Pick<C, "env">, machine: ScannedResource, known?: Resource | null) {
   const device = known ?? await loadResource(c.env.DB, machine.shop_id, machine.id);
-  const config = device ? mahjongConfigOf(device) : null;
+  const config = device ? tableConfigOf(device) : null;
   return device && config ? { ...config, capacity: device.capacity } : null;
 }
-// A seat lives as long as the session it runs on; see `mahjong-occupancy.ts`.
+// A seat lives as long as the session it runs on; see `table-occupancy.ts`.
 const liveSeats = liveSeatsSql;
 
 /** Seats at a table; `mine` marks the viewer's seat: the signed-in user's, or a player's for the bot. */
-export async function mahjongState(c: Pick<C, "env"> | C, machine: ScannedResource, viewer?: { playerId: string }, device?: Resource | null) {
-  const config = await mahjongConfig(c, machine, device);
+export async function tableState(c: Pick<C, "env"> | C, machine: ScannedResource, viewer?: { playerId: string }, device?: Resource | null) {
+  const config = await tableConfig(c, machine, device);
   if (!config) return null;
   const result = await c.env.DB.prepare(`SELECT p.id AS playerId, p.display_name AS name,
-    CASE WHEN ${viewer ? "ms.player_id=?" : "a.user_id=?"} THEN 1 ELSE 0 END AS mine,
+    CASE WHEN ${viewer ? "ts.player_id=?" : "a.user_id=?"} THEN 1 ELSE 0 END AS mine,
     CASE WHEN s.status='active' THEN 1 ELSE 0 END AS playing
-    FROM (${liveSeats}) ms
-    JOIN players p ON p.shop_id=ms.shop_id AND p.id=ms.player_id
-    LEFT JOIN shop_player_accounts a ON a.shop_id=ms.shop_id AND a.player_id=ms.player_id
-    LEFT JOIN sessions s ON s.shop_id=ms.shop_id AND s.id=ms.session_id
-    WHERE ms.machine_id=? ORDER BY ms.joined_at,ms.player_id`)
+    FROM (${liveSeats}) ts
+    JOIN players p ON p.shop_id=ts.shop_id AND p.id=ts.player_id
+    LEFT JOIN shop_player_accounts a ON a.shop_id=ts.shop_id AND a.player_id=ts.player_id
+    LEFT JOIN sessions s ON s.shop_id=ts.shop_id AND s.id=ts.session_id
+    WHERE ts.machine_id=? ORDER BY ts.joined_at,ts.player_id`)
     .bind(viewer?.playerId ?? requireUser(c as C).id,machine.id).all<{playerId:string;name:string;mine:number;playing:number}>();
   return { capacity: config.capacity, seats: result.results.map(s => ({ playerId:s.playerId, name:s.name, mine:!!s.mine, playing:!!s.playing })) };
 }
@@ -66,15 +66,15 @@ type Seat = {
 };
 
 async function seatsInShop(c: Pick<C, "env">, shopId: string) {
-  return (await c.env.DB.prepare(`SELECT ms.player_id AS playerId, ms.machine_id AS machineId,
-    ms.session_id AS sessionId, ms.entry_session_id AS entrySessionId, ms.entry_owned AS entryOwned,
-    ms.joined_at AS joinedAt, CASE WHEN s.status='active' THEN 1 ELSE 0 END AS playing,
+  return (await c.env.DB.prepare(`SELECT ts.player_id AS playerId, ts.machine_id AS machineId,
+    ts.session_id AS sessionId, ts.entry_session_id AS entrySessionId, ts.entry_owned AS entryOwned,
+    ts.joined_at AS joinedAt, CASE WHEN s.status='active' THEN 1 ELSE 0 END AS playing,
     json_extract(s.pricing_config_ids_json,'$[0]') AS planId,
     CASE WHEN e.status='active' THEN json_extract(e.pricing_config_ids_json,'$[0]') END AS entryPlanId
-    FROM (${liveSeats}) ms
-    LEFT JOIN sessions s ON s.shop_id=ms.shop_id AND s.id=ms.session_id
-    LEFT JOIN sessions e ON e.shop_id=ms.shop_id AND e.id=ms.entry_session_id
-    WHERE ms.shop_id=? ORDER BY ms.joined_at,ms.player_id`).bind(shopId).all<Seat>()).results;
+    FROM (${liveSeats}) ts
+    LEFT JOIN sessions s ON s.shop_id=ts.shop_id AND s.id=ts.session_id
+    LEFT JOIN sessions e ON e.shop_id=ts.shop_id AND e.id=ts.entry_session_id
+    WHERE ts.shop_id=? ORDER BY ts.joined_at,ts.player_id`).bind(shopId).all<Seat>()).results;
 }
 
 /** Leaving a table releases its own plans, while keeping plans that other active plans require. */
@@ -132,8 +132,8 @@ function confirmedBillingRevision(expected: unknown, seats: string) {
 }
 
 /** The confirmation shows the same seat transition as the write, including the old table's release. */
-export async function previewMahjong(c: C, machine: ScannedResource, playerId: string) {
-  const config = await mahjongConfig(c, machine);
+export async function previewTable(c: C, machine: ScannedResource, playerId: string) {
+  const config = await tableConfig(c, machine);
   if (!config) return null;
   const shop = await getBillingShop(c, machine.shop_public_id);
   const deps = getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env);
@@ -179,11 +179,11 @@ async function commitSeats(c: Pick<C, "env">, shopId: string, billing: SessionTr
   });
   await writer.sessions.applyTransition!(billing);
   statements.push(
-    { sql: `DELETE FROM mahjong_seats WHERE shop_id=? AND (shop_id,player_id) NOT IN (SELECT shop_id,player_id FROM (${liveSeats}))`, params: [shopId] },
-    { sql: "DELETE FROM mahjong_seats WHERE shop_id=? AND session_id IN (SELECT value FROM json_each(?))", params: [shopId, JSON.stringify(billing.close.map(s => s.id))] },
-    { sql: "DELETE FROM mahjong_seats WHERE shop_id=? AND player_id=?", params: [shopId, playerId] },
+    { sql: `DELETE FROM table_seats WHERE shop_id=? AND (shop_id,player_id) NOT IN (SELECT shop_id,player_id FROM (${liveSeats}))`, params: [shopId] },
+    { sql: "DELETE FROM table_seats WHERE shop_id=? AND session_id IN (SELECT value FROM json_each(?))", params: [shopId, JSON.stringify(billing.close.map(s => s.id))] },
+    { sql: "DELETE FROM table_seats WHERE shop_id=? AND player_id=?", params: [shopId, playerId] },
     ...seats.map(seat => ({
-      sql: `INSERT INTO mahjong_seats(shop_id,player_id,machine_id,session_id,entry_session_id,entry_owned,joined_at)
+      sql: `INSERT INTO table_seats(shop_id,player_id,machine_id,session_id,entry_session_id,entry_owned,joined_at)
         VALUES (?,?,?,?,?,?,?) ON CONFLICT(shop_id,player_id) DO UPDATE SET
         machine_id=excluded.machine_id,session_id=excluded.session_id,entry_session_id=excluded.entry_session_id,
         entry_owned=excluded.entry_owned,joined_at=excluded.joined_at`,
@@ -194,20 +194,20 @@ async function commitSeats(c: Pick<C, "env">, shopId: string, billing: SessionTr
 }
 
 /** A table after a move, and for someone getting up what still bills. */
-export type MahjongMove = {
-  mahjong: NonNullable<Awaited<ReturnType<typeof mahjongState>>> | null;
+export type TableMove = {
+  table: NonNullable<Awaited<ReturnType<typeof tableState>>> | null;
   billing?: { remaining: string[] };
   alreadySeated?: boolean;
   movedFrom?: { id: string };
 };
 
-export async function operateMahjong(
+export async function operateTable(
   c: C,
   machine: ScannedResource,
   body: Record<string, unknown>,
   options: { staff?: boolean; bot?: { playerId: string } } = {},
 ) {
-  const config = await mahjongConfig(c, machine);
+  const config = await tableConfig(c, machine);
   if (!config) jsonError(409, "这里不支持此操作", "DEVICE_ACTION_UNSUPPORTED");
   await assertNotBanned(c, options.bot ? [["machine",machine.id]] : [["user",requireUser(c).id],["machine",machine.id]]);
   const shop = await getBillingShop(c, machine.shop_public_id);
@@ -218,9 +218,9 @@ export async function operateMahjong(
   if (options.staff && !targetPlayerId) jsonError(400, "请选择玩家", "PLAYER_REQUIRED");
   const player = options.bot ? await staffTargetPlayer(c, shop.id, options.bot.playerId)
     : options.staff ? await staffTargetPlayer(c, shop.id, targetPlayerId) : await requireShopPlayer(c, shop);
-  const joining = body.action === "mahjong.join" || body.action === "mahjong.seat";
-  const once = (action: () => Promise<Response>) => options.bot ? action() : runPlayerOperation(c, shop.id, `mahjong/${machine.id}`, body, action);
-  return once(async () => c.json(await moveMahjong(c, shop, machine, player, {
+  const joining = body.action === "table.join" || body.action === "table.seat";
+  const once = (action: () => Promise<Response>) => options.bot ? action() : runPlayerOperation(c, shop.id, `table/${machine.id}`, body, action);
+  return once(async () => c.json(await moveTable(c, shop, machine, player, {
     joining, onBehalf: !!options.staff || !!options.bot, body, viewer: options.bot,
     origin: requestOrigin(c, options.staff ? "merchant" : "page"),
   })));
@@ -231,8 +231,8 @@ export async function operateMahjong(
  * signed-in player or staff, or a bot's command. `onBehalf`: staff or a bot act for
  * the player, which is their confirmation.
  */
-export async function moveMahjong(
-  c: MahjongRuntime,
+export async function moveTable(
+  c: TableRuntime,
   shop: TenantShop,
   machine: ScannedResource,
   player: { id: string },
@@ -241,16 +241,16 @@ export async function moveMahjong(
     /** Where the move was asked for, for the facts it publishes. */
     origin: FactOrigin;
   },
-): Promise<MahjongMove> {
+): Promise<TableMove> {
   const { joining, onBehalf, body, viewer } = input;
-  const config = await mahjongConfig(c, machine);
+  const config = await tableConfig(c, machine);
   if (!config) jsonError(409, "这里不支持此操作", "DEVICE_ACTION_UNSUPPORTED");
   const confirmed = onBehalf || body.consent === true;
   const repos = createD1Repositories({ db: c.env.DB, shopId: shop.id, id: crypto.randomUUID, now: () => new Date() });
   const deps = getOrCreateShopDependencies(c.env.DB, shop, c.env.URL_ENCRYPTION_KEY, c.env);
   return withOperationLease({
     // One shop seat lock serializes transfers across tables; billing locks still protect each player.
-    repository: repos.operationLocks, scope: "mahjong.table", resourceId: shop.id, now: () => new Date(),
+    repository: repos.operationLocks, scope: "table.seat", resourceId: shop.id, now: () => new Date(),
   }, async () => {
     const before = await seatsInShop(c, shop.id);
     const ids = [...new Set([player.id, ...before.filter(s => s.machineId === machine.id).map(s => s.playerId)])].sort();
@@ -261,13 +261,13 @@ export async function moveMahjong(
       const old = seats.find(s => s.playerId === player.id);
       const here = seats.filter(s => s.machineId === machine.id);
       if (joining && old?.machineId === machine.id)
-        return { mahjong: await mahjongState(c, machine, viewer), alreadySeated: true };
-      if (!joining && old?.machineId !== machine.id) jsonError(409, "你不在这张麻将桌上", "MAHJONG_NOT_SEATED");
-      if (joining && here.length >= config.capacity) jsonError(409, "已满桌", "MAHJONG_TABLE_FULL");
+        return { table: await tableState(c, machine, viewer), alreadySeated: true };
+      if (!joining && old?.machineId !== machine.id) jsonError(409, "你不在这张桌游桌上", "TABLE_NOT_SEATED");
+      if (joining && here.length >= config.capacity) jsonError(409, "已满桌", "TABLE_FULL");
       const at = new Date();
       const gamePlan = config.pricingConfigIds[0] ?? null;
       const waitingPlan = await deps.resourceBilling.planOf(machine.id);
-      if (joining && waitingPlan && !gamePlan) jsonError(409, "请店家配置麻将计费规则", "DEVICE_CONFIGURATION_REQUIRED");
+      if (joining && waitingPlan && !gamePlan) jsonError(409, "请店家配置桌游计费规则", "DEVICE_CONFIGURATION_REQUIRED");
       const expectedRevision = confirmedBillingRevision(body.expectedRevision, seatRevision(here, old, gamePlan, waitingPlan, config.capacity));
       const playing = joining && startsPlaying(here, old, gamePlan, config.capacity, config.startWhen);
       const running = joining && waitingPlan ? await deps.resourceBilling.activeSession({ resourceId: machine.id, playerId: player.id }) : null;
@@ -284,7 +284,7 @@ export async function moveMahjong(
         const result = await prepareSeatBilling(deps.pricingSessions, {
           playerId, desired, old: playerId === player.id ? old : undefined, joining, at,
           ...(playerId === player.id ? { expectedRevision } : {}),
-          metadata: playing ? { mahjongDeviceId: machine.id } : { resourceId: machine.id },
+          metadata: playing ? { tableDeviceId: machine.id } : { resourceId: machine.id },
         });
         prepared.push(result);
         if (joining) {
@@ -314,7 +314,7 @@ export async function moveMahjong(
         payload: { joined: joining, ...(old && old.machineId !== machine.id ? { left: old.machineId } : {}) },
       })));
       const remaining = (await deps.pricingSessions.getActive(player.id)).active.map(plan => plan.planName);
-      return { mahjong: await mahjongState(c, machine, viewer), billing: { remaining },
+      return { table: await tableState(c, machine, viewer), billing: { remaining },
         ...(joining && old ? { movedFrom: { id: old.machineId } } : {}) };
     });
   }).catch(error => {

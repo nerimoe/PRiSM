@@ -1,7 +1,7 @@
 /**
  * The single way pricing sessions start and stop.
  *
- * Every entry point (player scan, front desk, cashier, integration, mahjong)
+ * Every entry point (player scan, front desk, cashier, integration, table)
  * asks this service to activate or deactivate a plan instead of writing sessions
  * itself. The service resolves the relation graph of the release the player is
  * billed under, plans the transition, refuses states the graph does not allow,
@@ -99,7 +99,7 @@ export type PricingSessionOrchestratorDependencies = {
   pricingCatalog(playerId: string): Promise<readonly PricingConfig[]>;
   /**
    * Runs after a transition is written, with the sessions it closed, so what
-   * hangs off those sessions (a mahjong seat) can be released. Never undoes the
+   * hangs off those sessions (a table seat) can be released. Never undoes the
    * transition; a failure only leaves the cleanup for later.
    */
   afterClose?(closed: readonly Session[]): Promise<void>;

@@ -37,7 +37,7 @@ export type PageBlock =
   | { kind: "consent"; id: string; text: string }
   | { kind: "climate"; id: string; state: unknown; needsLocation: boolean }
   | {
-      kind: "mahjong"; id: string; title: string; status: string; capacity: number;
+      kind: "table"; id: string; title: string; status: string; capacity: number;
       emptyLabel: string; mineLabel: string; seats: Array<{ name: string; mine: boolean }>;
     }
   /** Where the player's cards go. The cards themselves are read when the page opens, not with it. */
@@ -62,7 +62,7 @@ export type PageInput = {
   head: Omit<Page, "blocks" | "billingActive">;
   billingActive: boolean;
   /** What the resource can do, as players are shown it. */
-  capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; mahjong: boolean };
+  capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; table: boolean };
   billed: boolean;
   cardCapture: boolean;
   /** Which of the shop's location checks apply: the door and entry are "checkin", the rest "machine". */
@@ -79,7 +79,7 @@ export type PageInput = {
   coinFull: boolean;
   /** A direct-connected IO has not connected, so nothing can reach the machine yet. */
   ioWaiting: boolean;
-  mahjong: { capacity: number; seats: Array<{ name: string; mine: boolean; playing: boolean }> } | null;
+  table: { capacity: number; seats: Array<{ name: string; mine: boolean; playing: boolean }> } | null;
 };
 
 const EN: Record<string, string> = {
@@ -97,8 +97,8 @@ const EN: Record<string, string> = {
   "在门锁上输入密码后按 #": "Enter the code on the lock, then press #",
   "设备尚未开机": "The device is off",
   "开机": "Turn on",
-  "麻将桌": "Mahjong table",
-  "麻将计费中": "Billing",
+  "桌游": "Tabletop",
+  "桌游计费中": "Billing",
   "等待玩家": "Waiting for players",
   "空位": "Empty",
   "你": "You",
@@ -138,7 +138,7 @@ function pageBlocks(input: PageInput): PageBlock[] {
     );
     return blocks;
   }
-  if (cap.mahjong && input.mahjong) blocks.push(...mahjongBlocks(input.mahjong, t, geo.machine));
+  if (cap.table && input.table) blocks.push(...tableBlocks(input.table, t, geo.machine));
   if ((cap.card || cap.coin) && input.ioWaiting) {
     blocks.push({ kind: "text", id: "io-waiting", text: t("等待机台连接"), style: "heading" });
     return blocks;
@@ -173,7 +173,7 @@ function entryBlocks(input: PageInput, t: (text: string) => string): PageBlock[]
   const revision = billing?.preview?.revision;
   const payload = { ...(revision !== undefined ? { expectedRevision: revision } : {}), ...(cap.door ? { openDoor: true } : {}) };
   // Confirming at a table is sitting down: the seat and its billing move together.
-  const action = cap.mahjong ? "mahjong.join" : "entry";
+  const action = cap.table ? "table.join" : "entry";
   return [
     { kind: "text", id: "entry-title", text: t("计费规则"), style: "heading" },
     ...(billing?.rules ? [{ kind: "pricing", id: "pricing", rules: billing.rules, changes: billing.preview ?? null } as const] : []),
@@ -182,16 +182,16 @@ function entryBlocks(input: PageInput, t: (text: string) => string): PageBlock[]
       kind: "button", id: cap.door ? "door" : "entry", label: t(cap.door ? "入场并获取开门密码" : "确认"),
       ...(cap.door ? { icon: "door" as const, againLabel: t("重新获取密码") } : {}),
       style: "primary", enabled: true, action, payload, requires: "consent",
-      needsLocation: geo.checkin || (cap.mahjong && geo.machine),
+      needsLocation: geo.checkin || (cap.table && geo.machine),
     },
   ];
 }
 
-function mahjongBlocks(table: NonNullable<PageInput["mahjong"]>, t: (text: string) => string, needsLocation: boolean): PageBlock[] {
+function tableBlocks(table: NonNullable<PageInput["table"]>, t: (text: string) => string, needsLocation: boolean): PageBlock[] {
   const mine = table.seats.some((seat) => seat.mine);
   return [
     {
-      kind: "mahjong", id: "mahjong", title: t("麻将桌"), status: t(table.seats.some((seat) => seat.playing) ? "麻将计费中" : "等待玩家"),
+      kind: "table", id: "table", title: t("桌游"), status: t(table.seats.some((seat) => seat.playing) ? "桌游计费中" : "等待玩家"),
       capacity: table.capacity, emptyLabel: t("空位"), mineLabel: t("你"),
       seats: table.seats.map((seat) => ({ name: seat.name, mine: seat.mine })),
     },
@@ -199,7 +199,7 @@ function mahjongBlocks(table: NonNullable<PageInput["mahjong"]>, t: (text: strin
       ? { kind: "text", id: "seat-full", text: t("已满桌") }
       : {
           kind: "button", id: "seat", label: t(mine ? "下桌" : "上桌"), ...(mine ? {} : { style: "primary" as const }),
-          enabled: true, action: mine ? "mahjong.leave" : "mahjong.join", needsLocation,
+          enabled: true, action: mine ? "table.leave" : "table.join", needsLocation,
         },
   ];
 }

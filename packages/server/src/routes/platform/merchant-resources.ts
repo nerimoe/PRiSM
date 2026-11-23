@@ -7,7 +7,7 @@ import { normalizeHinataUrl } from "../../hardware/hinata.js";
 import { vkFromKeyText } from "@prism/core";
 import { machineRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
-import { loadResource, loadResources, can, coinConfigOf, coinKeyOf, hinataConfigOf, doorConfigOf, mahjongConfigOf, readSecret, type Resource } from "../../resources/resource.js";
+import { loadResource, loadResources, can, coinConfigOf, coinKeyOf, hinataConfigOf, doorConfigOf, tableConfigOf, readSecret, type Resource } from "../../resources/resource.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { capabilityWrites, storedCapabilities, type StoredCapability } from "../../resources/capabilities/configure.js";
 import { announceGroupSchema, botReplyTemplatesSchema, capabilities, type BotConfig, type CabinetKey, type CoinConfig, type CapabilityId, type HaEntityConfig, type HinataConfig } from "../../resources/capabilities/catalog.js";
@@ -25,7 +25,7 @@ import { z } from "zod";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { DEFAULT_RESOURCE_GROUP_ID } from "../../resources/billing.js";
-import { liveSeatsSql } from "../../resources/capabilities/mahjong-occupancy.js";
+import { liveSeatsSql } from "../../resources/capabilities/table-occupancy.js";
 import { findResourceGroup } from "../../resources/repository.js";
 import { assertBillablePlan } from "./merchant-resource-groups.js";
 
@@ -130,7 +130,7 @@ async function presentResource(c: C, device: Resource, shopPublicId: string, can
     homeAssistant: ha ? { connectionId: ha.connectionId, url: canConfigure ? ha.url : "", entityId: ha.entityId } : null,
     climate: climate ? { connectionId: climate.connectionId, url: canConfigure ? climate.url : "", entityId: climate.entityId } : null,
     ttlockLockId: doorConfigOf(device)?.lockId ?? null,
-    mahjong: mahjongConfigOf(device),
+    table: tableConfigOf(device),
     // The token itself is only returned when it is issued.
     bot: (() => {
       if (!botConfig) return null;
@@ -245,7 +245,7 @@ async function presentWithStatus(c: C, devices: readonly Resource[], shopPublicI
       ...presented,
       resourceGroupId: binding?.groupId ?? DEFAULT_RESOURCE_GROUP_ID,
       pricingConfigOverrideId: binding?.overrideId ?? null,
-      // How many can use it at once (a mahjong table's size), and how long
+      // How many can use it at once (a table's size), and how long
       // someone counts as on it after the last sign of them.
       capacity: binding?.capacity ?? 0,
       occupancyMinutes: binding?.occupancyMinutes ?? 15,
@@ -591,13 +591,13 @@ const machineInput=z.object({
   resourceGroupId:z.string().min(1).nullable().optional(),
   pricingConfigOverrideId:z.string().min(1).nullable().optional(),
   // How many people can use it at once; 0 for one nobody occupies (an air
-  // conditioner). A mahjong table's is its table size.
+  // conditioner). A table's is its table size.
   capacity:z.number().int().min(0).max(16).optional(),
   // How long someone counts as on it after the last eligible swipe or coin.
   occupancyMinutes:z.number().int().min(1).max(1440).optional(),
-  mahjong:z.object({
+  table:z.object({
     // A table bills one plan; what it stacks on is that plan's `requires`.
-    pricingConfigIds:z.array(z.string().min(1)).max(1,"麻将桌只能选择一个计费方案"),
+    pricingConfigIds:z.array(z.string().min(1)).max(1,"桌游桌只能选择一个计费方案"),
     // When the game plan starts: once the table is full (players wait until then), or as each sits down.
     startWhen:z.enum(["full","seated"]).optional(),
   }).nullable().optional(),
@@ -616,22 +616,22 @@ async function tableSeated(c:C,table:Resource):Promise<boolean>{
   ).bind(table.shopId,table.id).first();
 }
 
-async function validateMahjong(c:C,shopId:string,current:Resource|null,body:MachineInput){
-  if(body.mahjong===undefined)return;
-  const ids=body.mahjong?.pricingConfigIds??[];
+async function validateTable(c:C,shopId:string,current:Resource|null,body:MachineInput){
+  if(body.table===undefined)return;
+  const ids=body.table?.pricingConfigIds??[];
   if(ids.length){
     const active=await c.env.DB.prepare(
       "SELECT id FROM pricing_configs WHERE shop_id=? AND enabled=1 AND status='active'",
     ).bind(shopId).all<{id:string}>();
     const valid=new Set(active.results.map(row=>row.id));
-    if(ids.some(id=>!valid.has(id)))jsonError(400,"请选择有效的麻将计费规则","MAHJONG_PRICING_INVALID");
+    if(ids.some(id=>!valid.has(id)))jsonError(400,"请选择有效的桌游计费规则","TABLE_PRICING_INVALID");
   }
-  const before=current?mahjongConfigOf(current):null;
+  const before=current?tableConfigOf(current):null;
   // A client that does not say when the game starts keeps what was set.
-  const after=body.mahjong?{pricingConfigIds:ids,startWhen:body.mahjong.startWhen??before?.startWhen??"full"}:null;
+  const after=body.table?{pricingConfigIds:ids,startWhen:body.table.startWhen??before?.startWhen??"full"}:null;
   const was=before?{pricingConfigIds:before.pricingConfigIds,startWhen:before.startWhen??"full"}:null;
   if(current&&JSON.stringify(after)!==JSON.stringify(was)){
-    if(await tableSeated(c,current))jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
+    if(await tableSeated(c,current))jsonError(409,"请先让玩家下桌再修改桌游配置","TABLE_IN_USE");
   }
 }
 
@@ -709,10 +709,10 @@ async function nextCapabilities(
   else if(body.ttlockLockId!==undefined)
     next.set("door",{config:{lockId:body.ttlockLockId},secrets:{},credentialHash:null});
 
-  if(body.mahjong===null)next.delete("mahjong");
-  else if(body.mahjong)next.set("mahjong",{config:{
-    ...body.mahjong,
-    startWhen:body.mahjong.startWhen??(stored.get("mahjong")?.config.startWhen as string|undefined)??"full",
+  if(body.table===null)next.delete("table");
+  else if(body.table)next.set("table",{config:{
+    ...body.table,
+    startWhen:body.table.startWhen??(stored.get("table")?.config.startWhen as string|undefined)??"full",
   },secrets:{},credentialHash:null});
 
   const io=stored.get("hinata_io");
@@ -874,7 +874,7 @@ async function changeResource(c:C, machineId?:string) {
   const publicShopId=await shopPublicId(c,shopId);
   const current=machineId?await loadResource(c.env.DB,shopId,machineId):null;
 
-  await validateMahjong(c,shopId,current,body);
+  await validateTable(c,shopId,current,body);
   const binding=await nextBinding(c,shopId,machineId??null,body);
   const id=current?.id??crypto.randomUUID();
   const stored=current?await storedCapabilities(c.env.DB,shopId,id):new Map<CapabilityId,StoredCapability>();
@@ -884,12 +884,12 @@ async function changeResource(c:C, machineId?:string) {
   const name=body.name??current?.name;
   if(!name)jsonError(400,"资源名称不能为空","INVALID_DEVICE_NAME");
   // A new resource holds one person when a cabinet's IO can tell who is on it,
-  // four at a mahjong table, otherwise nobody.
-  const capacity=binding.capacity??(next.has("mahjong")?4:next.has("hinata_io")?1:0);
-  if(next.has("mahjong")&&(capacity<2||capacity>8))jsonError(400,"麻将桌容量须为 2 到 8 人","MAHJONG_CAPACITY_INVALID");
+  // four at a table, otherwise nobody.
+  const capacity=binding.capacity??(next.has("table")?4:next.has("hinata_io")?1:0);
+  if(next.has("table")&&(capacity<2||capacity>8))jsonError(400,"桌游容量须为 2 到 8 人","TABLE_CAPACITY_INVALID");
   // Seats are counted against the capacity, so it cannot change under seated players.
-  if(current&&next.has("mahjong")&&capacity!==current.capacity&&await tableSeated(c,current))
-    jsonError(409,"请先让玩家下桌再修改麻将配置","MAHJONG_IN_USE");
+  if(current&&next.has("table")&&capacity!==current.capacity&&await tableSeated(c,current))
+    jsonError(409,"请先让玩家下桌再修改桌游配置","TABLE_IN_USE");
   const aliases=[...new Set((body.aliases??current?.aliases??[]).map(x=>x.trim()).filter(Boolean))];
   const enabled=+(body.enabled??current?.enabled??true);
   const kind=body.kind??current?.kind??"machine";
@@ -943,7 +943,7 @@ merchantResourceRouter.delete("/machines/:id",async(c)=>{
      UNION ALL SELECT 1 FROM player_operations WHERE device_id=?
      UNION ALL SELECT 1 FROM device_operations WHERE shop_id=? AND device_id=?
      UNION ALL SELECT 1 FROM resource_occupancies WHERE shop_id=? AND resource_id=?
-     UNION ALL SELECT 1 FROM mahjong_seats WHERE shop_id=? AND machine_id=? LIMIT 1`,
+     UNION ALL SELECT 1 FROM table_seats WHERE shop_id=? AND machine_id=? LIMIT 1`,
   ).bind(id,id,machine.shop_id,id,machine.shop_id,id,machine.shop_id,id).first();
   if(used)jsonError(409,"资源已有使用记录，请改为停用","MACHINE_HAS_HISTORY");
   const botToken=await c.env.DB.prepare(

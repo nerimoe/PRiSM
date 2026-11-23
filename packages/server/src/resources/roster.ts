@@ -2,7 +2,7 @@
  * Who is in the shop, and where.
  *
  * Someone is in the shop while they play anywhere or bill anything: every
- * player occupying a resource (a cabinet, a mahjong seat) and every player
+ * player occupying a resource (a cabinet, a table seat) and every player
  * with an active session. Each of them is listed once, at
  * their most specific place:
  *

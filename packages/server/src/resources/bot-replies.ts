@@ -234,13 +234,13 @@ export function entryMessage(result: { created: boolean; planName: string | null
   return onBehalf ? botMessage("✅ 已为用户 ", ...reference(who), ` 入场成功${ended}`) : botMessage(`✅ 入场成功${ended}`);
 }
 
-/* ------------------------------- mahjong --------------------------------- */
+/* -------------------------------- table ---------------------------------- */
 
 type Table = { name: string; aliases?: string[]; capacity: number; seats: Array<{ playing: boolean; mine?: boolean }> };
 
-export function mahjongTablesMessage(tables: Table[]): BotMessage {
-  if (!tables.length) return botMessage("当前没有配置任何麻将机。");
-  return botMessage([`🀄️ 麻将机列表（${tables.length} 台）`, ...tables.map((table) => {
+export function tableListMessage(tables: Table[]): BotMessage {
+  if (!tables.length) return botMessage("当前没有配置任何桌游桌。");
+  return botMessage([`🎲 桌游桌列表（${tables.length} 桌）`, ...tables.map((table) => {
     const playing = table.seats.filter((seat) => seat.playing).length;
     const waiting = table.seats.length - playing;
     const status = [...(playing ? [`游玩中 ${playing}/${table.capacity}`] : []), ...(waiting ? [`等位 ${waiting}/${table.capacity}`] : [])].join("；") || "空闲";
@@ -253,15 +253,15 @@ export function forPlayer(who: Addressee, message: BotMessage): BotMessage {
   return botMessage("玩家 ", ...reference(who), "\n", message);
 }
 
-export function mahjongJoinedMessage(table: Table): BotMessage {
+export function tableJoinedMessage(table: Table): BotMessage {
   const seated = table.seats.length;
-  if (table.seats.find((seat) => seat.mine)?.playing) return botMessage(`已加入 ${table.name}，麻将计费已开始。当前 ${seated}/${table.capacity} 人。`);
+  if (table.seats.find((seat) => seat.mine)?.playing) return botMessage(`已加入 ${table.name}，桌游计费已开始。当前 ${seated}/${table.capacity} 人。`);
   return botMessage(`已加入 ${table.name}，当前 ${seated}/${table.capacity} 人，满 ${table.capacity} 人开始计费。`);
 }
 
 /** Getting up does not check out: what still bills is said, so leaving the shop means /logout. */
-export function mahjongLeftMessage(table: Table, wasPlaying: boolean, remaining: string[]): BotMessage {
-  return botMessage(`已离开 ${table.name}${wasPlaying ? "，麻将计费已停止" : ""}。当前还剩 ${table.seats.length}/${table.capacity} 人。`
+export function tableLeftMessage(table: Table, wasPlaying: boolean, remaining: string[]): BotMessage {
+  return botMessage(`已离开 ${table.name}${wasPlaying ? "，桌游计费已停止" : ""}。当前还剩 ${table.seats.length}/${table.capacity} 人。`
     + (remaining.length ? `\n仍在计费：${remaining.join("、")}` : ""));
 }
 
@@ -391,13 +391,13 @@ export function errorReply(command: string, args: string[], error: Refusal, chec
     const reason = (type.startsWith("power.") ? POWER_REASONS : ACTION_REASONS)[error.code] ?? "请稍后再试";
     return said(`${FAILED[type]}${reason}`);
   }
-  if (command === "mahjong" || command === "上桌" || command === "下桌") {
+  if (command === "table" || command === "mahjong" || command === "上桌" || command === "下桌") {
     const ref = args[0] ?? "";
     const joining = command !== "下桌";
-    if (error.code === "MAHJONG_TABLE_NOT_FOUND") return said(joining || ref ? `未找到麻将桌「${ref}」。可先使用 /麻将列表 查看可用桌位。` : "你当前未在任何麻将桌上。");
-    if (error.code === "MAHJONG_TABLE_FULL") return said(`「${ref}」已满桌，请等待本局结束后再上桌。`);
-    if (error.code === "MAHJONG_ALREADY_SEATED") return said("你已经在另一张麻将桌上，请先 /下桌。");
-    if (error.code === "MAHJONG_NOT_SEATED") return said(error.message);
+    if (error.code === "TABLE_NOT_FOUND") return said(joining || ref ? `未找到桌游桌「${ref}」。可先使用 /桌游列表 查看可用桌位。` : "你当前未在任何桌游桌上。");
+    if (error.code === "TABLE_FULL") return said(`「${ref}」已满桌，请等待本局结束后再上桌。`);
+    if (error.code === "TABLE_ALREADY_SEATED") return said("你已经在另一张桌游桌上，请先 /下桌。");
+    if (error.code === "TABLE_NOT_SEATED") return said(error.message);
     if (platformSaid) return said(`${joining ? "上桌" : "下桌"}失败，${platformSaid}`);
   }
   if (command === "bind" || command === "prism.bind") {

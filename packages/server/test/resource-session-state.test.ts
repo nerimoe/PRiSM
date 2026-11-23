@@ -304,14 +304,14 @@ describe("one device's state for the board", () => {
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 
-  it("keeps the mahjong seats apart: they are not Home Assistant state and reading them asks it nothing", async () => {
+  it("keeps the table seats apart: they are not Home Assistant state and reading them asks it nothing", async () => {
     const { call, json, sqlite } = await fixture();
     const ha = homeAssistant();
     try {
-      const table = await json(await call("/api/v1/merchant/machines/cab/mahjong", ADMIN));
-      expect(table).toEqual({ mahjong: null });
+      const table = await json(await call("/api/v1/merchant/machines/cab/table", ADMIN));
+      expect(table).toEqual({ table: null });
       expect(ha.calls).toEqual([]);
-      expect((await call("/api/v1/merchant/machines/cab/mahjong", PLAYER)).status).toBe(403);
+      expect((await call("/api/v1/merchant/machines/cab/table", PLAYER)).status).toBe(403);
     } finally { ha.spy.mockRestore(); sqlite.close(); }
   });
 });

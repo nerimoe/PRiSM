@@ -10,8 +10,8 @@
  *   after a power or climate action): that is part of doing the action;
  * - what the shop hub tells from its own memory (Home Assistant power changes
  *   merged per switch, the idle rule's power-offs and warnings);
- * - a mahjong table's seats: joining and leaving tell the table's pages
- *   themselves (`routes/platform/mahjong.ts`).
+ * - a table's seats: joining and leaving tell the table's pages
+ *   themselves (`routes/platform/table.ts`).
  */
 import { createD1Executor, type D1DatabaseLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";

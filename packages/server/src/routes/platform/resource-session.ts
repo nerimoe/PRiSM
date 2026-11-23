@@ -20,7 +20,7 @@ import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type 
 import { assertResourceShop } from "./merchant-resources.js";
 import { errorNotice, requestLocale } from "../../notices.js";
 import { allowedOrigins } from "../../middleware/cors.js";
-import { mahjongState, operateMahjong, previewMahjong } from "./mahjong.js";
+import { tableState, operateTable, previewTable } from "./table.js";
 
 export const resourceSessionRouter=new Hono<AppBindings>();
 export const merchantResourceActionRouter=new Hono<AppBindings>();
@@ -52,7 +52,7 @@ type C=Context<AppBindings,any,any>;
 
 /**
  * What the page needs before it can show anything: whether the player must
- * bind an identity or confirm billing first, mahjong seats, and the device's
+ * bind an identity or confirm billing first, table seats, and the device's
  * stored facts. Every resource with a plan, hardware or not, needs that plan
  * running for the player; `billing` then says what confirming would
  * start, keep and end. Reading this never starts anything. The facts are only
@@ -70,7 +70,7 @@ async function sessionState(c:C,machine:ScannedResource,options:{includePower:bo
   const live=device?await readLiveState(c.env.DB,shop.id,device):null;
   return {
     gate,coinUsed:false,billing,
-    mahjong:gate==="ready"&&bound("mahjong")?await mahjongState(c,machine,undefined,device):null,
+    table:gate==="ready"&&bound("table")?await tableState(c,machine,undefined,device):null,
     power:gate==="ready"&&bound("power")&&options.includePower
       ?await resourcePowerState(c,machine):"unmanaged",
     climate:gate==="ready"&&bound("climate")&&options.includeClimate?await resourceClimateState(c,machine):null,
@@ -103,7 +103,7 @@ export async function readGate(c:C,machine:ScannedResource,device:Resource|null)
   // Undefined when the resource's binding cannot be read; `billing.error` says why.
   const planId=await billingRead(()=>resourceBilling.planOf(machine.id));
   const bills=planId!==null;
-  if(bills||bound("door")||bound("mahjong")){
+  if(bills||bound("door")||bound("table")){
     const player=await c.env.DB.prepare(
       `SELECT a.player_id AS playerId,p.status,
        EXISTS(SELECT 1 FROM shop_platform_bindings b WHERE b.shop_id=? AND b.user_id=?) AS identityBound
@@ -125,8 +125,8 @@ export async function readGate(c:C,machine:ScannedResource,device:Resource|null)
     if(gate==="entry"&&planId&&!billing){
       const playerId=player?.playerId??""; // Not yet registered here: nothing is running, so everything the plan needs.
       // At a table the preview includes the seat move, and may start the game's plan rather than the waiting one.
-      const preview=await billingRead<ResourceBillingPreview|null>(()=>bound("mahjong")
-        ?previewMahjong(c,machine,playerId)
+      const preview=await billingRead<ResourceBillingPreview|null>(()=>bound("table")
+        ?previewTable(c,machine,playerId)
         :resourceBilling.preview({resourceId:machine.id,playerId}));
       const rules=await billingRead(()=>resourceBilling.rulesOf({resourceId:machine.id,playerId,pricingConfigId:preview?.pricingConfigId,withCaps:true}));
       // `billingRead` set any failure as these ran.
@@ -237,7 +237,7 @@ resourceSessionRouter.post("/session/actions",async c=>{
   const body=actionSchema.parse(await c.req.json());
   if(body.action==="power.off")jsonError(403,"关机需要店员权限","FORBIDDEN");
   const machine=await resolveResourceTicket(c,body.ticket);
-  if(body.action.startsWith("mahjong."))return operateMahjong(c,machine,body);
+  if(body.action.startsWith("table."))return operateTable(c,machine,body);
   return executeResourceAction(c,machine,body);
 });
 
@@ -324,15 +324,15 @@ merchantResourceActionRouter.get("/machines/:id/state",async c=>{
  * Seats let staff see who is at the table before seating someone else. They are not Home
  * Assistant state, nothing pushes them, and reading them asks Home Assistant nothing.
  */
-merchantResourceActionRouter.get("/machines/:id/mahjong",async c=>{
+merchantResourceActionRouter.get("/machines/:id/table",async c=>{
   const machine=await merchantMachine(c);
-  return c.json({mahjong:await mahjongState(c,machine)});
+  return c.json({table:await tableState(c,machine)});
 });
 
 merchantResourceActionRouter.post("/machines/:id/actions",async c=>{
   const machine=await merchantMachine(c,true);
   const raw=await c.req.json();
   const body=actionSchema.parse({...(raw as object),ticket:`staff:${machine.id}`});
-  if(body.action.startsWith("mahjong."))return operateMahjong(c,machine,body,{staff:true});
+  if(body.action.startsWith("table."))return operateTable(c,machine,body,{staff:true});
   return executeResourceAction(c,machine,body,true);
 });

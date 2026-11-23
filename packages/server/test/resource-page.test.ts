@@ -20,10 +20,10 @@ const input = (over: Partial<PageInput> = {}): PageInput => ({
   locale: "zh",
   head: { shop: "店", shopCode: "s", heroUrl: null, resource: "舞萌", publicId: "p" },
   billingActive: false,
-  capabilities: { power: false, climate: false, card: false, coin: false, door: false, mahjong: false },
+  capabilities: { power: false, climate: false, card: false, coin: false, door: false, table: false },
   billed: false, cardCapture: false,
   geo: { checkin: false, machine: false },
-  signedIn: true, gate: "ready", billing: null, power: null, climate: null, coinFull: false, ioWaiting: false, mahjong: null,
+  signedIn: true, gate: "ready", billing: null, power: null, climate: null, coinFull: false, ioWaiting: false, table: null,
   ...over,
 });
 const caps = (...names: Array<keyof PageInput["capabilities"]>) =>
@@ -89,15 +89,15 @@ describe("what the page shows", () => {
 
   it("seats and unseats at the table, and says when it is full", () => {
     const seat = (name: string, mine = false) => ({ name, mine, playing: false });
-    const table = (...seats: ReturnType<typeof seat>[]) => ({ ...caps("mahjong"), mahjong: { capacity: 2, seats } });
-    expect(block(table(), "seat")).toMatchObject({ action: "mahjong.join", style: "primary" });
-    expect(block(table(seat("我", true), seat("他")), "seat").action).toBe("mahjong.leave");
-    expect(ids(table(seat("甲"), seat("乙")))).toEqual(["mahjong", "seat-full"]);
+    const table = (...seats: ReturnType<typeof seat>[]) => ({ ...caps("table"), table: { capacity: 2, seats } });
+    expect(block(table(), "seat")).toMatchObject({ action: "table.join", style: "primary" });
+    expect(block(table(seat("我", true), seat("他")), "seat").action).toBe("table.leave");
+    expect(ids(table(seat("甲"), seat("乙")))).toEqual(["table", "seat-full"]);
   });
 
   it("confirms at a table by sitting down, which also checks the machine's location rule", () => {
-    const over = { ...caps("mahjong"), gate: "entry" as const, geo: { checkin: false, machine: true }, billing: { preview: { revision: "r" } } };
-    expect(block(over, "entry")).toMatchObject({ action: "mahjong.join", requires: "consent", payload: { expectedRevision: "r" }, needsLocation: true });
+    const over = { ...caps("table"), gate: "entry" as const, geo: { checkin: false, machine: true }, billing: { preview: { revision: "r" } } };
+    expect(block(over, "entry")).toMatchObject({ action: "table.join", requires: "consent", payload: { expectedRevision: "r" }, needsLocation: true });
   });
 
   it("is worded in the player's language, with no text left behind", () => {
@@ -280,7 +280,7 @@ describe("reading and acting on the page", () => {
     sqlite.run("UPDATE machines SET capacity=2 WHERE id='cab'");
     sqlite.run(
       `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
-       VALUES ('shop','cab','mahjong',?,'{}',?,?)`,
+       VALUES ('shop','cab','table',?,'{}',?,?)`,
       [JSON.stringify({ pricingConfigIds: ["plan"] }), NOW, NOW],
     );
     const told: Array<[unknown, string]> = [];
@@ -288,18 +288,18 @@ describe("reading and acting on the page", () => {
       get: (_, name) => async (...args: unknown[]) => { if (name === "pagesChanged") told.push(args as [unknown, string]); },
     }) };
     const button = (await page()).page.blocks.at(-1);
-    expect(button.action).toBe("mahjong.join");
+    expect(button.action).toBe("table.join");
     const seated = await act(button.action, { ...button.payload, consent: true });
     expect(seated.status).toBe(200);
     expect(seated.data.ok).toBe(true);
-    expect(blockIds(seated.data.page)).toEqual(["mahjong", "seat"]);
+    expect(blockIds(seated.data.page)).toEqual(["table", "seat"]);
     expect(seated.data.page.blocks[0].seats).toEqual([{ name: "一号", mine: true }]);
-    expect(seated.data.page.blocks[1].action).toBe("mahjong.leave");
+    expect(seated.data.page.blocks[1].action).toBe("table.leave");
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(told).toContainEqual([{ player: "p1" }, "seat"]);
-    const left = await act("mahjong.leave");
+    const left = await act("table.leave");
     expect(left.data.ok).toBe(true);
-    expect(left.data.page.blocks.find((block: any) => block.kind === "mahjong")?.seats ?? []).toEqual([]);
+    expect(left.data.page.blocks.find((block: any) => block.kind === "table")?.seats ?? []).toEqual([]);
     sqlite.close();
   });
 

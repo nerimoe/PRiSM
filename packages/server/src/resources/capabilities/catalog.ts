@@ -24,7 +24,7 @@ export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRef
   }
 });
 
-export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "mahjong" | "bot";
+export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "table" | "bot";
 
 /** What a player or staff member asks a device to do. Names are the public action names. */
 export type ActionName =
@@ -151,8 +151,8 @@ export type CoinConfig = z.infer<typeof coinConfig>;
 const doorConfig = z.object({ lockId: z.number().int().positive() });
 export type DoorConfig = z.infer<typeof doorConfig>;
 
-/** A mahjong table's size is the resource's capacity, not part of this config. */
-const mahjongConfig = z.object({
+/** A table's size is the resource's capacity, not part of this config. */
+const tableConfig = z.object({
   pricingConfigIds: z.array(z.string().min(1)).max(20).default([]),
   /**
    * When the table's game plan starts. `full`: players wait at the table on
@@ -162,7 +162,7 @@ const mahjongConfig = z.object({
    */
   startWhen: z.enum(["full", "seated"]).default("full"),
 });
-export type MahjongConfig = z.infer<typeof mahjongConfig>;
+export type TableConfig = z.infer<typeof tableConfig>;
 
 export const power: CapabilitySpec<HaEntityConfig> = {
   id: "power",
@@ -317,13 +317,13 @@ export const door: CapabilitySpec<DoorConfig> = {
   available: () => true,
 };
 
-export const mahjong: CapabilitySpec<MahjongConfig> = {
-  id: "mahjong",
+export const table: CapabilitySpec<TableConfig> = {
+  id: "table",
   legacyExecutor: "machine_ws",
   legacyTargetKind: "game_machine",
-  config: mahjongConfig,
+  config: tableConfig,
   secrets: [],
-  // Joining and leaving a table are seat changes handled by the mahjong flow,
+  // Joining and leaving a table are seat changes handled by the table flow,
   // not device actions.
   actions: {},
   signals: {},
@@ -408,7 +408,7 @@ export const bot: CapabilitySpec<BotConfig> = {
   available: () => false,
 };
 
-export const capabilities = { power, climate, hinata_io: hinataIo, coin, door, mahjong, bot } as const;
+export const capabilities = { power, climate, hinata_io: hinataIo, coin, door, table, bot } as const;
 
 export function capabilitySpec(id: string): CapabilitySpec<unknown> | null {
   return (capabilities as Record<string, CapabilitySpec<unknown>>)[id] ?? null;

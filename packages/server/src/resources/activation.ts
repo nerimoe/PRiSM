@@ -12,7 +12,7 @@
  * running for the player who uses it; a resource without one is free and needs
  * nothing. This service never decides
  * what a resource's hardware may do; capabilities and their business rules
- * (mahjong seats, door codes) stay where they are.
+ * (table seats, door codes) stay where they are.
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type {
@@ -77,7 +77,7 @@ export type ResourceBilling = {
     label?: string;
     metadata?: Record<string, unknown>;
   }): Promise<BillingActivation>;
-  /** The plans scanning this resource bills; mahjong may select its game plan instead of its waiting plan. */
+  /** The plans scanning this resource bills; table may select its game plan instead of its waiting plan. */
   rulesOf(input: { resourceId: string; playerId: string; pricingConfigId?: string; withCaps?: boolean }): Promise<ResourcePlanRules | null>;
   /** The running session of the resource's plan; null when the player must confirm first, or the resource is free. */
   activeSession(input: { resourceId: string; playerId: string }): Promise<Session | null>;
@@ -202,7 +202,7 @@ export function createResourceBilling(dependencies: {
           return { ...unpricedTransition(!running), session, created: !running };
         }
         const pricingConfigId = await targetPlanOf(input);
-        // A session started for a resource remembers it: a mahjong seat ends
+        // A session started for a resource remembers it: a table seat ends
         // the waiting session on getting up only when it was started for that table.
         const metadata = input.resourceId ? { ...input.metadata, resourceId: input.resourceId } : input.metadata;
         const result = await dependencies.pricingSessions.activate({

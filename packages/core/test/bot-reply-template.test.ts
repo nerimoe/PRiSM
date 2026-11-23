@@ -22,6 +22,7 @@ it("substitutes once, retains player segments and falls back safely", () => {
   expect(renderBotReplyTemplate("login.behalf", { "login.behalf": "{result}" }, result)).toEqual(result);
   expect(canonicalBotCommand("入场")).toBe("login");
   expect(canonicalBotCommand("prism.bind")).toBe("bind");
+  expect(canonicalBotCommand("table")).toBe("上桌");
   expect(canonicalBotCommand("mahjong")).toBe("上桌");
 });
 

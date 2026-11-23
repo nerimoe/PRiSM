@@ -105,7 +105,7 @@ export async function publicResource(c: Context<AppBindings>, m: ScannedResource
   const device = await loadResource(c.env.DB, m.shop_id, m.id);
   const capabilities = device
     ? publicCapabilities(device)
-    : { power: false, climate: false, card: false, coin: false, door: false, mahjong: false };
+    : { power: false, climate: false, card: false, coin: false, door: false, table: false };
   const io = device ? hinataConfigOf(device) : null;
   return {
     publicId: m.public_id, name: m.name, kind: m.kind,

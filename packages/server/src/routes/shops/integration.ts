@@ -9,7 +9,7 @@ import { botConfigView, ensureBotResource } from "../../resources/bot.js";
 import { notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
 import { loadResources, matchesRef } from "../../resources/resource.js";
 import { loadScannedResource } from "../platform/resource-ticket.js";
-import { mahjongState, operateMahjong } from "../platform/mahjong.js";
+import { tableState, operateTable } from "../platform/table.js";
 import {
   toPlayerAssetsView,
   toPlayerCheckoutPreviewView,
@@ -331,36 +331,36 @@ integrationRouter.get("/bot", async (c) => {
   });
 });
 
-/** The shop's mahjong table named by id, name or alias. */
-async function mahjongTable(c: Context<AppBindings>, ref: unknown) {
+/** The shop's table named by id, name or alias. */
+async function findTable(c: Context<AppBindings>, ref: unknown) {
   const shop = getShop(c);
   const tables = (await loadResources(c.env.DB, shop.id, c.env.URL_ENCRYPTION_KEY))
-    .filter((resource) => resource.capabilities.has("mahjong") && resource.enabled);
+    .filter((resource) => resource.capabilities.has("table") && resource.enabled);
   const table = typeof ref === "string" ? tables.find((resource) => matchesRef(resource, ref)) : undefined;
-  if (!table) jsonError(404, "没有找到这张麻将桌", "MAHJONG_TABLE_NOT_FOUND");
+  if (!table) jsonError(404, "没有找到这张桌游桌", "TABLE_NOT_FOUND");
   return (await loadScannedResource(c, shop.id, table.id))!;
 }
 
 // Seat or unseat a player at a table, as the player's own command through the bot.
-integrationRouter.post("/players/by-identity/mahjong", async (c) => {
+integrationRouter.post("/players/by-identity/table", async (c) => {
   const deps = getShopDeps(c);
   const body = await c.req.json<{ table?: unknown; action?: unknown } & Record<string, any>>();
   if (body.action !== "join" && body.action !== "leave") jsonError(400, "请说明上桌还是下桌", "VALIDATION_FAILED");
-  const table = await mahjongTable(c, body.table);
+  const table = await findTable(c, body.table);
   const player = body.action === "join"
     ? await deps.integrationCommands.resolveOrRegisterPlayerByIdentity(botRequest(c, body))
     : await deps.integrationCommands.resolvePlayerByIdentity(botIdentity(body as Parameters<typeof botIdentity>[0]));
-  return operateMahjong(c, table, { action: `mahjong.${body.action}` }, { bot: { playerId: player.id } });
+  return operateTable(c, table, { action: `table.${body.action}` }, { bot: { playerId: player.id } });
 });
 
 // Every table with its seats, for the bot's roster.
-integrationRouter.get("/mahjong-tables", async (c) => {
+integrationRouter.get("/tables", async (c) => {
   const shop = getShop(c);
   const tables = (await loadResources(c.env.DB, shop.id, c.env.URL_ENCRYPTION_KEY))
-    .filter((resource) => resource.capabilities.has("mahjong") && resource.enabled);
+    .filter((resource) => resource.capabilities.has("table") && resource.enabled);
   return c.json({
     tables: await Promise.all(tables.map(async (resource) => {
-      const state = await mahjongState(c, (await loadScannedResource(c, shop.id, resource.id))!, { playerId: "" });
+      const state = await tableState(c, (await loadScannedResource(c, shop.id, resource.id))!, { playerId: "" });
       return {
         id: resource.id,
         name: resource.name,

@@ -520,7 +520,7 @@ function v2DeviceStatements(db: D1Database, shopId: string, jobId: string, merge
     capability("coin", `json_object('method','key','keyId','coin','cap',NULL,'afterSwipe',json('false'))`, "'{}'",
       `COALESCE(${machine("hinata_url")},'')!='' AND COALESCE(${machine("coin_key")},0)>0`),
     capability("door", `json_object('lockId',${machine("ttlock_lock_id")})`, "'{}'", `${machine("ttlock_lock_id")} IS NOT NULL`),
-    capability("mahjong", machine("mahjong_config_json"), "'{}'", `json_valid(${machine("mahjong_config_json")})`),
+    capability("table", machine("mahjong_config_json"), "'{}'", `json_valid(${machine("mahjong_config_json")})`),
   ];
   const history = [
     // A historic pending stays pending: billing has always counted it as use.
@@ -683,6 +683,7 @@ async function applyJob(
     if (table === "machines" || table === "account_links" || !rowsCount[table]) continue;
     // v2 history tables are converted with the machines above; their devices must exist first.
     if (table === "device_commands" || table === "device_states" || table === "machine_connections") continue;
+    const targetTable: FullTable = table === "mahjong_seats" ? "table_seats" : table;
     const cols = importColumns(table, header.version),
       expressions = cols.map((col) => `json_extract(payload_json,'$.${col}')`);
     let filter = "";
@@ -693,7 +694,7 @@ async function applyJob(
     if (table === "app_settings")
       filter += " AND json_extract(payload_json,'$.key')!='backup.importedAccounts'";
     const deviceCol =
-      table === "mahjong_seats"
+      targetTable === "table_seats"
         ? "machine_id"
         : table === "device_capabilities" || table === "device_operations" || table === "device_events" || table === "device_state"
           ? "device_id"
@@ -706,9 +707,30 @@ async function applyJob(
       AND d.source_id=json_extract(payload_json,'$.${col}')),json_extract(payload_json,'$.${col}'))`;
     if (table === "sessions")
       expressions[cols.indexOf("metadata_json")] =
-        `CASE WHEN EXISTS(SELECT 1 FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId'))
-      THEN json_set(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId',(SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId')))
-      ELSE json_extract(payload_json,'$.metadata_json') END`;
+        `CASE
+          WHEN json_type(json_extract(payload_json,'$.metadata_json'),'$.tableDeviceId') IS NOT NULL
+            THEN json_set(json_extract(payload_json,'$.metadata_json'),'$.tableDeviceId',
+              COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.tableDeviceId')),
+                json_extract(json_extract(payload_json,'$.metadata_json'),'$.tableDeviceId')))
+          WHEN json_type(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId') IS NOT NULL
+            THEN json_remove(json_set(json_extract(payload_json,'$.metadata_json'),'$.tableDeviceId',
+              COALESCE((SELECT id FROM shop_data_device_ids d WHERE d.job_id=shop_data_rows.job_id AND d.source_id=json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId')),
+                json_extract(json_extract(payload_json,'$.metadata_json'),'$.mahjongDeviceId'))),
+              '$.mahjongDeviceId')
+          ELSE json_extract(payload_json,'$.metadata_json')
+        END`;
+    if (
+      (table === "device_capabilities" || table === "device_operations" || table === "device_events" || table === "device_state") &&
+      cols.includes("capability")
+    )
+      expressions[cols.indexOf("capability")] =
+        `CASE WHEN json_extract(payload_json,'$.capability')='mahjong' THEN 'table' ELSE json_extract(payload_json,'$.capability') END`;
+    if (table === "device_operations" && cols.includes("action"))
+      expressions[cols.indexOf("action")] =
+        `CASE WHEN json_extract(payload_json,'$.action') LIKE 'mahjong.%' THEN 'table.'||substr(json_extract(payload_json,'$.action'),9) ELSE json_extract(payload_json,'$.action') END`;
+    if (table === "device_events" && cols.includes("name"))
+      expressions[cols.indexOf("name")] =
+        `CASE WHEN json_extract(payload_json,'$.name') LIKE 'mahjong.%' THEN 'table.'||substr(json_extract(payload_json,'$.name'),9) ELSE json_extract(payload_json,'$.name') END`;
     if (table === "device_capabilities") {
       // A relay channel names a Durable Object shared by every shop. Keep it for
       // a restore, but never adopt one another shop's device already uses.
@@ -726,7 +748,7 @@ async function applyJob(
     if (table === "device_state")
       expressions[cols.indexOf("value_json")] =
         `CASE WHEN json_extract(payload_json,'$.key')='link' THEN '"offline"' ELSE json_extract(payload_json,'$.value_json') END`;
-    let conflict = header.scope === "configuration" ? configurationConflict(table) : "";
+    let conflict = header.scope === "configuration" ? configurationConflict(targetTable) : "";
     if (table === "app_settings")
       conflict =
         " ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at";
@@ -738,19 +760,19 @@ async function applyJob(
     statements.push(
       db
         .prepare(
-          `INSERT INTO ${table}(shop_id,${cols.join(",")}) SELECT ?,${expressions.join(",")}
+          `INSERT INTO ${targetTable}(shop_id,${cols.join(",")}) SELECT ?,${expressions.join(",")}
       FROM shop_data_rows WHERE job_id=? AND table_name=?${filter}${conflict}`,
         )
         .bind(...params),
     );
   }
   if (v2Devices) statements.push(...v2Devices.history);
-  // A mahjong table's size used to live in its capability; it is the resource's capacity now.
+  // A table's size used to live in its capability; it is the resource's capacity now.
   statements.push(db.prepare(
     `UPDATE machines SET capacity=(SELECT json_extract(c.config_json,'$.capacity') FROM device_capabilities c
-       WHERE c.shop_id=machines.shop_id AND c.device_id=machines.id AND c.capability='mahjong')
+       WHERE c.shop_id=machines.shop_id AND c.device_id=machines.id AND c.capability='table')
      WHERE shop_id=? AND EXISTS(SELECT 1 FROM device_capabilities c WHERE c.shop_id=machines.shop_id AND c.device_id=machines.id
-       AND c.capability='mahjong' AND json_type(c.config_json,'$.capacity')='integer')`,
+       AND c.capability='table' AND json_type(c.config_json,'$.capacity')='integer')`,
   ).bind(shop.id));
   const profile = header.shopProfile;
   const timeZone = profile ? resolveLocationTimeZone(profile.latitude, profile.longitude) : shop.time_zone;

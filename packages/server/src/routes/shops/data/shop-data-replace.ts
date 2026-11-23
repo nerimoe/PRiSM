@@ -31,7 +31,7 @@ export function replaceBusinessStatements(
     "platform_binding_codes",
     "player_sessions",
     "live_activity_tokens",
-    "mahjong_seats",
+    "table_seats",
     "player_cards",
     "resource_occupancies",
     "device_events",
