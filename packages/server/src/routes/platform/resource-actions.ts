@@ -3,15 +3,15 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { jsonError, clientIp } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
-import { checkShopLocation } from "../../middleware/geo.js";
+import { checkResourceLocation } from "../../middleware/geo.js";
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { requestOrigin, shopServices } from "../../middleware/tenant.js";
 import { runPlayerOperation } from "../shops/player-operation.js";
 import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer, requireResourcePlan } from "./machine-login.js";
 import type { ScannedResource as ScannedResource } from "./resource-ticket.js";
 import type { AppBindings } from "../../bindings.js";
-import { can, hinataConfigOf, loadResource } from "../../resources/resource.js";
-import type { CabinetKey } from "../../resources/capabilities/catalog.js";
+import { can, keysConfigOf, loadResource } from "../../resources/resource.js";
+import type { ResourceButton } from "../../resources/capabilities/catalog.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { readClimate, readPower, type ClimateState } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
@@ -151,7 +151,13 @@ async function performResourceAction(
   const isClimate = action.startsWith("climate.");
   const climate = isClimate ? climatePayload(body) : {};
   if (!staff)
-    checkShopLocation(shop, isDoor ? "checkin" : "machine", body.location);
+    await checkResourceLocation({
+      db: c.env.DB,
+      shop,
+      action: isDoor ? "checkin" : "machine",
+      deviceId: machine.id,
+      location: body.location,
+    });
   const billed = staff || isDoor ? null : await requireResourcePlan(c, shop, machine.id);
   const player = staff
     ? null
@@ -187,12 +193,12 @@ async function performResourceAction(
       jsonError(400, "请输入卡号或选择玩家", "CARD_REQUIRED");
     }
   }
-  // Staff may press any key on the cabinet (`key.press`), which is not a coin.
-  // A coin is always the cabinet's own coin, so its key is never the caller's.
-  let pressed: CabinetKey | null = null;
+  // Staff may press any named button on the cabinet (`key.press`), which is not a coin.
+  // A coin is always the cabinet's own coin, so its button is never the caller's.
+  let pressed: ResourceButton | null = null;
   if (action === "key.press") {
     if (!staff) jsonError(403, "只有店员可以按键", "FORBIDDEN");
-    pressed = hinataConfigOf(device)?.keys.find((key) => key.id === body.keyId) ?? null;
+    pressed = keysConfigOf(device)?.buttons.find((btn) => btn.id === body.keyId) ?? null;
     if (!pressed) jsonError(404, "没有这个按键", "KEY_NOT_FOUND");
   }
   return runPlayerOperation(
@@ -238,8 +244,16 @@ async function performResourceAction(
         action,
         actor: player ? { type: "player", playerId: player.id } : { type: "staff", staffId: `user:${user.id}` },
         operationId: body.operationId,
-        // Which key staff pressed is kept with the event; a card number is not.
-        payload: { holder: player?.id ?? user.id, ...climate, ...(pressed ? { key: pressed.key, keyId: pressed.id, keyName: pressed.name } : {}) },
+        // Which button staff pressed is kept with the event; a card number is not.
+        payload: {
+          holder: player?.id ?? user.id,
+          ...climate,
+          ...(pressed
+            ? pressed.mode === "keyboard"
+              ? { key: pressed.key, keyId: pressed.id, keyName: pressed.name, keyMode: "keyboard" }
+              : { keyId: pressed.id, keyName: pressed.name, keyMode: "gpio", nodeId: pressed.nodeId, pin: pressed.pin }
+            : {}),
+        },
         // Staff swiping or coining for a named player act for them.
         ...(staff && body.playerId ? { forPlayerId: body.playerId } : {}),
         ...(accessCode ? { transient: { accessCode } } : {}),

@@ -17,7 +17,9 @@ import { normalizeHinataUrl, sendHinataCard, sendHinataCoin } from "../../hardwa
 import { TTLockClient } from "../../hardware/ttlock.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
 import { createDeviceBus, type ActionRunner, type PerformInput, type PerformResult, type RunOutcome } from "./bus.js";
-import { coinConfigOf, coinKeyOf, doorConfigOf, hinataConfigOf, readSecret } from "../resource.js";
+import { ioCanPress, type ResourceButton } from "./catalog.js";
+import { coinKeyOf, doorConfigOf, hinataConfigOf, hostConfigOf, keysConfigOf, readSecret } from "../resource.js";
+import { resolveNodeChannel } from "../nodes.js";
 import { deviceRead, type HubCalls } from "../../durable-objects/shop-hub-client.js";
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
@@ -31,25 +33,12 @@ export type DeviceRuntime = {
   fetcher?: typeof fetch;
   now?: () => Date;
   id?: () => string;
-  /**
-   * The shop hub, for a bus it makes for itself (its idle rule, its watchers'
-   * reports, a bot's command): listeners call it directly (`EventContext.hub`),
-   * and what an action leaves the device in is the hub's own to know.
-   */
   hub?: HubCalls;
-  /** Listeners of the caller's own, heard after the platform's (`events/subscribers.ts`). */
   subscribers?: readonly EventSubscriber<EventContext>[];
-  /** Where what this bus records came from: the page, board, bot or channel that made it. */
   via?: DeviceEventVia;
-  /** A request's `waitUntil`: what only reacts to an event runs after the answer. */
   defer?: (work: Promise<unknown>) => void;
 };
 
-/**
- * Keep a running device from being switched off as idle. Nothing is sent to
- * Home Assistant, so it can never switch a device on; a device that is off
- * (or whose state cannot be read) is refused.
- */
 function keepRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device }) => {
     const power = await readPower(runtime, device);
@@ -96,7 +85,6 @@ function climateRunner(
   };
 }
 
-/** Map an HTTP call result: no status means the request may still have arrived. */
 function relayOutcome(result: { ok: boolean; status: number; error?: string }): RunOutcome {
   if (result.ok) return { outcome: "ok" };
   if (result.status === 0) return { outcome: "unknown", message: result.error ?? "机台未响应" };
@@ -108,11 +96,12 @@ function cardRunner(runtime: DeviceRuntime): ActionRunner {
     const accessCode = typeof payload.accessCode === "string" ? payload.accessCode : "";
     if (!accessCode) return { outcome: "failed", message: "缺少卡号" };
     const config = hinataConfigOf(device)!;
-    // `source` carries the operation id, which the machine's card reports echo.
     if (config.transport === "embedded") {
       const relay = machineRelayNamespace(runtime.env);
-      if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
-      const sent = await relay.getByName(config.channel).sendCard({
+      const target = await resolveNodeChannel(runtime.db, runtime.shopId, config.nodeId, config.channel);
+      if (!relay || !target) return { outcome: "failed", message: "直连中继尚未配置" };
+      if (!target.enabled) return { outcome: "failed", message: "该直连节点已停用" };
+      const sent = await relay.getByName(target.channel).sendCard({
         accessCode,
         source: operationId,
         ...(awaits ? { wait: awaits } : {}),
@@ -129,13 +118,44 @@ function cardRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
-/** The IO presses a key on the cabinet, `count` times: what both a coin by key and a staff key press are. */
-async function pressKey(runtime: DeviceRuntime, device: Parameters<ActionRunner>[0]["device"], operationId: string, key: number, count: number): Promise<RunOutcome> {
-  const config = hinataConfigOf(device)!;
+/** Press a Windows VK key via a bound PRiSM Launcher (`host`) node. */
+async function pressLauncherKey(
+  runtime: DeviceRuntime,
+  device: Parameters<ActionRunner>[0]["device"],
+  operationId: string,
+  key: number,
+  count: number,
+): Promise<RunOutcome> {
+  const host = hostConfigOf(device);
+  const relay = machineRelayNamespace(runtime.env);
+  if (!host?.nodeId || !relay) return { outcome: "failed", message: "未绑定 Launcher 节点" };
+  const target = await resolveNodeChannel(runtime.db, runtime.shopId, host.nodeId);
+  if (!target) return { outcome: "failed", message: "Launcher 节点不存在" };
+  if (!target.enabled) return { outcome: "failed", message: "Launcher 节点已停用" };
+  const reply = await relay.getByName(target.channel).callNode(
+    "key.press",
+    { key, count },
+    { id: operationId, expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS },
+  );
+  return reply.ok ? { outcome: "ok" } : { outcome: "failed", message: reply.error ?? "Launcher 离线" };
+}
+
+/** Press a Windows VK key via HINATA IO (embedded or external relay). */
+async function pressHinataKey(
+  runtime: DeviceRuntime,
+  device: Parameters<ActionRunner>[0]["device"],
+  operationId: string,
+  key: number,
+  count: number,
+): Promise<RunOutcome> {
+  const config = hinataConfigOf(device);
+  if (!config) return { outcome: "failed", message: "未配置 HINATA IO" };
   if (config.transport === "embedded") {
     const relay = machineRelayNamespace(runtime.env);
-    if (!relay || !config.channel) return { outcome: "failed", message: "直连中继尚未配置" };
-    const sent = await relay.getByName(config.channel).sendKeyPress({
+    const target = await resolveNodeChannel(runtime.db, runtime.shopId, config.nodeId, config.channel);
+    if (!relay || !target) return { outcome: "failed", message: "直连中继尚未配置" };
+    if (!target.enabled) return { outcome: "failed", message: "该直连节点已停用" };
+    const sent = await relay.getByName(target.channel).sendKeyPress({
       key,
       count,
       messageId: operationId,
@@ -152,35 +172,125 @@ async function pressKey(runtime: DeviceRuntime, device: Parameters<ActionRunner>
   }));
 }
 
+/** Pulse a GPIO output pin on an IoT controller node. */
+async function pulseGpioButton(
+  runtime: DeviceRuntime,
+  operationId: string,
+  button: Extract<ResourceButton, { mode: "gpio" }>,
+  count: number,
+): Promise<RunOutcome> {
+  const relay = machineRelayNamespace(runtime.env);
+  if (!relay) return { outcome: "failed", message: "直连中继尚未配置" };
+  const target = await resolveNodeChannel(runtime.db, runtime.shopId, button.nodeId);
+  if (!target) return { outcome: "failed", message: "绑定的 IoT 控制器不存在" };
+  if (!target.enabled) return { outcome: "failed", message: "绑定的 IoT 控制器已停用" };
+  const reply = await relay.getByName(target.channel).callNode(
+    "gpio.pulse",
+    { pin: button.pin, duration_ms: button.pulseMs, count, active_low: button.activeLow },
+    { id: operationId, expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS },
+  );
+  return reply.ok ? { outcome: "ok" } : { outcome: "failed", message: reply.error ?? "IoT 控制器离线" };
+}
+
+/**
+ * Execute a unified cabinet button (`keys` capability):
+ * - `gpio`: pulses the configured IoT controller pin.
+ * - `keyboard`: prefers PRiSM Launcher (`host`) when available, falling back
+ *   automatically to HINATA IO when Launcher is absent or offline.
+ */
+async function pressKeyboardWithPriority(
+  runtime: DeviceRuntime,
+  device: Parameters<ActionRunner>[0]["device"],
+  operationId: string,
+  key: number,
+  count: number,
+): Promise<RunOutcome> {
+  const hasHost = !!hostConfigOf(device)?.nodeId;
+  const ioBound = device.capabilities.get("hinata_io");
+  const canUseIo = !!ioBound && ioCanPress(hinataConfigOf(device)!, ioBound.secretNames);
+
+  if (hasHost) {
+    const primary = await pressLauncherKey(runtime, device, operationId, key, count);
+    if (primary.outcome === "ok" || !canUseIo) return primary;
+    const fallback = await pressHinataKey(runtime, device, operationId, key, count);
+    return fallback.outcome === "ok" ? fallback : primary;
+  }
+  if (canUseIo) {
+    return pressHinataKey(runtime, device, operationId, key, count);
+  }
+  return { outcome: "failed", message: "需要绑定 PRiSM Launcher 或 HINATA IO 才能发送键盘按键" };
+}
+
+async function pressButton(
+  runtime: DeviceRuntime,
+  device: Parameters<ActionRunner>[0]["device"],
+  operationId: string,
+  button: ResourceButton,
+  count: number,
+): Promise<RunOutcome> {
+  if (button.mode === "gpio") {
+    return pulseGpioButton(runtime, operationId, button, count);
+  }
+  return pressKeyboardWithPriority(runtime, device, operationId, button.key, count);
+}
+
 const countOf = (payload: Record<string, unknown>) => typeof payload.count === "number" ? payload.count : 1;
 
-/** A coin, the way this resource takes one (its `coin` capability). Never a key of the caller's choosing. */
+/** A coin, triggered through the button selected by this resource's `coin` capability. */
 function coinRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, operationId, payload }) => {
-    const coin = coinConfigOf(device);
-    switch (coin?.method) {
-      case "key": {
-        const key = coinKeyOf(device);
-        if (!key) return { outcome: "failed", message: "投币按键不存在" };
-        return pressKey(runtime, device, operationId, key.key, countOf(payload));
-      }
-      default: return { outcome: "failed", message: "没有设置投币方式" };
-    }
+    const button = coinKeyOf(device);
+    if (!button) return { outcome: "failed", message: "投币按键不存在" };
+    return pressButton(runtime, device, operationId, button, countOf(payload));
   };
 }
 
-/** Staff pressing a key they name (`key.press`). */
+/** Managed host (PRiSM Launcher) command runner, audited through DeviceBus. */
+function hostRunner(
+  runtime: DeviceRuntime,
+  method: "host.switch" | "key.press" | "host.text" | "host.screenshot" | "host.reboot" | "host.shutdown",
+  paramsOf: (payload: Record<string, unknown>) => Record<string, unknown> | null,
+): ActionRunner {
+  return async ({ device, operationId, payload }) => {
+    const host = hostConfigOf(device);
+    if (!host?.nodeId) return { outcome: "failed", message: "未绑定 Launcher 节点" };
+    const relay = machineRelayNamespace(runtime.env);
+    if (!relay) return { outcome: "failed", message: "直连中继尚未配置" };
+    const target = await resolveNodeChannel(runtime.db, runtime.shopId, host.nodeId);
+    if (!target) return { outcome: "failed", message: "Launcher 节点不存在" };
+    if (!target.enabled) return { outcome: "failed", message: "Launcher 节点已停用" };
+    const params = paramsOf(payload);
+    if (!params) return { outcome: "failed", message: "主机指令缺少参数" };
+    const reply = await relay.getByName(target.channel).callNode(method, params, {
+      id: operationId,
+      expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
+    });
+    if (!reply.ok) return { outcome: "failed", message: reply.error ?? "Launcher 离线" };
+    const result = reply.result && typeof reply.result === "object" && !Array.isArray(reply.result)
+      ? (reply.result as Record<string, unknown>)
+      : undefined;
+    return { outcome: "ok", ...(result !== undefined ? { result } : {}) };
+  };
+}
+
+/** Staff pressing a named cabinet button (`key.press`). */
 function keyRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, operationId, payload }) => {
-    if (typeof payload.key !== "number") return { outcome: "failed", message: "缺少按键码" };
-    return pressKey(runtime, device, operationId, payload.key, countOf(payload));
+    const count = countOf(payload);
+    if (typeof payload.keyId === "string" && payload.keyId) {
+      const button = keysConfigOf(device)?.buttons.find((b) => b.id === payload.keyId);
+      if (button) return pressButton(runtime, device, operationId, button, count);
+    }
+    if (typeof payload.key === "number") {
+      return pressKeyboardWithPriority(runtime, device, operationId, payload.key, count);
+    }
+    return { outcome: "failed", message: "缺少按键配置" };
   };
 }
 
 function doorRunner(runtime: DeviceRuntime): ActionRunner {
   return async ({ device, payload }) => {
     const config = doorConfigOf(device)!;
-    // TTLock credentials are one account per shop, not per lock.
     const row = await runtime.db
       .prepare("SELECT value_json FROM app_settings WHERE shop_id=? AND key='devices.ttlock_connection'")
       .bind(runtime.shopId)
@@ -222,6 +332,15 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     "aime.scan": cardRunner(runtime),
     coin: coinRunner(runtime),
     "key.press": keyRunner(runtime),
+    "host.switch": hostRunner(runtime, "host.switch", (p) =>
+      typeof p.name === "string" && p.name ? { name: p.name } : null),
+    "host.key": hostRunner(runtime, "key.press", (p) =>
+      typeof p.key === "number" ? { key: p.key, count: countOf(p) } : null),
+    "host.text": hostRunner(runtime, "host.text", (p) =>
+      typeof p.text === "string" && p.text ? { text: p.text } : null),
+    "host.screenshot": hostRunner(runtime, "host.screenshot", () => ({})),
+    "host.reboot": hostRunner(runtime, "host.reboot", () => ({})),
+    "host.shutdown": hostRunner(runtime, "host.shutdown", () => ({})),
     "door.open": doorRunner(runtime),
   };
   const bus = createDeviceBus({
@@ -230,8 +349,6 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     id: runtime.id ?? (() => crypto.randomUUID()),
     runners,
     ...(runtime.via ? { via: runtime.via } : {}),
-    // Who occupies the resource now, what the bots announce and what the hub
-    // is told all follow from the events, in `events/subscribers.ts`.
     published: createEventDispatcher({
       subscribers: [...eventSubscribers, ...(runtime.subscribers ?? [])],
       context: {
@@ -255,9 +372,6 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     ...bus,
     async perform(input: PerformInput): Promise<PerformResult & { device?: DeviceView }> {
       const result = await bus.perform(input);
-      // What a power or climate action left the device in, read back the same
-      // way as any read, so the caller can show it. A device that is not live has
-      // nobody else to tell its pages and the boards, so the hub is handed it.
       if (!runtime.hub && result.operation.status === "succeeded") {
         const after = await readAfterAction(runtime, input.device, input.action, input.payload).catch(() => null);
         if (after) {

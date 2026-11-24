@@ -9,7 +9,7 @@ import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser, staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
-import { checkShopLocation } from "../../middleware/geo.js";
+import { checkResourceLocation } from "../../middleware/geo.js";
 import { can, loadResource, type Resource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
 import { notice, requestLocale } from "../../notices.js";
@@ -266,7 +266,7 @@ playerRouter.post("/session/start", async (c) => {
   if (body.consent !== true) {
     jsonError(409, "请确认入场计费规则", "CHECKIN_CONSENT_REQUIRED");
   }
-  checkShopLocation(shop, "checkin", body.location);
+  await checkResourceLocation({ db: c.env.DB, shop, action: "checkin", deviceId: machine.id, location: body.location });
   const door = body.openDoor === true ? await loadResource(c.env.DB, shop.id, machine.id) : null;
   if (body.openDoor === true && (!door || !can(door, "door.open"))) {
     jsonError(409, "这里不支持此操作", "DEVICE_ACTION_UNSUPPORTED");
@@ -356,7 +356,7 @@ playerRouter.post("/checkout/confirm", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop);
   const body = (await c.req.json<{ location?: unknown; operationId?: string }>().catch(() => ({}))) as { location?: unknown; operationId?: string };
-  checkShopLocation(shop, "checkout", body.location);
+  await checkResourceLocation({ db: c.env.DB, shop, action: "checkout", location: body.location });
   const deps = getShopDeps(c);
 
   return runPlayerOperation(c, shop.id, "checkout/confirm", body, async () => {

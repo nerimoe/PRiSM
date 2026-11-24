@@ -9,6 +9,7 @@ import { coinLimit, ioConnected } from "../../resources/capabilities/cabinet.js"
 import { readDeviceState } from "../../resources/capabilities/device-state.js";
 import { pageCode, renderPage, type Page } from "../../resources/page.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
+import { parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
 import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
@@ -51,6 +52,13 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
           ).bind(shopId, user.id).first()
         : null,
     ]);
+    const locationSettings = parseShopLocationSettings(machine.location_settings_json);
+    const checkinPolicy = gated?.shop
+      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "checkin", settings: locationSettings, deviceId: machine.id })
+      : null;
+    const machinePolicy = gated?.shop
+      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "machine", settings: locationSettings, deviceId: machine.id })
+      : null;
     return renderPage({
       locale: requestLocale(c.req.header("accept-language")),
       head: {
@@ -61,7 +69,10 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       capabilities,
       billed: !!machine.billed,
       cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,
-      geo: { checkin: !!gated?.shop.checkin_geo, machine: !!gated?.shop.machine_geo },
+      geo: {
+        checkin: !!checkinPolicy && (checkinPolicy.mode === "gps" || checkinPolicy.mode === "any"),
+        machine: !!machinePolicy && (machinePolicy.mode === "gps" || machinePolicy.mode === "any"),
+      },
       signedIn: !!user,
       gate: gated?.gate ?? "ready",
       billing: gated?.billing ?? null,

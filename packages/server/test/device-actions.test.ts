@@ -214,7 +214,7 @@ describe("legacy device registries", () => {
     expect(await loadResources(db, SHOP, undefined)).toEqual([]);
     expect(sqlite.query("SELECT COUNT(*) AS n FROM app_settings").get()).toEqual({ n: 1 });
     const adopted = await loadResources(db, SHOP, KEY);
-    // Its coin key becomes the IO's key 投币, which a coin of its own presses.
-    expect(adopted.map((device) => [device.name, [...device.capabilities.keys()]])).toEqual([["IO", ["coin", "hinata_io"]]]);
+    // Its coin key becomes the unified `keys` button 投币, which a coin of its own presses.
+    expect(adopted.map((device) => [device.name, [...device.capabilities.keys()]])).toEqual([["IO", ["coin", "hinata_io", "keys"]]]);
   });
 });

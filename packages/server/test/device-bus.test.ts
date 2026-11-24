@@ -47,12 +47,16 @@ function device(bound: Partial<Record<CapabilityId, Partial<BoundCapability>>>, 
   return { id: "m1", shopId: "shop", publicId: "pub", name: "Cabinet", aliases: [], enabled, kind: "machine", capacity: 1, occupancyMinutes: 15, capabilities };
 }
 
-/** A cabinet with a HINATA IO whose key 投币 its coin presses; `coinKey: 0` leaves the coin out. */
+/** A cabinet with a HINATA IO and unified `keys` whose button 投币 its coin presses; `coinKey: 0` leaves the coin out. */
 const ioDevice = (config: Record<string, unknown> = {}, secrets: string[] = ["url", "password"]) => {
-  const { coinKey, coinKeyId: _chosen, ...io } = config;
+  const { coinKey, coinKeyId: _chosen, keys: customKeys, ...io } = config;
+  const buttons = Array.isArray(customKeys)
+    ? customKeys.map((k: { id: string; name: string; key: number }) => ({ ...k, mode: "keyboard" as const }))
+    : [{ id: "coin", name: "投币", mode: "keyboard" as const, key: 32 }];
   return device({
-    hinata_io: { config: { transport: "external", keys: [{ id: "coin", name: "投币", key: 32 }], ...io }, secretNames: new Set(secrets) },
-    ...(coinKey === 0 ? {} : { coin: { config: { method: "key", keyId: "coin", cap: null, afterSwipe: false } } }),
+    hinata_io: { config: { transport: "external", keys: [], ...io }, secretNames: new Set(secrets) },
+    keys: { config: { buttons } },
+    ...(coinKey === 0 ? {} : { coin: { config: { keyId: "coin", cap: null, afterSwipe: false } } }),
   });
 };
 const powerDevice = () => device({ power: { secretNames: new Set(["binding"]) } });

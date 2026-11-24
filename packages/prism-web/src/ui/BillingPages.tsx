@@ -4,7 +4,7 @@ import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Api, api, InlineError } from "../api";
+import { Api, api, InlineError, type ShopLocationMode } from "../api";
 import { useI18n } from "../i18n";
 import { BillingConversionWizard } from "./merchant/BillingSetup";
 import { IdentityPolicyPicker } from "./merchant/IdentityPolicyPicker";
@@ -16,6 +16,8 @@ export type Settings = {
   autoRegister: boolean;
   identityBindingRequired: boolean;
   locationEnabled: boolean;
+  locationMode?: ShopLocationMode;
+  locationRssiThreshold?: number;
   checkinGeo: boolean;
   checkoutGeo: boolean;
   machineGeo: boolean;
@@ -199,7 +201,11 @@ export function BillingSettings({
                       identityBindingRequired: settings.identityBindingRequired,
                       autoRegister: settings.autoRegister,
                     }
-                  : { locationEnabled: settings.locationEnabled };
+                  : {
+                      locationEnabled: settings.locationEnabled,
+                      locationMode: settings.locationMode ?? "gps",
+                      locationRssiThreshold: settings.locationRssiThreshold ?? -75,
+                    };
             const result = await api<Settings>(shopApi(shopCode, "settings"), {
               method: "PUT",
               body: JSON.stringify({ ...current, ...patch }),
@@ -294,29 +300,100 @@ export function BillingSettings({
             />
           )}
           {section === "devices" && (
-            <label className="grid gap-2">
-              <span className="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  checked={settings.locationEnabled}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      locationEnabled: e.target.checked,
-                    })
-                  }
-                />
-                {t(flags.locationEnabled)}
-              </span>
-              <span className="pl-7 text-sm leading-relaxed text-ink/60">
-                {t(
-                  "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。",
-                )}{" "}
-                <Link className="underline" to="?group=general">
-                  {t("调整店铺范围")}
-                </Link>
-              </span>
-            </label>
+            <div className="grid gap-3">
+              <label className="grid gap-2">
+                <span className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={settings.locationEnabled}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        locationEnabled: e.target.checked,
+                      })
+                    }
+                  />
+                  {t(flags.locationEnabled)}
+                </span>
+                <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                  {t(
+                    "位置校验开启后，入场、开门、开机、投币和刷卡均须在店内；离场结账须定位确认已在店外。单个资源可在编辑页单独覆盖此设置。",
+                  )}{" "}
+                  <Link className="underline" to="?group=general">
+                    {t("调整店铺范围")}
+                  </Link>
+                </span>
+              </label>
+              {settings.locationEnabled && (
+                <div className="grid gap-3 pl-7 sm:grid-cols-2">
+                  <label className="grid gap-1.5 text-sm">
+                    <span className="font-medium">{t("默认校验方式")}</span>
+                    <select
+                      className="focus-ring min-h-11 rounded-lg border border-ink/20 bg-panel px-3 py-2"
+                      value={settings.locationMode ?? "gps"}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          locationMode: e.target.value as ShopLocationMode,
+                        })
+                      }
+                    >
+                      <option value="gps">{t("仅 GPS 围栏")}</option>
+                      <option value="ble">{t("仅蓝牙信标")}</option>
+                      <option value="any">{t("GPS 或蓝牙信标（任一通过）")}</option>
+                    </select>
+                  </label>
+                  {(settings.locationMode === "ble" || settings.locationMode === "any") && (
+                    <div className="grid gap-1.5 text-sm">
+                      <span className="font-medium">{t("蓝牙感应距离")}</span>
+                      <div
+                        role="group"
+                        aria-label={t("蓝牙感应距离")}
+                        className="grid min-h-11 grid-cols-3 overflow-hidden rounded-lg border border-ink/20 bg-panel"
+                      >
+                        {(
+                          [
+                            { value: -65, label: "近 · 1~2m" },
+                            { value: -75, label: "标准 · 3~5m" },
+                            { value: -85, label: "远 · 8m+" },
+                          ] as const
+                        ).map((preset, idx) => {
+                          const current = settings.locationRssiThreshold ?? -75;
+                          const active =
+                            preset.value === -65
+                              ? current >= -70
+                              : preset.value === -85
+                                ? current <= -80
+                                : current > -80 && current < -70;
+                          return (
+                            <button
+                              key={preset.value}
+                              type="button"
+                              aria-pressed={active}
+                              className={`focus-ring px-2 py-2 text-xs font-medium transition-colors ${
+                                idx > 0 ? "border-l border-ink/15" : ""
+                              } ${
+                                active
+                                  ? "bg-primary text-primary-foreground"
+                                  : "text-ink/70 hover:bg-ink/5 hover:text-ink"
+                              }`}
+                              onClick={() =>
+                                setSettings({
+                                  ...settings,
+                                  locationRssiThreshold: preset.value,
+                                })
+                              }
+                            >
+                              {t(preset.label)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           )}
 
           {error && errorSection === section && <p role="alert" className="text-sm text-coral">{error}</p>}

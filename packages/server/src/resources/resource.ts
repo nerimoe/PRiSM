@@ -10,6 +10,7 @@ import { adoptLegacyRegistries } from "./capabilities/legacy-registries.js";
 import {
   capabilities,
   capabilitySpec,
+  hasResourceLink,
   legacyCoin,
   type ActionName,
   type BoundView,
@@ -18,6 +19,10 @@ import {
   type CoinConfig,
   type DoorConfig,
   type HinataConfig,
+  type HostConfig,
+  type IotConfig,
+  type KeysConfig,
+  type ResourceButton,
   type TableConfig,
 } from "./capabilities/catalog.js";
 import { logger } from "../log.js";
@@ -105,6 +110,104 @@ function bind(row: CapabilityRow): BoundCapability | null {
 
 const deviceColumns = "id, shop_id, public_id, name, aliases_json, enabled, kind, capacity, occupancy_minutes";
 
+/**
+ * Upgrade older stored rows in memory without mutating storage:
+ * - Pre-0056 `hinata_io` rows holding `coinKey` expand into `hinata_io` + `coin`.
+ * - Pre-`keys` rows with `hinata_io.keys`, `host.keys`, or legacy GPIO `coin`
+ *   synthesize a unified `keys` capability so actions and UI work seamlessly.
+ */
+function upgradeLegacyCapabilityRows(capabilityRows: CapabilityRow[]): CapabilityRow[] {
+  const rowsRead = capabilityRows.flatMap((row) => {
+    if (row.capability !== "hinata_io") return [row];
+    const raw = parseObject(row.config_json);
+    const moved = legacyCoin(raw);
+    if (!moved) return [row];
+    const io = { ...row, config_json: JSON.stringify(moved.io) };
+    const hasCoin = capabilityRows.some((other) => other.device_id === row.device_id && other.capability === "coin");
+    return moved.coin && !hasCoin
+      ? [io, { ...row, capability: "coin", config_json: JSON.stringify(moved.coin), secret_json: "{}", credential_hash: null }]
+      : [io];
+  });
+
+  // Group by device to check whether a legacy row needs a synthesized `keys` capability.
+  const byDevice = new Map<string, CapabilityRow[]>();
+  for (const row of rowsRead) {
+    const list = byDevice.get(row.device_id) ?? [];
+    list.push(row);
+    byDevice.set(row.device_id, list);
+  }
+
+  const finalRows: CapabilityRow[] = [];
+  for (const [deviceId, list] of byDevice) {
+    const hasKeys = list.some((r) => r.capability === "keys");
+    if (hasKeys) {
+      finalRows.push(...list);
+      continue;
+    }
+
+    const synthesizedButtons: ResourceButton[] = [];
+    const seenIds = new Set<string>();
+    const addKeyboard = (raw: unknown) => {
+      if (!Array.isArray(raw)) return;
+      for (const item of raw) {
+        if (!item || typeof item !== "object") continue;
+        const one = item as Partial<CabinetKey>;
+        if (typeof one.id !== "string" || typeof one.name !== "string" || typeof one.key !== "number") continue;
+        if (seenIds.has(one.id)) continue;
+        seenIds.add(one.id);
+        synthesizedButtons.push({ id: one.id, name: one.name, mode: "keyboard", key: one.key });
+      }
+    };
+
+    const nextList = list.map((row) => {
+      const cfg = parseObject(row.config_json);
+      if (row.capability === "hinata_io") addKeyboard(cfg.keys);
+      if (row.capability === "host") addKeyboard(cfg.keys);
+      if (row.capability === "coin" && cfg.method === "gpio" && typeof cfg.nodeId === "string" && typeof cfg.pin === "number") {
+        const coinBtnId = "coin";
+        if (!seenIds.has(coinBtnId)) {
+          seenIds.add(coinBtnId);
+          synthesizedButtons.push({
+            id: coinBtnId,
+            name: "投币",
+            mode: "gpio",
+            nodeId: cfg.nodeId,
+            pin: cfg.pin,
+            pulseMs: typeof cfg.pulseMs === "number" ? cfg.pulseMs : 80,
+            activeLow: cfg.activeLow !== false,
+          });
+        }
+        return {
+          ...row,
+          config_json: JSON.stringify({
+            keyId: coinBtnId,
+            cap: null,
+            afterSwipe: false,
+            feedbackNodeId: typeof cfg.feedbackPin === "number" ? cfg.nodeId : null,
+            feedbackPin: typeof cfg.feedbackPin === "number" ? cfg.feedbackPin : null,
+            feedbackEdge: cfg.feedbackEdge ?? "falling",
+            feedbackDebounceMs: cfg.feedbackDebounceMs ?? 50,
+            feedbackSignal: cfg.feedbackSignal ?? "cabinet.coin",
+          }),
+        };
+      }
+      return row;
+    });
+
+    finalRows.push(...nextList);
+    if (synthesizedButtons.length > 0) {
+      finalRows.push({
+        device_id: deviceId,
+        capability: "keys",
+        config_json: JSON.stringify({ buttons: synthesizedButtons.slice(0, 16) }),
+        secret_json: "{}",
+        credential_hash: null,
+      });
+    }
+  }
+  return finalRows;
+}
+
 async function assemble(db: D1DatabaseLike, shopId: string, rows: ResourceRow[]): Promise<Resource[]> {
   if (!rows.length) return [];
   const capabilityRows = (
@@ -116,19 +219,7 @@ async function assemble(db: D1DatabaseLike, shopId: string, rows: ResourceRow[])
       .bind(shopId, JSON.stringify(rows.map((row) => row.id)))
       .all<CapabilityRow>()
   ).results;
-  // An IO stored with its coin in it reads as the IO and a coin of its own (before the schema drops the coin's fields).
-  const rowsRead = capabilityRows.flatMap((row) => {
-    if (row.capability !== "hinata_io") return [row];
-    let raw: unknown;
-    try { raw = JSON.parse(row.config_json); } catch { return [row]; }
-    const moved = raw && typeof raw === "object" ? legacyCoin(raw as Record<string, unknown>) : null;
-    if (!moved) return [row];
-    const io = { ...row, config_json: JSON.stringify(moved.io) };
-    const hasCoin = capabilityRows.some((other) => other.device_id === row.device_id && other.capability === "coin");
-    return moved.coin && !hasCoin
-      ? [io, { ...row, capability: "coin", config_json: JSON.stringify(moved.coin), secret_json: "{}", credential_hash: null }]
-      : [io];
-  });
+  const rowsRead = upgradeLegacyCapabilityRows(capabilityRows);
   const byDevice = new Map<string, Map<CapabilityId, BoundCapability>>();
   for (const row of rowsRead) {
     const bound = bind(row);
@@ -198,6 +289,11 @@ export function has(device: Resource, capability: CapabilityId): boolean {
   return device.capabilities.has(capability);
 }
 
+/** Whether the device has a player-facing QR / NFC link. */
+export function resourceHasLink(device: Resource): boolean {
+  return hasResourceLink(device.capabilities.keys());
+}
+
 /** Whether the device offers an action right now, given its bound capabilities. */
 export function can(device: Resource, action: ActionName): boolean {
   for (const [id, bound] of device.capabilities) {
@@ -217,15 +313,27 @@ export function hinataConfigOf(device: Resource): HinataConfig | null {
   return (device.capabilities.get("hinata_io")?.config as HinataConfig | undefined) ?? null;
 }
 
+export function keysConfigOf(device: Resource): KeysConfig | null {
+  return (device.capabilities.get("keys")?.config as KeysConfig | undefined) ?? null;
+}
+
 export function coinConfigOf(device: Resource): CoinConfig | null {
   return (device.capabilities.get("coin")?.config as CoinConfig | undefined) ?? null;
 }
 
-/** The key a coin presses on this resource's HINATA IO, when it coins by key. */
-export function coinKeyOf(device: Resource): CabinetKey | null {
+/** The button in `keys` that a coin triggers (keyboard or GPIO). */
+export function coinKeyOf(device: Resource): ResourceButton | null {
   const coin = coinConfigOf(device);
-  if (coin?.method !== "key" || !coin.keyId) return null;
-  return hinataConfigOf(device)?.keys.find((key) => key.id === coin.keyId) ?? null;
+  if (!coin?.keyId) return null;
+  return keysConfigOf(device)?.buttons.find((button) => button.id === coin.keyId) ?? null;
+}
+
+export function hostConfigOf(device: Resource): HostConfig | null {
+  return (device.capabilities.get("host")?.config as HostConfig | undefined) ?? null;
+}
+
+export function iotConfigOf(device: Resource): IotConfig | null {
+  return (device.capabilities.get("iot")?.config as IotConfig | undefined) ?? null;
 }
 
 export function doorConfigOf(device: Resource): DoorConfig | null {

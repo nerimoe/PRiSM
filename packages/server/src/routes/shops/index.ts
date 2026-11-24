@@ -36,6 +36,11 @@ export * from "./pricing.js";
 export * from "./assets.js";
 export * from "./cashier.js";
 import { cashierResourceId } from "./cashier.js";
+import {
+  readShopLocationSettings,
+  shopLocationModeSchema,
+  writeShopLocationSettingsStatement,
+} from "../../resources/location.js";
 import { ACCOUNT_HAS_PLATFORM_IDENTITY_SQL, listAccountPlatformIdentities } from "../../resources/platform-identities.js";
 import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 export * from "./redeem.js";
@@ -79,6 +84,8 @@ const settingsSchema = z.object({
   autoRegister: z.boolean(),
   identityBindingRequired: z.boolean().optional(),
   locationEnabled: z.boolean().optional(),
+  locationMode: shopLocationModeSchema.optional(),
+  locationRssiThreshold: z.number().int().min(-100).max(-20).optional(),
   checkinGeo: z.boolean().optional(),
   checkoutGeo: z.boolean().optional(),
   machineGeo: z.boolean().optional(),
@@ -136,8 +143,11 @@ shopRouter.get("/", async (c) => {
   // Released App Clips decode `shop.billingEnabled` as a required field and use
   // it to offer the bill and wallet. There is no switch behind it any more: it
   // says whether any resource bills.
-  const billingEnabled = !!(await c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`)
-    .bind(shop.id).first<{ bills: number }>())?.bills;
+  const [billingEnabledRow, locationSettings] = await Promise.all([
+    c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`).bind(shop.id).first<{ bills: number }>(),
+    readShopLocationSettings(c.env.DB, shop.id),
+  ]);
+  const billingEnabled = !!billingEnabledRow?.bills;
 
   const localDate =
     c.req.query("date") ?? formatLocalDate(new Date(), shop.time_zone);
@@ -166,6 +176,8 @@ shopRouter.get("/", async (c) => {
       timeZone: shop.time_zone,
       heroUrl: shop.hero_url,
       ...publicSettings(shop),
+      locationMode: locationSettings.mode,
+      locationRssiThreshold: locationSettings.rssiThreshold,
       billingEnabled,
     },
     membership: membership
@@ -201,12 +213,15 @@ shopRouter.get("/hero", async (c) => {
 shopRouter.get("/settings", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
-  const [cashierResource, configuration] = await Promise.all([
+  const [cashierResource, configuration, locationSettings] = await Promise.all([
     cashierResourceId(c.env.DB, shop.id),
     billingConfiguration(c.env.DB, shop.id),
+    readShopLocationSettings(c.env.DB, shop.id),
   ]);
   return c.json({
     ...publicSettings(shop),
+    locationMode: locationSettings.mode,
+    locationRssiThreshold: locationSettings.rssiThreshold,
     cashierResourceId: cashierResource,
     billingConfiguration: configuration,
   });
@@ -256,7 +271,17 @@ shopRouter.put("/settings", async (c) => {
       if (cashierEnabled && !cashierResource) jsonError(409, "请先选择前台资源", "CASHIER_RESOURCE_REQUIRED");
       if (cashierResource && !await c.env.DB.prepare("SELECT 1 FROM machines WHERE shop_id = ? AND id = ?")
         .bind(initialShop.id, cashierResource).first()) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
-      const configuration = await billingConfiguration(c.env.DB, initialShop.id);
+      const [configuration, existingLocation] = await Promise.all([
+        billingConfiguration(c.env.DB, initialShop.id),
+        readShopLocationSettings(c.env.DB, initialShop.id),
+      ]);
+      const nextLocationSettings = {
+        ...existingLocation,
+        mode: body.locationMode ?? existingLocation.mode,
+        rssiThreshold: body.locationRssiThreshold ?? existingLocation.rssiThreshold,
+      };
+      const locationChanged =
+        body.locationMode !== undefined || body.locationRssiThreshold !== undefined;
 
       await c.env.DB.batch([
         c.env.DB.prepare(
@@ -285,6 +310,9 @@ shopRouter.put("/settings", async (c) => {
           JSON.stringify({ enabled: cashierEnabled, ...(cashierResource ? { resourceId: cashierResource } : {}) }),
           new Date().toISOString(),
         ),
+        ...(locationChanged
+          ? [writeShopLocationSettingsStatement(c.env.DB, initialShop.id, nextLocationSettings)]
+          : []),
       ]);
 
       // Every page shows the shop's settings.
@@ -294,6 +322,8 @@ shopRouter.put("/settings", async (c) => {
       return c.json({
         ...body,
         locationEnabled: checkinGeo || checkoutGeo || machineGeo,
+        locationMode: nextLocationSettings.mode,
+        locationRssiThreshold: nextLocationSettings.rssiThreshold,
         checkinGeo,
         checkoutGeo,
         machineGeo,

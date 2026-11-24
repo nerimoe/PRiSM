@@ -8,6 +8,22 @@
  * capability catalog in code, never by CHECK constraints.
  */
 export const deviceEventSchema = [
+  `CREATE TABLE IF NOT EXISTS shop_nodes (
+    shop_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    channel TEXT NOT NULL,
+    credential_hash TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (shop_id, id),
+    UNIQUE (channel)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS shop_nodes_credential ON shop_nodes(credential_hash) WHERE credential_hash IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS shop_nodes_shop_kind ON shop_nodes(shop_id, kind)`,
   `CREATE TABLE IF NOT EXISTS device_capabilities (
     shop_id TEXT NOT NULL,
     device_id TEXT NOT NULL,

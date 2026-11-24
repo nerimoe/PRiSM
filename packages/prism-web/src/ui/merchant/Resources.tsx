@@ -11,8 +11,10 @@ import {
   DoorOpen,
   Gamepad2,
   History,
+  Keyboard,
   LayoutGrid,
   Lock,
+  Monitor,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -44,12 +46,14 @@ import {
   capabilityOrder,
   deviceActionGroups,
   deviceActions,
+  hasResourceLink,
   resourceCapabilities,
   isDirectConnect,
   type CapabilityId,
 } from "./resource-capabilities";
 import { ResourceEditor } from "./ResourceEditor";
 import { ResourceGroupEditor, useBillablePlans, useResourceGroups } from "./ResourceGroups";
+import { HostControls } from "./HostControls";
 import {
   applyBoardAnswer,
   applyBoardFrame,
@@ -74,7 +78,10 @@ const capabilityLabels: Record<CapabilityId, string> = {
   power: "电源",
   climate: "空调",
   hinata_io: "刷卡",
+  keys: "按键",
   coin: "投币",
+  host: "启动器",
+  iot: "IoT 控制器",
   door: "门锁",
   table: "桌游",
   bot: "Bot",
@@ -187,7 +194,9 @@ export function ResourcesPage() {
   useEffect(() => {
     load().catch((e) => setError(e.message));
   }, [load]);
-  const hasConnections = (devices ?? []).some((device) => device.bot || isDirectConnect(device));
+  const hasConnections = (devices ?? []).some(
+    (device) => device.bot || isDirectConnect(device) || device.host || device.iot,
+  );
   useEffect(() => {
     if (!hasConnections) return;
     const timer = setInterval(() => void load().catch(() => {}), 15_000);
@@ -439,6 +448,7 @@ export function ResourcesPage() {
           xl
         >
           <ResourceEditor
+            key={"id" in editing ? editing.id : `new:${editing.groupId}`}
             value={"id" in editing ? editing : undefined}
             groupId={"id" in editing ? undefined : editing.groupId}
             onLockChange={setEditorLocked}
@@ -650,9 +660,27 @@ function ResourceCard({
   const enabled = !!device.enabled;
   const configured = Object.values(caps).some(Boolean);
   // Seating a player is a table operation even though the catalog lists no device action for it.
-  const hasControls = deviceActions(device).length > 0 || !!caps.table;
+  const hasControls = deviceActions(device).length > 0 || !!caps.table || !!caps.host;
   const view = tileView(device, state, occupancy, powerOffAt, stateFailed);
-  const TypeIcon = caps.bot ? Bot : caps.table ? LayoutGrid : caps.hinata_io ? Gamepad2 : caps.door ? Lock : caps.power ? Power : caps.climate ? AirVent : QrCode;
+  const TypeIcon = caps.bot
+    ? Bot
+    : caps.table
+      ? LayoutGrid
+      : caps.hinata_io
+        ? Gamepad2
+        : caps.host
+          ? Monitor
+          : caps.iot
+            ? Cpu
+            : caps.door
+              ? Lock
+              : caps.power
+                ? Power
+                : caps.climate
+                  ? AirVent
+                  : caps.keys
+                    ? Keyboard
+                    : QrCode;
   const open = canWrite && hasControls && enabled ? onAct : onHistory;
   const first = view.seats?.occupants[0];
   const stay = first ? stayLength(first.startedAt, now) : null;
@@ -776,8 +804,8 @@ function ResourceCard({
           </span>
         )}
         <span className="relative z-10 ml-auto flex items-center gap-0.5">
-          {/* A bot is not something players scan. */}
-          {!device.bot && (
+          {/* Resources without a player link (e.g. a pure bot or pure IoT controller) are not scanned. */}
+          {hasResourceLink(caps) && (
             <button
               type="button"
               className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium text-ink/70 ring-1 ring-inset ring-ink/15 hover:bg-ink/5 hover:text-ink"
@@ -867,7 +895,14 @@ const actionLabels: Record<string, string> = {
   "cabinet.coin": "机台投币",
   "cabinet.credit": "机内加币",
   "cabinet.consumed": "机内扣币",
+  "cabinet.activity": "机台活动",
   "cabinet.reset": "投币计数清零",
+  "host.switch": "切换游戏",
+  "host.key": "远程按键",
+  "host.text": "文字输入",
+  "host.screenshot": "截取画面",
+  "host.reboot": "重启主机",
+  "host.shutdown": "关闭主机",
   "reader.connected": "读卡器插入",
   "reader.disconnected": "读卡器拔出",
   // What happened at the shop without a device doing anything (capability `shop`).
@@ -993,7 +1028,10 @@ const capabilityMeta: Record<
   power: { icon: Power, title: "电源控制" },
   climate: { icon: AirVent, title: "空调" },
   hinata_io: { icon: CreditCard, title: "刷卡 · HINATA IO" },
+  keys: { icon: Keyboard, title: "机台按键" },
   coin: { icon: Coins, title: "投币" },
+  host: { icon: Monitor, title: "启动器" },
+  iot: { icon: Cpu, title: "IoT 控制器" },
   door: { icon: DoorOpen, title: "开门密码" },
   table: { icon: Ungroup, title: "桌游" },
   bot: { icon: Bot, title: "Bot" },
@@ -1103,6 +1141,20 @@ export function ResourceActions({
           : isDirectConnect(device)
             ? t("未知")
             : t("外部中继");
+    if (id === "keys") {
+      const count = (device.keys ?? []).filter((one) => one.id !== device.coinKeyId).length;
+      return count > 0 ? t("{count} 个按键", { count }) : "";
+    }
+    if (id === "coin") {
+      const btn = (device.keys ?? []).find((one) => one.id === device.coinKeyId);
+      if (!btn) return "";
+      if (btn.mode === "gpio") return t("GPIO {pin}", { pin: btn.pin });
+      return keyTextFromVk(btn.key);
+    }
+    if (id === "host") return t("PRiSM Launcher");
+    if (id === "iot") {
+      return device.iotOnline === true ? t("在线") : device.iotOnline === false ? t("离线") : "";
+    }
     if (id === "door")
       return device.ttlockLockId ? `TTLock · ${device.ttlockLockId}` : "";
     return table ? `${table.seats.length} / ${table.capacity}` : "";
@@ -1110,7 +1162,8 @@ export function ResourceActions({
   const sections = capabilityOrder.filter(
     (id) =>
       groups.some((group) => group.capability === id) ||
-      (id === "table" && caps.table),
+      (id === "table" && caps.table) ||
+      (id === "host" && caps.host),
   );
   return (
     <div className="grid gap-4">
@@ -1196,32 +1249,38 @@ export function ResourceActions({
                   </button>
                 </div>
               )}
-              {/* The shop's named keys, for service menus and tests: not coins, and never on a player's page.
-                  The coin key is the 投币 button above, with its cooldown and limit, so it is not here again. */}
-              {id === "hinata_io" && actionNames.includes("key.press") && (() => {
+              {/* The shop's named cabinet buttons (keyboard via Launcher/IO or GPIO pulse via IoT).
+                  The coin button is shown in the 投币 section with its cooldown and limit. */}
+              {id === "keys" && actionNames.includes("key.press") && (() => {
                 const pressable = (device.keys ?? []).filter((one) => one.id !== device.coinKeyId);
                 if (!pressable.length) return null;
                 return (
-                  <div className="grid gap-1.5">
-                    <span className="text-xs text-ink/55">{t("按键")}</span>
-                    <div className="flex flex-wrap gap-2">
-                      {pressable.map((one) => (
-                        <button
-                          key={one.id}
-                          type="button"
-                          className={`${button} min-h-9 px-3`}
-                          disabled={!device.enabled || !!busy}
-                          onClick={() => void send("key.press", { keyId: one.id })}
-                        >
-                          <span>{one.name}</span>
-                          <kbd className="rounded border border-ink/15 bg-ink/[0.04] px-1.5 font-mono text-[11px] font-normal text-ink/60">{keyTextFromVk(one.key)}</kbd>
-                        </button>
-                      ))}
-                    </div>
+                  <div className="flex flex-wrap gap-2">
+                    {pressable.map((one) => (
+                      <button
+                        key={one.id}
+                        type="button"
+                        className={`${button} min-h-9 px-3`}
+                        disabled={!device.enabled || !!busy}
+                        onClick={() => void send("key.press", { keyId: one.id })}
+                      >
+                        <span>{one.name}</span>
+                        <kbd className="rounded border border-ink/15 bg-ink/[0.04] px-1.5 font-mono text-[11px] font-normal text-ink/60">
+                          {one.mode === "gpio" ? `GPIO ${one.pin}` : keyTextFromVk(one.key)}
+                        </kbd>
+                      </button>
+                    ))}
                   </div>
                 );
               })()}
               {id === "hinata_io" && device.relayConnection === "embedded" && <CabinetBooks deviceId={device.id} />}
+              {id === "host" && (
+                <HostControls
+                  device={device}
+                  disabled={!device.enabled}
+                  onChanged={onChanged}
+                />
+              )}
               {id === "table" && (
                 <>
                   <div className="grid gap-1">

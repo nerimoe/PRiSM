@@ -1,6 +1,6 @@
 import type { Resource } from "../../api";
 import type { Settings } from "../BillingPages";
-import { resourceCapabilities, isUnconfigured } from "./resource-capabilities";
+import { hasResourceLink, resourceCapabilities, isUnconfigured } from "./resource-capabilities";
 
 /** How a player proves who they are before entering or using a guarded device. */
 export type IdentityPolicy = "web" | "bot" | "existing";
@@ -139,7 +139,7 @@ export function setupStatus(signals: SetupSignals): SetupStatus {
   const { settings, machines } = signals;
   const mode = operatingMode({ billing: signals.billing, cashierEnabled: settings.cashierEnabled });
   const billing = mode !== "devices";
-  const shopResources = machines.filter((machine) => !machine.bot);
+  const shopResources = machines.filter((machine) => hasResourceLink(resourceCapabilities(machine)));
   const groups = signals.groups ?? [];
   const caps = shopResources.map(resourceCapabilities);
   const unconfigured = shopResources.filter(

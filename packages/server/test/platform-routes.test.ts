@@ -801,7 +801,7 @@ describe("Platform & System Routes", () => {
       const patterns = config.assets.run_worker_first.map((glob) =>
         new RegExp(`^${glob.split("*").map(literal).join(".*")}$`));
       const workerPaths = [
-        "/api/v1/shops/x", "/rpc/integration/bot", "/io/ws", "/integration/ws", "/.well-known/assetlinks.json",
+        "/api/v1/shops/x", "/rpc/integration/bot", "/io/ws", "/node/ws", "/integration/ws", "/.well-known/assetlinks.json",
         "/callback", "/health", "/version", "/t/shop/resource",
       ];
       for (const path of workerPaths) {

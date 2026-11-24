@@ -113,7 +113,12 @@ async function create(app: Hono<AppBindings>, env: Env, body: Record<string, unk
 
 function io(sqlite: Database) {
   return sqlite.query<{ credential_hash: string | null; channel: string | null; config_json: string; secret_json: string }, []>(
-    "SELECT credential_hash, json_extract(config_json,'$.channel') AS channel, config_json, secret_json FROM device_capabilities WHERE capability='hinata_io'",
+    `SELECT COALESCE(n.credential_hash, c.credential_hash) AS credential_hash,
+            COALESCE(n.channel, json_extract(c.config_json,'$.channel')) AS channel,
+            c.config_json, c.secret_json
+     FROM device_capabilities c
+     LEFT JOIN shop_nodes n ON n.shop_id = c.shop_id AND n.id = json_extract(c.config_json,'$.nodeId')
+     WHERE c.capability='hinata_io'`,
   ).get()!;
 }
 
@@ -250,8 +255,9 @@ describe("embedded relay machine configuration", () => {
       }),
       env,
     );
-    // With no relay URL either, the machine no longer has a HINATA IO at all.
+    // With no relay URL either, the machine no longer has a HINATA IO or shop_nodes credential.
     expect(sqlite.query("SELECT 1 FROM device_capabilities WHERE capability='hinata_io'").get()).toBeNull();
+    expect(sqlite.query("SELECT 1 FROM shop_nodes WHERE kind='hinata_io'").get()).toBeNull();
   });
 });
 

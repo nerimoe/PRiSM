@@ -2,10 +2,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   AirVent,
+  Bot,
   Coins,
+  Cpu,
   CreditCard,
   DoorOpen,
   Info,
+  Keyboard,
+  Monitor,
   Plus,
   Power,
   Trash2,
@@ -13,24 +17,52 @@ import {
   Users,
   X,
   type LucideIcon,
-  Bot,
 } from "lucide-react";
 import { botReplyTemplateError, keyTextFromVk, vkFromKeyText } from "@prism/core";
-import { Api, api, type BotSettings, type Resource } from "../../api";
+import {
+  Api,
+  api,
+  type BotSettings,
+  type CoinFeedbackEdge,
+  type CoinFeedbackSignal,
+  type HostProgram,
+  type Resource,
+  type ResourceLocationMode,
+  type ShopNodeBinding,
+} from "../../api";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
-import { resourceCapabilities, type CapabilityId } from "./resource-capabilities";
+import {
+  capabilityRequires,
+  conflictingCapabilities,
+  dependentCapabilities,
+  hasResourceLink,
+  resourceCapabilities,
+  type CapabilityId,
+} from "./resource-capabilities";
 import { BotReplyEditor } from "./BotReplyEditor";
-
-/** A named key as it is being edited: `key` is what staff typed, read by the server. */
-type CabinetKeyDraft = { id: string; name: string; key: string };
-/** An id for a key added here; the server keeps it, so the coin choice can point at it before saving. */
-const newKeyId = () => `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 import { BotAnnouncementGroups } from "./BotAnnouncementGroups";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
 import { idlePath, useIdleSettings } from "./IdlePowerSettings";
+
+const SELF_IOT_REF = "__self__";
+
+/** One unified cabinet button being edited (keyboard VK or IoT GPIO pulse). */
+type ResourceButtonDraft = {
+  id: string;
+  name: string;
+  mode: "keyboard" | "gpio";
+  key: string;
+  nodeId: string;
+  pin: string;
+  pulseMs: string;
+  activeLow: boolean;
+};
+
+/** An id for a button added here; the server keeps it so `coin` can reference it before saving. */
+const newKeyId = () => `k${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 const draftOf = (binding?: { connectionId?: string | null; url: string; entityId: string } | null): HaDraft => ({
   connection: binding?.connectionId ?? NEW_CONNECTION,
@@ -41,11 +73,16 @@ const draftOf = (binding?: { connectionId?: string | null; url: string; entityId
 const POWER_DOMAINS = ["switch", "input_boolean"];
 const CLIMATE_DOMAINS = ["climate"];
 
+type IssuedCredential = {
+  kind: "hinata" | "host" | "iot";
+  token: string;
+  url: string;
+};
+
 /**
- * Resource configuration, one section at a time: what it is, what it bills and
- * how many it holds, then each capability it has. A capability with something
- * left to fill in is marked in the list, so nothing half-done hides behind a
- * collapsed card.
+ * Resource configuration, one section at a time: basics (including location
+ * override), billing & occupancy, each enabled capability, and the capability
+ * picker with declarative conflict/dependency rules.
  */
 export function ResourceEditor({
   value,
@@ -70,6 +107,7 @@ export function ResourceEditor({
     !!shopSettings.data &&
     !(lock?.clientId && lock.clientSecret && (lock.accessToken || lock.appAccount));
   const shopPath = `/merchant/${encodeURIComponent(shopCode)}`;
+
   const initial = resourceCapabilities(
     value ?? {
       homeAssistant: null,
@@ -83,18 +121,59 @@ export function ResourceEditor({
     },
   );
   const [caps, setCaps] = useState(initial);
-  // One section is shown at a time: the basics, billing and occupancy, an
-  // enabled capability, or the list of capabilities still to add.
   const [pane, setPane] = useState<"basic" | "usage" | "add" | CapabilityId>("basic");
   const [name, setName] = useState(value?.name ?? "");
-  // One value per alias. The editor always renders one extra empty row, so an
-  // empty array is the correct starting point for a device without aliases.
   const [aliases, setAliases] = useState<string[]>(value?.aliases ?? []);
   const [enabled, setEnabled] = useState(value ? !!value.enabled : true);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // Empty for a new resource: the server picks 1 for a cabinet with an IO, 0 otherwise.
   const [resourceCapacity, setResourceCapacity] = useState(value?.capacity === undefined ? "" : String(value.capacity));
   const [occupancyMinutes, setOccupancyMinutes] = useState(String(value?.occupancyMinutes ?? 15));
+
+  // Resource-level location verification override
+  const [locMode, setLocMode] = useState<ResourceLocationMode>(value?.locationOverride?.mode ?? "inherit");
+  const [locBeaconNodeId, setLocBeaconNodeId] = useState<string>(value?.locationOverride?.beaconNodeId ?? "");
+  const [locRssiThreshold, setLocRssiThreshold] = useState<number | null>(
+    value?.locationOverride?.rssiThreshold ?? null,
+  );
+
+  // All resources in this shop (for IoT controller picker and Bot door picker)
+  const [shopResources, setShopResources] = useState<Resource[]>([]);
+  useEffect(() => {
+    Api.machines(shopId)
+      .then((r) => setShopResources(r.machines))
+      .catch(() => setShopResources([]));
+  }, [shopId]);
+
+  const selfIotId = value?.iot?.nodeId ?? SELF_IOT_REF;
+  const iotOptions: Array<{
+    nodeId: string;
+    label: string;
+    isSelf: boolean;
+    bleEnabled: boolean;
+    beaconId: number | null;
+    bindings: ShopNodeBinding[];
+  }> = [
+    ...(caps.iot
+      ? [{
+          nodeId: selfIotId,
+          label: `${name.trim() || t("本资源")}（${t("本机控制器")}）`,
+          isSelf: true,
+          bleEnabled: true,
+          beaconId: value?.iot?.ble.beaconId ?? null,
+          bindings: value?.iotBindings ?? [],
+        }]
+      : []),
+    ...shopResources
+      .filter((r) => r.id !== value?.id && !!r.iot?.nodeId)
+      .map((r) => ({
+        nodeId: r.iot!.nodeId,
+        label: `${r.name}${r.iotOnline ? ` · ${t("在线")}` : ""}`,
+        isSelf: false,
+        bleEnabled: r.iot!.ble.enabled,
+        beaconId: r.iot!.ble.beaconId,
+        bindings: r.iotBindings ?? [],
+      })),
+  ];
 
   const ha = useHaConnections(shopId);
   const idle = useIdleSettings(shopId);
@@ -105,8 +184,6 @@ export function ResourceEditor({
   }, [ownIdle?.exclude]);
   const [power, setPower] = useState<HaDraft>(() => draftOf(value?.homeAssistant));
   const [ac, setAc] = useState<HaDraft>(() => draftOf(value?.climate));
-  // Once the shop's connections are known, an unset binding uses the first one,
-  // and one saved by address alone is shown on its connection.
   useEffect(() => {
     const list = ha.connections;
     if (!list?.length) return;
@@ -119,69 +196,97 @@ export function ResourceEditor({
     setPower(settle);
     setAc(settle);
   }, [ha.connections]);
-  // The server reuses the power side's token for the same new Home Assistant.
   const acSharesPowerToken =
     caps.power && ac.connection === NEW_CONNECTION && power.connection === NEW_CONNECTION &&
     !!ac.url.trim() && ac.url.trim() === power.url.trim() && (!!value?.homeAssistant || !!power.token.trim());
 
-  // A HINATA IO connects straight to the platform unless it already runs through
-  // an external relay: direct is what a new card cabinet is set up with.
+  // HINATA IO state
   const [embedded, setEmbedded] = useState(
     initial.hinata_io ? value?.relayConnection === "embedded" : true,
   );
   const [hinataUrl, setHinataUrl] = useState(value?.hinataUrl ?? "");
   const [password, setPassword] = useState("");
-  const [coinMethod, setCoinMethod] = useState<"key">(value?.coinMethod ?? "key");
-  // The cabinet's named keys, with what staff typed for each; and which one is the coin button.
-  const [keys, setKeys] = useState<CabinetKeyDraft[]>(
-    () => (value?.keys ?? []).map((one) => ({ id: one.id, name: one.name, key: keyTextFromVk(one.key) })),
+
+  // Host (PRiSM Launcher) state
+  const [hostPrograms, setHostPrograms] = useState<HostProgram[]>(value?.host?.programs ?? []);
+  const [hostDefaultProgram, setHostDefaultProgram] = useState<string>(value?.host?.defaultProgram ?? "");
+
+  // Unified cabinet buttons (`keys`) state
+  const [buttons, setButtons] = useState<ResourceButtonDraft[]>(() =>
+    (value?.keys ?? []).map((one) =>
+      one.mode === "gpio"
+        ? {
+            id: one.id,
+            name: one.name,
+            mode: "gpio",
+            key: "",
+            nodeId: one.nodeId,
+            pin: String(one.pin),
+            pulseMs: String(one.pulseMs ?? 80),
+            activeLow: one.activeLow ?? true,
+          }
+        : {
+            id: one.id,
+            name: one.name,
+            mode: "keyboard",
+            key: keyTextFromVk(one.key),
+            nodeId: "",
+            pin: "",
+            pulseMs: "80",
+            activeLow: true,
+          },
+    ),
   );
+
+  // Coin state (picks a button in `keys` + direct-IO cap/afterSwipe + GPIO-only optional hardware feedback)
   const [coinKeyId, setCoinKeyId] = useState<string | null>(value?.coin?.keyId ?? value?.coinKeyId ?? null);
-  const coinChosen = !!coinKeyId && keys.some((one) => one.id === coinKeyId);
+  const selectedCoinButton = coinKeyId ? buttons.find((one) => one.id === coinKeyId) ?? null : null;
+  const coinChosen = !!selectedCoinButton;
+  const isGpioCoin = selectedCoinButton?.mode === "gpio";
   const [coinAfterSwipe, setCoinAfterSwipe] = useState(
     value?.coin?.afterSwipe ?? value?.coinAfterSwipe ?? false,
   );
   const [coinCap, setCoinCap] = useState(
     (value?.coin?.cap ?? value?.coinCap) ? String(value?.coin?.cap ?? value?.coinCap) : "",
   );
+  const [coinFeedbackEnabled, setCoinFeedbackEnabled] = useState<boolean>(
+    !!(value?.coin?.feedbackNodeId && value?.coin?.feedbackPin !== undefined && value?.coin?.feedbackPin !== null),
+  );
+  const [coinFeedbackNodeId, setCoinFeedbackNodeId] = useState<string>(value?.coin?.feedbackNodeId ?? "");
+  const [coinFeedbackPin, setCoinFeedbackPin] = useState<string>(
+    value?.coin?.feedbackPin !== undefined && value?.coin?.feedbackPin !== null
+      ? String(value.coin.feedbackPin)
+      : "",
+  );
+  const [coinFeedbackEdge, setCoinFeedbackEdge] = useState<CoinFeedbackEdge>(
+    value?.coin?.feedbackEdge ?? "falling",
+  );
+  const [coinFeedbackDebounceMs, setCoinFeedbackDebounceMs] = useState<string>(
+    String(value?.coin?.feedbackDebounceMs ?? 50),
+  );
+  const [coinFeedbackSignal, setCoinFeedbackSignal] = useState<CoinFeedbackSignal>(
+    value?.coin?.feedbackSignal ?? "cabinet.coin",
+  );
 
-  const [lockId, setLockId] = useState(
-    value?.ttlockLockId ? String(value.ttlockLockId) : "",
-  );
+  const [lockId, setLockId] = useState(value?.ttlockLockId ? String(value.ttlockLockId) : "");
   const [tableStart, setTableStart] = useState<"full" | "seated">(value?.table?.startWhen ?? "full");
-  const [tablePricing, setTablePricing] = useState<string[]>(
-    value?.table?.pricingConfigIds ?? [],
-  );
-  const [pricing, setPricing] = useState<
-    { id: string; name: string; enabled: boolean }[]
-  >([]);
-  // Which plan scanning this resource starts: its group's, or one of its own.
+  const [tablePricing, setTablePricing] = useState<string[]>(value?.table?.pricingConfigIds ?? []);
+  const [pricing, setPricing] = useState<{ id: string; name: string; enabled: boolean }[]>([]);
   const [groupId, setGroupId] = useState(value?.resourceGroupId ?? initialGroupId ?? "default");
   const [overrideId, setOverrideId] = useState(value?.pricingConfigOverrideId ?? "");
   const { groups } = useResourceGroups(shopId);
   const billablePlans = useBillablePlans(shopCode);
   const groupPlanId = groups?.find((group) => group.id === groupId)?.defaultPricingConfigId ?? null;
   const groupPlanName = groupPlanId ? billablePlans.find((plan) => plan.id === groupPlanId)?.name ?? null : null;
-  // Without its own plan or its group's, the resource is free to use.
   const billed = !!overrideId || !!groupPlanId;
 
-  const [issued, setIssued] = useState<{ token: string; url: string } | null>(
-    null,
-  );
+  const [issued, setIssued] = useState<IssuedCredential | null>(null);
   const [live, setLive] = useState<Resource | null>(value ?? null);
   const [botPane, setBotPane] = useState<"permissions" | "broadcasts" | "replies" | "connection">("permissions");
   const [bot, setBot] = useState<BotSettings>(() => ({ ...defaultBotSettings, ...(value?.bot ?? {}) }));
   const changeBot = (patch: Partial<BotSettings>) => setBot((current) => ({ ...current, ...patch }));
-  // Shown once, after the bot is created or its token replaced.
   const [botToken, setBotToken] = useState<string | null>(null);
-  const [doors, setDoors] = useState<{ id: string; name: string }[]>([]);
-  useEffect(() => {
-    if (!caps.bot) return;
-    Api.machines(shopId)
-      .then((r) => setDoors(r.machines.filter((m) => m.ttlockLockId).map((m) => ({ id: m.id, name: m.name }))))
-      .catch(() => setDoors([]));
-  }, [caps.bot, shopId]);
-  const canCoin = embedded || !!value?.hasPassword || !!password;
+  const doors = shopResources.filter((m) => m.ttlockLockId).map((m) => ({ id: m.id, name: m.name }));
 
   useEffect(() => {
     if (!caps.table) return;
@@ -192,12 +297,15 @@ export function ResourceEditor({
       .catch(() => setPricing([]));
   }, [caps.table, shopCode]);
 
-  // A token that is on screen has not reached the machine yet, so the dialog
-  // must stay open until the store confirms it wrote the value down.
   useEffect(() => {
     onLockChange(!!issued || !!botToken);
     return () => onLockChange(false);
   }, [issued, botToken, onLockChange]);
+
+  const hasKeyboardChannel = caps.host || (caps.hinata_io && (embedded || !!value?.hasPassword || !!password));
+  const resourceHasPlayerLink = hasResourceLink(caps);
+
+  const defaultIotOptionId = () => (caps.iot ? selfIotId : iotOptions[0]?.nodeId ?? "");
 
   /** Why a capability's own configuration is not complete yet. */
   const missingConfig = (id: CapabilityId): string | null => {
@@ -216,9 +324,40 @@ export function ResourceEditor({
     }
     if (id === "hinata_io" && !embedded && !hinataUrl.trim())
       return t("请填写 HINATA IO 地址");
+    if (id === "keys") {
+      if (!buttons.length) return t("请至少添加一个按键");
+      for (const btn of buttons) {
+        if (!btn.name.trim()) return t("请填写按键名称");
+        if (btn.mode === "gpio") {
+          if (!btn.nodeId) return t("请为 GPIO 按键选择 IoT 控制器");
+          const pin = Number(btn.pin);
+          if (btn.pin.trim() === "" || !Number.isInteger(pin) || pin < 0 || pin > 255)
+            return t("请填写有效的 GPIO 引脚编号（0–255）");
+        } else {
+          const code = btn.key.trim() ? vkFromKeyText(btn.key) : null;
+          if (code === null) return t("请填写有效的键盘按键");
+          if (!hasKeyboardChannel) return t("键盘按键需要启用「启动器」或「刷卡 · HINATA IO」");
+        }
+      }
+    }
     if (id === "coin") {
-      if (!caps.hinata_io) return t("用按键投币需要先添加「刷卡 · HINATA IO」");
       if (!coinChosen) return t("请选择投币按键");
+      if (isGpioCoin && coinFeedbackEnabled) {
+        if (!coinFeedbackNodeId) return t("配置硬件回报引脚时请选择 IoT 控制器");
+        const fb = Number(coinFeedbackPin);
+        if (coinFeedbackPin.trim() === "" || !Number.isInteger(fb) || fb < 0 || fb > 255)
+          return t("回报引脚编号须为 0–255 的整数");
+      }
+    }
+    if (id === "host") {
+      const names = new Set<string>();
+      for (const p of hostPrograms) {
+        if (!p.name.trim() || !p.path.trim()) return t("程序名称和路径均不能为空");
+        if (names.has(p.name.trim())) return t("程序名称不能重复");
+        names.add(p.name.trim());
+      }
+      if (hostDefaultProgram && !names.has(hostDefaultProgram))
+        return t("默认启动程序必须在程序列表中");
     }
     if (id === "door" && !(Number(lockId) > 0)) return t("请填写门锁 ID");
     if (id === "bot") {
@@ -237,23 +376,47 @@ export function ResourceEditor({
     return null;
   };
 
-  /** Adding a capability shows it, because that is when it has to be filled in. */
+  /** Adding a capability automatically enables any required dependencies. */
   const enable = (id: CapabilityId) => {
+    if (conflictingCapabilities(id, caps).length > 0) return;
+    const reqs = capabilityRequires(id);
     if (id === "climate" && ac.connection === NEW_CONNECTION && !ac.url.trim())
-      // Usually the same Home Assistant as the power switch.
       setAc({ ...ac, connection: power.connection, url: power.url });
-    // A coin presses the IO's key named 投币 when there is one, otherwise its first key.
-    if (id === "coin" && !coinChosen)
-      setCoinKeyId((keys.find((one) => one.name.trim() === "投币") ?? keys[0])?.id ?? null);
-    setCaps((current) => ({ ...current, [id]: true }));
+    if (id === "keys" || reqs.includes("keys")) {
+      if (buttons.length === 0) {
+        const preferGpio = !caps.host && !caps.hinata_io && (caps.iot || iotOptions.length > 0);
+        const firstId = newKeyId();
+        setButtons([
+          {
+            id: firstId,
+            name: "投币",
+            mode: preferGpio ? "gpio" : "keyboard",
+            key: preferGpio ? "" : "Space",
+            nodeId: preferGpio ? defaultIotOptionId() : "",
+            pin: "",
+            pulseMs: "80",
+            activeLow: true,
+          },
+        ]);
+        if (id === "coin" && !coinKeyId) setCoinKeyId(firstId);
+      } else if (id === "coin" && !coinChosen) {
+        setCoinKeyId((buttons.find((one) => one.name.trim() === "投币") ?? buttons[0])?.id ?? null);
+      }
+    }
+    setCaps((current) => {
+      const next = { ...current, [id]: true };
+      for (const req of reqs) next[req] = true;
+      return next;
+    });
     setPane(id);
   };
+
   const remove = (id: CapabilityId) => {
+    if (dependentCapabilities(id, caps).length > 0) return;
     setCaps((current) => ({ ...current, [id]: false }));
     setPane("basic");
   };
 
-  /** Why an enabled capability still cannot be saved, if it cannot. */
   const incomplete = (id: CapabilityId): string | null =>
     caps[id] ? missingConfig(id) : null;
 
@@ -266,11 +429,6 @@ export function ResourceEditor({
     })),
     ...(capabilityList.some((id) => !caps[id]) ? [{ id: "add" as const, label: "添加能力", icon: Plus }] : []),
   ];
-
-  /** The INI fragment a machine needs to reach this platform directly. */
-  const iniSnippet = issued
-    ? `serverUrl=${issued.url}\ndeviceToken=${issued.token}`
-    : "";
 
   if (botToken) {
     const snippet = `baseUrl: ${window.location.origin}\nintegrationToken: ${botToken}`;
@@ -307,19 +465,39 @@ export function ResourceEditor({
   }
 
   if (issued) {
-    // The token is a one-time credential handout, not part of the form. The
-    // dialog stays locked until the store confirms it wrote the value down.
+    const isHinata = issued.kind === "hinata";
+    const snippet = isHinata
+      ? `serverUrl=${issued.url}\ndeviceToken=${issued.token}`
+      : JSON.stringify({ url: issued.url, token: issued.token }, null, 2);
+    const title =
+      issued.kind === "hinata"
+        ? "设备令牌已签发"
+        : issued.kind === "host"
+          ? "Launcher 令牌已签发"
+          : "IoT 控制器令牌已签发";
+    const sectionTitle =
+      issued.kind === "hinata"
+        ? "写入机台 INI"
+        : issued.kind === "host"
+          ? "写入 launcher.json"
+          : "写入硬件控制器配置";
+    const hintText =
+      issued.kind === "hinata"
+        ? "把这两行写入 hinata.ini 或 segatools.ini 的 [aimeio] 段，然后重启机台。"
+        : issued.kind === "host"
+          ? "把这段配置保存为 prism-launcher 同目录的 launcher.json 后启动即可；游戏列表会在连接后自动下发。"
+          : "把地址和令牌写入 IoT 控制器（ESP32 / 树莓派 / RP2040 等）；信标与 GPIO 引脚会在连接后自动下发。";
     return (
       <div className="grid gap-5">
         <div className="grid gap-1">
-          <h3 className="text-sm font-semibold">{t("设备令牌已签发")}</h3>
+          <h3 className="text-sm font-semibold">{t(title)}</h3>
           <p className="text-xs leading-relaxed text-ink/60">
             {t("这是唯一一次显示，离开后无法再次查看。")}
           </p>
         </div>
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium">{t("设备令牌")}</span>
+            <span className="text-sm font-medium">{t("连接令牌")}</span>
             <CopyButton value={issued.token} label="复制令牌" />
           </div>
           <code className="break-all rounded-lg bg-ink/5 p-3 text-xs">
@@ -328,15 +506,13 @@ export function ResourceEditor({
         </div>
         <div className="grid gap-2">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium">{t("写入机台 INI")}</span>
-            <CopyButton value={iniSnippet} label="复制片段" />
+            <span className="text-sm font-medium">{t(sectionTitle)}</span>
+            <CopyButton value={snippet} label="复制配置" />
           </div>
           <pre className="overflow-x-auto whitespace-pre rounded-lg bg-ink/5 p-3 text-xs">
-            {iniSnippet}
+            {snippet}
           </pre>
-          <p className="text-xs leading-relaxed text-ink/60">
-            {t("把这两行写入 hinata.ini 或 segatools.ini 的 [aimeio] 段，然后重启机台。")}
-          </p>
+          <p className="text-xs leading-relaxed text-ink/60">{t(hintText)}</p>
         </div>
         <button
           type="button"
@@ -346,7 +522,7 @@ export function ResourceEditor({
             done();
           }}
         >
-          {t("我已写入机台")}
+          {t("我已保存配置")}
         </button>
       </div>
     );
@@ -367,11 +543,13 @@ export function ResourceEditor({
       noValidate
       done={done}
       onResult={(result) => {
-        // The device token is returned exactly once. Keep the editor open so
-        // the store can copy it, and never re-fetch it: it is not recoverable.
         const saved = result as {
           machine?: Resource;
           relayToken?: string;
+          hostToken?: string;
+          hostWsUrl?: string;
+          iotToken?: string;
+          iotWsUrl?: string;
           botToken?: string;
         } | null;
         if (saved?.machine) setLive(saved.machine);
@@ -379,21 +557,30 @@ export function ResourceEditor({
           setBotToken(saved.botToken);
           return true;
         }
-        const token = saved?.relayToken;
-        if (!token) {
-          setIssued(null);
-          return false;
+        if (saved?.hostToken) {
+          setIssued({ kind: "host", token: saved.hostToken, url: saved.hostWsUrl ?? saved.machine?.hostWsUrl ?? "" });
+          return true;
         }
-        setIssued({ token, url: saved?.machine?.relayUrl ?? "" });
-        return true;
+        if (saved?.iotToken) {
+          setIssued({ kind: "iot", token: saved.iotToken, url: saved.iotWsUrl ?? saved.machine?.iotWsUrl ?? "" });
+          return true;
+        }
+        if (saved?.relayToken) {
+          setIssued({ kind: "hinata", token: saved.relayToken, url: saved.machine?.relayUrl ?? "" });
+          return true;
+        }
+        setIssued(null);
+        return false;
       }}
       submit={async (f) => {
-        const issuing = f.get("intent") === "issue";
+        const intent = f.get("intent");
+        const issuingRelay = intent === "issue";
+        const issuingHost = intent === "issue-host";
+        const issuingIot = intent === "issue-iot";
         if (!name.trim()) throw new Error(t("请填写资源名称"));
         for (const id of capabilityList) {
           const reason = incomplete(id);
           if (reason) {
-            // Show the capability so the message lands next to its fields.
             setPane(id);
             if (id === "bot") {
               const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text));
@@ -409,15 +596,7 @@ export function ResourceEditor({
           setPane("table");
           throw new Error(t("桌游容量须为 2 到 8 人"));
         }
-        // Minting is an explicit action. A plain save on a direct-connect
-        // device without a credential would silently create one, so it is
-        // refused instead.
-        if (
-          caps.hinata_io &&
-          embedded &&
-          !live?.hasRelayToken &&
-          !issuing
-        ) {
+        if (caps.hinata_io && embedded && !live?.hasRelayToken && !issuingRelay) {
           setPane("hinata_io");
           throw new Error(t("请先签发设备令牌，或改为外部中继。"));
         }
@@ -426,47 +605,80 @@ export function ResourceEditor({
           body: JSON.stringify({
             shopId,
             name: name.trim(),
-            aliases: aliases
-              .map((alias) => alias.trim())
-              .filter(Boolean),
+            aliases: aliases.map((alias) => alias.trim()).filter(Boolean),
             kind: caps.door ? "door" : "machine",
             enabled,
             ...(resourceCapacity.trim() !== "" ? { capacity: Number(resourceCapacity) } : {}),
             occupancyMinutes: Number(occupancyMinutes) || 15,
+            locationOverride: resourceHasPlayerLink
+              ? {
+                  mode: locMode,
+                  beaconNodeId: locMode === "ble" ? (locBeaconNodeId || null) : null,
+                  rssiThreshold: locMode === "ble" ? locRssiThreshold : null,
+                }
+              : null,
             bot: caps.bot ? bot : null,
-            ...(caps.bot && f.get("intent") === "rotate-bot" ? { rotateBotToken: true } : {}),
+            ...(caps.bot && intent === "rotate-bot" ? { rotateBotToken: true } : {}),
             resourceGroupId: groupId,
             pricingConfigOverrideId: overrideId || null,
             table: caps.table ? { pricingConfigIds: tablePricing, startWhen: tableStart } : null,
-            // A capability that is switched off is removed, which the server
-            // expresses as `null` for the bound fields.
             relayConnection: caps.hinata_io && embedded ? "embedded" : "external",
-            // Re-issuing replaces the token the machine currently uses.
-            ...(caps.hinata_io && embedded && issuing && live?.hasRelayToken
-              ? { rotateRelayToken: true }
-              : {}),
-            // Direct mode is authenticated by its device token, so it has no URL
-            // or password to send, and the platform rejects the combination.
+            ...(caps.hinata_io && embedded && issuingRelay && live?.hasRelayToken ? { rotateRelayToken: true } : {}),
             hinataUrl: caps.hinata_io && !embedded ? hinataUrl.trim() : null,
-            ...(caps.hinata_io && !embedded && password
-              ? { hinataPassword: password }
-              : {}),
+            ...(caps.hinata_io && !embedded && password ? { hinataPassword: password } : {}),
             homeAssistant: caps.power ? haBody(power) : null,
             climate: caps.climate ? haBody(ac) : null,
-            ...(caps.hinata_io ? { keys: keys.map((one) => ({ id: one.id, name: one.name.trim(), key: one.key })) } : {}),
-            // Coin is its own capability; the limit and the coin after a swipe need a direct IO.
+            keysEnabled: caps.keys,
+            keys: caps.keys
+              ? buttons.map((one) =>
+                  one.mode === "gpio"
+                    ? {
+                        id: one.id,
+                        name: one.name.trim(),
+                        mode: "gpio" as const,
+                        nodeId: one.nodeId,
+                        pin: Number(one.pin),
+                        pulseMs: Math.min(5000, Math.max(10, Number(one.pulseMs) || 80)),
+                        activeLow: one.activeLow,
+                      }
+                    : {
+                        id: one.id,
+                        name: one.name.trim(),
+                        mode: "keyboard" as const,
+                        key: one.key,
+                      },
+                )
+              : null,
+            host: caps.host
+              ? {
+                  defaultProgram: hostDefaultProgram || null,
+                  programs: hostPrograms.map((p) => ({ name: p.name.trim(), path: p.path.trim() })),
+                }
+              : null,
+            ...(caps.host && issuingHost ? { rotateHostToken: true } : {}),
+            iot: caps.iot ? {} : null,
+            ...(caps.iot && issuingIot ? { rotateIotToken: true } : {}),
             coin: caps.coin
               ? {
-                  method: coinMethod,
                   keyId: coinChosen ? coinKeyId : null,
-                  cap: embedded && Number(coinCap) > 0 ? Number(coinCap) : null,
-                  afterSwipe: embedded && Number(coinCap) > 0 && coinAfterSwipe,
+                  cap: caps.hinata_io && embedded && Number(coinCap) > 0 ? Number(coinCap) : null,
+                  afterSwipe: caps.hinata_io && embedded && Number(coinCap) > 0 && coinAfterSwipe,
+                  feedbackNodeId:
+                    isGpioCoin && coinFeedbackEnabled && coinFeedbackPin.trim() !== ""
+                      ? coinFeedbackNodeId || null
+                      : null,
+                  feedbackPin:
+                    isGpioCoin && coinFeedbackEnabled && coinFeedbackPin.trim() !== ""
+                      ? Number(coinFeedbackPin)
+                      : null,
+                  feedbackEdge: coinFeedbackEdge,
+                  feedbackDebounceMs: Math.min(2000, Math.max(1, Number(coinFeedbackDebounceMs) || 50)),
+                  feedbackSignal: coinFeedbackSignal,
                 }
               : null,
             ttlockLockId: caps.door ? Number(lockId) : null,
           }),
         });
-        // Whether it is never switched off lives with the shop's idle rules, keyed by device.
         const own = idle.settings?.devices[saved.machine.id];
         if ((caps.power || caps.climate) && !!own?.exclude !== idleExclude) {
           await api(idlePath(shopId, `/devices/${encodeURIComponent(saved.machine.id)}`), {
@@ -515,9 +727,6 @@ export function ResourceEditor({
               {t("玩家和 Bot 可以用任意一个别名找到这个资源。")}
             </p>
           </div>
-          {/* The list always ends in an empty row: typing in it appends the
-              value and a fresh empty row appears, so adding an alias needs no
-              separate button. */}
           {[...aliases, ""].map((alias, index) => {
             const draft = index === aliases.length;
             return (
@@ -531,18 +740,12 @@ export function ResourceEditor({
                   onChange={(e) => {
                     const next = e.target.value;
                     if (index < aliases.length) {
-                      setAliases(
-                        aliases.map((current, i) =>
-                          i === index ? next : current,
-                        ),
-                      );
+                      setAliases(aliases.map((current, i) => (i === index ? next : current)));
                     } else if (next) {
                       setAliases([...aliases, next]);
                     }
                   }}
                   onBlur={() => {
-                    // An alias edited down to nothing should not leave a
-                    // blank row behind when the field loses focus.
                     if (index < aliases.length && !aliases[index]?.trim()) {
                       setAliases(aliases.filter((_, i) => i !== index));
                     }
@@ -553,9 +756,7 @@ export function ResourceEditor({
                     type="button"
                     className={`${buttonQuiet} size-11 shrink-0 justify-center`}
                     aria-label={`${t("移除别名")} ${index + 1}`}
-                    onClick={() =>
-                      setAliases(aliases.filter((_, i) => i !== index))
-                    }
+                    onClick={() => setAliases(aliases.filter((_, i) => i !== index))}
                   >
                     <X size={16} />
                   </button>
@@ -565,6 +766,87 @@ export function ResourceEditor({
           })}
         </div>
         </div>
+        {resourceHasPlayerLink && (
+          <div className="bill-entry !mb-0 grid gap-3">
+            <Field label="定位设置覆盖">
+              <select
+                className={input}
+                value={locMode}
+                onChange={(e) => setLocMode(e.target.value as ResourceLocationMode)}
+              >
+                <option value="inherit">{t("跟随店铺")}</option>
+                <option value="gps">{t("仅 GPS")}</option>
+                <option value="ble">{t("仅蓝牙信标")}</option>
+                <option value="none">{t("无定位")}</option>
+              </select>
+            </Field>
+            {locMode === "ble" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="限定蓝牙信标">
+                  <select
+                    className={input}
+                    value={locBeaconNodeId}
+                    onChange={(e) => setLocBeaconNodeId(e.target.value)}
+                  >
+                    <option value="">{t("店内任意蓝牙信标")}</option>
+                    {iotOptions.map((opt) => (
+                      <option key={opt.nodeId} value={opt.nodeId}>
+                        {opt.beaconId !== null ? `${opt.label} · #${opt.beaconId}` : opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="grid gap-1.5">
+                  <span className="text-sm font-medium">{t("感应距离覆盖")}</span>
+                  <div
+                    role="group"
+                    aria-label={t("感应距离覆盖")}
+                    className="grid min-h-11 grid-cols-4 overflow-hidden rounded-lg border border-ink/20 bg-panel"
+                  >
+                    {(
+                      [
+                        { value: null, label: "跟随店铺" },
+                        { value: -65, label: "近" },
+                        { value: -75, label: "标准" },
+                        { value: -85, label: "远" },
+                      ] as const
+                    ).map((preset, idx) => {
+                      const active =
+                        preset.value === null
+                          ? locRssiThreshold === null
+                          : locRssiThreshold !== null &&
+                            (preset.value === -65
+                              ? locRssiThreshold >= -70
+                              : preset.value === -85
+                                ? locRssiThreshold <= -80
+                                : locRssiThreshold > -80 && locRssiThreshold < -70);
+                      return (
+                        <button
+                          key={String(preset.value)}
+                          type="button"
+                          aria-pressed={active}
+                          className={`focus-ring px-1.5 py-2 text-xs font-medium transition-colors ${
+                            idx > 0 ? "border-l border-ink/15" : ""
+                          } ${
+                            active
+                              ? "bg-primary text-primary-foreground"
+                              : "text-ink/70 hover:bg-ink/5 hover:text-ink"
+                          }`}
+                          onClick={() => setLocRssiThreshold(preset.value)}
+                        >
+                          {t(preset.label)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+            <Hint>
+              {t("默认跟随「设置 → 位置与设备」中的店铺位置校验；也可以为此资源单独指定 GPS、蓝牙信标或免定位校验。")}
+            </Hint>
+          </div>
+        )}
         <label className="bill-entry !mb-0 flex cursor-pointer items-center justify-between gap-3 px-3.5 py-3 text-sm font-medium">
           <span>{t("启用")}</span>
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -599,7 +881,7 @@ export function ResourceEditor({
                 </select>
               </Field>
             </div>
-          {!caps.bot && (
+          {resourceHasPlayerLink && (
             <div className="bill-entry !mb-0 grid gap-3">
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="容量" unit="人">
@@ -687,199 +969,569 @@ export function ResourceEditor({
       )}
       {pane === "hinata_io" && caps.hinata_io && (
         <CapabilityPane meta={capabilityMeta.hinata_io} problem={incomplete("hinata_io")} remove={() => remove("hinata_io")}>
-          <div className="grid gap-4">
-            <div className="bill-entry !mb-0 grid gap-4">
-              <Segmented
-                label={t("连接方式")}
-                options={[
-                  ["embedded", t("直连本平台")],
-                  ["external", t("外部中继")],
-                ]}
-                value={embedded ? "embedded" : "external"}
-                onChange={(next) => setEmbedded(next === "embedded")}
-              />
-              {embedded ? (
-                <DirectConnectPanel
-                  live={live}
-                  hasRelayToken={!!live?.hasRelayToken}
-                />
-              ) : (
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label="HINATA IO 地址">
-                    <input
-                      className={input}
-                      required
-                      placeholder="https://io.example.com"
-                      value={hinataUrl}
-                      onChange={(e) => setHinataUrl(e.target.value)}
-                    />
-                  </Field>
-                  <Field label="连接密码" unit={value?.hasPassword ? "已设置" : undefined}>
-                    <input
-                      className={input}
-                      type="password"
-                      autoComplete="new-password"
-                      value={password}
-                      placeholder={
-                        value?.hasPassword ? "••••••••" : ""
-                      }
-                      onChange={(e) => setPassword(e.target.value)}
-                    />
-                  </Field>
-                </div>
+          <div className="bill-entry !mb-0 grid gap-4">
+            <Segmented
+              label={t("连接方式")}
+              options={[
+                ["embedded", t("直连本平台")],
+                ["external", t("外部中继")],
+              ]}
+              value={embedded ? "embedded" : "external"}
+              onChange={(next) => setEmbedded(next === "embedded")}
+            />
+            {embedded ? (
+              <DirectConnectPanel live={live} hasRelayToken={!!live?.hasRelayToken} />
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="HINATA IO 地址">
+                  <input
+                    className={input}
+                    required
+                    placeholder="https://io.example.com"
+                    value={hinataUrl}
+                    onChange={(e) => setHinataUrl(e.target.value)}
+                  />
+                </Field>
+                <Field label="连接密码" unit={value?.hasPassword ? "已设置" : undefined}>
+                  <input
+                    className={input}
+                    type="password"
+                    autoComplete="new-password"
+                    value={password}
+                    placeholder={value?.hasPassword ? "••••••••" : ""}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </Field>
+              </div>
+            )}
+            <Hint>{t("如需配置投币、测试或服务等按键，请添加「机台按键」能力。")}</Hint>
+          </div>
+        </CapabilityPane>
+      )}
+      {pane === "keys" && caps.keys && (
+        <CapabilityPane
+          meta={capabilityMeta.keys}
+          problem={incomplete("keys")}
+          remove={() => remove("keys")}
+          removeBlockedBy={dependentCapabilities("keys", caps).map((d) => t(capabilityMeta[d].label))}
+        >
+          <div className="bill-entry !mb-0 grid gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">{t("按键列表")}</span>
+                <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink/55 tabular-nums">
+                  {t("{count} / 16", { count: String(buttons.length) })}
+                </span>
+              </div>
+              {buttons.length < 16 && (
+                <button
+                  type="button"
+                  className={`${compactActionBtn} border-dashed`}
+                  onClick={() => {
+                    const preferGpio = !caps.host && !caps.hinata_io && iotOptions.length > 0;
+                    setButtons([
+                      ...buttons,
+                      {
+                        id: newKeyId(),
+                        name: buttons.length ? "" : "投币",
+                        mode: preferGpio ? "gpio" : "keyboard",
+                        key: buttons.length ? "" : preferGpio ? "" : "Space",
+                        nodeId: preferGpio ? defaultIotOptionId() : "",
+                        pin: "",
+                        pulseMs: "80",
+                        activeLow: true,
+                      },
+                    ]);
+                  }}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  {t("添加按键")}
+                </button>
               )}
             </div>
-            {/* Named keys: buttons in this cabinet's admin, never on a player's page. */}
-            <div className="bill-entry !mb-0 grid gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium">{t("按键")}</span>
-                  <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium text-ink/55 tabular-nums">
-                    {t("{count} / 16", { count: String(keys.length) })}
-                  </span>
-                </div>
-                {keys.length < 16 && (
-                  <button
-                    type="button"
-                    className={`${compactActionBtn} border-dashed`}
-                    onClick={() => setKeys([...keys, { id: newKeyId(), name: keys.length ? "" : "投币", key: keys.length ? "" : "Space" }])}
-                  >
-                    <Plus size={14} aria-hidden="true" />
-                    {t("添加按键")}
-                  </button>
-                )}
-              </div>
-              {keys.length > 0 && (
-                <div className="overflow-hidden rounded-xl border border-ink/10 bg-panel">
-                  <div className="hidden grid-cols-[minmax(0,1fr)_9rem_2.75rem] gap-2 border-b border-ink/10 bg-ink/[0.02] px-3 py-2 text-xs text-ink/55 sm:grid">
-                    <span>{t("名称")}</span>
-                    <span>{t("键")}</span>
-                    <span />
-                  </div>
-                  {keys.map((one, index) => {
-                    const code = one.key.trim() ? vkFromKeyText(one.key) : null;
-                    const bad = !!one.key.trim() && code === null;
-                    const set = (patch: Partial<CabinetKeyDraft>) => setKeys(keys.map((other, at) => (at === index ? { ...other, ...patch } : other)));
-                    return (
-                      <div key={one.id} className="grid grid-cols-[minmax(0,1fr)_9rem_2.75rem] items-start gap-2 border-b border-ink/[0.06] px-3 py-2.5 last:border-b-0">
+
+            {buttons.length > 0 && (
+              <div className="grid gap-2.5">
+                {buttons.map((one, index) => {
+                  const code = one.mode === "keyboard" && one.key.trim() ? vkFromKeyText(one.key) : null;
+                  const badKey = one.mode === "keyboard" && !!one.key.trim() && code === null;
+                  const set = (patch: Partial<ResourceButtonDraft>) =>
+                    setButtons(buttons.map((other, at) => (at === index ? { ...other, ...patch } : other)));
+                  const selectedIot = one.mode === "gpio" ? iotOptions.find((o) => o.nodeId === one.nodeId) : undefined;
+                  const occupiedPins = selectedIot?.bindings
+                    .filter((b) => b.deviceId !== value?.id && b.pin !== undefined)
+                    .map((b) => `GPIO ${b.pin} (${b.deviceName})`);
+                  return (
+                    <div key={one.id} className="grid gap-2 rounded-xl border border-ink/10 bg-panel p-3">
+                      {caps.coin && one.id === coinKeyId && (
+                        <span className="justify-self-start rounded-full bg-mint/10 px-2 py-0.5 text-[11px] font-medium text-mint">
+                          {t("用作投币按键")}
+                        </span>
+                      )}
+
+                      {one.mode === "keyboard" ? (
                         <div className="grid gap-1.5">
-                          <input
-                            className={`${input} min-h-9`}
-                            aria-label={t("按键名称")}
-                            placeholder={t("如 服务、测试")}
-                            maxLength={20}
-                            value={one.name}
-                            onChange={(e) => set({ name: e.target.value })}
-                          />
-                          {caps.coin && one.id === coinKeyId && (
-                            <span className="justify-self-start rounded-full bg-mint/10 px-2 py-0.5 text-[11px] font-medium text-mint">
-                              {t("用作投币按键")}
-                            </span>
+                          <div className="grid grid-cols-2 items-center gap-2 sm:grid-cols-[minmax(0,1.1fr)_7.5rem_minmax(0,1fr)_auto]">
+                            <input
+                              className={`${input} min-h-9`}
+                              aria-label={t("按键名称")}
+                              placeholder={t("如 投币、服务、测试")}
+                              maxLength={20}
+                              value={one.name}
+                              onChange={(e) => set({ name: e.target.value })}
+                            />
+                            <select
+                              className={`${input} min-h-9`}
+                              aria-label={t("触发方式")}
+                              value={one.mode}
+                              onChange={(e) => {
+                                const mode = e.target.value as "keyboard" | "gpio";
+                                set({
+                                  mode,
+                                  ...(mode === "gpio" && !one.nodeId ? { nodeId: defaultIotOptionId() } : {}),
+                                });
+                              }}
+                            >
+                              <option value="keyboard">{t("键盘按键")}</option>
+                              <option value="gpio">{t("GPIO 脉冲")}</option>
+                            </select>
+                            <input
+                              className={`${input} min-h-9 font-mono ${badKey ? "border-red-500/70" : ""}`}
+                              aria-label={t("键")}
+                              aria-invalid={badKey}
+                              placeholder="Space / F1"
+                              maxLength={12}
+                              value={one.key}
+                              onChange={(e) => set({ key: e.target.value })}
+                            />
+                            <button
+                              type="button"
+                              className={`${buttonQuiet} h-9 w-9 justify-center justify-self-end text-ink/55 hover:text-coral`}
+                              aria-label={t("删除按键 {name}", { name: one.name || t("未命名") })}
+                              onClick={() => {
+                                setButtons(buttons.filter((_, at) => at !== index));
+                                if (one.id === coinKeyId) setCoinKeyId(null);
+                              }}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                          {badKey && (
+                            <span className="text-xs text-red-600">{t("认不出这个键")}</span>
                           )}
                         </div>
-                        <div className="grid gap-1">
-                          <input
-                            className={`${input} min-h-9 font-mono ${bad ? "border-red-500/70" : ""}`}
-                            aria-label={t("键")}
-                            aria-invalid={bad}
-                            placeholder="F1"
-                            maxLength={12}
-                            value={one.key}
-                            onChange={(e) => set({ key: e.target.value })}
-                          />
-                          <span className={`text-xs tabular-nums ${bad ? "text-red-600" : "text-ink/45"}`}>
-                            {bad ? t("认不出这个键") : code !== null ? t("键码 {code}", { code: String(code) }) : "\u00a0"}
-                          </span>
+                      ) : (
+                        <div className="grid gap-2">
+                          <div className="grid grid-cols-2 items-center gap-2 sm:grid-cols-[minmax(0,0.9fr)_7.5rem_minmax(0,1.25fr)_5rem_auto]">
+                            <input
+                              className={`${input} min-h-9`}
+                              aria-label={t("按键名称")}
+                              placeholder={t("如 投币、服务、测试")}
+                              maxLength={20}
+                              value={one.name}
+                              onChange={(e) => set({ name: e.target.value })}
+                            />
+                            <select
+                              className={`${input} min-h-9`}
+                              aria-label={t("触发方式")}
+                              value={one.mode}
+                              onChange={(e) => {
+                                const mode = e.target.value as "keyboard" | "gpio";
+                                set({
+                                  mode,
+                                  ...(mode === "gpio" && !one.nodeId ? { nodeId: defaultIotOptionId() } : {}),
+                                });
+                              }}
+                            >
+                              <option value="keyboard">{t("键盘按键")}</option>
+                              <option value="gpio">{t("GPIO 脉冲")}</option>
+                            </select>
+                            <select
+                              className={`${input} min-h-9`}
+                              aria-label={t("IoT 控制器")}
+                              value={one.nodeId}
+                              onChange={(e) => set({ nodeId: e.target.value })}
+                            >
+                              <option value="">{t("请选择控制器")}</option>
+                              {iotOptions.map((opt) => (
+                                <option key={opt.nodeId} value={opt.nodeId}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              className={`${input} min-h-9 font-mono`}
+                              aria-label={t("引脚 (GPIO)")}
+                              type="number"
+                              min={0}
+                              max={255}
+                              placeholder="GPIO"
+                              value={one.pin}
+                              onChange={(e) => set({ pin: e.target.value })}
+                            />
+                            <button
+                              type="button"
+                              className={`${buttonQuiet} h-9 w-9 justify-center justify-self-end text-ink/55 hover:text-coral`}
+                              aria-label={t("删除按键 {name}", { name: one.name || t("未命名") })}
+                              onClick={() => {
+                                setButtons(buttons.filter((_, at) => at !== index));
+                                if (one.id === coinKeyId) setCoinKeyId(null);
+                              }}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                          <details className="text-xs text-ink/60">
+                            <summary className="cursor-pointer select-none hover:text-ink">
+                              {t("高级脉冲参数（{ms}ms · {level}）", {
+                                ms: String(Number(one.pulseMs) || 80),
+                                level: t(one.activeLow ? "低电平触发" : "高电平触发"),
+                              })}
+                            </summary>
+                            <div className="mt-2.5 flex flex-wrap items-center gap-4 border-t border-dashed border-ink/10 pt-2.5">
+                              <label className="flex items-center gap-2">
+                                <span>{t("脉冲时长")}</span>
+                                <input
+                                  className={`${input} min-h-8 !w-20 font-mono text-xs`}
+                                  type="number"
+                                  min={10}
+                                  max={5000}
+                                  value={one.pulseMs}
+                                  onChange={(e) => set({ pulseMs: e.target.value })}
+                                />
+                                <span>ms</span>
+                              </label>
+                              <label className="flex cursor-pointer items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={one.activeLow}
+                                  onChange={(e) => set({ activeLow: e.target.checked })}
+                                />
+                                <span>{t("低电平触发（常用于光耦/集电极开路）")}</span>
+                              </label>
+                            </div>
+                          </details>
+                          {occupiedPins && occupiedPins.length > 0 && (
+                            <Hint>{t("该控制器已被其它资源占用的引脚：{pins}", { pins: occupiedPins.join("、") })}</Hint>
+                          )}
                         </div>
-                        <button
-                          type="button"
-                          className={`${buttonQuiet} h-9 w-9 justify-center text-ink/55 hover:text-coral`}
-                          aria-label={t("删除按键 {name}", { name: one.name || t("未命名") })}
-                          onClick={() => {
-                            setKeys(keys.filter((_, at) => at !== index));
-                            if (one.id === coinKeyId) setCoinKeyId(null);
-                          }}
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              <Hint>
-                {t("按键显示在后台这台资源的操作面板里，玩家页面不显示。键可以填字母、数字、F1–F24、Enter、Space，或直接填 Windows Virtual-Key 码。")}
-              </Hint>
-            </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <Hint>
+              {t("按键显示在后台操作面板中（玩家页面不显示）。键盘按键优先由 PRiSM Launcher 执行，未配或离线时自动回落 HINATA IO；GPIO 脉冲可选择本机或店内任意启用了「IoT 控制器」的资源。")}
+            </Hint>
           </div>
         </CapabilityPane>
       )}
       {pane === "coin" && caps.coin && (
         <CapabilityPane meta={capabilityMeta.coin} problem={incomplete("coin")} remove={() => remove("coin")}>
-          {/* How a coin goes in, and what holds every coin whichever way: the cooldown, the limit, coin events and billing. */}
           <div className="grid gap-4">
             <div className="bill-entry !mb-0 grid gap-3">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="投币方式">
-                  <select
-                    className={input}
-                    value={coinMethod}
-                    onChange={(e) => setCoinMethod(e.target.value as "key")}
-                  >
-                    <option value="key">{t("HINATA IO 按键")}</option>
-                  </select>
-                </Field>
-                <Field label="投币按键">
-                  <select
-                    className={input}
-                    disabled={!caps.hinata_io}
-                    value={coinChosen ? coinKeyId! : ""}
-                    onChange={(e) => setCoinKeyId(e.target.value || null)}
-                  >
-                    <option value="">{t("请选择")}</option>
-                    {keys.filter((one) => one.name.trim()).map((one) => (
-                      <option key={one.id} value={one.id}>{`${one.name} · ${one.key || "?"}`}</option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-              {caps.hinata_io ? (
-                <Hint>{t("投币时由 HINATA IO 按下这个键。按键在「刷卡 · HINATA IO」里添加和修改。")}</Hint>
-              ) : (
-                <Hint>{t("用按键投币需要先添加「刷卡 · HINATA IO」。")}</Hint>
-              )}
-              {!canCoin && caps.hinata_io && (
-                <Hint>{t("外部中继要先填连接密码，才能投币。")}</Hint>
-              )}
-            </div>
-            <div className="bill-entry !mb-0 grid gap-3">
-              <Field label="机台投币上限">
-                <input
+              <Field label="投币按键">
+                <select
                   className={input}
-                  type="number"
-                  min="1"
-                  max="99"
-                  placeholder={t("不限制")}
-                  disabled={!embedded}
-                  value={embedded ? coinCap : ""}
-                  onChange={(e) => setCoinCap(e.target.value)}
-                />
+                  value={coinChosen ? coinKeyId! : ""}
+                  onChange={(e) => setCoinKeyId(e.target.value || null)}
+                >
+                  <option value="">{t("请选择")}</option>
+                  {buttons.filter((one) => one.name.trim()).map((one) => (
+                    <option key={one.id} value={one.id}>
+                      {one.mode === "gpio"
+                        ? `${one.name} · GPIO ${one.pin || "?"}`
+                        : `${one.name} · ${one.key || "?"}`}
+                    </option>
+                  ))}
+                </select>
               </Field>
-              <label className={toggleRowClass}>
-                <input
-                  type="checkbox"
-                  disabled={!embedded || !(Number(coinCap) > 0)}
-                  checked={embedded && Number(coinCap) > 0 && coinAfterSwipe}
-                  onChange={(e) => setCoinAfterSwipe(e.target.checked)}
-                />
-                <span>{t("自动投币：游戏取走玩家的卡后自动投一枚币")}</span>
-              </label>
               <Hint>
-                {embedded
-                  ? t("机台内的币达到上限后，平台不再投币，自动投币也停在上限。需要直连的 HINATA IO 1.2.4 及以上；读不到币数时按投币冷却处理，自动投币不生效。")
-                  : t("投币上限和自动投币要读机台的账本和刷卡回报，只有直连的 HINATA IO 能用。")}
+                {t("从「机台按键」中选择一个按钮作为投币触发（支持键盘按键或 GPIO 脉冲）。")}{" "}
+                <button type="button" className="underline" onClick={() => setPane("keys")}>
+                  {t("去编辑机台按键")}
+                </button>
               </Hint>
             </div>
+
+            {caps.hinata_io && (
+              <div className="bill-entry !mb-0 grid gap-3">
+                <Field label="机台投币上限">
+                  <input
+                    className={input}
+                    type="number"
+                    min="1"
+                    max="99"
+                    placeholder={t("不限制")}
+                    disabled={!embedded}
+                    value={embedded ? coinCap : ""}
+                    onChange={(e) => setCoinCap(e.target.value)}
+                  />
+                </Field>
+                <label className={toggleRowClass}>
+                  <input
+                    type="checkbox"
+                    disabled={!embedded || !(Number(coinCap) > 0)}
+                    checked={embedded && Number(coinCap) > 0 && coinAfterSwipe}
+                    onChange={(e) => setCoinAfterSwipe(e.target.checked)}
+                  />
+                  <span>{t("自动投币：游戏取走玩家的卡后自动投一枚币")}</span>
+                </label>
+                <Hint>
+                  {embedded
+                    ? t("机台内的币达到上限后，平台不再投币，自动投币也停在上限。需要直连的 HINATA IO 1.2.4 及以上；读不到币数时按投币冷却处理，自动投币不生效。")
+                    : t("投币上限和自动投币要读机台的账本和刷卡回报，只有直连的 HINATA IO 能用。")}
+                </Hint>
+              </div>
+            )}
+
+            {isGpioCoin && (
+              <div className="bill-entry !mb-0 grid gap-3">
+                <label className={toggleRowClass}>
+                  <input
+                    type="checkbox"
+                    checked={coinFeedbackEnabled}
+                    onChange={(e) => {
+                      const nextEnabled = e.target.checked;
+                      setCoinFeedbackEnabled(nextEnabled);
+                      if (nextEnabled && !coinFeedbackNodeId) {
+                        setCoinFeedbackNodeId(selectedCoinButton?.nodeId || defaultIotOptionId());
+                      }
+                    }}
+                  />
+                  <span>{t("接入实体投币回报引脚")}</span>
+                </label>
+                {coinFeedbackEnabled ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label="IoT 控制器">
+                        <select
+                          className={input}
+                          value={coinFeedbackNodeId}
+                          onChange={(e) => setCoinFeedbackNodeId(e.target.value)}
+                        >
+                          <option value="">{t("请选择控制器")}</option>
+                          {iotOptions.map((opt) => (
+                            <option key={opt.nodeId} value={opt.nodeId}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="回报引脚 (GPIO)">
+                        <input
+                          className={`${input} font-mono`}
+                          type="number"
+                          min={0}
+                          max={255}
+                          placeholder="13"
+                          value={coinFeedbackPin}
+                          onChange={(e) => setCoinFeedbackPin(e.target.value)}
+                        />
+                      </Field>
+                    </div>
+                    <details className="text-xs text-ink/60">
+                      <summary className="cursor-pointer select-none hover:text-ink">
+                        {t("高级回报设置（{edge} · {ms}ms · {signal}）", {
+                          edge: t(
+                            coinFeedbackEdge === "rising"
+                              ? "上升沿"
+                              : coinFeedbackEdge === "both"
+                                ? "双边沿"
+                                : "下降沿",
+                          ),
+                          ms: String(Number(coinFeedbackDebounceMs) || 50),
+                          signal: t(
+                            coinFeedbackSignal === "cabinet.consumed"
+                              ? "扣币回报"
+                              : coinFeedbackSignal === "cabinet.activity"
+                                ? "机台活动"
+                                : "投币回报",
+                          ),
+                        })}
+                      </summary>
+                      <div className="mt-2.5 grid gap-3 border-t border-dashed border-ink/10 pt-2.5 sm:grid-cols-3">
+                        <Field label="触发边沿">
+                          <select
+                            className={`${input} min-h-9 text-xs`}
+                            value={coinFeedbackEdge}
+                            onChange={(e) => setCoinFeedbackEdge(e.target.value as CoinFeedbackEdge)}
+                          >
+                            <option value="falling">{t("下降沿 (falling)")}</option>
+                            <option value="rising">{t("上升沿 (rising)")}</option>
+                            <option value="both">{t("双边沿 (both)")}</option>
+                          </select>
+                        </Field>
+                        <Field label="防抖时长" unit="ms">
+                          <input
+                            className={`${input} min-h-9 font-mono text-xs`}
+                            type="number"
+                            min={1}
+                            max={2000}
+                            value={coinFeedbackDebounceMs}
+                            onChange={(e) => setCoinFeedbackDebounceMs(e.target.value)}
+                          />
+                        </Field>
+                        <Field label="上报事件类型">
+                          <select
+                            className={`${input} min-h-9 text-xs`}
+                            value={coinFeedbackSignal}
+                            onChange={(e) => setCoinFeedbackSignal(e.target.value as CoinFeedbackSignal)}
+                          >
+                            <option value="cabinet.coin">{t("投币回报 (cabinet.coin)")}</option>
+                            <option value="cabinet.consumed">{t("扣币回报 (cabinet.consumed)")}</option>
+                            <option value="cabinet.activity">{t("机台活动 (cabinet.activity)")}</option>
+                          </select>
+                        </Field>
+                      </div>
+                    </details>
+                  </>
+                ) : (
+                  <Hint>{t("仅实体框体需要检测投币计数器脉冲时开启。")}</Hint>
+                )}
+              </div>
+            )}
+          </div>
+        </CapabilityPane>
+      )}
+      {pane === "host" && caps.host && (
+        <CapabilityPane meta={capabilityMeta.host} problem={incomplete("host")} remove={() => remove("host")}>
+          <div className="grid gap-4">
+            <EdgeTokenPanel
+              live={live}
+              online={live?.hostOnline ?? null}
+              hasToken={!!live?.hasHostToken}
+              wsUrl={live?.hostWsUrl ?? null}
+              metaLine={[
+                live?.hostVersion ? `v${live.hostVersion}` : null,
+                live?.hostProgram ? t("当前：{name}", { name: live.hostProgram }) : null,
+              ].filter(Boolean).join(" · ") || null}
+              intent="issue-host"
+              issueLabel="签发 Launcher 令牌"
+              rotateLabel="轮换 Launcher 令牌"
+              rotateConfirmLabel="确认轮换 Launcher 令牌"
+              rotateWarn="轮换后旧令牌立即失效，机台上的 prism-launcher 会断线，需要更新 launcher.json 后重启。"
+            />
+
+            <div className="bill-entry !mb-0 grid gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">{t("可切换的游戏 / 程序")}</span>
+                <button
+                  type="button"
+                  className={`${compactActionBtn} border-dashed`}
+                  onClick={() => setHostPrograms([...hostPrograms, { name: "", path: "" }])}
+                >
+                  <Plus size={14} aria-hidden="true" />
+                  {t("添加程序")}
+                </button>
+              </div>
+              {hostPrograms.length > 0 ? (
+                <div className="grid gap-2">
+                  {hostPrograms.map((prog, index) => (
+                    <div key={index} className="grid gap-2 rounded-xl border border-ink/10 bg-panel p-2.5 sm:grid-cols-[10rem_minmax(0,1fr)_auto]">
+                      <input
+                        className={`${input} min-h-9`}
+                        placeholder={t("程序名，如 maimai")}
+                        maxLength={64}
+                        value={prog.name}
+                        onChange={(e) => {
+                          const nextName = e.target.value;
+                          if (hostDefaultProgram && hostDefaultProgram === prog.name) {
+                            setHostDefaultProgram(nextName);
+                          }
+                          setHostPrograms(hostPrograms.map((p, i) => (i === index ? { ...p, name: nextName } : p)));
+                        }}
+                      />
+                      <input
+                        className={`${input} min-h-9 font-mono text-xs`}
+                        placeholder="D:\Games\maimai\start.bat"
+                        maxLength={512}
+                        value={prog.path}
+                        onChange={(e) =>
+                          setHostPrograms(hostPrograms.map((p, i) => (i === index ? { ...p, path: e.target.value } : p)))
+                        }
+                      />
+                      <button
+                        type="button"
+                        className={`${buttonQuiet} h-9 w-9 justify-center text-ink/55 hover:text-coral`}
+                        aria-label={t("删除程序")}
+                        onClick={() => {
+                          if (hostDefaultProgram === prog.name) setHostDefaultProgram("");
+                          setHostPrograms(hostPrograms.filter((_, i) => i !== index));
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))}
+                  <Field label="开机默认启动程序">
+                    <select
+                      className={input}
+                      value={hostDefaultProgram}
+                      onChange={(e) => setHostDefaultProgram(e.target.value)}
+                    >
+                      <option value="">{t("不自动启动")}</option>
+                      {hostPrograms
+                        .filter((p) => p.name.trim())
+                        .map((p) => (
+                          <option key={p.name} value={p.name.trim()}>
+                            {p.name.trim()}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                </div>
+              ) : (
+                <Hint>{t("还没有配置程序。也可以不填程序列表，仅用于远程截屏、发送文字或开关机；固定按键请在「机台按键」中配置。")}</Hint>
+              )}
+              <Hint>{t("保存后，程序列表会自动推送到机台上的 prism-launcher，无需在机台本地维护配置。")}</Hint>
+            </div>
+          </div>
+        </CapabilityPane>
+      )}
+      {pane === "iot" && caps.iot && (
+        <CapabilityPane meta={capabilityMeta.iot} problem={incomplete("iot")} remove={() => remove("iot")}>
+          <div className="grid gap-4">
+            <EdgeTokenPanel
+              live={live}
+              online={live?.iotOnline ?? null}
+              hasToken={!!live?.hasIotToken}
+              wsUrl={live?.iotWsUrl ?? null}
+              metaLine={[
+                live?.iotModel ?? null,
+                live?.iotVersion ? `v${live.iotVersion}` : null,
+                live?.iot?.ble.beaconId ? t("信标 #{id}", { id: String(live.iot.ble.beaconId) }) : null,
+              ].filter(Boolean).join(" · ") || null}
+              intent="issue-iot"
+              issueLabel="签发 IoT 令牌"
+              rotateLabel="轮换 IoT 令牌"
+              rotateConfirmLabel="确认轮换 IoT 令牌"
+              rotateWarn="轮换后旧令牌立即失效，控制器会断线，需要把新令牌重新写入设备配置。"
+            />
+
+            <Hint>
+              {t("控制器上线后自动作为本店蓝牙近场信标与常驻 Home Assistant 监听器。")}
+            </Hint>
+
+            {live?.iotBindings && live.iotBindings.length > 0 && (
+              <div className="bill-entry !mb-0 grid gap-2">
+                <span className="text-sm font-medium">{t("GPIO 引脚占用")}</span>
+                <ul className="grid gap-1.5 text-xs">
+                  {live.iotBindings.map((b, i) => (
+                    <li key={`${b.deviceId}-${b.pin}-${i}`} className="flex items-center justify-between gap-2 rounded-lg bg-ink/[0.03] px-3 py-2">
+                      <span className="font-mono font-medium">
+                        {`GPIO ${b.pin} · ${t(b.direction === "input" ? "输入" : "输出")}`}
+                      </span>
+                      <span className="text-ink/70">
+                        {`${b.deviceName}${b.label ? ` · ${b.label}` : b.signal ? ` · ${b.signal}` : ""}`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </CapabilityPane>
       )}
@@ -951,9 +1603,7 @@ export function ResourceEditor({
               <Hint>{t("支持 2 到 8 人同桌；留空默认按 4 人桌计算。")}</Hint>
             </div>
             <fieldset className="bill-entry !mb-0 grid gap-2.5">
-              <legend className="mb-0.5 text-sm font-medium">
-                {t("对局方案")}
-              </legend>
+              <legend className="mb-0.5 text-sm font-medium">{t("对局方案")}</legend>
               {pricing.filter((r) => r.enabled).length === 0 ? (
                 <p className="text-sm text-ink/55">
                   {t("还没有启用中的计费规则。")}{" "}
@@ -963,22 +1613,17 @@ export function ResourceEditor({
                 </p>
               ) : (
                 <div className="grid gap-2">
-                  {pricing
-                    .filter((r) => r.enabled)
-                    .map((r) => (
-                      <label
-                        className={optionCardClass(tablePricing[0] === r.id)}
-                        key={r.id}
-                      >
-                        <input
-                          type="radio"
-                          name="table-pricing"
-                          checked={tablePricing[0] === r.id}
-                          onChange={() => setTablePricing([r.id])}
-                        />
-                        <span className="truncate">{r.name}</span>
-                      </label>
-                    ))}
+                  {pricing.filter((r) => r.enabled).map((r) => (
+                    <label className={optionCardClass(tablePricing[0] === r.id)} key={r.id}>
+                      <input
+                        type="radio"
+                        name="table-pricing"
+                        checked={tablePricing[0] === r.id}
+                        onChange={() => setTablePricing([r.id])}
+                      />
+                      <span className="truncate">{r.name}</span>
+                    </label>
+                  ))}
                 </div>
               )}
             </fieldset>
@@ -1111,14 +1756,14 @@ export function ResourceEditor({
                 <details className="border-t border-ink/[0.06] pt-3 text-xs text-ink/55">
                   <summary className="cursor-pointer font-medium text-ink/70">{t("播报说明")}</summary>
                   <p className="mt-2 leading-relaxed">
-                  {t("「尝试」是有人要求做某件事，以及结果：已发出表示机器接受了命令，不代表真的完成。「事实」是真的发生了的事，比如机器开了、游戏读到了卡。同时勾选会各播报一次。每个播报组各自决定播什么、怎么说、发到哪里；同一个地方被两个组都选中时只说一次。本 Bot 自己执行的命令不会再播报。提前量为 0 时不发闲置关机提醒。")}
+                    {t("「尝试」是有人要求做某件事，以及结果：已发出表示机器接受了命令，不代表真的完成。「事实」是真的发生了的事，比如机器开了、游戏读到了卡。同时勾选会各播报一次。每个播报组各自决定播什么、怎么说、发到哪里；同一个地方被两个组都选中时只说一次。本 Bot 自己执行的命令不会再播报。提前量为 0 时不发闲置关机提醒。")}
                   </p>
                 </details>
               </div>
             </div>
           </div>
           <div hidden={botPane !== "replies"}>
-            <BotReplyEditor value={bot.replyTemplates ?? {}} onChange={replyTemplates => changeBot({ replyTemplates })} />
+            <BotReplyEditor value={bot.replyTemplates ?? {}} onChange={(replyTemplates) => changeBot({ replyTemplates })} />
           </div>
           <div hidden={botPane !== "connection"}>
             <BotTokenPanel live={live} hasBotToken={!!live?.hasBotToken} />
@@ -1131,16 +1776,45 @@ export function ResourceEditor({
           <ul className="grid gap-2.5">
             {capabilityList.filter((id) => !caps[id]).map((id) => {
               const item = capabilityMeta[id];
+              const conflicts = conflictingCapabilities(id, caps);
+              const missingReqs = capabilityRequires(id).filter((req) => !caps[req]);
+              const blocked = conflicts.length > 0;
               return (
-                <li key={id} className="flex items-center gap-3.5 rounded-2xl border border-ink/10 bg-ink/[0.015] p-3.5 transition-colors hover:border-ink/20 hover:bg-ink/[0.03]">
+                <li
+                  key={id}
+                  className={`flex items-center gap-3.5 rounded-2xl border border-ink/10 bg-ink/[0.015] p-3.5 transition-colors ${
+                    blocked ? "opacity-55" : "hover:border-ink/20 hover:bg-ink/[0.03]"
+                  }`}
+                >
                   <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-mint/10 text-mint">
                     <item.icon size={18} aria-hidden="true" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{t(item.label)}</span>
+                    <span className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                      <span>{t(item.label)}</span>
+                      {blocked && (
+                        <span className="rounded-full bg-coral/10 px-2 py-0.5 text-[11px] font-medium text-coral">
+                          {t("与「{names}」冲突", {
+                            names: conflicts.map((c) => t(capabilityMeta[c].label)).join("、"),
+                          })}
+                        </span>
+                      )}
+                      {!blocked && missingReqs.length > 0 && (
+                        <span className="rounded-full bg-mint/10 px-2 py-0.5 text-[11px] font-medium text-mint">
+                          {t("将同时启用「{names}」", {
+                            names: missingReqs.map((r) => t(capabilityMeta[r].label)).join("、"),
+                          })}
+                        </span>
+                      )}
+                    </span>
                     <span className="mt-0.5 block text-xs text-ink/55">{t(item.description)}</span>
                   </span>
-                  <button type="button" className={compactActionBtn} onClick={() => enable(id)}>
+                  <button
+                    type="button"
+                    className={compactActionBtn}
+                    disabled={blocked}
+                    onClick={() => enable(id)}
+                  >
                     <Plus size={14} aria-hidden="true" />
                     {t("添加")}
                   </button>
@@ -1176,20 +1850,32 @@ const defaultBotSettings: BotSettings = {
   idleReminderMinutes: 5,
 };
 
-const capabilityList = ["power", "climate", "hinata_io", "coin", "door", "table", "bot"] as const satisfies readonly CapabilityId[];
+const capabilityList = [
+  "power",
+  "climate",
+  "hinata_io",
+  "keys",
+  "coin",
+  "host",
+  "iot",
+  "door",
+  "table",
+  "bot",
+] as const satisfies readonly CapabilityId[];
 
-/** `seats`: the capability holds its occupants itself, so the occupancy time does not apply. */
 const capabilityMeta: Record<CapabilityId, { icon: LucideIcon; label: string; description: string; seats?: true }> = {
   power: { icon: Power, label: "电源控制", description: "通过 Home Assistant 读取并开关电源。" },
   climate: { icon: AirVent, label: "空调", description: "通过 Home Assistant 控制空调。" },
-  hinata_io: { icon: CreditCard, label: "刷卡 · HINATA IO", description: "刷卡、按键，记录谁在玩。" },
-  coin: { icon: Coins, label: "投币", description: "怎么投币，投币上限和自动投币。" },
+  hinata_io: { icon: CreditCard, label: "刷卡 · HINATA IO", description: "读取卡片与卡簿，记录谁在玩。" },
+  keys: { icon: Keyboard, label: "机台按键", description: "配置键盘按键（优先 Launcher、回落 IO）或 IoT GPIO 脉冲按键。" },
+  coin: { icon: Coins, label: "投币", description: "绑定一个机台按键作为投币触发，配置上限、自动投币与硬件回报。" },
+  host: { icon: Monitor, label: "启动器", description: "通过 PRiSM Launcher 切换游戏、远程文字输入、截屏与开关机。" },
+  iot: { icon: Cpu, label: "IoT 控制器", description: "蓝牙近场信标广播、GPIO 脉冲与输入回报、常驻 Home Assistant 监听。" },
   door: { icon: DoorOpen, label: "开门密码", description: "通过 TTLock 生成一次性开门密码。" },
   table: { icon: Ungroup, label: "桌游", description: "按座位开桌计费，适用麻将、桌游等多人同桌场景。", seats: true },
   bot: { icon: Bot, label: "店铺 Bot", description: "Koishi 等聊天机器人。" },
 };
 
-/** Shared section heading inside ResourceEditor right-hand panes. */
 function PaneHeader({
   icon: Icon,
   title,
@@ -1220,19 +1906,21 @@ function PaneHeader({
   );
 }
 
-/** One enabled capability: its settings, why it cannot be saved yet, and removing it. */
 function CapabilityPane({
   meta,
   problem,
   remove,
+  removeBlockedBy,
   children,
 }: {
   meta: { icon: LucideIcon; label: string; description: string };
   problem: string | null;
   remove: () => void;
+  removeBlockedBy?: string[];
   children: ReactNode;
 }) {
   const { t } = useI18n();
+  const blocked = !!removeBlockedBy?.length;
   return (
     <section className="grid gap-4" aria-label={t(meta.label)}>
       <PaneHeader
@@ -1240,9 +1928,15 @@ function CapabilityPane({
         title={meta.label}
         description={meta.description}
         action={
-          <button type="button" className={dangerActionBtn} onClick={remove}>
+          <button
+            type="button"
+            className={dangerActionBtn}
+            disabled={blocked}
+            title={blocked ? t("需先移除「{names}」", { names: removeBlockedBy!.join("、") }) : undefined}
+            onClick={remove}
+          >
             <Trash2 size={14} aria-hidden="true" />
-            {t("移除")}
+            {blocked ? t("被「{names}」依赖", { names: removeBlockedBy!.join("、") }) : t("移除")}
           </button>
         }
       />
@@ -1256,28 +1950,78 @@ function CapabilityPane({
   );
 }
 
-/** A value the shop pastes elsewhere, with a copy button. */
-function CopyField({ label, value }: { label: string; value: string }) {
+function EdgeTokenPanel({
+  live,
+  online,
+  hasToken,
+  wsUrl,
+  metaLine,
+  intent,
+  issueLabel,
+  rotateLabel,
+  rotateConfirmLabel,
+  rotateWarn,
+}: {
+  live: Resource | null;
+  online: boolean | null;
+  hasToken: boolean;
+  wsUrl: string | null;
+  metaLine: string | null;
+  intent: "issue-host" | "issue-iot";
+  issueLabel: string;
+  rotateLabel: string;
+  rotateConfirmLabel: string;
+  rotateWarn: string;
+}) {
   const { t } = useI18n();
+  const statusTone =
+    online === true
+      ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400"
+      : online === false
+        ? "bg-coral/10 text-coral"
+        : "bg-ink/[0.05] text-ink/60";
   return (
-    <div className="grid min-w-0 gap-1">
-      <span className="flex items-center justify-between gap-2 text-xs font-medium text-ink/60">
-        {t(label)}
-        <CopyButton value={value} label="复制" />
-      </span>
-      <code className="truncate rounded bg-ink/5 px-2 py-1.5 text-xs">{value}</code>
+    <div className="bill-entry !mb-0 grid gap-3">
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-ink/60">{t("连接状态")}</span>
+        <span className={`${statusPill} ${statusTone}`}>
+          {t(online === true ? "已连接" : online === false ? "未连接" : hasToken ? "未知" : "未签发")}
+        </span>
+        {metaLine && <span className="text-xs text-ink/55">{metaLine}</span>}
+      </div>
+      {live && wsUrl && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-ink/10 bg-ink/[0.025] px-2.5 py-1.5">
+          <code className="min-w-0 flex-1 break-all font-mono text-xs text-ink/70">{wsUrl}</code>
+          <CopyButton value={wsUrl} label="复制" />
+        </div>
+      )}
+      {hasToken ? (
+        <RotateTokenConfirm label={rotateLabel} warn={rotateWarn}>
+          <button
+            type="submit"
+            name="intent"
+            value={intent}
+            className={`${primary} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs justify-self-start`}
+          >
+            {t(rotateConfirmLabel)}
+          </button>
+        </RotateTokenConfirm>
+      ) : (
+        <button
+          type="submit"
+          name="intent"
+          value={intent}
+          className={`${compactActionBtn} justify-self-start`}
+        >
+          {t(issueLabel)}
+        </button>
+      )}
     </div>
   );
 }
 
-/**
- * The bot's credential, presented and minted the way a device's direct-connect
- * token is: one line saying whether it has one, and one button that issues or
- * rotates it. Minting is an explicit submit (`intent=rotate-bot`), never a side
- * effect of saving the settings.
- */
 function BotTokenPanel({
-  live,
+  live: _live,
   hasBotToken,
 }: {
   live: Resource | null;
@@ -1313,12 +2057,6 @@ function BotTokenPanel({
   );
 }
 
-/**
- * Direct connect authenticates the machine with a token this platform issues.
- * Minting it is a separate, explicit action: a plain save must never hand the
- * store a secret it did not ask for. The button submits the form with
- * `intent=issue`, which is the only path that creates or rotates the token.
- */
 function DirectConnectPanel({
   live,
   hasRelayToken,
@@ -1365,16 +2103,13 @@ function DirectConnectPanel({
       )}
       {live?.relayE2ee === true && (
         <p className="rounded-xl border border-coral/25 bg-coral/[0.06] px-3 py-2 text-xs font-medium text-coral">
-          {t(
-            "该机台仍在发送加密消息：请把机台 INI 里的 remotePassword 清空后重启，否则平台无法下发指令。",
-          )}
+          {t("该机台仍在发送加密消息：请把机台 INI 里的 remotePassword 清空后重启，否则平台无法下发指令。")}
         </p>
       )}
     </div>
   );
 }
 
-/** Copies a one-time value and confirms it, because selecting it by hand is error-prone. */
 function CopyButton({ value, label }: { value: string; label: string }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);

@@ -55,6 +55,7 @@
       "/.well-known/*",
       "/callback*",
       "/io/*",
+      "/node/*",
       "/integration/*",
       "/health*",
       "/version*"

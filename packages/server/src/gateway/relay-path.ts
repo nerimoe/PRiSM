@@ -1,9 +1,16 @@
 /**
- * Public path for the embedded HINATA IO relay.
+ * Public WebSocket paths for direct-connected edge nodes.
  *
- * Devices point `[aimeio] serverUrl` at the platform itself and carry no path
- * or query identifier: the channel is resolved from the Bearer token. Keeping
- * this to one fixed prefix makes it a single exemption from the static-asset
- * gate, which otherwise claims every path that is not an API route.
+ * - `/node/ws`: unified entry for all node kinds (`hinata_io`, `launcher`, `iot`).
+ * - `/io/ws`: legacy alias kept for deployed HINATA IO clients whose INI files
+ *   point `[aimeio] serverUrl` at `/io/ws`.
+ *
+ * Neither path carries a shop or node identifier in the URL: the Bearer token
+ * resolves the node and its Durable Object channel.
  */
 export const machineRelayPath = "/io/ws";
+export const nodeRelayPath = "/node/ws";
+
+export function isRelayPath(pathname: string): boolean {
+  return pathname === machineRelayPath || pathname === nodeRelayPath;
+}

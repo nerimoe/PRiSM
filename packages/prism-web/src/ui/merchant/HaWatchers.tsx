@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Gamepad2 } from "lucide-react";
+import { Bot, Cpu, Gamepad2 } from "lucide-react";
 import { api, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
 import type { BoardWatcher, BoardWatchers, WatcherPhase } from "./board-state";
@@ -43,7 +43,9 @@ export function HaWatchersPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const nameOf = (watcher: BoardWatcher) =>
-    watcher.kind === "bot" ? watcher.name : (devices.find((device) => device.id === watcher.deviceId)?.name ?? t("未知资源"));
+    watcher.kind === "iot" || watcher.kind === "bot"
+      ? watcher.name
+      : (devices.find((device) => device.id === watcher.deviceId)?.name ?? t("未知资源"));
   async function change(count: number) {
     setSaving(true);
     setError("");
@@ -88,13 +90,17 @@ export function HaWatchersPanel({
         <ul className="grid gap-1.5">
           {watchers.watchers.map((watcher) => (
             <li key={watcher.id} className="flex flex-wrap items-center gap-x-2 text-sm">
-              {watcher.kind === "bot" ? (
+              {watcher.kind === "iot" ? (
+                <Cpu size={16} className="text-ink/55" aria-hidden="true" />
+              ) : watcher.kind === "bot" ? (
                 <Bot size={16} className="text-ink/55" aria-hidden="true" />
               ) : (
                 <Gamepad2 size={16} className="text-ink/55" aria-hidden="true" />
               )}
               <span className="font-medium">{nameOf(watcher)}</span>
-              <span className="text-xs text-ink/45">{t(watcher.kind === "bot" ? "Bot" : "机台")}</span>
+              <span className="text-xs text-ink/45">
+                {t(watcher.kind === "iot" ? "IoT" : watcher.kind === "bot" ? "Bot" : "机台")}
+              </span>
               <span className={`${phaseColor[watcher.state]} text-xs`} aria-hidden="true">
                 ●
               </span>
@@ -106,7 +112,7 @@ export function HaWatchersPanel({
         <p className="text-sm text-ink/55">{t("没有监听器在线：设备状态为非实时，进入页面和点「刷新设备状态」时才读取。")}</p>
       )}
       <p className="text-xs text-ink/45">
-        {t("Bot 优先，不够的名额由店里的机台补上。")}
+        {t("独立 IoT 节点优先，其次是 Bot，不够的名额由店里的机台补上。")}
         {watchers.standby > 0 && ` ${t("另有 {count} 个在线，等待空位", { count: watchers.standby })}`}
       </p>
       {error && (
