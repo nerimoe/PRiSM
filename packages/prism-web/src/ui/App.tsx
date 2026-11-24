@@ -64,8 +64,8 @@ function Shell() {
         <header className="site-header">
           <div className="site-header-inner">
             <Link to="/" className="site-brand focus-ring">
-              <span className="grid size-10 place-items-center rounded-2xl bg-mint text-white">
-                <Gamepad2 size={20} />
+              <span className="grid size-8 place-items-center rounded-xl bg-mint text-white">
+                <Gamepad2 size={17} />
               </span>
               PRiSM
             </Link>

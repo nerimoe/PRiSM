@@ -1,4 +1,5 @@
 import app from "./app.js";
+import { applyAllDuePricingChanges } from "./pricing-changes.js";
 import {
   deploymentControl,
   isDeploymentMaintenance,
@@ -84,6 +85,9 @@ export const worker = {
   ): Promise<void> {
     if (await isDeploymentMaintenance(env)) return;
     await purgeExpiredPlatformState(env);
+    // Scheduled price changes apply before anyone enters anyway; the sweep
+    // puts them in place for shops nobody visits around the moment.
+    await applyAllDuePricingChanges(env.DB);
   },
 
   /** Every request the Worker answers itself gets one line (`log.ts`); Cloudflare's own per-call records are off. */

@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { Hono } from "hono";
 import type { D1BoundStatementLike, D1DatabaseLike, SqlValue } from "@prism/adapter-d1";
 import type { AppBindings, Env } from "../src/bindings.js";
-import { deviceEventSchema } from "@prism/storage-sql";
+import { deviceEventSchema, pricingChangeSchema } from "@prism/storage-sql";
 import { merchantResourceRouter } from "../src/routes/platform/merchant-resources.js";
 import { responseTimeMiddleware } from "../src/middleware/response-time.js";
 
@@ -55,7 +55,12 @@ function fixture() {
     CREATE TABLE machine_tickets(machine_id TEXT,token_hash TEXT);
     CREATE TABLE table_seats(shop_id TEXT,machine_id TEXT,player_id TEXT,session_id TEXT,entry_session_id TEXT);
     CREATE TABLE sessions(shop_id TEXT,id TEXT,status TEXT);
+    CREATE TABLE pricing_configs(shop_id TEXT,id TEXT,kind TEXT,name TEXT,enabled INTEGER,status TEXT,provider_json TEXT,created_at TEXT,updated_at TEXT);
+    CREATE TABLE resource_groups(shop_id TEXT,id TEXT,name TEXT,default_pricing_config_id TEXT);
+    CREATE TABLE pricing_releases(shop_id TEXT,id TEXT,created_at TEXT);
+    CREATE TABLE pricing_release_heads(shop_id TEXT PRIMARY KEY,release_id TEXT);
   `);
+  for(const statement of pricingChangeSchema)sqlite.run(statement);
   sqlite.run("CREATE TABLE players(shop_id TEXT NOT NULL,id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',PRIMARY KEY(shop_id,id))");
   for(const statement of deviceEventSchema)sqlite.run(statement);
   sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters) VALUES ('shop-1','shop-code','Test Shop',0,0,80)");

@@ -145,8 +145,8 @@ input::placeholder {
   position: sticky;
   top: 0;
   z-index: 20;
-  padding: 20px 24px 12px;
-  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+  padding: 10px 24px 8px;
+  background: color-mix(in srgb, var(--color-canvas) 78%, transparent);
   backdrop-filter: blur(24px) saturate(140%);
   -webkit-backdrop-filter: blur(24px) saturate(140%);
 }
@@ -157,34 +157,37 @@ input::placeholder {
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: 16px;
+}
+.site-header:has(+ .site-main .merchant-workspace) .site-header-inner {
+  max-width: 1280px;
 }
 .site-brand {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 21px;
+  gap: 10px;
+  font-size: 18px;
   font-weight: 700;
-  letter-spacing: -0.5px;
-  border-radius: 16px;
+  letter-spacing: -0.4px;
+  border-radius: 12px;
 }
 .site-navigation {
   display: flex;
-  gap: 4px;
-  padding: 6px;
+  gap: 3px;
+  padding: 4px;
   background: var(--color-panel);
-  border-radius: 24px;
+  border-radius: 18px;
 }
 .site-nav-item {
   display: flex;
-  min-width: 44px;
-  min-height: 44px;
+  min-width: 38px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  padding: 10px 16px;
-  border-radius: 18px;
-  font-size: 14px;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 14px;
+  font-size: 13.5px;
   color: rgb(var(--color-ink) / 0.7);
 }
 .site-nav-item.is-active {
@@ -202,7 +205,8 @@ input::placeholder {
 }
 .site-main:has(.merchant-workspace) {
   max-width: 1328px;
-  padding-top: 28px;
+  padding-top: 8px;
+  padding-bottom: 20px;
 }
 .site-main h1 {
   font-size: clamp(28px, 4vw, 36px);

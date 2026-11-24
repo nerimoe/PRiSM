@@ -231,6 +231,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `PATCH` | `/rpc/staff/pricing-configs/:pricingConfigId` | 修改现有计费方案；计费方案类型不可在更新时切换，后台会按原方案类型校验并提交完整 provider 内容。省略 `relations` 时保留原关系。管理视图对计时方案总是返回 `relations`。 |
 | `POST` | `/rpc/staff/pricing-configs/:pricingConfigId/archive` | 软归档计费方案。 |
 | `POST` | `/rpc/staff/pricing-configs/:pricingConfigId/restore` | 恢复已归档计费方案（默认处于禁用状态，需重新开启）。 |
+| `GET` / `POST` / `PATCH` | `/api/v1/shops/:shopCode/staff/pricing-configs/changes[/:id]` | 价目修改记录与调价计划：时间轴、某时刻的预计价目（`/projected?at=`）、记录详情、恢复草稿（`/:id/restore-draft`）、新建 / 修改计划（`effectiveAt` 为空即立即生效）、取消（`/:id/cancel`）、立即生效（`/:id/apply-now`）。规则的新建、编辑、归档、恢复返回 `pendingConflicts`：会在到点时覆盖这次修改的待生效计划。详见 [价目修改记录与调价计划](pricing-changes.md)。 |
 | `GET` | `/rpc/staff/pricing-configs/:pricingConfigId/timeline?date=YYYY-MM-DD` | 获取指定日期下该方案的可视化 24 小时时间轴分段明细。 |
 | `POST` | `/rpc/staff/pricing-timeline/preview` | 发送未保存的计费规则草稿，计算并预览其 24 小时时间轴；普通计费草稿发送 `pricing`，全局封顶草稿发送 `priceCap` 与 `includedPricingConfigIds: []`。 |
 | `GET` | `/rpc/staff/settings` | 读取店铺通用和硬件设置。 |
@@ -282,7 +283,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 
 资产计费效果的 `config` 可包含 `applicableSessionLabels`、`applicablePricingConfigIds`、`applicableRuleIds` 以及最低消费门槛 `minSubtotal`（消费未达门槛时不触发减免）。结算时只有当前计时名称、费用项所属计费方案和费用项所属规则匹配且达到最低消费门槛时，效果才会作用到费用；针对特定方案的多张卡券叠加时，系统会跟踪并限制在目标费用项的剩余额度内，不会超出目标方案费用穿透到其他费用。资产持有量在扣减为 0 后不会在多场次结账中重复享受优惠；多张相同卡券生成的调整明细会带有持有唯一标识避免主键冲突；比例折扣按分保留两位小数；卡券有效窗口在开台时间或当前结算时间任一处于有效期内均可生效。后台 UI 会用中文控件生成这些配置，员工不需要手写 JSON。
 
-员工计费时间轴预览使用与已保存计费配置相同的时间轴分段引擎。`time.priority` 草稿返回带 `pricing` 的收费时段，`time.cap` 草稿返回带 `priceCap` 的封顶时段；Staff Web 在保存前调用它来绘制草稿日时间轴，以便可视化预览与结账行为保持一致。预览圆环以接口返回的 `startMinute` / `endMinute` 为准，不在前端重新猜测跨日时段。未覆盖的时间轴段是非营业时间：玩家无法在其中启动计费场次，如果现有场次跨越这些分钟，结算将跳过这些分钟；全局封顶则只在覆盖到的分钟内限制选中方案合计。在可视化编辑器中，未保存的草稿规则可以直接移除；已保存规则会写回 `status: "archived"`，不再参与结算和时间轴，但保留规则 ID 供历史账单和计费封顶记录回查。迁移来的 `specificDates` 与 `dateTimeRange` 会随草稿预览和保存原样保留，避免节假日规则落到普通营业日；当需要停用整个方案而不破坏历史数据时，已保存的计费方案应使用归档/还原逻辑。
+员工计费时间轴预览使用与已保存计费配置相同的时间轴分段引擎。`time.priority` 草稿返回带 `pricing` 的收费时段，`time.cap` 草稿返回带 `priceCap` 的封顶时段；Staff Web 在保存前调用它来绘制草稿日时间轴，以便可视化预览与结账行为保持一致。预览圆环以接口返回的 `startMinute` / `endMinute` 为准，不在前端重新猜测跨日时段。未覆盖的时间轴段是非营业时间：玩家无法在其中启动计费场次，如果现有场次跨越这些分钟，结算将跳过这些分钟；全局封顶则只在覆盖到的分钟内限制选中方案合计。在可视化编辑器中，未保存的草稿规则可以直接移除；已保存规则会写回 `status: "archived"`，不再参与结算和时间轴，但保留规则 ID 供历史账单和计费封顶记录回查。迁移来的 `specificDates` 与 `dateTimeRange` 会随草稿预览和保存原样保留，避免节假日规则落到普通营业日；`dateTimeRange` 只能原样保留，新增或改动返回 `PRICING_RULE_DATE_TIME_RANGE_RETIRED`；当需要停用整个方案而不破坏历史数据时，已保存的计费方案应使用归档/还原逻辑。
 
 `time.priority` 规则允许负数 `unitPrice`，用于“在另一条 active session 上叠加抵扣”的场景。例如麻将 B 桌可用独立计时 session 按每小时 `-2` 生成负费用项，最终和玩家的标准入场计时一起统一结算。每个 session 的 `subtotal` / `total` 保留其真实正负计费贡献；后端只在汇总本次统一结账覆盖的全部 session、session 调整、全局封顶和整单调整后，将玩家级最终 `total` 限制为不低于 `0`。统一结账会持久化一条 `player_checkouts` 记录，并通过 `settlements.checkout_id` 关联各 session；营业汇总直接使用该批次的最终金额，不会提前把负数 session 单独归零，也不再依赖玩家和结账时间推断批次。
 
