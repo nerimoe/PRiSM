@@ -89,6 +89,7 @@ export function ResourceEditor({
   groupId: initialGroupId,
   done,
   onLockChange,
+  onWideChange,
 }: {
   value?: Resource;
   /** The group a new resource is added to. */
@@ -96,6 +97,8 @@ export function ResourceEditor({
   done: () => void;
   /** Locks the dialog while a one-time token is on screen. */
   onLockChange: (locked: boolean) => void;
+  /** Widens the dialog to `xl` when editing a Bot workbench resource. */
+  onWideChange?: (wide: boolean | null) => void;
 }) {
   const { shopId, shopCode, owner } = useMerchant();
   const { t } = useI18n();
@@ -301,6 +304,11 @@ export function ResourceEditor({
     onLockChange(!!issued || !!botToken);
     return () => onLockChange(false);
   }, [issued, botToken, onLockChange]);
+
+  useEffect(() => {
+    onWideChange?.(!!caps.bot);
+    return () => onWideChange?.(null);
+  }, [caps.bot, onWideChange]);
 
   const hasKeyboardChannel = caps.host || (caps.hinata_io && (embedded || !!value?.hasPassword || !!password));
   const resourceHasPlayerLink = hasResourceLink(caps);

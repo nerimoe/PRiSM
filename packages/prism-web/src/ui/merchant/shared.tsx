@@ -162,6 +162,7 @@ export function Modal({
   close,
   dismissDisabled = false,
   wide = false,
+  lg = false,
   xl = false,
 }: {
   title: string;
@@ -170,7 +171,9 @@ export function Modal({
   dismissDisabled?: boolean;
   /** Room for a multi-section form rather than a single short confirmation. */
   wide?: boolean;
-  /** A two-column layout: side content plus the form it controls. */
+  /** Balanced sidebar + form dialog for standard resource editing. */
+  lg?: boolean;
+  /** A wide multi-column workbench dialog (e.g. Bot broadcasts/replies or records). */
   xl?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -184,7 +187,7 @@ export function Modal({
     <dialog
       ref={ref}
       onCancel={event => { if (dismissDisabled) event.preventDefault(); else close(); }}
-      className={`m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-y-auto rounded-xl bg-panel p-0 text-ink backdrop:bg-black/35 ${xl ? "max-w-7xl" : wide ? "max-w-2xl" : "max-w-xl"}`}
+      className={`m-auto max-h-[90dvh] w-[calc(100%-2rem)] overflow-y-auto rounded-xl bg-panel p-0 text-ink transition-[max-width] duration-150 backdrop:bg-black/35 ${xl ? "max-w-7xl" : lg ? "max-w-4xl" : wide ? "max-w-2xl" : "max-w-xl"}`}
       aria-label={t(title)}
     >
       <header className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-ink/10 bg-panel px-5 py-4">

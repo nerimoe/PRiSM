@@ -109,6 +109,7 @@ export function ResourcesPage() {
   const [acting, setActing] = useState<Resource | null>(null);
   const [history, setHistory] = useState<Resource | null>(null);
   const [editorLocked, setEditorLocked] = useState(false);
+  const [editorWide, setEditorWide] = useState<boolean | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const resourceGroups = useResourceGroups(shopId);
   const [params, setParams] = useSearchParams();
@@ -440,25 +441,34 @@ export function ResourcesPage() {
           <ResourceRecords device={history} playerHref={(playerId) => `/merchant/${segment(shopCode)}/dashboard?player=${segment(playerId)}`} />
         </Modal>
       )}
-      {editing && (
-        <Modal
-          title={"id" in editing ? "编辑资源" : "添加资源"}
-          close={() => setEditing(null)}
-          dismissDisabled={editorLocked}
-          xl
-        >
-          <ResourceEditor
-            key={"id" in editing ? editing.id : `new:${editing.groupId}`}
-            value={"id" in editing ? editing : undefined}
-            groupId={"id" in editing ? undefined : editing.groupId}
-            onLockChange={setEditorLocked}
-            done={() => {
+      {editing && (() => {
+        const isWide = editorWide ?? ("id" in editing && !!editing.bot);
+        return (
+          <Modal
+            title={"id" in editing ? "编辑资源" : "添加资源"}
+            close={() => {
               setEditing(null);
-              reloadAll();
+              setEditorWide(null);
             }}
-          />
-        </Modal>
-      )}
+            dismissDisabled={editorLocked}
+            xl={isWide}
+            lg={!isWide}
+          >
+            <ResourceEditor
+              key={"id" in editing ? editing.id : `new:${editing.groupId}`}
+              value={"id" in editing ? editing : undefined}
+              groupId={"id" in editing ? undefined : editing.groupId}
+              onLockChange={setEditorLocked}
+              onWideChange={setEditorWide}
+              done={() => {
+                setEditing(null);
+                setEditorWide(null);
+                reloadAll();
+              }}
+            />
+          </Modal>
+        );
+      })()}
       {groupEditing && (
         <Modal
           title={groupEditing === "new" ? "添加资源组" : t(groupEditing.name)}
