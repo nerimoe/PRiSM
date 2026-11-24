@@ -79,6 +79,7 @@ describe("sqliteSchema", () => {
       "settlement_adjustments",
       "settlement_charge_items",
       "settlements",
+      "shop_nodes",
       "staff_users",
     ]);
   });

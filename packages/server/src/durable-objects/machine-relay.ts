@@ -15,21 +15,26 @@ import {
   capabilitiesForAttachment,
   capabilitiesFromRequest,
   ioEventSource,
-  isRecord,
-  parseCabinetEvent,
   parseCabinetSnapshot,
-  parseClientHello,
-  parseReadersEvent,
-  type IoReader,
-  parseHaStates,
-  parseHeartbeat,
-  parseIoEvent,
   prepareMessageForClient,
   type CabinetSnapshot,
   type ClientCapabilities,
   type IoEventMethod,
+  type IoReader,
   type RelayMessage,
 } from "../hardware/aimeio-relay.js";
+import {
+  encodeNodeCommand,
+  encodeNodeConfig,
+  encodeNodeHaWatch,
+  parseNodeMessage,
+  type IotNodeConfig,
+  type NodeCallReply,
+  type NodeKind,
+  type NodeRuntimeConfig,
+} from "../hardware/node-protocol.js";
+import { deriveNodeRuntimeConfig, getNode, resolveGpioInputTargets } from "../resources/nodes.js";
+import type { NodeLiveStatus } from "../gateway/machine-relay-gateway.js";
 import { logger } from "../log.js";
 
 const log = logger("machine-relay");
@@ -69,14 +74,47 @@ const SIGNAL_NAMES: Record<IoEventMethod, string> = {
   "event.ledSet": "led.set",
 };
 
-type Channel = { shopId: string; machineId: string; channel?: string };
+type Channel = {
+  shopId: string;
+  /** Resource id for a `hinata_io` node bound to a machine (optional for 1:0 / 1:N nodes). */
+  machineId?: string;
+  /** `shop_nodes.id` (defaults to `machineId` for legacy upgrades). */
+  nodeId?: string;
+  /** Edge node kind (defaults to `hinata_io`). */
+  kind?: NodeKind;
+  /** Friendly node label for ShopHub watcher views. */
+  label?: string;
+  channel?: string;
+};
 
 /**
  * Per-socket state. It lives in the socket attachment rather than on the
  * object, because a hibernated object wakes with its fields reset while its
  * sockets and their attachments survive.
  */
-type Attachment = ClientCapabilities & { e2ee?: boolean; ha?: boolean; session?: string; /** Last time this socket said anything, ms. */ seenAt?: number };
+type Attachment = ClientCapabilities & {
+  kind?: NodeKind;
+  e2ee?: boolean;
+  ha?: boolean;
+  session?: string;
+  /** Last time this socket said anything, ms. */
+  seenAt?: number;
+  version?: string | null;
+  model?: string | null;
+  program?: string | null;
+};
+
+const NODE_CALL_TIMEOUT_MS = 35_000;
+
+function channelKind(channel: Channel | null | undefined): NodeKind {
+  return channel?.kind ?? "hinata_io";
+}
+
+function watcherKeyOf(channel: Channel): string {
+  const kind = channelKind(channel);
+  if (kind === "hinata_io") return channel.machineId ?? channel.nodeId ?? "";
+  return `node:${channel.nodeId ?? channel.channel ?? ""}`;
+}
 
 /**
  * What the IO assigned to watch the shop's Home Assistants should subscribe to.
@@ -129,6 +167,76 @@ export class MachineRelay extends BaseDurableObject<Env> {
 
   /** RPCs sent to the IO awaiting its answer, by request id. Memory only, like `waits`. */
   private readonly rpcs = new Map<string, { timer: ReturnType<typeof setTimeout>; settle: (reply: Record<string, any> | null) => void }>();
+
+  /** Unified JSON-RPC calls in flight to any node (`launcher`, `iot`, etc.), by request id. */
+  private readonly nodeCalls = new Map<string, { ws: WebSocket; finish: (reply: NodeCallReply) => void }>();
+
+  private socketKind(ws: WebSocket): NodeKind {
+    return (ws.deserializeAttachment() as Attachment | null)?.kind ?? "hinata_io";
+  }
+
+  /** Live status of the node owning this relay Durable Object. */
+  async nodeStatus(): Promise<NodeLiveStatus> {
+    const channel = await this.channel();
+    const live = await this.syncPresence();
+    const primary = live[0];
+    const att = primary?.deserializeAttachment() as Attachment | null | undefined;
+    return {
+      online: live.length > 0,
+      kind: att?.kind ?? channelKind(channel),
+      version: att?.version ?? null,
+      model: att?.model ?? null,
+      program: att?.program ?? null,
+      e2ee: live.some((ws) => this.socketE2ee(ws)),
+    };
+  }
+
+  /** Push freshly derived runtime config (`node.setConfig`) to all live sockets of this node. */
+  async pushConfig(config: NodeRuntimeConfig): Promise<{ delivered: boolean }> {
+    const live = this.liveAgents();
+    if (!live.length) return { delivered: false };
+    let delivered = false;
+    for (const ws of live) {
+      const frame = encodeNodeConfig(this.socketKind(ws), config);
+      if (!frame) continue;
+      try {
+        ws.send(frame);
+        delivered = true;
+      } catch {
+        // Dead socket will be cleaned up on close/timeout.
+      }
+    }
+    return { delivered };
+  }
+
+  /** Invoke a JSON-RPC command on the connected node and wait for its reply. */
+  async callNode(
+    method: string,
+    params: Record<string, unknown>,
+    options: { id?: string; expiresAt?: number; timeoutMs?: number } = {},
+  ): Promise<NodeCallReply> {
+    const ws = this.liveAgents()[0];
+    if (!ws) return { ok: false, error: "节点离线" };
+    const id = options.id ?? crypto.randomUUID();
+    if (this.nodeCalls.has(id)) return { ok: false, error: "指令已在执行" };
+    const expiresAt = options.expiresAt ?? Date.now() + 30_000;
+    const timeoutMs = options.timeoutMs ?? NODE_CALL_TIMEOUT_MS;
+    const kind = this.socketKind(ws);
+    return new Promise((resolve) => {
+      const finish = (reply: NodeCallReply) => {
+        clearTimeout(timer);
+        this.nodeCalls.delete(id);
+        resolve(reply);
+      };
+      const timer = setTimeout(() => finish({ ok: false, error: "节点响应超时，执行结果未知" }), timeoutMs);
+      this.nodeCalls.set(id, { ws, finish });
+      try {
+        ws.send(encodeNodeCommand(kind, { id, method, params, expiresAt }));
+      } catch {
+        finish({ ok: false, error: "节点已断线" });
+      }
+    });
+  }
 
   /**
    * Ask the IO to read its cabinet's books now (`cabinet.getSnapshot`), and
@@ -187,35 +295,37 @@ export class MachineRelay extends BaseDurableObject<Env> {
    * Record through the device bus. Storage failures are logged and swallowed:
    * losing an audit row must not break card delivery to the game.
    */
-  private async record(what: string, write: (bus: ReturnType<typeof createRuntimeBus>, channel: Channel) => Promise<unknown>) {
+  private async record(what: string, write: (bus: ReturnType<typeof createRuntimeBus>, channel: Channel & { machineId: string }) => Promise<unknown>) {
     const channel = await this.channel();
-    if (!channel) return;
+    if (!channel?.machineId) return;
+    const bound = channel as Channel & { machineId: string };
     try {
       await write(createRuntimeBus({
-        db: this.env.DB, env: this.env, shopId: channel.shopId,
+        db: this.env.DB, env: this.env, shopId: bound.shopId,
         via: { channel: "relay", resourceId: null },
-        subscribers: [this.coinAfterCardSubscriber(channel)],
-      }), channel);
+        subscribers: [this.coinAfterCardSubscriber(bound)],
+      }), bound);
     } catch (error) {
-      log.error(`could not record ${what} from machine ${channel.machineId}`, { event: "machine_relay_record_failed", shopId: channel.shopId, machineId: channel.machineId, what, error });
+      log.error(`could not record ${what} from machine ${bound.machineId}`, { event: "machine_relay_record_failed", shopId: bound.shopId, machineId: bound.machineId, what, error });
     }
   }
 
   private async setLink(online: boolean) {
-    await this.record("link", (bus, channel) =>
-      bus.setOwned({ device: { id: channel.machineId }, capability: "hinata_io", key: "link", value: online ? "online" : "offline" }),
+    const channel = await this.channel();
+    if (!channel?.machineId || channelKind(channel) !== "hinata_io") return;
+    await this.record("link", (bus, bound) =>
+      bus.setOwned({ device: { id: bound.machineId }, capability: "hinata_io", key: "link", value: online ? "online" : "offline" }),
     );
     // Without a link the books no longer count, so the coin button is no longer held by them.
     await this.judgeCoinLimit();
     // A page shows the IO's actions only while it is connected.
-    const channel = await this.channel();
-    if (channel) await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "link");
+    await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "link");
   }
 
   /** Open pages hear when the cabinet reaches or leaves its limit, and only then. Never gets in the way of the machine. */
   private async judgeCoinLimit() {
     const channel = await this.channel();
-    if (!channel) return;
+    if (!channel?.machineId || channelKind(channel) !== "hinata_io") return;
     try {
       const device = await loadResource(this.env.DB, channel.shopId, channel.machineId);
       const full = !!device && (await coinLimit(this.env.DB, channel.shopId, device)) === "full";
@@ -229,44 +339,102 @@ export class MachineRelay extends BaseDurableObject<Env> {
   }
 
   /**
-   * WebSocket upgrade from a device. A request without the gateway's channel
-   * headers did not come through the authenticated path and is refused.
+   * WebSocket upgrade from an edge node (`hinata_io`, `launcher`, `iot`).
+   * A request without the gateway's channel headers did not come through the
+   * authenticated path and is refused.
    */
   async fetch(request: Request): Promise<Response> {
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("Expected Upgrade: websocket", { status: 426 });
     }
     const shopId = request.headers.get("x-prism-relay-shop");
-    const machineId = request.headers.get("x-prism-relay-machine");
-    if (!shopId || !machineId) {
+    const machineId = request.headers.get("x-prism-relay-machine") ?? undefined;
+    const nodeId = request.headers.get("x-prism-relay-node") ?? machineId;
+    const rawKind = request.headers.get("x-prism-relay-kind");
+    const kind: NodeKind = rawKind === "launcher" || rawKind === "iot" ? rawKind : "hinata_io";
+    if (!shopId || !nodeId) {
       return new Response("Missing relay channel", { status: 400 });
     }
-    const channel = request.headers.get("x-prism-relay-channel") ?? undefined;
-    await this.ctx.storage.put<Channel>(CHANNEL_KEY, { shopId, machineId, ...(channel ? { channel } : {}) });
+    const channelName = request.headers.get("x-prism-relay-channel") ?? undefined;
+    const rawLabel = request.headers.get("x-prism-relay-label");
+    let label: string | undefined;
+    if (rawLabel) {
+      try { label = decodeURIComponent(rawLabel); } catch { label = rawLabel; }
+    }
+    const storedChannel: Channel = {
+      shopId,
+      nodeId,
+      kind,
+      ...(machineId ? { machineId } : {}),
+      ...(label ? { label } : {}),
+      ...(channelName ? { channel: channelName } : {}),
+    };
+    await this.ctx.storage.put<Channel>(CHANNEL_KEY, storedChannel);
 
     const capabilities = capabilitiesFromRequest(request);
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
+    // Single active connection for dedicated server-driven nodes (`launcher` / `iot`).
+    if (kind !== "hinata_io") {
+      for (const old of this.ctx.getWebSockets()) {
+        try { old.close(1000, "replaced"); } catch { /* already closed */ }
+      }
+    }
+
+    // Look up node-level settings (e.g. IoT haWatch & derived runtime config).
+    const nodeRecord = await getNode(this.env.DB, shopId, nodeId).catch(() => null);
+    const iotHaWatch = kind === "iot" && (nodeRecord ? (nodeRecord.config as IotNodeConfig).haWatch !== false : true);
+    const session = crypto.randomUUID();
+
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ ...capabilities, session: crypto.randomUUID(), seenAt: Date.now() } satisfies Attachment);
+    server.serializeAttachment({
+      ...capabilities,
+      kind,
+      ...(iotHaWatch ? { ha: true } : {}),
+      session,
+      seenAt: Date.now(),
+    } satisfies Attachment);
+
     if (capabilities.role === "agent") {
       await this.ctx.storage.put(ONLINE_KEY, true);
-      await this.setLink(true);
+      if (kind === "hinata_io") await this.setLink(true);
       await this.syncPresence();
     }
 
-    // A reconnecting device cleared its card locally, so it must learn the card
-    // it was still holding. Only while it would still hold it: a card replayed
-    // after its lifetime would sign the last player in again on a later boot.
-    const stored = await this.storedCard();
-    if (stored) {
-      try {
-        server.send(prepareMessageForClient(JSON.stringify(stored.message), capabilities));
-      } catch {
-        // Socket already gone; the next command will deliver the state again.
+    if (kind === "hinata_io") {
+      // A reconnecting IO cleared its card locally, so it must learn the card
+      // it was still holding while it is still valid.
+      const stored = await this.storedCard();
+      if (stored) {
+        try {
+          server.send(prepareMessageForClient(JSON.stringify(stored.message), capabilities));
+        } catch {
+          // Socket already gone; the next command will deliver the state again.
+        }
+      }
+    } else {
+      // Push server-derived runtime configuration immediately on connect.
+      if (nodeRecord) {
+        const runtimeConfig = await deriveNodeRuntimeConfig(this.env.DB, shopId, nodeRecord).catch(() => null);
+        const encoded = runtimeConfig ? encodeNodeConfig(kind, runtimeConfig) : null;
+        if (encoded) {
+          try { server.send(encoded); } catch { /* socket already gone */ }
+        }
+      }
+      // Register always-on IoT hardware as a high-priority Home Assistant watcher candidate.
+      if (iotHaWatch && channelName) {
+        await this.ctx.storage.put(HA_SESSION_KEY, session);
+        await shopHub(this.env, shopId)
+          ?.relayOnline(shopId, watcherKeyOf(storedChannel), channelName, {
+            session,
+            kind: "iot",
+            ...(label ? { label } : {}),
+          })
+          .catch((error) => log.error(`could not register iot node ${nodeId} with shop hub`, { shopId, nodeId, error }));
       }
     }
+
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -324,7 +492,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     return this.agents().filter((ws) => ws.readyState === 1 && this.beatIsRecent(ws));
   }
 
-  /** The board and HA assignments both use this IO presence decision. */
+  /** The board and HA assignments both use this node presence decision. */
   private async offline(): Promise<void> {
     if ((await this.ctx.storage.get<boolean>(ONLINE_KEY)) === false) return;
     const session = await this.ctx.storage.get<string>(HA_SESSION_KEY);
@@ -334,7 +502,8 @@ export class MachineRelay extends BaseDurableObject<Env> {
       return;
     }
     const channel = await this.channel();
-    if (channel) await shopHub(this.env, channel.shopId)?.relayOffline(channel.shopId, channel.machineId, { session });
+    const key = channel ? watcherKeyOf(channel) : "";
+    if (channel && key) await shopHub(this.env, channel.shopId)?.relayOffline(channel.shopId, key, { session });
     if (!this.liveAgents().length) await this.ctx.storage.put(ONLINE_KEY, false);
     else await this.setLink(true);
   }
@@ -496,44 +665,148 @@ export class MachineRelay extends BaseDurableObject<Env> {
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string") return;
     // Anything at all is proof of life: the beat is the reliable case, but a
-    // card or a state report is just as good.
+    // card, GPIO event, or command reply is just as good.
     await this.markSeen(ws);
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(message);
-    } catch {
-      return;
-    }
-    // An answer to an RPC this object sent.
-    if (isRecord(parsed) && typeof parsed.id === "string" && !("method" in parsed) && this.rpcs.has(parsed.id)) {
-      const pending = this.rpcs.get(parsed.id)!;
-      clearTimeout(pending.timer);
-      this.rpcs.delete(parsed.id);
-      pending.settle(parsed);
+    const kind = this.socketKind(ws);
+    const inbound = parseNodeMessage(kind, message);
+    if (!inbound) return;
+
+    // Unified JSON-RPC reply handling across all node kinds.
+    if (inbound.kind === "rpc_reply") {
+      const nodeCall = this.nodeCalls.get(inbound.id);
+      if (nodeCall?.ws === ws) {
+        nodeCall.finish(inbound.error ? { ok: false, error: inbound.error.message } : { ok: true, result: inbound.result });
+        return;
+      }
+      const pending = this.rpcs.get(inbound.id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.rpcs.delete(inbound.id);
+        pending.settle(inbound.error ? { id: inbound.id, error: inbound.error } : { id: inbound.id, result: inbound.result });
+      }
       return;
     }
 
-    // The IO announces its transports on connect, before anything else.
-    const hello = parseClientHello(parsed);
-    if (hello) {
+    // Unified passive hello for `launcher` and `iot`.
+    if (inbound.kind === "node_hello") {
+      const previous = (ws.deserializeAttachment() ?? {}) as Attachment;
+      ws.serializeAttachment({
+        ...previous,
+        ...(inbound.hello.version ? { version: inbound.hello.version } : {}),
+        ...(inbound.hello.model ? { model: inbound.hello.model } : {}),
+        seenAt: Date.now(),
+      } satisfies Attachment);
+      return;
+    }
+
+    // Unified heartbeat for `launcher` and `iot`.
+    if (inbound.kind === "node_heartbeat") {
+      const previous = (ws.deserializeAttachment() ?? {}) as Attachment;
+      ws.serializeAttachment({
+        ...previous,
+        ...("program" in inbound.heartbeat ? { program: inbound.heartbeat.program ?? null } : {}),
+        seenAt: Date.now(),
+      } satisfies Attachment);
+      const channel = await this.channel();
+      if (channel?.channel && previous.ha && inbound.heartbeat.ha !== undefined) {
+        const key = watcherKeyOf(channel);
+        const session = await this.ctx.storage.get<string>(HA_SESSION_KEY);
+        if (!session || previous.session === session) {
+          await shopHub(this.env, channel.shopId)
+            ?.relayOnline(channel.shopId, key, channel.channel, {
+              session: previous.session,
+              restart: !inbound.heartbeat.ha.length,
+              kind,
+              ...(channel.label ? { label: channel.label } : {}),
+            })
+            .catch((error) => log.error(`could not refresh watcher node ${key} with shop hub`, { shopId: channel.shopId, key, error }));
+          for (const health of inbound.heartbeat.ha) {
+            await shopHub(this.env, channel.shopId)
+              ?.haReport(channel.shopId, key, { method: "ha.status", params: health })
+              .catch((error) => log.error(`could not pass node ${key}'s Home Assistant status to shop hub`, { shopId: channel.shopId, key, error }));
+          }
+        }
+      }
+      return;
+    }
+
+    // GPIO input feedback -> map `(nodeId, pin)` to bound resource standard signal.
+    if (inbound.kind === "gpio_event") {
+      const channel = await this.channel();
+      if (!channel?.nodeId) return;
+      const targets = await resolveGpioInputTargets(this.env.DB, channel.shopId, channel.nodeId, inbound.event.pin).catch(() => []);
+      if (!targets.length) return;
+      const bus = createRuntimeBus({
+        db: this.env.DB,
+        env: this.env,
+        shopId: channel.shopId,
+        via: { channel: "relay", resourceId: null },
+      });
+      for (const target of targets) {
+        await bus
+          .signal({
+            device: { id: target.deviceId },
+            capability: target.capability,
+            name: target.signal,
+            payload: {
+              nodeId: channel.nodeId,
+              pin: inbound.event.pin,
+              edge: inbound.event.edge,
+              count: inbound.event.count,
+              ...(inbound.event.value !== undefined ? { value: inbound.event.value } : {}),
+            },
+          })
+          .catch((error) =>
+            log.error(`could not record gpio event from node ${channel.nodeId}`, {
+              shopId: channel.shopId,
+              nodeId: channel.nodeId,
+              deviceId: target.deviceId,
+              pin: inbound.event.pin,
+              error,
+            }),
+          );
+      }
+      return;
+    }
+
+    // Unified HA state report (`hinata_io` and `iot`).
+    if (inbound.kind === "ha_report") {
+      const channel = await this.channel();
+      const key = channel ? watcherKeyOf(channel) : "";
+      if (channel && key) {
+        await shopHub(this.env, channel.shopId)
+          ?.haReport(channel.shopId, key, inbound.report)
+          .catch((error) => log.error(`could not pass node ${key}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, key, error }));
+      }
+      return;
+    }
+
+    // HINATA IO protocol events below.
+    if (inbound.kind === "io_hello") {
+      const { hello } = inbound;
       const ha = hello.features.includes("ha.watch");
       const previous = ws.deserializeAttachment() as Attachment;
       const session = previous.session ?? crypto.randomUUID();
-      ws.serializeAttachment({ ...previous, e2ee: hello.e2ee, ha, session, seenAt: Date.now() } satisfies Attachment);
+      ws.serializeAttachment({
+        ...previous,
+        e2ee: hello.e2ee,
+        ha,
+        session,
+        ...(hello.ioVersion ? { version: hello.ioVersion } : {}),
+        seenAt: Date.now(),
+      } satisfies Attachment);
       if (hello.ioVersion) await this.ioVersion(hello.ioVersion);
-      // Its books, without anyone editing the machine's config. It holds this only until it
-      // restarts. An IO too old to know this, or whose game has no sysfile.dat, declines;
-      // neither needs an answer.
       if (hello.authenticated && !hello.e2ee) {
         ws.send(JSON.stringify({ jsonrpc: "2.0", method: "io.setLiveConfig", params: { key: "cabinetMonitor", value: "1" } }));
       }
       const channel = await this.channel();
-      if (ha && channel?.channel) {
+      const key = channel ? watcherKeyOf(channel) : "";
+      if (ha && channel?.channel && key) {
         await this.ctx.storage.put(HA_SESSION_KEY, session);
         await shopHub(this.env, channel.shopId)
-          ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session })
-          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is online`, { shopId: channel.shopId, machineId: channel.machineId, error }));
+          ?.relayOnline(channel.shopId, key, channel.channel, { session })
+          .catch((error) => log.error(`could not tell the shop hub machine ${key} is online`, { shopId: channel.shopId, machineId: key, error }));
       }
       return;
     }
@@ -542,63 +815,44 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const session = await this.ctx.storage.get<string>(HA_SESSION_KEY);
     if (session && attachment?.ha && attachment.session !== session) return;
 
-    // The beat says the IO is alive and, when it holds an assignment, what it
-    // knows about each Home Assistant. That health is handed on under the same
-    // method the hub already reasons about.
-    const heartbeat = parseHeartbeat(parsed);
-    if (heartbeat) {
+    if (inbound.kind === "io_heartbeat") {
       await this.dropExpiredCapture();
       const channel = await this.channel();
-      if (channel?.channel && attachment?.ha) {
-        // Reoffer after an outage; an empty HA list also says the IO lost its assignment.
+      const key = channel ? watcherKeyOf(channel) : "";
+      if (channel?.channel && key && attachment?.ha) {
         await shopHub(this.env, channel.shopId)
-          ?.relayOnline(channel.shopId, channel.machineId, channel.channel, { session: attachment.session, restart: !heartbeat.ha.length })
-          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is online`, { shopId: channel.shopId, machineId: channel.machineId, error }));
+          ?.relayOnline(channel.shopId, key, channel.channel, { session: attachment.session, restart: !inbound.ha.length })
+          .catch((error) => log.error(`could not tell the shop hub machine ${key} is online`, { shopId: channel.shopId, machineId: key, error }));
       }
-      if (channel?.channel && heartbeat.ha.length) {
-        // The same session keeps its assignment; only a reconnect or lost task gets a new term.
-        for (const health of heartbeat.ha) {
+      if (channel?.channel && key && inbound.ha.length) {
+        for (const health of inbound.ha) {
           await shopHub(this.env, channel.shopId)
-            ?.haReport(channel.shopId, channel.machineId, { method: "ha.status", params: health })
-            .catch((error) => log.error(`could not pass machine ${channel.machineId}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, machineId: channel.machineId, error }));
+            ?.haReport(channel.shopId, key, { method: "ha.status", params: health })
+            .catch((error) => log.error(`could not pass machine ${key}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, machineId: key, error }));
         }
       }
-      // The beat repeats the latest books, so a missed snapshot event is made up
-      // for here; an unchanged one changes nothing.
-      if (heartbeat.cabinet) await this.cabinet(heartbeat.cabinet);
-      // The whole list, once the IO has one, in case a change was missed.
-      if (heartbeat.readers) await this.readers(heartbeat.readers);
+      if (inbound.cabinet) await this.cabinet(inbound.cabinet);
+      if (inbound.readers) await this.readers(inbound.readers);
       return;
     }
 
-    const books = parseCabinetEvent(parsed);
-    if (books) {
-      await this.cabinet(books);
+    if (inbound.kind === "cabinet") {
+      await this.cabinet(inbound.snapshot);
       return;
     }
 
-    const readers = parseReadersEvent(parsed);
-    if (readers) {
-      await this.readers(readers.readers);
-      const { change } = readers;
-      if (change) await this.record("reader", (bus, channel) =>
-        bus.signal({ device: { id: channel.machineId }, capability: "hinata_io", name: change.signal, payload: change.reader }));
-      return;
-    }
-
-    const report = parseHaStates(parsed);
-    if (report) {
-      const channel = await this.channel();
-      if (channel) {
-        await shopHub(this.env, channel.shopId)
-          ?.haReport(channel.shopId, channel.machineId, report)
-          .catch((error) => log.error(`could not pass machine ${channel.machineId}'s Home Assistant report to the shop hub`, { shopId: channel.shopId, machineId: channel.machineId, error }));
+    if (inbound.kind === "readers") {
+      await this.readers(inbound.readers);
+      if (inbound.change) {
+        const change = inbound.change;
+        await this.record("reader", (bus, bound) =>
+          bus.signal({ device: { id: bound.machineId }, capability: "hinata_io", name: change.signal, payload: change.reader }));
       }
       return;
     }
 
-    const event = parseIoEvent(message);
-    if (!event) return;
+    if (inbound.kind !== "io_event") return;
+    const { event } = inbound;
     // Reader colours come every frame and are never stored.
     if (event.method === "event.ledSet") return;
     const name = SIGNAL_NAMES[event.method];
@@ -622,7 +876,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     };
     this.answer(name, source, payload);
     if (!hinataIo.signals[name]?.store) return;
-    await this.record(name, (bus, channel) => this.signal(bus, channel, name, source, payload, card?.accessCode ?? null));
+    await this.record(name, (bus, bound) => this.signal(bus, bound, name, source, payload, card?.accessCode ?? null));
   }
 
   /**
@@ -634,7 +888,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
    */
   private async signal(
     bus: ReturnType<typeof createRuntimeBus>,
-    channel: Channel,
+    channel: Channel & { machineId: string },
     name: string,
     source: string | null,
     payload: Record<string, unknown>,
@@ -651,7 +905,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
    * test that keeps the cabinet from idling: a known player billing for it.
    * This object's own listener, because the coin is a key press only it can make.
    */
-  private coinAfterCardSubscriber(channel: Channel): AfterSubscriber<EventContext> {
+  private coinAfterCardSubscriber(channel: Channel & { machineId: string }): AfterSubscriber<EventContext> {
     return {
       name: "coin-after-card",
       when: "after",
@@ -670,7 +924,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
    * after a card. Only below a coin limit read from the cabinet's own books:
    * an IO that does not report them, or a cabinet with no limit, gets none.
    */
-  private async coinAfterCard(channel: Channel, playerId: string, cardOperation: string | null) {
+  private async coinAfterCard(channel: Channel & { machineId: string }, playerId: string, cardOperation: string | null) {
     const device = await loadResource(this.env.DB, channel.shopId, channel.machineId);
     if (!device || !coinConfigOf(device)?.afterSwipe || !can(device, "coin")) return;
     const operationId = crypto.randomUUID();
@@ -791,7 +1045,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
     if (!capture || capture.result || capture.card !== undefined || capture.expiresAt <= Date.now()) return;
     await this.ctx.storage.put(CAPTURE_KEY, { ...capture, card });
     const channel = await this.channel();
-    if (channel) await cardRead(this.env, capture.shopId, capture.userId, channel.machineId);
+    if (channel?.machineId) await cardRead(this.env, capture.shopId, capture.userId, channel.machineId);
   }
 
   /** A card nobody came for does not stay in storage. */
@@ -809,6 +1063,9 @@ export class MachineRelay extends BaseDurableObject<Env> {
     } catch {
       // Already closed.
     }
+    for (const call of this.nodeCalls.values()) {
+      if (call.ws === ws) call.finish({ ok: false, error: "节点已断线，执行结果未知" });
+    }
     if (this.socketCapabilities(ws).role !== "agent") return;
     const otherLive = this.liveAgents().some((other) => other !== ws);
     if (!otherLive) await this.offline();
@@ -816,29 +1073,31 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const session = (ws.deserializeAttachment() as Attachment | null)?.session;
     if (otherLive && watching && (!this.watchers().some((other) => other !== ws) || session === await this.ctx.storage.get<string>(HA_SESSION_KEY))) {
       const channel = await this.channel();
-      if (channel) {
+      const key = channel ? watcherKeyOf(channel) : "";
+      if (channel && key) {
         await shopHub(this.env, channel.shopId)
-          ?.relayOffline(channel.shopId, channel.machineId, { session })
-          .catch((error) => log.error(`could not tell the shop hub machine ${channel.machineId} is offline`, { shopId: channel.shopId, machineId: channel.machineId, error }));
+          ?.relayOffline(channel.shopId, key, { session })
+          .catch((error) => log.error(`could not tell the shop hub node ${key} is offline`, { shopId: channel.shopId, key, error }));
       }
     }
     await this.syncPresence();
   }
 
-  /** Connected IOs that said they can watch Home Assistant. */
+  /** Connected nodes (`hinata_io` or `iot`) that can watch Home Assistant. */
   private watchers(): WebSocket[] {
     return this.liveAgents().filter((ws) => (ws.deserializeAttachment() as Attachment | null)?.ha === true);
   }
 
   /**
-   * Hand this machine's IO the Home Assistant watch for the shop, or take it
-   * away with `null`. Not stored: the shop hub sends it again on reconnect.
+   * Hand this node the Home Assistant watch for the shop, or take it away with
+   * `null`. Uses the node's wire adapter (`HA_WATCH` for HINATA IO, JSON-RPC
+   * `ha.watch` for IoT/newer nodes).
    */
   async watchHa(watch: HaWatch | null, session?: string): Promise<{ ok: boolean }> {
     const socket = this.watchers().find((ws) => !session || (ws.deserializeAttachment() as Attachment | null)?.session === session);
     if (!socket) return { ok: false };
     try {
-      socket.send(JSON.stringify(watch ? { action: "HA_WATCH", body: watch } : { action: "HA_UNWATCH", body: {} }));
+      socket.send(encodeNodeHaWatch(this.socketKind(socket), watch));
       return { ok: true };
     } catch {
       return { ok: false };

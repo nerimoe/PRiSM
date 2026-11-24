@@ -6,7 +6,7 @@ import { PrismDomainError, type SessionTransitionWrite } from "@prism/core";
 import { createSqlRepositories, type SqlStatement } from "@prism/storage-sql";
 import { requireUser } from "../../middleware/auth.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
-import { checkShopLocation } from "../../middleware/geo.js";
+import { checkResourceLocation } from "../../middleware/geo.js";
 import { publishShopFacts, type FactOrigin } from "../../events/shop-facts.js";
 import { requestOrigin } from "../../middleware/tenant.js";
 import { jsonError } from "../../http.js";
@@ -213,7 +213,7 @@ export async function operateTable(
   await assertNotBanned(c, options.bot ? [["machine",machine.id]] : [["user",requireUser(c).id],["machine",machine.id]]);
   const shop = await getBillingShop(c, machine.shop_public_id);
   if (!options.staff && !options.bot) {
-    checkShopLocation(shop, "machine", body.location);
+    await checkResourceLocation({ db: c.env.DB, shop, action: "machine", deviceId: machine.id, location: body.location });
   }
   const targetPlayerId = typeof body.playerId === "string" ? body.playerId : "";
   if (options.staff && !targetPlayerId) jsonError(400, "请选择玩家", "PLAYER_REQUIRED");
@@ -273,7 +273,7 @@ export async function moveTable(
       const playing = joining && startsPlaying(here, old, gamePlan, config.capacity, config.startWhen);
       const running = joining && waitingPlan ? await deps.resourceBilling.activeSession({ resourceId: machine.id, playerId: player.id }) : null;
       if (joining && waitingPlan && !running && !onBehalf && body.consent === true)
-        checkShopLocation(shop, "checkin", body.location);
+        await checkResourceLocation({ db: c.env.DB, shop, action: "checkin", deviceId: machine.id, location: body.location });
       if (joining && waitingPlan && !confirmed && !running) jsonError(403, "请先确认开始计费", "CHECKIN_REQUIRED");
 
       const changedSeats: Seat[] = [];

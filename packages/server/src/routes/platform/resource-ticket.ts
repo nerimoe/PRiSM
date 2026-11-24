@@ -4,7 +4,8 @@ import type { AppBindings } from "../../bindings.js";
 import { decryptSecret, encryptSecret, sha256 } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { resourceBilledSql } from "../../resources/billed-sql.js";
-import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
+import { hinataConfigOf, loadResource, publicCapabilities, resourceHasLink } from "../../resources/resource.js";
+import { readShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
 import { recordResourceVisit } from "./resource-visit.js";
 
 export const resourceTicketRouter = new Hono<AppBindings>();
@@ -97,17 +98,30 @@ export async function resolveResourceTicket(c: Context<AppBindings>, ticket: str
     if (!machine || (route && route !== machine.public_id)) jsonError(410, "本次会话已失效", "TICKET_EXPIRED");
   }
   if (machine.enabled !== 1) jsonError(404, "机台不可用", "MACHINE_NOT_FOUND");
-  // A bot is managed as a resource but is not something players scan.
+  // Resources without a player link (e.g. a pure bot or pure IoT controller) cannot be scanned.
   if (machine.is_bot) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
+  const device = await loadResource(c.env.DB, machine.shop_id, machine.id);
+  if (device && !resourceHasLink(device)) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
   return machine;
 }
 
 export async function publicResource(c: Context<AppBindings>, m: ScannedResource) {
-  const device = await loadResource(c.env.DB, m.shop_id, m.id);
+  const [device, locationSettings] = await Promise.all([
+    loadResource(c.env.DB, m.shop_id, m.id),
+    readShopLocationSettings(c.env.DB, m.shop_id),
+  ]);
   const capabilities = device
     ? publicCapabilities(device)
     : { power: false, climate: false, card: false, coin: false, door: false, table: false };
   const io = device ? hinataConfigOf(device) : null;
+  const effectivePolicy = resolveEffectiveLocationPolicy({
+    shop: { checkin_geo: m.machine_geo, checkout_geo: m.machine_geo, machine_geo: m.machine_geo },
+    action: "machine",
+    settings: locationSettings,
+    deviceId: m.id,
+  });
+  const requiresGps = effectivePolicy.mode === "gps" || effectivePolicy.mode === "any";
+  const requiresLocation = effectivePolicy.mode !== "none";
   return {
     publicId: m.public_id, name: m.name, kind: m.kind,
     capabilities,
@@ -118,9 +132,12 @@ export async function publicResource(c: Context<AppBindings>, m: ScannedResource
     // Native apps render the full device flow only for a plain card cabinet.
     webOnly: !!m.billed || !capabilities.card ||
       capabilities.door || capabilities.power || capabilities.climate,
+    locationMode: effectivePolicy.mode,
     shop: {
       name: m.shop_name, publicId: m.shop_public_id,
-      locationEnabled: !!m.machine_geo, machineGeo: !!m.machine_geo,
+      locationEnabled: requiresLocation,
+      locationMode: effectivePolicy.mode,
+      machineGeo: requiresGps,
       // Released App Clips read this to tell a resource without hardware that
       // still needs confirming from an idle one; it answers for this resource.
       billingEnabled: !!m.billed, heroUrl: m.shop_hero_url,
@@ -138,6 +155,8 @@ resourceTicketRouter.post("/session/start", async (c) => {
   if (!machine || machine.enabled !== 1 || machine.shop_public_id !== body.shopCode)
     jsonError(404, "机台不可用", "MACHINE_NOT_FOUND");
   if (machine.is_bot) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
+  const device = await loadResource(c.env.DB, machine.shop_id, machine.id);
+  if (device && !resourceHasLink(device)) jsonError(404, "这里不能扫码使用", "MACHINE_NOT_FOUND");
   const navigation = await mintResourceTicket(c.env.SESSION_SECRET, body.shopCode, body.publicId);
   await recordResourceVisit(c, machine, navigation.ticket);
   return c.json({ ...navigation, machine: await publicResource(c, machine) });

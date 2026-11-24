@@ -1,14 +1,15 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import type { AppBindings } from "../bindings.js";
-import { machineRelayPath } from "../gateway/relay-path.js";
+import { machineRelayPath, nodeRelayPath } from "../gateway/relay-path.js";
 
 export function isAssetEligiblePath(path: string): boolean {
   return (
     !path.startsWith("/api/") &&
     !path.startsWith("/rpc") &&
-    // The relay upgrade is a GET, so without this it is served as a static asset
+    // Relay upgrades are GETs, so without this they are served as static assets
     // and the WebSocket handshake never happens.
     !path.startsWith(machineRelayPath) &&
+    !path.startsWith(nodeRelayPath) &&
     // A bot's connection upgrade is a GET too, at one fixed path.
     !path.startsWith("/integration/") &&
     !path.startsWith("/.well-known/") &&

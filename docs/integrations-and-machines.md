@@ -252,8 +252,11 @@ await client.requestScanByIdentity(
 | --- | --- | --- | --- | --- | --- |
 | `power` | `connectionId`、`entityId`（`switch.*`/`input_boolean.*`） | —（旧绑定：`binding`，见下文「店铺 Home Assistant 连接」） | `power.on`、`power.off` | — | `power`，外部权威（事件驱动读存储，无状态现查） |
 | `climate` | `connectionId`、`entityId`（`climate.*`） | —（同上） | `climate.on`、`climate.off`、`climate.set_mode`、`climate.set_temperature`、`climate.set_fan_mode` | — | `climate`，外部权威（同上） |
-| `hinata_io` | `transport`（`external`/`embedded`）、`keys`（店家命名的按键）、`channel` | `url`、`password`（仅外部中继） | `aime.scan`、`key.press` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
-| `coin` | `method`（目前只有 `key`）、`keyId`（按下 `hinata_io` 的哪个按键）、`cap`（投币上限，直连）、`afterSwipe`（自动投币，直连） | — | `coin` | — | — |
+| `hinata_io` | `transport`（`external`/`embedded`）、`nodeId`（指向 `shop_nodes`）、`channel` | `url`、`password`（仅外部中继） | `aime.scan` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
+| `keys` | `buttons`（最多 16 个按钮：键盘 `mode: "keyboard"` 优先 Launcher 回落 HINATA IO，或 `mode: "gpio"` 指向店内任意 IoT 控制器引脚） | — | `key.press` | — | — |
+| `coin` | `keyId`（依赖 `keys` 能力中的按钮）、`cap`、`afterSwipe`、可选硬件回报 `feedbackNodeId` / `feedbackPin` / `feedbackEdge` / `feedbackDebounceMs` / `feedbackSignal` | — | `coin` | `cabinet.coin`、`cabinet.consumed`、`cabinet.activity`（硬件 GPIO 回报） | — |
+| `host` | `nodeId`（指向 `launcher` 节点）、`defaultProgram`、`programs` | — | `host.switch`、`host.key`、`host.text`、`host.screenshot`、`host.reboot`、`host.shutdown` | — | `link`（平台权威）、`program`（外部权威） |
+| `iot` | `nodeId`（指向 `iot` 节点）、`haWatch`、`ble`（`enabled`、`beaconId`、`txPower`、`rssiThreshold`） | — | — | — | `link`（平台权威） |
 | `door` | `lockId` | — | `door.open` | — | — |
 | `table` | `pricingConfigIds`（最多一个方案）、`startWhen`（资源本身另有 `capacity`） | — | —（上下桌走桌游流程） | — | — |
 
@@ -385,14 +388,15 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 `transport: "external"` 时平台通过 HTTP 访问外部 relay（`secret.url`）。有连接密码时按 Hinata IO 协议用 PBKDF2-HMAC-SHA256 与 AES-256-GCM 生成 `E2EE_V1`：投币向 `<url>/event` 发送有效期 30 秒、带去重 ID 的 `KEY_PRESS`；刷卡向 `<url>` 发送一次性 `SET_CARD`。投币必须有密码，按键码 1–65535。relay 的 HTTP 拒绝记为失败（状态码写入结果事件和登录审计），无响应记为结果未知。外部 relay 的「已接收」不等于机台真正读到了卡。
 
-### HINATA IO：机台直连（内嵌中继）
+### 边缘节点直连（内嵌中继：HINATA IO / PRiSM Launcher / IoT 控制器）
 
-`transport: "embedded"` 时机台直接连本平台：`[aimeio] serverUrl=<APP_ORIGIN>/io/ws`，再填写平台签发的 `deviceToken`。
+`transport: "embedded"` 的 HINATA IO 与 PRiSM Launcher、独立 IoT 硬件节点统一纳入店铺级节点表 `shop_nodes`（迁移 `0064_shop_nodes.sql`），共享同一套令牌鉴权、心跳活性、配置下发与 Durable Object 中继生命周期，仅线协议帧格式按节点类型适配（详见 [边缘节点接入与通信协议](nodes-protocol.md)）。
 
-- 保存时生成 `prism_io_` 前缀的随机令牌，**只在保存响应里返回一次**，库里只存 SHA-256（`device_capabilities.credential_hash`）。`rotateRelayToken: true` 轮换令牌；通道名 `config.channel` 与令牌无关，轮换不会断开在线机台。
-- WebSocket 升级请求带 `Authorization: Bearer <deviceToken>`，平台在握手前按令牌找到设备和通道；令牌无效返回 401，机台客户端把 401/403 当作永久失败停止重连。
-- 直连不做端到端加密：平台既是中继也是控制端，卡号本来就由平台从 `cards.access_code` 取出，身份由设备令牌承担，机密性由 `wss://` 承担。保存为直连时会丢弃之前给外部中继存的密码；请求里同时提交密码返回 `DEVICE_RELAY_PASSWORD_CONFLICT`。机台若仍设置了 `remotePassword`，会在 `CLIENT_HELLO` 里声明 `e2ee: true`，平台拒绝下发并在设备看板提示清空。
-- 通道是 `MachineRelay` Durable Object（binding `MACHINE_RELAY`，迁移 tag `machine-relay-v1`）。控制端接口不对外暴露，`/io/ws` 是唯一公开路径。设备看板上的「已连接」直接问 Durable Object，不读存储：部署重启会断开连接却不触发断开回调。
+- 公开 WebSocket 路径为 `/node/ws`（同时保留 `/io/ws` 兼容已部署 HINATA IO，两者均列入 `wrangler.jsonc` 的 `run_worker_first`）。
+- 令牌只存 SHA-256（`shop_nodes.credential_hash`），**只在签发/轮换响应里返回一次**；既有 `hinata_io` 迁移时保留原 `channel` 与 `credential_hash`，现场机台不断线。通过 `POST/PATCH /api/v1/merchant/machines` 启用直连或 `rotateRelayToken: true` 会自动同步对应的 `hinata_io` 节点。
+- WebSocket 升级请求带 `Authorization: Bearer <token>`，平台在握手前按令牌权威解析出店铺、节点 ID、节点类型和通道；令牌无效或节点/机台停用返回 401，客户端将 401/403 视为永久失败停止重连。
+- 直连不做端到端加密：平台既是中继也是控制端，卡号本来就由平台从 `cards.access_code` 取出，身份由节点令牌承担，机密性由 `wss://` 承担。保存为直连时会丢弃之前给外部中继存的密码；请求里同时提交密码返回 `DEVICE_RELAY_PASSWORD_CONFLICT`。机台若仍设置了 `remotePassword`，会在 `CLIENT_HELLO` 里声明 `e2ee: true`，平台拒绝下发并在设备看板提示清空。
+- 每个节点独立占用一个 `MachineRelay` Durable Object（binding `MACHINE_RELAY`，按 `shop_nodes.channel` 寻址）。控制端接口不对外暴露。设备看板上的「已连接」直接问 Durable Object，不读存储：部署重启会断开连接却不触发断开回调。
 - 机台通过同一连接回报 `event.cardStateChanged`、`event.cardConsumed`、`event.ledSet`，分别记为 `card.state`、`card.consumed` 信号；`led.set` 每帧都有，不存储。下发刷卡时平台把操作 ID 放进 `source`，机台原样回传；只有 UUID 形式的 `source` 被当作关联，`Remote`、`HINATA(<实例>)` 等机台本地来源不关联任何操作。卡片事件带着卡号（包括玩家直接在读卡器上刷的实体卡）：平台用它认出卡主人、记在事件的 `player_id` 上，并推断谁在占用机台，存入日志前去掉卡号，只留卡类型。
 - 机台断线重连时，平台只重发**仍在有效期内、且还没被游戏取走**的那张卡（客户端默认 3 秒后丢弃远程卡）。游戏取走后（`source` 一致的 `card.consumed`）或过了有效期，存着的卡就被删除；旧版本存下的、没有有效期的卡一律不重发。否则机台几小时后重启，会把上一位玩家的卡再塞进游戏。
 
@@ -437,7 +441,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 
 ### 店铺 Hub：谁替店里盯着 Home Assistant，以及设备状态的两种模式
 
-每家店有一个 `ShopHub` Durable Object（binding `SHOP_HUB`，迁移 tag `shop-hub-v1`，名字是店铺 ID），它从店里**在线的 Bot 和直连 HINATA IO 中挑最多两个**（默认两个，平台管理员可按店铺调整，见下），让它们用只读令牌订阅 Home Assistant（`subscribe_entities`），把状态变化经已有的连接报回来。HA 不必暴露到公网（监听者在局域网里也行），机台连进来的 WebSocket 照常可以休眠。Bot 的 WebSocket、玩家资源页和商户看板的 WebSocket 都进这个对象；只有机台直连走每台一个的 `MachineRelay`。
+每家店有一个 `ShopHub` Durable Object（binding `SHOP_HUB`，迁移 tag `shop-hub-v1`，名字是店铺 ID），它从店里**在线的独立 IoT 硬件节点、Bot 和直连 HINATA IO 中按优先级（IoT 节点 > Bot > 稳定 IO > 普通 IO）挑最多两个**（默认两个，平台管理员可按店铺调整，见下），让它们用只读令牌订阅 Home Assistant（`subscribe_entities`），把状态变化经已有的连接报回来。HA 不必暴露到公网（监听者在局域网里也行），节点连进来的 WebSocket 照常可以休眠。Bot 的 WebSocket、玩家资源页和商户看板的 WebSocket 都进这个对象；只有边缘节点直连走每节点一个的 `MachineRelay`。
 
 #### 两种模式（按 Home Assistant 连接）
 

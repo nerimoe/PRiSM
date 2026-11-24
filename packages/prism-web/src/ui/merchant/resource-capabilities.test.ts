@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   canOperateCoin,
+  capabilityConflicts,
+  capabilityRequires,
+  conflictingCapabilities,
+  dependentCapabilities,
   deviceActionGroups,
   deviceActions,
+  hasResourceLink,
   resourceCapabilities,
   isDirectConnect,
   isUnconfigured,
@@ -51,7 +56,10 @@ describe("device capability view", () => {
       power: false,
       climate: false,
       hinata_io: false,
+      keys: false,
       coin: false,
+      host: false,
+      iot: false,
       door: false,
       table: false,
       bot: false,
@@ -63,10 +71,80 @@ describe("device capability view", () => {
           ttlockLockId: 42,
           table: { capacity: 4, pricingConfigIds: [] },
           relayConnection: "embedded",
-          coin: { method: "key", keyId: "coin", cap: null, afterSwipe: false },
+          hasKeys: true,
+          keys: [{ id: "coin", name: "投币", mode: "keyboard", key: 32 }],
+          coin: { keyId: "coin", cap: null, afterSwipe: false },
+          host: { nodeId: "ln_m1", defaultProgram: "Game", programs: [{ name: "Game", path: "C:\\game.exe" }] },
+          iot: { nodeId: "iot_m1", haWatch: true, ble: { enabled: true, beaconId: 1, txPower: -59, rssiThreshold: -75 } },
         }),
       ),
-    ).toEqual({ power: true, climate: false, hinata_io: true, coin: true, door: true, table: true, bot: false });
+    ).toEqual({
+      power: true,
+      climate: false,
+      hinata_io: true,
+      keys: true,
+      coin: true,
+      host: true,
+      iot: true,
+      door: true,
+      table: true,
+      bot: false,
+    });
+  });
+
+  it("enforces declarative capability conflicts, dependencies, and player-link rules", () => {
+    // Bot conflicts with everything; IoT conflicts with table/door/climate; table+climate is allowed.
+    expect(capabilityConflicts("bot", "power")).toBe(true);
+    expect(capabilityConflicts("bot", "iot")).toBe(true);
+    expect(capabilityConflicts("iot", "table")).toBe(true);
+    expect(capabilityConflicts("iot", "door")).toBe(true);
+    expect(capabilityConflicts("iot", "climate")).toBe(true);
+    expect(capabilityConflicts("iot", "coin")).toBe(false);
+    expect(capabilityConflicts("iot", "keys")).toBe(false);
+    expect(capabilityConflicts("table", "climate")).toBe(false);
+
+    // Coin requires keys, so removing keys is blocked while coin is enabled.
+    expect(capabilityRequires("coin")).toEqual(["keys"]);
+    const cabinetCaps = resourceCapabilities(
+      machine({ hasKeys: true, coin: { keyId: "coin" } }),
+    );
+    expect(dependentCapabilities("keys", cabinetCaps)).toEqual(["coin"]);
+    expect(conflictingCapabilities("bot", cabinetCaps)).toEqual(["keys", "coin"]);
+
+    // Pure bot and pure IoT have no player link; plain QR and IoT+keys+coin do.
+    expect(hasResourceLink(resourceCapabilities(machine()))).toBe(true);
+    expect(hasResourceLink(resourceCapabilities(machine({ bot: { playerCommands: "all", readOnlyNotice: "", staffCommands: true, powerOffStaffOnly: false, doorResourceId: null, doorPasswordOnEntry: false, announceGroups: [], idleReminderMinutes: 5 } })))).toBe(false);
+    expect(hasResourceLink(resourceCapabilities(machine({ iot: { nodeId: "iot_1", haWatch: true, ble: { enabled: true, beaconId: 1, txPower: -59, rssiThreshold: -75 } } })))).toBe(false);
+    expect(hasResourceLink(resourceCapabilities(machine({
+      iot: { nodeId: "iot_1", haWatch: true, ble: { enabled: true, beaconId: 1, txPower: -59, rssiThreshold: -75 } },
+      hasKeys: true,
+      keys: [{ id: "coin", name: "投币", mode: "gpio", nodeId: "iot_1", pin: 12, pulseMs: 80, activeLow: true }],
+      coin: { keyId: "coin" },
+    })))).toBe(true);
+  });
+
+  it("supports unified keys (GPIO & keyboard), coin, and host actions", () => {
+    const arcade = machine({
+      hasKeys: true,
+      keys: [
+        { id: "coin", name: "投币", mode: "gpio", nodeId: "iot-1", pin: 12, pulseMs: 80, activeLow: true },
+        { id: "test", name: "测试", mode: "gpio", nodeId: "iot-1", pin: 14, pulseMs: 80, activeLow: true },
+      ],
+      coin: { keyId: "coin", feedbackNodeId: "iot-1", feedbackPin: 13, feedbackEdge: "falling", feedbackDebounceMs: 50, feedbackSignal: "cabinet.coin" },
+      host: { nodeId: "l-1", defaultProgram: null, programs: [] },
+      actions: [
+        { name: "key.press", capability: "keys" },
+        { name: "coin", capability: "coin" },
+        { name: "host.switch", capability: "host" },
+        { name: "host.screenshot", capability: "host" },
+      ],
+    });
+    expect(canOperateCoin(arcade)).toBe(true);
+    expect(deviceActionGroups(arcade)).toEqual([
+      { capability: "keys", actions: ["key.press"] },
+      { capability: "coin", actions: ["coin"] },
+      { capability: "host", actions: ["host.switch", "host.screenshot"] },
+    ]);
   });
 
   it("treats a direct connection as HINATA IO even without an external URL", () => {
@@ -81,9 +159,7 @@ describe("device capability view", () => {
     const external = machine({ hasHinata: true, hasPassword: false, coinKey: 32 });
     expect(canOperateCoin(external)).toBe(false);
     expect(canOperateCoin({ ...external, hasPassword: true })).toBe(true);
-    // The key is the switch: no key, no coin.
     expect(canOperateCoin({ ...external, hasPassword: true, coinKey: 0 })).toBe(false);
-    // A direct connection authenticates the socket, so no password is needed.
     expect(
       canOperateCoin(
         machine({ relayConnection: "embedded", hasPassword: false, coinKey: 32 }),
@@ -101,7 +177,6 @@ describe("device capability view", () => {
         }),
       ),
     ).toEqual(["power.on", "power.off", "door.open"]);
-    // A card can always be sent once the IO binding exists; coin still needs a key.
     expect(
       deviceActions(
         machine({

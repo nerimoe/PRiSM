@@ -164,18 +164,38 @@ export type Resource = {
   /** A Home Assistant `climate.*` entity, such as an air conditioner. */
   climate?: { connectionId?: string | null; url: string; entityId: string } | null;
   ttlockLockId: number | null;
-  /** The HINATA IO's named keys, shown as buttons in the admin; the coin may press one of them. */
-  keys?: { id: string; name: string; key: number }[];
+  /** Unified cabinet buttons (`keys` capability): keyboard (Launcher/IO) or GPIO pulse (IoT). */
+  hasKeys?: boolean;
+  keys?: ResourceButton[];
   /**
-   * The resource's coin, a capability of its own: how it goes in (`key`: the
-   * IO presses `keyId`), the limit and the coin after a swipe. Null when the
-   * resource takes no coin. The flat `coin*` fields say the same for older code.
+   * The resource's coin, a capability of its own: picks one button in `keys`,
+   * plus direct-IO credit limit/auto-coin and optional GPIO hardware feedback.
    */
-  coin?: { method: "key"; keyId: string | null; cap: number | null; afterSwipe: boolean } | null;
-  coinMethod?: "key";
+  coin?: ResourceCoinConfig | null;
   coinKeyId?: string | null;
   coinKey: number;
   coinEnabled?: boolean;
+  /** Host launcher capability (`host`). */
+  host?: HostConfig | null;
+  hasHostToken?: boolean;
+  hostWsUrl?: string | null;
+  hostOnline?: boolean | null;
+  hostVersion?: string | null;
+  hostProgram?: string | null;
+  /** Hardware-agnostic IoT controller capability (`iot`). */
+  iot?: IotConfig | null;
+  hasIotToken?: boolean;
+  iotWsUrl?: string | null;
+  iotOnline?: boolean | null;
+  iotVersion?: string | null;
+  iotModel?: string | null;
+  iotBindings?: ShopNodeBinding[];
+  /** Whether this resource has a player-facing QR / NFC link. */
+  hasLink?: boolean;
+  /** Resource-level location verification override. */
+  locationOverride?: ResourceLocationOverride;
+  /** Explicit `shop_nodes.id` when HINATA IO uses direct mode. */
+  hinataNodeId?: string | null;
   id: string;
   publicId: string;
   shopId: string;
@@ -207,6 +227,128 @@ export type Resource = {
   /** A plan of its own that replaces the group's; null to follow the group. */
   pricingConfigOverrideId?: string | null;
 };
+
+export type NodeKind = "hinata_io" | "launcher" | "iot";
+
+export type IotNodeConfig = {
+  haWatch: boolean;
+  ble: { enabled: boolean; beaconId: number | null; txPower: number };
+};
+
+export type ShopNodeBinding = {
+  deviceId: string;
+  deviceName: string;
+  capability: string;
+  pin?: number;
+  direction?: "output" | "input";
+  signal?: string;
+  label?: string;
+};
+
+export type ShopNode = {
+  id: string;
+  shopId: string;
+  kind: NodeKind;
+  name: string;
+  enabled: boolean;
+  channel: string;
+  hasToken: boolean;
+  wsUrl: string;
+  config: Record<string, unknown>;
+  online: boolean | null;
+  version: string | null;
+  model: string | null;
+  program: string | null;
+  e2ee: boolean;
+  bindings: ShopNodeBinding[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ShopBeacon = {
+  nodeId: string;
+  nodeName: string;
+  resourceId: string | null;
+  beaconId: number;
+  txPower: number;
+  rssiThreshold: number;
+};
+
+export type ShopLocationMode = "gps" | "ble" | "any";
+export type ResourceLocationMode = "inherit" | "gps" | "ble" | "none";
+
+export type ResourceLocationOverride = {
+  mode: ResourceLocationMode;
+  beaconNodeId?: string | null;
+  rssiThreshold?: number | null;
+};
+
+export type ResourceButton =
+  | {
+      id: string;
+      name: string;
+      mode?: "keyboard";
+      key: number;
+    }
+  | {
+      id: string;
+      name: string;
+      mode: "gpio";
+      nodeId: string;
+      pin: number;
+      pulseMs: number;
+      activeLow: boolean;
+    };
+
+export type HostProgram = { name: string; path: string };
+
+export type HostConfig = {
+  nodeId: string;
+  defaultProgram: string | null;
+  programs: HostProgram[];
+};
+
+export type IotConfig = {
+  nodeId: string;
+  haWatch: boolean;
+  ble: {
+    enabled: boolean;
+    beaconId: number | null;
+    txPower: number;
+    rssiThreshold: number;
+  };
+};
+
+export type HostStatus = {
+  bound: boolean;
+  online: boolean | null;
+  program: string | null;
+  version: string | null;
+  nodeId: string | null;
+  config: { default: string | null; programs: HostProgram[] } | null;
+};
+
+export type CoinFeedbackSignal = "cabinet.coin" | "cabinet.consumed" | "cabinet.activity";
+export type CoinFeedbackEdge = "falling" | "rising" | "both";
+
+export type ResourceCoinConfig = {
+  keyId?: string | null;
+  cap?: number | null;
+  afterSwipe?: boolean;
+  feedbackNodeId?: string | null;
+  feedbackPin?: number | null;
+  feedbackEdge?: CoinFeedbackEdge;
+  feedbackDebounceMs?: number;
+  feedbackSignal?: CoinFeedbackSignal;
+};
+
+export type HostCommandInput =
+  | { action: "switch"; name: string }
+  | { action: "key"; key: string | number; count?: number }
+  | { action: "text"; text: string }
+  | { action: "screenshot" }
+  | { action: "reboot" }
+  | { action: "shutdown" };
 
 /** What a shop bot offers players and staff; everything else it is told comes from the platform. */
 export type BotSettings = {
@@ -607,6 +749,50 @@ export const Api = {
     }),
   deleteResource: (id: string) =>
     api<{ ok: true }>(`/api/v1/merchant/machines/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  nodes: (shopId: string, kind?: NodeKind) => {
+    const params = new URLSearchParams({ shopId });
+    if (kind) params.set("kind", kind);
+    return api<{ nodes: ShopNode[] }>(`/api/v1/merchant/nodes?${params.toString()}`);
+  },
+  createNode: (input: {
+    shopId: string;
+    kind: NodeKind;
+    name: string;
+    enabled?: boolean;
+    config?: Record<string, unknown>;
+  }) =>
+    api<{ node: ShopNode; token: string; wsUrl: string }>("/api/v1/merchant/nodes", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateNode: (
+    id: string,
+    input: {
+      shopId: string;
+      name?: string;
+      enabled?: boolean;
+      config?: Record<string, unknown>;
+      rotateToken?: boolean;
+    },
+  ) =>
+    api<{ node: ShopNode; token?: string; wsUrl?: string }>(
+      `/api/v1/merchant/nodes/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    ),
+  deleteNode: (shopId: string, id: string) =>
+    api<{ ok: true }>(
+      `/api/v1/merchant/nodes/${encodeURIComponent(id)}?shopId=${encodeURIComponent(shopId)}`,
+      { method: "DELETE" },
+    ),
+  beacons: (shopId: string) =>
+    api<{ beacons: ShopBeacon[] }>(`/api/v1/merchant/beacons?shopId=${encodeURIComponent(shopId)}`),
+  hostStatus: (machineId: string) =>
+    api<HostStatus>(`/api/v1/merchant/machines/${encodeURIComponent(machineId)}/host`),
+  hostCommand: (machineId: string, command: HostCommandInput) =>
+    api<{ ok: boolean; result?: Record<string, unknown>; error?: string }>(
+      `/api/v1/merchant/machines/${encodeURIComponent(machineId)}/host/commands`,
+      { method: "POST", body: JSON.stringify(command) },
+    ),
   shopMembers: (shopId: string) =>
     api<{ members: ShopMember[] }>(
       `/api/v1/merchant/shop-members?shopId=${encodeURIComponent(shopId)}`,

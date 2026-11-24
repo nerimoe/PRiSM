@@ -12,7 +12,12 @@ const log = logger("shop-hub");
 
 type ShopHubNamespace = {
   getByName(name: string): {
-    relayOnline(shopId: string, machineId: string, channel: string, options?: { session?: string; restart?: boolean }): Promise<void>;
+    relayOnline(
+      shopId: string,
+      machineId: string,
+      channel: string,
+      options?: { session?: string; restart?: boolean; kind?: "iot" | "hinata_io" | "launcher"; label?: string },
+    ): Promise<void>;
     relayOffline(shopId: string, machineId: string, options?: { session?: string }): Promise<void>;
     poweredOff(shopId: string, machineId: string): Promise<void>;
     deviceRead(shopId: string, deviceId: string, view: Record<string, unknown>): Promise<void>;

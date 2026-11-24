@@ -12,7 +12,7 @@ import { readPower } from "../../resources/capabilities/device-state.js";
 import { createCardStore } from "../../resources/cards.js";
 import { clientIp, jsonError, nowIso } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
-import { checkShopLocation } from "../../middleware/geo.js";
+import { beaconSightingSchema, checkResourceLocation } from "../../middleware/geo.js";
 import { enforceRateLimits, loginRateLimitRules } from "../../middleware/rate-limit.js";
 import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { reconnectImportedAccount } from "../shops/data/shop-data-accounts.js";
@@ -38,6 +38,7 @@ const machineLoginSchema = z.object({
   lat: z.number().gte(-90).lte(90).optional(),
   lng: z.number().gte(-180).lte(180).optional(),
   accuracy: z.number().min(0).max(10_000).optional(),
+  beacons: z.array(beaconSightingSchema).max(64).optional(),
   ticket: z.string().min(1, "缺少会话凭证"),
   clientTimestamp: z.string().optional(),
   /** Sent again after a lost answer, this swipes once and gets the first answer back. */
@@ -141,7 +142,7 @@ async function handleLogin(c:C,routePublicId?:string) {
   await enforceRateLimits(c,loginRateLimitRules(c,{userId:user.id,machineId:machine.id}));
 
   const shop=await getShopForMachine(c,machine.shop_public_id);
-  checkShopLocation(shop,"machine",body);
+  await checkResourceLocation({ db: c.env.DB, shop, action: "machine", deviceId: machine.id, location: body });
   const billed=await requireResourcePlan(c,shop,machine.id);
   const playerId=billed?.playerId??null;
   const device=await loadResource(c.env.DB,shop.id,machine.id);

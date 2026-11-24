@@ -3,19 +3,20 @@
  *
  * Every capability a device can carry is declared here once: how its config is
  * validated, which actions it offers and whether they count as play, which
- * device signals it accepts, and which state it keeps and who is authoritative
- * for it. Every other part of the platform asks this catalog instead of looking
- * at storage columns, which is what used to let a dozen call sites disagree.
+ * device signals it accepts, which state it keeps, and its declarative
+ * conflict, dependency, and player-link rules (`needsLink`, `conflicts`,
+ * `conflictsWithAll`, `requires`).
  *
  * State authority:
  * - owned     the platform is the source of truth; stored value is the fact
- * - external  the truth lives elsewhere (Home Assistant). While a HINATA IO
+ * - external  the truth lives elsewhere (Home Assistant). While a watcher
  *             watches it, every change arrives as an event and the stored value
  *             is the fact; otherwise nothing is known and a reader asks Home
  *             Assistant itself, without recording the answer (see `device-state.ts`)
  */
 import { z } from "zod";
 import { botReplyTemplateError, isAnnouncementKey, isShopAnnouncementSource } from "@prism/core";
+import { launcherProgramSchema, programNameSchema } from "../../hardware/node-protocol.js";
 
 export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
   for (const [key, text] of Object.entries(templates)) {
@@ -24,7 +25,17 @@ export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRef
   }
 });
 
-export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "table" | "bot";
+export type CapabilityId =
+  | "power"
+  | "climate"
+  | "hinata_io"
+  | "keys"
+  | "coin"
+  | "host"
+  | "iot"
+  | "door"
+  | "table"
+  | "bot";
 
 /** What a player or staff member asks a device to do. Names are the public action names. */
 export type ActionName =
@@ -39,6 +50,12 @@ export type ActionName =
   | "aime.scan"
   | "coin"
   | "key.press"
+  | "host.switch"
+  | "host.key"
+  | "host.text"
+  | "host.screenshot"
+  | "host.reboot"
+  | "host.shutdown"
   | "door.open";
 
 export type ActionSpec = {
@@ -73,6 +90,20 @@ export type BoundView = { config: unknown; secretNames: ReadonlySet<string> };
 
 export type CapabilitySpec<Config> = {
   id: CapabilityId;
+  /** Human-readable Chinese label used in conflict/dependency error messages. */
+  label: string;
+  /**
+   * Whether this capability is player-facing and needs a scannable QR / NFC link.
+   * A resource has a player link iff it has 0 capabilities OR at least one
+   * enabled capability declares `needsLink: true`.
+   */
+  needsLink: boolean;
+  /** Capabilities that cannot be combined with this one on the same resource (checked symmetrically). */
+  conflicts?: readonly CapabilityId[];
+  /** When true, this capability cannot be combined with ANY other capability on the same resource. */
+  conflictsWithAll?: boolean;
+  /** Capabilities that MUST also be enabled on the same resource. */
+  requires?: readonly CapabilityId[];
   /** Value of `executorKind` in compatibility views and Bot responses. */
   legacyExecutor: "home_assistant" | "hinata_io" | "ttlock" | "machine_ws";
   legacyTargetKind: "facility" | "game_machine";
@@ -86,7 +117,7 @@ export type CapabilitySpec<Config> = {
   /**
    * Whether an action is usable with this configuration (e.g. coin needs a key).
    * `others` are the resource's other bound capabilities, for one that works
-   * through another (a coin pressed by the HINATA IO).
+   * through another (a key pressed by PRiSM Launcher or HINATA IO).
    */
   available(action: ActionName, config: Config, secrets: ReadonlySet<string>, others: ReadonlyMap<CapabilityId, BoundView>): boolean;
 };
@@ -107,19 +138,52 @@ export type HaEntityConfig = z.infer<typeof haEntityConfig>;
 const haBound = (config: HaEntityConfig, secrets: ReadonlySet<string>) =>
   secrets.has("binding") || (!!config.connectionId && !!config.entityId);
 
-/** A key on the cabinet the shop named, such as 投币, 服务, 测试: pressed from the admin, never from a player's page. */
+/** Legacy keyboard-only key shape stored inside older `hinata_io` rows. */
 const cabinetKey = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
   name: z.string().trim().min(1).max(20),
-  /** Windows Virtual-Key code the IO presses. */
+  /** Windows Virtual-Key code. */
   key: z.number().int().min(1).max(65535),
 });
 export type CabinetKey = z.infer<typeof cabinetKey>;
 
+/** Unified cabinet button: either Windows keyboard VK (Launcher first, HINATA IO fallback) or IoT GPIO pulse. */
+const keyboardButtonSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+  name: z.string().trim().min(1).max(20),
+  mode: z.literal("keyboard").default("keyboard"),
+  /** Windows Virtual-Key code. */
+  key: z.number().int().min(1).max(65535),
+});
+
+const gpioButtonSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+  name: z.string().trim().min(1).max(20),
+  mode: z.literal("gpio"),
+  /** Shop IoT controller node id (`shop_nodes.id`, kind = 'iot'). */
+  nodeId: z.string().min(1),
+  /** GPIO output pin (0..255). */
+  pin: z.number().int().min(0).max(255),
+  /** Pulse duration in milliseconds. */
+  pulseMs: z.number().int().min(10).max(5000).default(80),
+  /** Whether the output pulse pulls the pin low (open-drain / optocoupler). */
+  activeLow: z.boolean().default(true),
+});
+
+export const resourceButtonSchema = z.union([gpioButtonSchema, keyboardButtonSchema]);
+export type ResourceButton = z.infer<typeof resourceButtonSchema>;
+
+const keysConfig = z.object({
+  buttons: z.array(resourceButtonSchema).max(16).default([]),
+});
+export type KeysConfig = z.infer<typeof keysConfig>;
+
 const hinataConfig = z.object({
   transport: z.enum(["external", "embedded"]).default("external"),
-  /** The shop's named keys, shown as buttons in the admin; the coin may press one of them. */
+  /** Legacy named keys retained for read compatibility with pre-`keys` records. */
   keys: z.array(cabinetKey).max(16).default([]),
+  /** Shop-level `hinata_io` node id (`shop_nodes.id`) for the embedded relay. */
+  nodeId: z.string().min(1).optional(),
   /** Durable Object name for the embedded relay. Stable across token rotation. */
   channel: z.string().min(1).optional(),
 });
@@ -128,14 +192,13 @@ export type HinataConfig = z.infer<typeof hinataConfig>;
 /**
  * How a resource takes a coin, and what holds every coin whichever way it goes
  * in: the cooldown, the limit, the coin events and billing all belong here.
+ *
+ * The actual button press (Windows keyboard via Launcher/IO or GPIO pulse via
+ * an IoT controller) is defined in the resource's `keys` capability and
+ * referenced by `keyId`.
  */
 const coinConfig = z.object({
-  /**
-   * How a coin goes in. `key`: the resource's HINATA IO presses one of its
-   * named keys (`keyId`). Other ways (a Home Assistant relay pulsing the coin
-   * line) are further values here.
-   */
-  method: z.enum(["key"]).default("key"),
+  /** Which button in the resource's `keys` capability performs the coin press. */
   keyId: z.string().nullable().default(null),
   /**
    * The most credits a coin through the platform may leave on the cabinet;
@@ -145,8 +208,45 @@ const coinConfig = z.object({
   cap: z.number().int().min(1).max(99).nullable().default(null),
   /** A coin for the player whose card the game just took (direct IO with a limit only). */
   afterSwipe: z.boolean().default(false),
+  /** Optional IoT controller node id (`shop_nodes.id`) for hardware feedback input. */
+  feedbackNodeId: z.string().min(1).nullable().default(null),
+  /** Optional GPIO input pin reporting coin/activity feedback from the cabinet. */
+  feedbackPin: z.number().int().min(0).max(255).nullable().default(null),
+  feedbackEdge: z.enum(["falling", "rising", "both"]).default("falling"),
+  feedbackDebounceMs: z.number().int().min(1).max(2000).default(50),
+  /** Standard signal emitted when `feedbackPin` triggers. */
+  feedbackSignal: z.enum(["cabinet.coin", "cabinet.consumed", "cabinet.activity"]).default("cabinet.coin"),
 });
 export type CoinConfig = z.infer<typeof coinConfig>;
+
+/** Managed PC host controlled by a PRiSM Launcher node (`shop_nodes.kind = 'launcher'`). */
+const hostConfig = z.object({
+  nodeId: z.string().min(1),
+  defaultProgram: programNameSchema.nullable().default(null),
+  programs: z.array(launcherProgramSchema).max(64).default([]),
+}).refine(
+  (cfg) =>
+    new Set(cfg.programs.map((p) => p.name)).size === cfg.programs.length &&
+    (cfg.defaultProgram === null || cfg.programs.some((p) => p.name === cfg.defaultProgram)),
+  "默认程序必须存在于程序列表中且程序名必须唯一",
+);
+export type HostConfig = z.infer<typeof hostConfig>;
+
+/** Hardware-agnostic IoT controller (`shop_nodes.kind = 'iot'`): BLE beacon, GPIO, HA watching. */
+const iotConfig = z.object({
+  nodeId: z.string().min(1),
+  haWatch: z.boolean().default(true),
+  ble: z.object({
+    enabled: z.boolean().default(true),
+    /** Shop-unique beacon id (1..65535), auto-allocated when enabled. */
+    beaconId: z.number().int().min(1).max(65535).nullable().default(null),
+    /** Calibrated RSSI at 1 m (dBm) advertised in the BLE packet. */
+    txPower: z.number().int().min(-100).max(20).default(-59),
+    /** Default RSSI threshold (dBm) for considering a player within range of this beacon. */
+    rssiThreshold: z.number().int().min(-100).max(-20).default(-75),
+  }).default({ enabled: true, beaconId: null, txPower: -59, rssiThreshold: -75 }),
+});
+export type IotConfig = z.infer<typeof iotConfig>;
 
 const doorConfig = z.object({ lockId: z.number().int().positive() });
 export type DoorConfig = z.infer<typeof doorConfig>;
@@ -166,6 +266,8 @@ export type TableConfig = z.infer<typeof tableConfig>;
 
 export const power: CapabilitySpec<HaEntityConfig> = {
   id: "power",
+  label: "电源控制",
+  needsLink: true,
   legacyExecutor: "home_assistant",
   legacyTargetKind: "facility",
   config: haEntityConfig,
@@ -178,22 +280,16 @@ export const power: CapabilitySpec<HaEntityConfig> = {
     "power.keep": { countsAsPlay: true, requiresBilling: true },
   },
   signals: {},
-  // Power can be switched outside the platform. A watcher's events keep it
-  // current. Occupancy alone determines whether the device is idle.
   state: { power: { authority: "external" } },
   available: (_action, config, secrets) => haBound(config, secrets),
 };
 
 const climateAction: ActionSpec = { countsAsPlay: false, requiresBilling: true };
 
-/**
- * A Home Assistant `climate.*` entity, such as an air conditioner. Kept apart
- * from power: its state is a mode and temperatures rather than on/off, using
- * it is not playing a machine, and an air conditioner being off must not stop
- * a machine from taking coins.
- */
 export const climate: CapabilitySpec<HaEntityConfig> = {
   id: "climate",
+  label: "空调",
+  needsLink: true,
   legacyExecutor: "home_assistant",
   legacyTargetKind: "facility",
   config: haEntityConfig,
@@ -226,20 +322,34 @@ export function legacyCoin(ioConfig: Record<string, unknown>): { io: Record<stri
   const keyId = typeof coinKeyId === "string" ? coinKeyId : keys.find((key) => key.key === code)?.id ?? null;
   return {
     io: { ...io, keys },
-    coin: { method: "key", keyId, cap: typeof coinCap === "number" ? coinCap : null, afterSwipe: coinAfterSwipe === true },
+    coin: coinConfig.parse({ keyId, cap: typeof coinCap === "number" ? coinCap : null, afterSwipe: coinAfterSwipe === true }),
   };
 }
 
 /** Whether a HINATA IO can be told to press a key: connected, and an external relay holding its password. */
-function ioCanPress(config: HinataConfig, secrets: ReadonlySet<string>): boolean {
-  const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
+export function ioCanPress(config: HinataConfig, secrets: ReadonlySet<string>): boolean {
+  const connected = config.transport === "embedded" ? !!(config.nodeId || config.channel) : secrets.has("url");
   // An external relay rejects a plaintext key press; the embedded relay
   // authenticates the connection instead and needs no password.
   return connected && (config.transport === "embedded" || secrets.has("password"));
 }
 
+/** Whether a single button in `keys` can currently be executed given the resource's other capabilities. */
+export function buttonUsable(button: ResourceButton, others: ReadonlyMap<CapabilityId, BoundView>): boolean {
+  if (button.mode === "gpio") {
+    return !!button.nodeId && Number.isInteger(button.pin) && button.pin >= 0 && button.pin <= 255;
+  }
+  const hostBound = others.get("host");
+  if (hostBound && !!(hostBound.config as HostConfig).nodeId) return true;
+  const io = others.get("hinata_io");
+  if (io && ioCanPress(io.config as HinataConfig, io.secretNames)) return true;
+  return false;
+}
+
 export const hinataIo: CapabilitySpec<HinataConfig> = {
   id: "hinata_io",
+  label: "刷卡 · HINATA IO",
+  needsLink: true,
   legacyExecutor: "hinata_io",
   legacyTargetKind: "game_machine",
   config: hinataConfig,
@@ -248,9 +358,6 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     // A game waiting for a card polls its reader continuously, so a card not
     // taken within this means it is busy elsewhere; the IO drops it after 3 s.
     "aime.scan": { countsAsPlay: true, requiresBilling: true, awaits: { signal: "card.consumed", timeoutMs: 4500 } },
-    // Staff pressing any key on the cabinet, for service menus and tests: not a
-    // coin, so no cooldown or limit, no coin event and no play.
-    "key.press": { countsAsPlay: false, staffOnly: true },
   },
   signals: {
     "card.state": { activity: true, store: true },
@@ -267,19 +374,39 @@ export const hinataIo: CapabilitySpec<HinataConfig> = {
     "reader.connected": { activity: false, store: true },
     "reader.disconnected": { activity: false, store: true },
   },
-  // `cabinet`: the latest book snapshot the IO read, whose truth is the cabinet's.
-  // `readers` and `version`: what the IO says it has connected and what it is.
   state: { link: { authority: "owned" }, cabinet: { authority: "external" }, readers: { authority: "external" }, version: { authority: "external" } },
   available(action, config, secrets) {
-    const connected = config.transport === "embedded" ? !!config.channel : secrets.has("url");
-    if (!connected) return false;
-    if (action === "key.press") return ioCanPress(config, secrets) && config.keys.length > 0;
-    return true;
+    if (action !== "aime.scan") return false;
+    return config.transport === "embedded" ? !!(config.nodeId || config.channel) : secrets.has("url");
+  },
+};
+
+export const keys: CapabilitySpec<KeysConfig> = {
+  id: "keys",
+  label: "机台按键",
+  needsLink: true,
+  legacyExecutor: "hinata_io",
+  legacyTargetKind: "game_machine",
+  config: keysConfig,
+  secrets: [],
+  actions: {
+    // Staff pressing any named button on the cabinet (keyboard or GPIO): not a
+    // coin, so no cooldown or limit, no coin event and no play.
+    "key.press": { countsAsPlay: false, staffOnly: true },
+  },
+  signals: {},
+  state: {},
+  available(action, config, _secrets, others) {
+    if (action !== "key.press") return false;
+    return config.buttons.some((button) => buttonUsable(button, others));
   },
 };
 
 export const coin: CapabilitySpec<CoinConfig> = {
   id: "coin",
+  label: "投币",
+  needsLink: true,
+  requires: ["keys"],
   legacyExecutor: "hinata_io",
   legacyTargetKind: "game_machine",
   config: coinConfig,
@@ -287,23 +414,65 @@ export const coin: CapabilitySpec<CoinConfig> = {
   actions: {
     coin: { countsAsPlay: true, requiresBilling: true },
   },
-  signals: {},
+  signals: {
+    "cabinet.coin": { activity: true, store: true },
+    "cabinet.consumed": { activity: true, store: true },
+    "cabinet.activity": { activity: true, store: true },
+  },
   state: {},
   available(action, config, _secrets, others) {
-    if (action !== "coin") return false;
-    switch (config.method) {
-      case "key": {
-        const io = others.get("hinata_io");
-        if (!io || !config.keyId) return false;
-        const ioConfig = io.config as HinataConfig;
-        return ioCanPress(ioConfig, io.secretNames) && ioConfig.keys.some((key) => key.id === config.keyId);
-      }
-    }
+    if (action !== "coin" || !config.keyId) return false;
+    const keysBound = others.get("keys");
+    if (!keysBound) return false;
+    const button = (keysBound.config as KeysConfig).buttons.find((one) => one.id === config.keyId);
+    return !!button && buttonUsable(button, others);
   },
+};
+
+export const host: CapabilitySpec<HostConfig> = {
+  id: "host",
+  label: "启动器",
+  needsLink: true,
+  legacyExecutor: "machine_ws",
+  legacyTargetKind: "game_machine",
+  config: hostConfig,
+  secrets: [],
+  actions: {
+    "host.switch": { countsAsPlay: false, staffOnly: true },
+    "host.key": { countsAsPlay: false, staffOnly: true },
+    "host.text": { countsAsPlay: false, staffOnly: true },
+    "host.screenshot": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
+    "host.reboot": { countsAsPlay: false, staffOnly: true },
+    "host.shutdown": { countsAsPlay: false, staffOnly: true },
+  },
+  signals: {},
+  state: { link: { authority: "owned" }, program: { authority: "external" } },
+  available(action, config) {
+    if (!config.nodeId) return false;
+    if (action === "host.switch") return config.programs.length > 0;
+    return true;
+  },
+};
+
+export const iot: CapabilitySpec<IotConfig> = {
+  id: "iot",
+  label: "IoT 控制器",
+  needsLink: false,
+  conflicts: ["table", "door", "climate"],
+  legacyExecutor: "machine_ws",
+  legacyTargetKind: "facility",
+  config: iotConfig,
+  secrets: [],
+  actions: {},
+  signals: {},
+  state: { link: { authority: "owned" } },
+  available: () => false,
 };
 
 export const door: CapabilitySpec<DoorConfig> = {
   id: "door",
+  label: "开门密码",
+  needsLink: true,
   legacyExecutor: "ttlock",
   legacyTargetKind: "facility",
   config: doorConfig,
@@ -319,29 +488,21 @@ export const door: CapabilitySpec<DoorConfig> = {
 
 export const table: CapabilitySpec<TableConfig> = {
   id: "table",
+  label: "桌游",
+  needsLink: true,
   legacyExecutor: "machine_ws",
   legacyTargetKind: "game_machine",
   config: tableConfig,
   secrets: [],
-  // Joining and leaving a table are seat changes handled by the table flow,
-  // not device actions.
   actions: {},
   signals: {},
   state: {},
   available: () => false,
 };
 
-/**
- * A shop bot (Koishi): what it offers players and staff, set by the shop on its
- * resource and delivered to the bot, so its own configuration is only how to
- * connect. Everything the platform already knows (staff, currency, tables,
- * doors) is derived, never configured here.
- */
-/** One way a bot announces: its destinations and a whole table of what it says (`AnnouncementGroup`). */
 export const announceGroupSchema = z.object({
   id: z.string().trim().min(1).max(40),
   name: z.string().trim().min(1).max(40),
-  /** Wherever the bot can say something: a group or a person, as the bot addresses it. */
   to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
   events: z.record(
     z.string().refine(isAnnouncementKey, "未知的事件"),
@@ -350,7 +511,6 @@ export const announceGroupSchema = z.object({
       sources: z.array(z.string().refine(isShopAnnouncementSource, "未知的来源")).max(10).default([]),
     }),
   ).default({}),
-  /** This group's own words; only announcement templates. */
   templates: botReplyTemplatesSchema.refine(
     (templates) => Object.keys(templates).every((key) => key.startsWith("announce.")),
     "播报组只能保存播报文案",
@@ -358,58 +518,105 @@ export const announceGroupSchema = z.object({
 });
 
 const botConfig = z.object({
-  /** The words of the bot's answers to commands; what it announces is in each group's own. */
   replyTemplates: botReplyTemplatesSchema.refine(
     (templates) => Object.keys(templates).every((key) => !key.startsWith("announce.")),
     "播报文案在播报组里设置",
   ).default({}),
-  /** The integration token the bot connects with. */
   tokenId: z.string().min(1),
-  /** `readonly`: players may only bind, look up and redeem through the bot. */
   playerCommands: z.enum(["all", "readonly"]).default("all"),
   readOnlyNotice: z.string().max(200).default("请扫描店内二维码或碰 NFC，在网页或 App Clip 里入场、结账和操作设备。"),
-  /** Staff (by their bound platform identity) may act for other players. */
   staffCommands: z.boolean().default(true),
-  /** Only staff may switch machines off through the bot. */
   powerOffStaffOnly: z.boolean().default(false),
-  /** The door `开门` opens; a resource with the door capability. */
   doorResourceId: z.string().min(1).nullable().default(null),
-  /**
-   * `login`/`入场` also hands out the door code, so a player who comes in
-   * through the bot needs one command. Off by default: a code lives three
-   * minutes, and a player who does not need the door should not cost one.
-   */
   doorPasswordOnEntry: z.boolean().default(false),
-  /**
-   * Everything the bot announces, and where: each group is one audience with
-   * its own table of what it says and in which words. A bot with no groups
-   * announces nothing.
-   */
   announceGroups: z.array(announceGroupSchema).max(10).default([]),
-  /** How many minutes before an idle power-off its warning is said; 0 for never. */
   idleReminderMinutes: z.number().int().min(0).max(120).default(5),
-  /** Whether the bot may be given Home Assistant connections to watch. */
 });
 export type BotConfig = z.infer<typeof botConfig>;
 
 export const bot: CapabilitySpec<BotConfig> = {
   id: "bot",
+  label: "店铺 Bot",
+  needsLink: false,
+  conflictsWithAll: true,
   legacyExecutor: "machine_ws",
   legacyTargetKind: "facility",
   config: botConfig,
   secrets: [],
-  // A bot is a party that asks for actions, not a device that performs them.
   actions: {},
-  // A command someone said to it, and how it was answered (`bot-commands.ts`).
   signals: { "bot.command": { activity: false, store: true } },
   state: {},
   available: () => false,
 };
 
-export const capabilities = { power, climate, hinata_io: hinataIo, coin, door, table, bot } as const;
+export const capabilities = {
+  power,
+  climate,
+  hinata_io: hinataIo,
+  keys,
+  coin,
+  host,
+  iot,
+  door,
+  table,
+  bot,
+} as const;
 
 export function capabilitySpec(id: string): CapabilitySpec<unknown> | null {
   return (capabilities as Record<string, CapabilitySpec<unknown>>)[id] ?? null;
+}
+
+/** Whether two capabilities conflict on the same resource (symmetric). */
+export function capabilityConflicts(a: CapabilityId, b: CapabilityId): boolean {
+  if (a === b) return false;
+  const specA = capabilities[a];
+  const specB = capabilities[b];
+  return Boolean(
+    specA.conflictsWithAll ||
+    specB.conflictsWithAll ||
+    specA.conflicts?.includes(b) ||
+    specB.conflicts?.includes(a),
+  );
+}
+
+/** Validate capability conflicts and dependencies on a single resource. */
+export function validateCapabilitySet(
+  ids: Iterable<CapabilityId>,
+): { code: "CAPABILITY_CONFLICT" | "CAPABILITY_DEPENDENCY"; message: string } | null {
+  const list = [...new Set(ids)];
+  const set = new Set(list);
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i]!;
+    for (let j = i + 1; j < list.length; j++) {
+      const b = list[j]!;
+      if (capabilityConflicts(a, b)) {
+        return {
+          code: "CAPABILITY_CONFLICT",
+          message: `「${capabilities[a].label}」与「${capabilities[b].label}」不能同时启用`,
+        };
+      }
+    }
+    for (const req of capabilities[a].requires ?? []) {
+      if (!set.has(req)) {
+        return {
+          code: "CAPABILITY_DEPENDENCY",
+          message: `启用「${capabilities[a].label}」需要先启用「${capabilities[req].label}」`,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a resource has a player-facing QR / NFC link.
+ * A resource with no capabilities is a plain check-in QR code (has a link);
+ * otherwise it has a link iff at least one enabled capability declares `needsLink: true`.
+ */
+export function hasResourceLink(ids: Iterable<CapabilityId>): boolean {
+  const list = [...ids];
+  if (!list.length) return true;
+  return list.some((id) => capabilities[id].needsLink);
 }
 
 /** The capability that offers an action. Each action belongs to exactly one capability. */

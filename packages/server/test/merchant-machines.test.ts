@@ -198,7 +198,7 @@ describe("pre-fork merchant machine lifecycle",()=>{
       homeAssistant:{url:"https://ha.example",entityId:"switch.cabinet"},ttlockLockId:77,relayConnection:"external",
     });
     const rows=()=>sqlite.query("SELECT capability,config_json,secret_json FROM device_capabilities ORDER BY capability").all() as {capability:string;config_json:string;secret_json:string}[];
-    expect(rows().map(r=>r.capability)).toEqual(["coin","door","hinata_io","power"]);
+    expect(rows().map(r=>r.capability)).toEqual(["coin","door","hinata_io","keys","power"]);
     // Secrets are stored encrypted, never in the clear.
     expect(JSON.stringify(rows())).not.toContain("secret-pass");
     expect(JSON.stringify(rows())).not.toContain("ha-token");
@@ -213,7 +213,7 @@ describe("pre-fork merchant machine lifecycle",()=>{
     const listed=await (await app.fetch(new Request("https://prism.test/api/v1/merchant/machines?shopId=shop-1"),env)).json() as {machines:Record<string,unknown>[]};
     expect(listed.machines[0]).toMatchObject({homeAssistant:{entityId:"switch.other"},coinKey:40});
 
-    const unbound=await send("PATCH",`/machines/${machine.id}`,{homeAssistant:null,ttlockLockId:null,hinataUrl:null,hinataPassword:null});
+    const unbound=await send("PATCH",`/machines/${machine.id}`,{homeAssistant:null,ttlockLockId:null,hinataUrl:null,hinataPassword:null,coin:null,keys:null});
     expect(unbound.status).toBe(200);
     expect(rows()).toEqual([]);
   });
@@ -300,5 +300,68 @@ describe("pre-fork merchant machine lifecycle",()=>{
     const res=await app.fetch(new Request("https://prism.test/api/v1/merchant/machines/machine-old",{method:"DELETE"}),env);
     expect(res.status).toBe(409);
     expect(sqlite.query("SELECT id FROM machines WHERE id='machine-old'").get()).not.toBeNull();
+  });
+
+  it("manages inline IoT & Launcher tokens, enforces capability conflicts/dependencies, guards IoT references, and saves locationOverride",async()=>{
+    const {app,env}=fixture();
+    const send=(method:string,path:string,body?:unknown)=>app.fetch(new Request(`https://prism.test/api/v1/merchant${path}`,{
+      method,
+      headers:{"content-type":"application/json"},
+      ...(body!==undefined?{body:JSON.stringify(body)}:{}),
+    }),env);
+
+    // Conflict: iot + door is refused with 409.
+    const badConflict=await send("POST","/machines",{shopId:"shop-1",name:"冲突",iot:{haWatch:true},ttlockLockId:99});
+    expect(badConflict.status).toBe(409);
+
+    // Dependency: coin without keys is refused with 422.
+    const badDep=await send("POST","/machines",{shopId:"shop-1",name:"无按键投币",coin:{keyId:"coin"}});
+    expect(badDep.status).toBe(422);
+
+    // Pure IoT resource: issues one-time token, auto-allocates beaconId, hasLink = false.
+    const iotRes=await send("POST","/machines",{
+      shopId:"shop-1",
+      name:"大厅控制器",
+      iot:{haWatch:true,ble:{enabled:true,txPower:-59,rssiThreshold:-72}},
+      rotateIotToken:true,
+    });
+    expect(iotRes.status).toBe(201);
+    const iotPayload=await iotRes.json() as {machine:{id:string;hasLink:boolean;hasIotToken:boolean;iot:{nodeId:string;ble:{beaconId:number}}};iotToken?:string;iotWsUrl?:string};
+    expect(iotPayload.iotToken).toMatch(/^prism_iot_/);
+    expect(iotPayload.iotWsUrl).toContain("/node/ws");
+    expect(iotPayload.machine.hasLink).toBe(false);
+    expect(iotPayload.machine.hasIotToken).toBe(true);
+    expect(iotPayload.machine.iot.ble.beaconId).toBe(1);
+
+    // Arcade cabinet referencing the IoT controller via GPIO keys + BLE locationOverride + inline Launcher token.
+    const cabRes=await send("POST","/machines",{
+      shopId:"shop-1",
+      name:"拳皇97",
+      host:{programs:[{name:"kof",path:"D:\\kof.exe"}],defaultProgram:"kof"},
+      rotateHostToken:true,
+      keys:[{id:"coin",name:"投币",mode:"gpio",nodeId:iotPayload.machine.iot.nodeId,pin:12,pulseMs:80,activeLow:true}],
+      coin:{keyId:"coin",feedbackNodeId:iotPayload.machine.iot.nodeId,feedbackPin:13},
+      locationOverride:{mode:"ble",beaconNodeId:iotPayload.machine.iot.nodeId,rssiThreshold:-68},
+    });
+    expect(cabRes.status).toBe(201);
+    const cabPayload=await cabRes.json() as {machine:{id:string;hasLink:boolean;hasHostToken:boolean;locationOverride:{mode:string;beaconNodeId:string|null;rssiThreshold:number|null}};hostToken?:string};
+    expect(cabPayload.hostToken).toMatch(/^prism_ln_/);
+    expect(cabPayload.machine.hasLink).toBe(true);
+    expect(cabPayload.machine.hasHostToken).toBe(true);
+    expect(cabPayload.machine.locationOverride).toEqual({
+      mode:"ble",
+      beaconNodeId:iotPayload.machine.iot.nodeId,
+      rssiThreshold:-68,
+    });
+
+    // Cannot remove `iot` capability or delete the IoT resource while referenced by 拳皇97.
+    const rmIot=await send("PATCH",`/machines/${iotPayload.machine.id}`,{iot:null});
+    expect(rmIot.status).toBe(409);
+    const delIot=await send("DELETE",`/machines/${iotPayload.machine.id}`);
+    expect(delIot.status).toBe(409);
+
+    // Once 拳皇97 is deleted, the IoT resource can be deleted cleanly.
+    expect((await send("DELETE",`/machines/${cabPayload.machine.id}`)).status).toBe(200);
+    expect((await send("DELETE",`/machines/${iotPayload.machine.id}`)).status).toBe(200);
   });
 });

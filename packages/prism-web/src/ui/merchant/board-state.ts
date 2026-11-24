@@ -48,9 +48,10 @@ export function awaitingState(state: BoardState | null, caps: { power: boolean; 
   return !state || (caps.power && state.power === undefined) || (caps.climate && state.climate === undefined);
 }
 
-/** Who is watching Home Assistant for the shop: one entry per bot or HINATA IO the platform has handed the watch. */
+/** Who is watching Home Assistant for the shop: one entry per IoT node, bot, or HINATA IO the platform has handed the watch. */
 export type WatcherPhase = "watching" | "subscribing" | "starting" | "confirming" | "unreachable";
 export type BoardWatcher =
+  | { id: string; kind: "iot"; name: string; state: WatcherPhase }
   | { id: string; kind: "bot"; name: string; state: WatcherPhase }
   | { id: string; kind: "device"; deviceId: string; state: WatcherPhase };
 /**
@@ -95,7 +96,8 @@ export function parseBoardFrame(raw: string): BoardFrame | null {
     const watchers: BoardWatcher[] = [];
     for (const item of frame.watchers) {
       if (!isRecord(item) || typeof item.id !== "string") continue;
-      if (item.kind === "bot") watchers.push({ id: item.id, kind: "bot", name: typeof item.name === "string" ? item.name : "Bot", state: phaseOf(item.state) });
+      if (item.kind === "iot") watchers.push({ id: item.id, kind: "iot", name: typeof item.name === "string" ? item.name : "IoT", state: phaseOf(item.state) });
+      else if (item.kind === "bot") watchers.push({ id: item.id, kind: "bot", name: typeof item.name === "string" ? item.name : "Bot", state: phaseOf(item.state) });
       else if (item.kind === "device" && typeof item.deviceId === "string")
         watchers.push({ id: item.id, kind: "device", deviceId: item.deviceId, state: phaseOf(item.state) });
     }

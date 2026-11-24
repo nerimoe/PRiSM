@@ -13,10 +13,11 @@ import { recordResourceVisit } from "./resource-visit.js";
 import { ACCOUNT_HAS_PLATFORM_IDENTITY_SQL } from "../../resources/platform-identities.js";
 import { executeResourceAction, actionSchema, resourceClimateState, resourcePowerState } from "./resource-actions.js";
 import { has, hinataConfigOf, loadResource, type Resource } from "../../resources/resource.js";
+import { resolveNodeChannel } from "../../resources/nodes.js";
 import { CARD_CAPTURE_MS } from "../../resources/card-capture.js";
 import { createOccupancy } from "../../resources/occupancy/service.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
-import { checkShopLocation } from "../../middleware/geo.js";
+import { checkResourceLocation } from "../../middleware/geo.js";
 import { withReadScope } from "../../read-scope.js";
 import { deviceView, readDeviceState, readLiveState, readShopDeviceStates, type DeviceState } from "../../resources/capabilities/device-state.js";
 import { assertResourceShop } from "./merchant-resources.js";
@@ -206,15 +207,16 @@ resourceSessionRouter.post("/session/cards/capture",async c=>{
   const body=z.object({ticket:z.string().min(1),location:z.unknown().optional()}).parse(await c.req.json());
   const machine=await resolveResourceTicket(c,body.ticket);
   const shop=await getShopForMachine(c,machine.shop_public_id);
-  checkShopLocation(shop,"machine",body.location);
+  await checkResourceLocation({ db: c.env.DB, shop, action: "machine", deviceId: machine.id, location: body.location });
   const device=await loadResource(c.env.DB,shop.id,machine.id);
   const io=device?hinataConfigOf(device):null;
-  if(!io||io.transport!=="embedded"||!io.channel)jsonError(409,"这台机器不能添加卡片","CARD_CAPTURE_UNSUPPORTED");
+  const target=io&&io.transport==="embedded"?await resolveNodeChannel(c.env.DB,shop.id,io.nodeId,io.channel):null;
+  if(!target||!target.enabled)jsonError(409,"这台机器不能添加卡片","CARD_CAPTURE_UNSUPPORTED");
   const relay=machineRelayNamespace(c.env);
   if(!relay||!c.env.URL_ENCRYPTION_KEY)jsonError(503,"添加卡片服务尚未配置","CARD_CAPTURE_UNAVAILABLE");
   const player=await requireShopPlayer(c,shop);
   const id=crypto.randomUUID(),expiresAt=Date.now()+CARD_CAPTURE_MS;
-  const started=await relay.getByName(io.channel).startCardCapture({id,shopId:shop.id,userId:user.id,playerId:player.id,expiresAt});
+  const started=await relay.getByName(target.channel).startCardCapture({id,shopId:shop.id,userId:user.id,playerId:player.id,expiresAt});
   if(!started.ok)jsonError(409,"机台未在线，请联系店员","DEVICE_UNAVAILABLE");
   return c.json({captureId:id,expiresAt:new Date(expiresAt).toISOString()});
 });
@@ -224,9 +226,10 @@ resourceSessionRouter.get("/session/cards/capture/:id",async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
   const io=device?hinataConfigOf(device):null;
+  const target=io&&io.transport==="embedded"?await resolveNodeChannel(c.env.DB,machine.shop_id,io.nodeId,io.channel):null;
   const relay=machineRelayNamespace(c.env);
-  if(!io?.channel||!relay)return c.json({status:"expired"});
-  return c.json(await relay.getByName(io.channel).cardCaptureResult(c.req.param("id"),user.id));
+  if(!target||!relay)return c.json({status:"expired"});
+  return c.json(await relay.getByName(target.channel).cardCaptureResult(c.req.param("id"),user.id));
 });
 
 resourceSessionRouter.delete("/session/cards/capture/:id",async c=>{
@@ -234,8 +237,9 @@ resourceSessionRouter.delete("/session/cards/capture/:id",async c=>{
   const machine=await resolveResourceTicket(c,c.req.query("ticket")??"");
   const device=await loadResource(c.env.DB,machine.shop_id,machine.id);
   const io=device?hinataConfigOf(device):null;
+  const target=io&&io.transport==="embedded"?await resolveNodeChannel(c.env.DB,machine.shop_id,io.nodeId,io.channel):null;
   const relay=machineRelayNamespace(c.env);
-  if(io?.channel&&relay)await relay.getByName(io.channel).cancelCardCapture(c.req.param("id"),user.id);
+  if(target&&relay)await relay.getByName(target.channel).cancelCardCapture(c.req.param("id"),user.id);
   return c.json({ok:true});
 });
 

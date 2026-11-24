@@ -65,9 +65,13 @@ export function tileView(
       ? device.botOnline === true
       : direct
         ? device.relayOnline === true
-        : caps.climate
-          ? climateRunning
-          : false;
+        : caps.host
+          ? device.hostOnline === true
+          : caps.iot
+            ? device.iotOnline === true
+            : caps.climate
+              ? climateRunning
+              : false;
   const credit = device.io?.credit;
   const coins = direct && typeof credit === "number"
     ? { value: credit, cap: device.coinCap ?? null, old: device.relayOnline !== true || powered === false }

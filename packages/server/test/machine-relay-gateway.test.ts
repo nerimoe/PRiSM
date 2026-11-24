@@ -81,7 +81,37 @@ describe("machine relay gateway", () => {
       kind: "dispatch",
       channel: "m_abc",
       shopId: "shop-1",
+      nodeId: "io_machine-1",
+      nodeKind: "hinata_io",
       machineId: "machine-1",
+    });
+  });
+
+  it("authenticates shop_nodes on /node/ws for iot, launcher, and hinata_io", async () => {
+    const { env, sqlite } = await fixture();
+    const iotToken = "prism_iot_test-token";
+    const launcherToken = "prism_ln_test-token";
+    sqlite.run(
+      `INSERT INTO shop_nodes(shop_id,id,kind,name,enabled,channel,credential_hash,config_json,created_at,updated_at)
+       VALUES ('shop-1','node-iot','iot','大厅控制器',1,'iot_chan',?,'{}','2026-01-01','2026-01-01'),
+              ('shop-1','node-ln','launcher','机台1启动器',1,'ln_chan',?,'{}','2026-01-01','2026-01-01')`,
+      [await sha256Hex(iotToken), await sha256Hex(launcherToken)],
+    );
+    expect(await relayGateway(upgrade("https://prism.test/node/ws", iotToken), env)).toEqual({
+      kind: "dispatch",
+      channel: "iot_chan",
+      shopId: "shop-1",
+      nodeId: "node-iot",
+      nodeKind: "iot",
+      nodeName: "大厅控制器",
+    });
+    expect(await relayGateway(upgrade("https://prism.test/node/ws", launcherToken), env)).toEqual({
+      kind: "dispatch",
+      channel: "ln_chan",
+      shopId: "shop-1",
+      nodeId: "node-ln",
+      nodeKind: "launcher",
+      nodeName: "机台1启动器",
     });
   });
 

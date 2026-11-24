@@ -1,26 +1,101 @@
 import type { Resource } from "../../api";
 
 /**
- * What a device can do, derived from the machine row once.
- *
- * The merchant API still describes a device as a flat row of optional columns
- * (`homeAssistant`, `ttlockLockId`, `hasHinata`, …). The screen needs the
- * capability view of the same facts, so the translation lives here instead of
- * being re-derived at every call site — the previous copy-per-component shape
- * let the device card, the editor and the action list disagree about whether
- * coin was usable on a given machine.
+ * What a device can do, derived from the machine row once, together with the
+ * declarative capability conflict, dependency, and player-link rules mirrored
+ * from the server catalog.
  */
-export type CapabilityId = "power" | "climate" | "hinata_io" | "coin" | "door" | "table" | "bot";
+export type CapabilityId =
+  | "power"
+  | "climate"
+  | "hinata_io"
+  | "keys"
+  | "coin"
+  | "host"
+  | "iot"
+  | "door"
+  | "table"
+  | "bot";
 
 export const capabilityOrder: CapabilityId[] = [
   "power",
   "climate",
   "hinata_io",
+  "keys",
   "coin",
+  "host",
+  "iot",
   "door",
   "table",
   "bot",
 ];
+
+type CapabilityRule = {
+  needsLink: boolean;
+  conflicts?: readonly CapabilityId[];
+  conflictsWithAll?: boolean;
+  requires?: readonly CapabilityId[];
+};
+
+export const capabilityRules: Record<CapabilityId, CapabilityRule> = {
+  power: { needsLink: true },
+  climate: { needsLink: true },
+  hinata_io: { needsLink: true },
+  keys: { needsLink: true },
+  coin: { needsLink: true, requires: ["keys"] },
+  host: { needsLink: true },
+  iot: { needsLink: false, conflicts: ["table", "door", "climate"] },
+  door: { needsLink: true },
+  table: { needsLink: true },
+  bot: { needsLink: false, conflictsWithAll: true },
+};
+
+/** Symmetric conflict check between two capabilities on one resource. */
+export function capabilityConflicts(a: CapabilityId, b: CapabilityId): boolean {
+  if (a === b) return false;
+  const ra = capabilityRules[a];
+  const rb = capabilityRules[b];
+  return Boolean(
+    ra.conflictsWithAll ||
+    rb.conflictsWithAll ||
+    ra.conflicts?.includes(b) ||
+    rb.conflicts?.includes(a),
+  );
+}
+
+/** Capabilities currently enabled that conflict with adding `target`. */
+export function conflictingCapabilities(
+  target: CapabilityId,
+  active: Record<CapabilityId, boolean>,
+): CapabilityId[] {
+  return capabilityOrder.filter((id) => active[id] && capabilityConflicts(target, id));
+}
+
+/** Capabilities required before `target` can be enabled. */
+export function capabilityRequires(target: CapabilityId): readonly CapabilityId[] {
+  return capabilityRules[target].requires ?? [];
+}
+
+/** Capabilities currently enabled that depend on `target` (blocking its removal). */
+export function dependentCapabilities(
+  target: CapabilityId,
+  active: Record<CapabilityId, boolean>,
+): CapabilityId[] {
+  return capabilityOrder.filter(
+    (id) => active[id] && (capabilityRules[id].requires ?? []).includes(target),
+  );
+}
+
+/**
+ * Whether a resource has a player-facing QR / NFC link.
+ * A resource with no capabilities is a plain check-in QR code (has a link);
+ * otherwise it has a link iff at least one enabled capability needs a link.
+ */
+export function hasResourceLink(active: Record<CapabilityId, boolean>): boolean {
+  const enabled = capabilityOrder.filter((id) => active[id]);
+  if (!enabled.length) return true;
+  return enabled.some((id) => capabilityRules[id].needsLink);
+}
 
 /** The capabilities this device currently carries. */
 export function resourceCapabilities(
@@ -34,14 +109,17 @@ export function resourceCapabilities(
     | "relayConnection"
     | "coinEnabled"
     | "hasPassword"
-  > & Partial<Pick<Resource, "bot" | "coin">>,
+  > & Partial<Pick<Resource, "bot" | "coin" | "host" | "iot" | "keys" | "hasKeys">>,
 ): Record<CapabilityId, boolean> {
   return {
     power: !!machine.homeAssistant,
     climate: !!machine.climate,
     hinata_io:
       !!machine.hasHinata || machine.relayConnection === "embedded",
+    keys: !!machine.hasKeys || (machine.keys?.length ?? 0) > 0,
     coin: !!machine.coin,
+    host: !!machine.host,
+    iot: !!machine.iot,
     door: !!machine.ttlockLockId,
     table: !!machine.table,
     bot: !!machine.bot,
@@ -58,15 +136,22 @@ export function isDirectConnect(
 /**
  * Whether the coin action can actually be sent: the server says so
  * (`coinEnabled`, its `coin.available`); an older response is read from the
- * coin key and how the IO is connected.
+ * coin config, its chosen button in `keys`, and how IO/Launcher is connected.
  */
 export function canOperateCoin(
   machine: Pick<
     Resource,
     "hasHinata" | "relayConnection" | "coinKey" | "hasPassword"
-  > & Partial<Pick<Resource, "coinEnabled">>,
+  > & Partial<Pick<Resource, "coinEnabled" | "coin" | "host" | "keys">>,
 ): boolean {
   if (machine.coinEnabled !== undefined) return machine.coinEnabled;
+  if (machine.coin?.keyId && machine.keys?.length) {
+    const btn = machine.keys.find((b) => b.id === machine.coin!.keyId);
+    if (!btn) return false;
+    if (btn.mode === "gpio") return !!btn.nodeId;
+    if (machine.host?.nodeId) return true;
+    return (machine.hasHinata || machine.relayConnection === "embedded") && (isDirectConnect(machine) || !!machine.hasPassword);
+  }
   if (!(machine.hasHinata || machine.relayConnection === "embedded")) {
     return false;
   }
@@ -84,8 +169,10 @@ export type ResourceAction = { name: string; capability: string };
 export function actionCapability(action: string): CapabilityId | null {
   if (action === "power.on" || action === "power.off" || action === "power.keep") return "power";
   if (action.startsWith("climate.")) return "climate";
-  if (action === "aime.scan" || action === "key.press") return "hinata_io";
+  if (action === "aime.scan") return "hinata_io";
+  if (action === "key.press") return "keys";
   if (action === "coin") return "coin";
+  if (action.startsWith("host.")) return "host";
   if (action === "door.open") return "door";
   if (action.startsWith("table.")) return "table";
   return null;
@@ -103,7 +190,7 @@ export function deviceActionGroups(
     | "relayConnection"
     | "coinKey"
     | "hasPassword"
-  > & { actions?: ResourceAction[] },
+  > & Partial<Pick<Resource, "bot" | "coin" | "host" | "iot" | "keys" | "hasKeys">> & { actions?: ResourceAction[] },
 ): { capability: CapabilityId; actions: string[] }[] {
   const groups = new Map<CapabilityId, string[]>();
   const add = (capability: CapabilityId | null, action: string) => {
@@ -120,7 +207,6 @@ export function deviceActionGroups(
       );
     }
   } else {
-    // Fallback for a response written before actions carried capabilities.
     const caps = resourceCapabilities(machine);
     if (caps.power) {
       add("power", "power.on");
@@ -130,6 +216,7 @@ export function deviceActionGroups(
       for (const action of ["climate.on", "climate.off", "climate.set_mode", "climate.set_temperature", "climate.set_fan_mode"])
         add("climate", action);
     if (caps.hinata_io) add("hinata_io", "aime.scan");
+    if (caps.keys && (machine.keys?.length ?? 0) > 0) add("keys", "key.press");
     if (canOperateCoin(machine)) add("coin", "coin");
     if (caps.door) add("door", "door.open");
   }

@@ -17,6 +17,7 @@ import { shopsRouter } from "./routes/platform/shops.js";
 import { adminManagementRouter } from "./routes/platform/admin-management.js";
 import { merchantMembersRouter } from "./routes/platform/merchant-members.js";
 import { merchantResourceRouter } from "./routes/platform/merchant-resources.js";
+import { merchantNodeRouter } from "./routes/platform/merchant-nodes.js";
 import { merchantResourceGroupRouter } from "./routes/platform/merchant-resource-groups.js";
 import { merchantHaRouter } from "./routes/platform/merchant-ha.js";
 import { merchantIdleRouter } from "./routes/platform/merchant-idle.js";
@@ -106,6 +107,7 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/merchant/shops", shopsRouter);
   app.route("/api/v1/merchant", merchantMembersRouter);
   app.route("/api/v1/merchant", merchantResourceRouter);
+  app.route("/api/v1/merchant", merchantNodeRouter);
   app.route("/api/v1/merchant", merchantResourceGroupRouter);
   app.route("/api/v1/merchant", merchantHaRouter);
   app.route("/api/v1/merchant", merchantIdleRouter);

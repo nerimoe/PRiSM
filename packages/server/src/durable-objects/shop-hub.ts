@@ -122,11 +122,13 @@ const isBot = (key: string) => key.startsWith(BOT_PREFIX);
  */
 type Candidate = {
   machineId: string;
-  /** The relay channel an IO is reached through; a bot is reached on its own socket. */
+  /** The relay channel a node is reached through; a bot is reached on its own socket. */
   channel: string;
   session?: string;
+  /** Node kind when offered by a relay node (`iot` ranks above bots and IOs). */
+  kind?: "iot" | "hinata_io" | "launcher";
   since: number;
-  /** A bot's name for the board. */
+  /** A display name for the board (bot or edge node). */
   label?: string;
   /** Ranked after the others for this long after it failed to take the watch. */
   benchedUntil?: number;
@@ -623,9 +625,11 @@ export class ShopHub extends BaseDurableObject<Env> {
   private async watchersFrame(watchers: Watchers): Promise<Record<string, unknown>> {
     const now = Date.now();
     const candidates = await this.load<Candidates>("candidates", {});
+    const tierOf = (machineId: string) =>
+      candidates[machineId]?.kind === "iot" ? 0 : isBot(machineId) ? 1 : 2;
     const list = Object.values(watchers)
       .filter((watcher) => watcher.leaseUntil > now)
-      .sort((a, b) => Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) || a.machineId.localeCompare(b.machineId))
+      .sort((a, b) => tierOf(a.machineId) - tierOf(b.machineId) || a.machineId.localeCompare(b.machineId))
       .map((watcher) => {
         const links = Object.values(watcher.links);
         const state = watcher.held !== undefined
@@ -637,6 +641,9 @@ export class ShopHub extends BaseDurableObject<Env> {
               : links.length
                 ? "unreachable"
                 : "starting";
+        if (candidates[watcher.machineId]?.kind === "iot") {
+          return { id: watcher.machineId, kind: "iot", name: watcher.label ?? candidates[watcher.machineId]?.label ?? "IoT", state };
+        }
         return isBot(watcher.machineId)
           ? { id: watcher.machineId, kind: "bot", name: watcher.label ?? DEFAULT_BOT_NAME, state }
           : { id: watcher.machineId, kind: "device", deviceId: watcher.machineId, state };
@@ -1028,10 +1035,25 @@ export class ShopHub extends BaseDurableObject<Env> {
     await this.ctx.storage.put("shop", shopId);
   }
 
-  /** An IO announcing it can watch Home Assistant has connected. */
-  async relayOnline(shopId: string, machineId: string, channel: string, options: { session?: string; restart?: boolean } = {}): Promise<void> {
+  /** A relay node (IoT controller or HINATA IO) announcing it can watch Home Assistant has connected. */
+  async relayOnline(
+    shopId: string,
+    machineId: string,
+    channel: string,
+    options: { session?: string; restart?: boolean; kind?: "iot" | "hinata_io" | "launcher"; label?: string } = {},
+  ): Promise<void> {
     await this.rememberShop(shopId);
-    await this.addCandidate({ machineId, channel, session: options.session, since: Date.now() }, options.restart);
+    await this.addCandidate(
+      {
+        machineId,
+        channel,
+        session: options.session,
+        ...(options.kind ? { kind: options.kind } : {}),
+        ...(options.label ? { label: options.label } : {}),
+        since: Date.now(),
+      },
+      options.restart,
+    );
   }
 
   /** A bot that can watch Home Assistant has said hello. */
@@ -1046,7 +1068,12 @@ export class ShopHub extends BaseDurableObject<Env> {
     const key = candidate.machineId;
     const known = candidates[key];
     // Standby heartbeats must not reset their priority or failure cooldown.
-    if (known?.channel !== candidate.channel || known?.label !== candidate.label || known?.session !== candidate.session) {
+    if (
+      known?.channel !== candidate.channel ||
+      known?.label !== candidate.label ||
+      known?.session !== candidate.session ||
+      known?.kind !== candidate.kind
+    ) {
       candidates[key] = { ...candidate, since: known?.since ?? candidate.since };
       await this.ctx.storage.put("candidates", candidates);
     }
@@ -1648,24 +1675,28 @@ export class ShopHub extends BaseDurableObject<Env> {
   }
 
   /**
-   * Who may watch, best first. One that just failed goes last, unless it is watching fine right now
-   * (it need not be swapped out for a newcomer); then bots before IOs; then the longest online.
+   * Who may watch, best first:
+   * 1. Not benched (one that just failed goes last unless watching fine right now)
+   * 2. Dedicated always-on IoT hardware (`iot`)
+   * 3. Shop bots (`bot:*`)
+   * 4. Trusted HINATA IOs (proven to survive their own machine's power-off)
+   * 5. Other HINATA IOs / nodes, longest online first
    */
   private ranked(candidates: Candidates, watchers: Watchers, now: number, reliabilities: Reliabilities = {}): Candidate[] {
     const benched = (candidate: Candidate) =>
       (candidate.benchedUntil ?? 0) > now &&
       !Object.values(watchers[candidate.machineId]?.links ?? {}).some((link) => link.connected);
-    // An IO that has kept reporting through its own machine's power-offs is the
-    // safer pair of hands, so it goes ahead of an unknown one of the same kind.
-    // It never outranks a machine that is actually failed right now: `benched`
-    // is checked first and is about the present, not about history.
-    const trusted = (candidate: Candidate) => !isBot(candidate.machineId) && !!reliabilities[candidate.machineId]?.trusted;
+    const tier = (candidate: Candidate): number => {
+      if (candidate.kind === "iot") return 0;
+      if (isBot(candidate.machineId)) return 1;
+      if (reliabilities[candidate.machineId]?.trusted) return 2;
+      return 3;
+    };
     return Object.values(candidates)
       .sort(
         (a, b) =>
           Number(benched(a)) - Number(benched(b)) ||
-          Number(!isBot(a.machineId)) - Number(!isBot(b.machineId)) ||
-          Number(!trusted(a)) - Number(!trusted(b)) ||
+          tier(a) - tier(b) ||
           a.since - b.since,
       );
   }
