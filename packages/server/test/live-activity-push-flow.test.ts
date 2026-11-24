@@ -9,7 +9,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
   it("delivers remote start and end for an account-bound visit and retires the session token", async () => {
     const sqlite = new Database(":memory:");
     sqlite.exec(`
-      CREATE TABLE shop_player_accounts (shop_id TEXT, user_id TEXT, player_id TEXT);
+      CREATE TABLE player_identities (shop_id TEXT, player_id TEXT, provider TEXT, subject TEXT, created_at TEXT);
       CREATE TABLE shops (id TEXT, public_id TEXT, name TEXT);
       CREATE TABLE sessions (shop_id TEXT, id TEXT, player_id TEXT, started_at TEXT, ended_at TEXT, payment_status TEXT);
       CREATE TABLE live_activity_start_tokens (
@@ -20,7 +20,7 @@ describe("Live Activity start-to-end APNs fanout", () => {
         id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT,
         shop_id TEXT, user_id TEXT, created_at TEXT, updated_at TEXT, client_id TEXT
       );
-      INSERT INTO shop_player_accounts VALUES ('shop', 'account', 'player');
+      INSERT INTO player_identities VALUES ('shop', 'player', 'web-account', 'account', '2026-01-01');
       INSERT INTO shops VALUES ('shop', 'demo', 'Example');
       INSERT INTO sessions VALUES ('shop', 'session', 'player', '2026-10-08T01:00:00Z', NULL, 'unpaid');
       INSERT INTO live_activity_start_tokens VALUES ('start', 'abcdef123456', 'sandbox',

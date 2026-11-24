@@ -10,6 +10,8 @@ import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { randomToken } from "../crypto.js";
 import { resourceBilledSql } from "./billed-sql.js";
 import { capabilities, type BotConfig } from "./capabilities/catalog.js";
+import { platformIdentitySql } from "./platform-identities.js";
+import { ACCOUNT_PROFILES_SQL } from "./account-profiles.js";
 
 export type BotResource = { id: string; name: string; enabled: boolean; config: BotConfig };
 
@@ -70,16 +72,19 @@ export async function shopCurrencyName(db: D1DatabaseLike, shopId: string): Prom
 /** Everything a bot is told: its settings plus what the platform knows. */
 export async function botConfigView(db: D1DatabaseLike, shopId: string, bot: BotResource) {
   const [staff, currency, tables, doors, own] = await Promise.all([
-    // Staff are whoever works at the shop and bound a platform identity there.
+    // Staff are whoever works at the shop: the platform identities on the
+    // profile their web account owns there.
     db.prepare(
-      `SELECT DISTINCT b.provider, b.subject FROM shop_platform_bindings b
-       WHERE b.shop_id = ? AND (
-         b.user_id IN (SELECT user_id FROM shop_members WHERE shop_id = ?)
-         OR b.user_id IN (
+      `SELECT DISTINCT i.provider, i.subject
+       FROM ${ACCOUNT_PROFILES_SQL} pa
+       JOIN player_identities i ON i.shop_id = pa.shop_id AND i.player_id = pa.player_id
+       WHERE pa.shop_id = ? AND ${platformIdentitySql("i")} AND (
+         pa.user_id IN (SELECT user_id FROM shop_members WHERE shop_id = ?)
+         OR pa.user_id IN (
            SELECT a.user_id FROM shop_staff_accounts a
            JOIN staff_users s ON s.shop_id = a.shop_id AND s.id = a.staff_id
            WHERE a.shop_id = ? AND s.status = 'active'))
-       ORDER BY b.provider, b.subject`,
+       ORDER BY i.provider, i.subject`,
     ).bind(shopId, shopId, shopId).all<{ provider: string; subject: string }>(),
     shopCurrencyName(db, shopId),
     db.prepare(

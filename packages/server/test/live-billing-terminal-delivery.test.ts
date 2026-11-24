@@ -9,12 +9,12 @@ async function fixture(statuses: number[]) {
   const clock = spyOn(Date, "now").mockImplementation(() => now);
   const sqlite = new Database(":memory:");
   sqlite.exec(`
-    CREATE TABLE shop_player_accounts(shop_id TEXT, user_id TEXT, player_id TEXT);
+    CREATE TABLE player_identities(shop_id TEXT, player_id TEXT, provider TEXT, subject TEXT, created_at TEXT);
     CREATE TABLE sessions(shop_id TEXT, id TEXT, player_id TEXT, started_at TEXT, ended_at TEXT, payment_status TEXT);
     CREATE TABLE live_activity_tokens(id TEXT, token TEXT, environment TEXT, bundle_id TEXT, session_id TEXT, shop_id TEXT, user_id TEXT, created_at TEXT, client_id TEXT);
     CREATE TABLE settlements(shop_id TEXT, session_id TEXT, checkout_id TEXT);
     CREATE TABLE player_checkouts(shop_id TEXT, id TEXT, total INTEGER, settled_at TEXT);
-    INSERT INTO shop_player_accounts VALUES ('shop','user','player');
+    INSERT INTO player_identities VALUES ('shop','player','web-account','user','2026-01-01');
   `);
   const state = new Map<string, unknown>([["alarm-budget", {
     tokens: 0, updatedAt: now, lastRunAt: now, lastTerminalBypassAt: now,

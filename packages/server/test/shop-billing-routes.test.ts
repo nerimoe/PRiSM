@@ -129,21 +129,6 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       staff_id TEXT NOT NULL,
       PRIMARY KEY(shop_id, user_id)
     );
-    CREATE TABLE IF NOT EXISTS shop_player_accounts (
-      shop_id TEXT NOT NULL REFERENCES shops(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      player_id TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, user_id)
-    );
-    CREATE TABLE IF NOT EXISTS shop_platform_bindings (
-      shop_id TEXT NOT NULL REFERENCES shops(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      provider TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, provider, subject)
-    );
     CREATE TABLE IF NOT EXISTS platform_binding_codes (
       shop_id TEXT NOT NULL REFERENCES shops(id),
       user_id TEXT NOT NULL REFERENCES users(id),
@@ -294,7 +279,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text()); sqlite.exec(await Bun.file(new URL("../../../migrations/0055_live_activity_token_client.sql", import.meta.url)).text());
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'player','Player','active',CURRENT_TIMESTAMP)", [shopId]);
     sqlite.run("INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES (?,'visit','player',?,'active','unpaid','[]')", [shopId, new Date().toISOString()]);
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id) VALUES (?,?,'player')", [shopId, staffUserId]);
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?,?,'player',CURRENT_TIMESTAMP, 'web-account')", [shopId, staffUserId]);
     sqlite.run(`INSERT INTO live_activity_tokens(id,shop_id,user_id,activity_id,token,environment,bundle_id,session_id,attributes_json,created_at,updated_at)
       VALUES ('activity',?,?,'clip','token','production','moe.neri.hinatago.prism','visit','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`, [shopId, staffUserId]);
     const refreshed: string[] = [];
@@ -415,7 +400,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       sqlite.exec(await Bun.file(new URL("../../../migrations/0025_live_activity_push_tokens.sql", import.meta.url)).text()); sqlite.exec(await Bun.file(new URL("../../../migrations/0055_live_activity_token_client.sql", import.meta.url)).text());
       sqlite.exec(await Bun.file(new URL("../../../migrations/0026_live_activity_start_tokens.sql", import.meta.url)).text());
       sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,'clip-player','Clip Player','active',CURRENT_TIMESTAMP)", [shopId]);
-      sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id) VALUES (?,?,'clip-player')", [shopId, staffUserId]);
+      sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?,?,'clip-player',CURRENT_TIMESTAMP, 'web-account')", [shopId, staffUserId]);
       if (checkout !== "cashier") sqlite.run("INSERT INTO asset_holdings(shop_id,id,player_id,asset_type,asset_code,quantity) VALUES (?,'balance','clip-player','currency','paid',1000000000)", [shopId]);
       const key = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
       const encoded = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey("pkcs8", key.privateKey))));
@@ -952,7 +937,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       [aliceUserId, aliceTokenHash, futureExpiry],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [shopId, aliceUserId, playerId],
     );
 
@@ -1571,7 +1556,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       [shopId, bobPlayerId],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [shopId, bobUserId, bobPlayerId],
     );
 
@@ -1613,13 +1598,13 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(confirmData.provider).toBe("qq");
     expect(confirmData.subject).toBe("99887766");
 
-    // 4. Verify binding was saved in shop_platform_bindings
+    // 4. The account owns the profile, and the identity sits on that profile
     const bindingRow = sqlite.query(
-      "SELECT provider, subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = ?",
+      `SELECT i.provider, i.subject FROM player_identities a
+       JOIN player_identities i ON i.shop_id = a.shop_id AND i.player_id = a.player_id
+       WHERE a.shop_id = ? AND a.provider = 'web-account' AND a.subject = ? AND i.provider = 'qq'`,
     ).get(shopId, bobUserId) as { provider: string; subject: string } | null;
-    expect(bindingRow).toBeDefined();
-    expect(bindingRow?.provider).toBe("qq");
-    expect(bindingRow?.subject).toBe("99887766");
+    expect(bindingRow).toEqual({ provider: "qq", subject: "99887766" });
   });
 
   it("lets the shop, never the bot request, decide registration on every bot command", async () => {
@@ -2062,7 +2047,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     const persisted = await app.fetch(new Request(settingsUrl, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
     expect(await persisted.json() as { excluded: boolean; isStaff: boolean }).toEqual({ excluded: true, isStaff: false });
     await app.fetch(new Request(settingsUrl, { method: "PUT", headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" }, body: JSON.stringify({ excluded: false }) }), env);
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,CURRENT_TIMESTAMP)", [shopId, viewerUserId, "p_a"]);
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?,?,?,CURRENT_TIMESTAMP, 'web-account')", [shopId, viewerUserId, "p_a"]);
     const optionsRes = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/staff/reports/player-options`, { headers: { Authorization: `Bearer ${viewerToken}` } }), env);
     expect(optionsRes.status).toBe(200);
     const options = await optionsRes.json() as { players: { id: string; isStaff: boolean }[] };
@@ -2283,7 +2268,7 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
       sqlite.run("INSERT INTO users (id, role, created_at, updated_at) VALUES (?, 'user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", [uid]);
       sqlite.run("INSERT INTO auth_sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)", [`sess_${uid}`, uid, await sha256(token), futureExpiry]);
       sqlite.run("INSERT INTO players (shop_id, id, display_name, status, created_at) VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP)", [shopId, playerId, name]);
-      sqlite.run("INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)", [shopId, uid, playerId]);
+      sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')", [shopId, uid, playerId]);
     }
 
     const genCode = async (token: string) => {
@@ -2396,9 +2381,35 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     expect(applyRes.status).toBe(200);
 
     const convertedRows = sqlite
-      .query("SELECT subject FROM shop_platform_bindings WHERE shop_id = ? AND user_id = 'u_multi' AND provider = 'onebot' ORDER BY subject")
+      .query("SELECT subject FROM player_identities WHERE shop_id = ? AND player_id = 'p_multi' AND provider = 'onebot' ORDER BY subject")
       .all(shopId) as { subject: string }[];
     expect(convertedRows.map((r) => r.subject)).toEqual(["10001", "10002", "30001"]);
+
+    // 6. Staff removing an identity removes it everywhere: the player's list, and once none
+    // are left, the binding gate.
+    const listBindings = async () => {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}/platform-binding`, { headers: { Authorization: "Bearer tok_multi" } }), env);
+      return ((await res.json()) as { bindings: { subject: string }[] }).bindings.map((b) => b.subject);
+    };
+    const removeIdentity = (subject: string) => app.fetch(new Request(
+      `https://prism.test/api/v1/shops/${publicId}/staff/players/p_multi/identities/onebot/${subject}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${staffSessionToken}` } },
+    ), env);
+    const identityBound = async () => {
+      const res = await app.fetch(new Request(`https://prism.test/api/v1/shops/${publicId}`, { headers: { Authorization: "Bearer tok_multi" } }), env);
+      return ((await res.json()) as { membership?: { identityBound?: boolean } }).membership?.identityBound;
+    };
+    expect(await listBindings()).toEqual(["10001", "10002", "30001"]);
+    expect(await identityBound()).toBe(true);
+    expect((await removeIdentity("10001")).status).toBe(200);
+    expect(await listBindings()).toEqual(["10002", "30001"]);
+    expect((await removeIdentity("10002")).status).toBe(200);
+    expect((await removeIdentity("30001")).status).toBe(200);
+    expect(await listBindings()).toEqual([]);
+    expect(await identityBound()).toBe(false);
+    // The removed account can be claimed again by another account's binding code.
+    const reclaimCode = await genCode("tok_other");
+    expect((await confirm({ code: reclaimCode, provider: "onebot", subject: "10001" })).status).toBe(200);
 
     sqlite.close();
   });

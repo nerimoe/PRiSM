@@ -28,6 +28,7 @@ import { shopCurrencyName } from "../resources/bot.js";
 import { capabilities } from "../resources/capabilities/catalog.js";
 import type { IdleSignal } from "../resources/capabilities/idle-power.js";
 import { cameOf, type AfterSubscriber, type EventSubscriber, type Heard, type InlineSubscriber } from "./dispatcher.js";
+import { ACCOUNT_PROFILES_SQL } from "../resources/account-profiles.js";
 
 /** What a subscriber is handed besides the events: the shop they happened at. */
 export type EventContext = {
@@ -279,7 +280,7 @@ export const shopChangedSubscriber: AfterSubscriber<EventContext> = {
     await pagesChanged(env, shopId, { shop: true }, "shop");
     const live = await db.prepare(
       `SELECT DISTINCT a.player_id AS playerId FROM live_activity_tokens t
-       JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+       JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
        WHERE t.shop_id=? AND t.session_id IS NOT NULL`,
     ).bind(shopId).all<{ playerId: string }>();
     for (const { playerId } of live.results) {

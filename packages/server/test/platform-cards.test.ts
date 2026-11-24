@@ -31,8 +31,8 @@ async function fixture() {
       sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES (?,?,?,'active',?)", [shop, player, player, new Date().toISOString()]);
   }
   for (const shop of ["shop1", "shop2"])
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,'u1','p1',CURRENT_TIMESTAMP)", [shop]);
-  sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop3','u1','p2',CURRENT_TIMESTAMP)");
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?,'u1','p1',CURRENT_TIMESTAMP, 'web-account')", [shop]);
+  sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop3','u1','p2',CURRENT_TIMESTAMP, 'web-account')");
   sqlite.run("INSERT INTO cards(id,user_id,label,access_code) VALUES ('card','u1','Main',?),('other-card','u1','Other',?),('foreign-card','u2','Other account',?)", [CARD, OTHER_CARD, CARD]);
   const db = createD1DatabaseFromSqlite(sqlite);
   const store = (shop: string) => createCardStore(db, shop, KEY);
@@ -54,7 +54,9 @@ async function fixture() {
   const remove = (id = "card", key: string | undefined = KEY) => app.request(`/cards/${id}`, { method: "DELETE" }, {
     DB: db, APP_ORIGIN: "https://example.test", URL_ENCRYPTION_KEY: key,
   });
-  const count = (table: string) => (sqlite.query(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+  // Account links are identities too; count the cards and chat identities the test is about.
+  const count = (table: string) =>
+    (sqlite.query(`SELECT COUNT(*) AS n FROM ${table}${table === "player_identities" ? " WHERE provider <> 'web-account'" : ""}`).get() as { n: number }).n;
   return { sqlite, store, remove, count };
 }
 
@@ -68,7 +70,7 @@ describe("deleting an account card", () => {
     expect(await store("shop2").latestOf("p1")).toBeNull();
     expect(await store("shop1").latestOf("p1")).toBe(OTHER_CARD);
     expect(await store("shop3").playerOf(CARD)).toBe("p1");
-    expect(sqlite.query("SELECT shop_id,provider,subject FROM player_identities ORDER BY shop_id").all()).toEqual([
+    expect(sqlite.query("SELECT shop_id,provider,subject FROM player_identities WHERE provider <> 'web-account' ORDER BY shop_id").all()).toEqual([
       { shop_id: "shop1", provider: "onebot", subject: "12345" },
       { shop_id: "shop3", provider: "aime", subject: CARD },
     ]);
@@ -103,7 +105,7 @@ describe("deleting an account card", () => {
 
   it("allows deletion without a key when the account has no shop profiles", async () => {
     const { sqlite, remove } = await fixture();
-    sqlite.run("DELETE FROM shop_player_accounts WHERE user_id = 'u1'");
+    sqlite.run("DELETE FROM player_identities WHERE provider = 'web-account' AND subject = 'u1'");
     expect((await remove("card", "")).status).toBe(200);
     expect(sqlite.query("SELECT id FROM cards WHERE id='card'").get()).toBeNull();
   });

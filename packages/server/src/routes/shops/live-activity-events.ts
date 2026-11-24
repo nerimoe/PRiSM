@@ -11,6 +11,7 @@ import {
 import type { AppBindings } from "../../bindings.js";
 import { activityBill, refreshActivityBill } from "../../durable-objects/live-activity-billing.js";
 import { logger } from "../../log.js";
+import { ACCOUNT_PROFILES_SQL, profileAccountId } from "../../resources/account-profiles.js";
 
 const log = logger("live-activity");
 
@@ -126,12 +127,9 @@ export async function pushSessionEvent(
     // Push-to-start: users who have previously signed in on a supported iOS device
     // registered their push-to-start tokens. We fan out APNs event=start so their
     // Dynamic Island / Live Activity starts automatically even if the app is killed.
-    const account = await c.env.DB.prepare(
-      "SELECT user_id AS userId FROM shop_player_accounts WHERE shop_id=? AND player_id=?",
-    )
-      .bind(input.shopId, input.playerId)
-      .first<{ userId: string }>();
-    if (!account) return;
+    const userId = await profileAccountId(c.env.DB, input.shopId, input.playerId);
+    if (!userId) return;
+    const account = { userId };
 
     const freshSince = new Date(Date.now() - START_TOKEN_MAX_AGE_MS).toISOString();
     await c.env.DB.prepare("DELETE FROM live_activity_start_tokens WHERE user_id=? AND updated_at<?")
@@ -233,13 +231,13 @@ export async function pushSessionEvent(
     const placeholders = input.sessionIds.map(() => "?").join(",");
     tokensQuery = `SELECT DISTINCT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
-     LEFT JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+     LEFT JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND (t.session_id IN (${placeholders}) OR a.player_id=?)`;
     bindings = [input.shopId, ...input.sessionIds, input.playerId];
   } else {
     tokensQuery = `SELECT t.id, t.token, t.environment, t.bundle_id, t.session_id, t.created_at, t.client_id
      FROM live_activity_tokens t
-     JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+     JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
      WHERE t.shop_id=? AND a.player_id=?`;
     bindings = [input.shopId, input.playerId];
   }

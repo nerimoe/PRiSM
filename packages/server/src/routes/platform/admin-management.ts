@@ -114,7 +114,8 @@ adminManagementRouter.delete("/users/:id", async (c) => {
       statement(`DELETE FROM platform_binding_codes WHERE user_id=? AND ${guard}`, userId),
       statement(`DELETE FROM player_operations WHERE user_id=? AND ${guard}`, userId),
       statement(`DELETE FROM shop_staff_accounts WHERE user_id=? AND ${guard}`, userId),
-      statement(`DELETE FROM shop_player_accounts WHERE user_id=? AND ${guard}`, userId),
+      // Unlinks the account from its shop profiles; the profiles and their balances stay.
+      statement(`DELETE FROM player_identities WHERE provider='web-account' AND subject=? AND ${guard}`, userId),
       // Login identities, OAuth credentials, sessions, challenges, passkeys,
       // cards and memberships cascade; historical login events become anonymous.
       statement(`DELETE FROM users WHERE id=? AND ${guard}`, userId),

@@ -20,6 +20,7 @@ import { createShopDependencies } from "../middleware/tenant.js";
 import type { Env, TenantShop } from "../bindings.js";
 import { liveActivityConfig } from "./live-activity-push.js";
 import { logger } from "../log.js";
+import { ACCOUNT_PROFILES_SQL } from "../resources/account-profiles.js";
 
 const log = logger("live-activity");
 
@@ -322,7 +323,7 @@ export async function refreshActivityBill(
   if (!env.LIVE_BILLING || !liveActivityConfig(env)) return;
   const token = await env.DB.prepare(
     `SELECT t.id FROM live_activity_tokens t
-    JOIN shop_player_accounts a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
+    JOIN ${ACCOUNT_PROFILES_SQL} a ON a.shop_id=t.shop_id AND a.user_id=t.user_id
     WHERE t.shop_id=? AND a.player_id=? AND t.session_id IS NOT NULL LIMIT 1`,
   )
     .bind(shopId, playerId)

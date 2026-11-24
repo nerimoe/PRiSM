@@ -67,7 +67,7 @@ async function fixture(tablePlan = "table-eight", waitingPlan?: string, startWhe
   for (const n of [1, 2, 3]) {
     sqlite.run("INSERT INTO users(id,role,created_at,updated_at) VALUES (?,'user',?,?)", [`user-${n}`, NOW, NOW]);
     sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop-1',?,?,'active',?)", [`p${n}`, `P${n}`, NOW]);
-    sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop-1',?,?,?)", [`user-${n}`, `p${n}`, NOW]);
+    sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop-1',?,?,?, 'web-account')", [`user-${n}`, `p${n}`, NOW]);
     sqlite.run("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES (?,?,?,?)",
       [`auth-${n}`, `user-${n}`, await sha256(`token-${n}`), new Date(Date.now() + 86_400_000).toISOString()]);
   }

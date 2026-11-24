@@ -134,7 +134,7 @@ describe("direct-connect card login result",()=>{
     // The player has an account at the shop, so the swipe binds the card to them here.
     ctx.sqlite.run("PRAGMA foreign_keys=OFF");
     ctx.sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop-id','p-one','One','active','2026-01-01')");
-    ctx.sqlite.run("INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES ('shop-id','player-one','p-one','2026-01-01')");
+    ctx.sqlite.run("INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES ('shop-id','player-one','p-one','2026-01-01', 'web-account')");
     const cards:Array<Record<string,unknown>>=[],presses:unknown[]=[];
     (ctx.env as any).MACHINE_RELAY={getByName:()=>({
       // The relay answers with the card report it waited for, or null.

@@ -13,6 +13,7 @@ import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
 import { recordResourceVisit } from "./resource-visit.js";
+import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 
 type C = Context<AppBindings, any, any>;
 
@@ -44,7 +45,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       ready && device && capabilities.table ? tableState(c, machine, undefined, device) : null,
       user
         ? c.env.DB.prepare(
-            `SELECT 1 FROM shop_player_accounts a
+            `SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} a
              JOIN sessions s ON s.shop_id=a.shop_id AND s.player_id=a.player_id AND s.status='active'
              WHERE a.shop_id=? AND a.user_id=? LIMIT 1`,
           ).bind(shopId, user.id).first()

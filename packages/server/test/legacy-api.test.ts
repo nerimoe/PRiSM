@@ -141,21 +141,6 @@ function createTestContext(): { db: D1DatabaseLike; sqlite: Database; env: Env }
       staff_id TEXT NOT NULL,
       PRIMARY KEY(shop_id, user_id)
     );
-    CREATE TABLE IF NOT EXISTS shop_player_accounts (
-      shop_id TEXT NOT NULL REFERENCES shops(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      player_id TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, user_id)
-    );
-    CREATE TABLE IF NOT EXISTS shop_platform_bindings (
-      shop_id TEXT NOT NULL REFERENCES shops(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      provider TEXT NOT NULL,
-      subject TEXT NOT NULL,
-      verified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(shop_id, provider, subject)
-    );
     CREATE TABLE IF NOT EXISTS platform_binding_codes (
       shop_id TEXT NOT NULL REFERENCES shops(id),
       user_id TEXT NOT NULL REFERENCES users(id),
@@ -337,7 +322,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       [bobUserId, bobTokenHash, futureExpiry],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [shopId, bobUserId, playerId],
     );
 
@@ -439,7 +424,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       [charlieUserId, charlieTokenHash, futureExpiry],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [branchShopId, charlieUserId, playerId],
     );
 
@@ -496,7 +481,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       [davidUserId, davidTokenHash, futureExpiry],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [branchShopId, davidUserId, playerId],
     );
 
@@ -643,7 +628,7 @@ describe("Legacy Single-Store API Centralization & Isolation Suite", () => {
       [rpcUserId, rpcTokenHash, futureExpiry],
     );
     sqlite.run(
-      "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+      "INSERT INTO player_identities (shop_id, subject, player_id, created_at, provider) VALUES (?, ?, ?, CURRENT_TIMESTAMP, 'web-account')",
       [shopId, rpcUserId, playerId],
     );
 

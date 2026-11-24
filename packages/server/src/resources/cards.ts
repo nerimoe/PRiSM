@@ -13,6 +13,7 @@
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import { decryptSecret, encryptSecret, toBase64Url } from "../crypto.js";
+import { ACCOUNT_PROFILES_SQL } from "./account-profiles.js";
 
 /** A card as a reader reported it: its type and the number games log in with. */
 export type ReportedCard = { type: string; accessCode: string };
@@ -57,13 +58,13 @@ export async function deleteAccountCard(db: D1DatabaseLike, userId: string, card
   const card = await db.prepare("SELECT access_code FROM cards WHERE id = ? AND user_id = ?")
     .bind(cardId, userId).first<{ access_code: string }>();
   if (!card) return;
-  const profiles = await db.prepare("SELECT shop_id, player_id FROM shop_player_accounts WHERE user_id = ?")
+  const profiles = await db.prepare("SELECT shop_id, player_id FROM player_identities WHERE provider = 'web-account' AND subject = ?")
     .bind(userId).all<{ shop_id: string; player_id: string }>();
   if (profiles.results.length && !key) throw new Error("URL_ENCRYPTION_KEY is required to revoke shop cards.");
   const statements = [];
   for (const profile of profiles.results) {
     // The same number can be on another account; only revoke our own profiles.
-    const ownsProfile = `EXISTS (SELECT 1 FROM shop_player_accounts WHERE shop_id = ? AND player_id = ? AND user_id = ?)
+    const ownsProfile = `EXISTS (SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} WHERE shop_id = ? AND player_id = ? AND user_id = ?)
       AND EXISTS (SELECT 1 FROM cards WHERE id = ? AND user_id = ? AND access_code = ?)`;
     const scope = [profile.shop_id, profile.player_id, userId, cardId, userId, card.access_code];
     statements.push(

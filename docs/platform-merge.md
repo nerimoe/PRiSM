@@ -83,7 +83,7 @@ A bare shop code with no device segment is the standalone, device-independent sh
 
 - It is served by the SPA, not the Worker: `run_worker_first` lists only the two-segment `/t/*/*`, which mints a machine ticket and redirects to `/m#ticket=…`. The Apple association file claims both shapes (`/t/*/*` and `/t/*`).
 - `GET /api/v1/shops/:shopCode` returns `shop.heroUrl` (the same versioned `…/hero?v=<hash>` path the machine payload uses, or `null`) so the shop card matches a device card. It is derived from `hero_data`/`hero_hash`, so a shop without cover art reports `null` rather than a broken path.
-- It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus a `shop_player_accounts` row.
+- It seeds the shared active shop from the route so the existing bill, redeem, history and wallet surfaces work without a machine. Reading them needs only the session cookie plus the profile's `web-account` identity (`player_identities`; migration 0063 folded the former `shop_player_accounts` table into it).
 - Players needing verification see the platform-binding command. When binding is optional, Web can create a membership directly; any later adapter binding reuses the same player.
 
 **Admission is deliberately absent here.** Only a scanned machine ticket proves the player is at a machine, and a shop URL carries no such proof, so this page never starts a session: it settles bills. A player who has not checked in is told to tap the machine NFC tag or scan its QR code. This is the one capability a shop link does not share with a device link; bill, checkout, redeem, history and wallet are identical on both.
@@ -182,7 +182,7 @@ Table player controls group the title/status and occupancy count in one header, 
 
 麻将人数不足时统一显示“等待玩家”（Waiting for players），保留两列座位布局。
 
-Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update both `player_identities` and `shop_platform_bindings`. See [API](api.md#店铺绑定要求与身份转换).
+Identity identifier conversion is an explicit owner operation in React Settings. Schema migration 0030 preserves legacy identifiers; preview and apply use a fingerprint and operation ID, reject conflicts, and atomically update `player_identities` (migration 0063 removed the duplicate `shop_platform_bindings` table). See [API](api.md#店铺绑定要求与身份转换).
 
 当前扫码/请求放大修复以 [扫码性能与请求预算](scan-performance.md) 为准：新 ticket 为 AEAD 密文且不写 D1；历史 ticket claim 描述不适用于新流程。
 

@@ -178,12 +178,11 @@ async function getExport(c: C, cancel = false) {
 }
 // Each UNION branch uses its existing (shop_id, account ID) index. Page only the selected IDs before constructing JSON.
 const accountIdsSql = `WITH related AS (
- SELECT user_id FROM shop_player_accounts WHERE shop_id=? UNION SELECT user_id FROM shop_staff_accounts WHERE shop_id=?
+ SELECT user_id FROM shop_staff_accounts WHERE shop_id=?
  UNION SELECT user_id FROM shop_members WHERE shop_id=? UNION SELECT subject FROM player_identities WHERE shop_id=? AND provider='web-account'
  UNION SELECT source_user_id FROM shop_imported_accounts WHERE shop_id=? AND matched_user_id IS NULL
 )`;
 const accountSources = [
-  ["shop_player_accounts", "user_id", ""],
   ["shop_staff_accounts", "user_id", ""],
   ["shop_members", "user_id", ""],
   ["player_identities", "subject", " AND provider='web-account'"],
@@ -197,20 +196,21 @@ const accountSql = `WITH related AS (${accountSources
   .join(" UNION ")}), selected AS (
  SELECT user_id FROM related ORDER BY user_id LIMIT ?
 ), links AS (
- SELECT r.user_id AS source_user_id,COALESCE(a.player_id,h.player_id,w.player_id) AS player_id,
+ SELECT r.user_id AS source_user_id,COALESCE(w.player_id,h.player_id) AS player_id,
  COALESCE(f.staff_id,h.staff_id) AS staff_id,COALESCE(m.role,h.member_role) AS member_role,
- COALESCE(a.verified_at,h.verified_at,w.created_at) AS verified_at,
- CASE WHEN u.id IS NOT NULL AND (a.user_id IS NOT NULL OR f.user_id IS NOT NULL OR m.user_id IS NOT NULL OR w.subject IS NOT NULL)
+ COALESCE(w.created_at,h.verified_at) AS verified_at,
+ CASE WHEN u.id IS NOT NULL AND (f.user_id IS NOT NULL OR m.user_id IS NOT NULL OR w.subject IS NOT NULL)
  THEN (SELECT json_group_array(json_object('provider',i.provider,'subject',i.provider_subject)) FROM auth_identities i WHERE i.user_id=u.id)||''
  ELSE COALESCE(h.identities_json,'[]') END AS identities_json,
- COALESCE(NULLIF((SELECT json_group_array(json_object('provider',b.provider,'subject',b.subject,'verified_at',b.verified_at))
- FROM shop_platform_bindings b WHERE b.shop_id=? AND b.user_id=u.id)||'','[]'),h.platform_bindings_json,'[]') AS platform_bindings_json
+ COALESCE(NULLIF((SELECT json_group_array(json_object('provider',pi.provider,'subject',pi.subject,'verified_at',pi.created_at))
+ FROM player_identities pi WHERE pi.shop_id=? AND u.id IS NOT NULL AND pi.player_id=w.player_id
+ AND pi.provider NOT IN ('web-account','aime'))||'','[]'),h.platform_bindings_json,'[]') AS platform_bindings_json
  FROM selected r LEFT JOIN users u ON u.id=r.user_id
- LEFT JOIN shop_player_accounts a ON a.user_id=r.user_id AND a.shop_id=? LEFT JOIN shop_staff_accounts f ON f.user_id=r.user_id AND f.shop_id=?
+ LEFT JOIN shop_staff_accounts f ON f.user_id=r.user_id AND f.shop_id=?
  LEFT JOIN shop_members m ON m.user_id=r.user_id AND m.shop_id=? LEFT JOIN player_identities w ON w.subject=r.user_id AND w.provider='web-account' AND w.shop_id=?
  LEFT JOIN shop_imported_accounts h ON h.source_user_id=r.user_id AND h.shop_id=? AND h.matched_user_id IS NULL
 )`;
-const accountBindings = (shopId: string) => Array(5).fill(shopId) as string[];
+const accountBindings = (shopId: string) => Array(4).fill(shopId) as string[];
 const validJobSql =
   "SELECT 1 AS valid FROM shop_data_exports WHERE id=? AND status='active' AND expires_at>? AND cursor=?";
 async function metadata(c: C, shop: BillingShop, job: ExportJob) {
@@ -387,7 +387,7 @@ async function readPage(c: C, job: ExportJob, after: number) {
               limit,
             ]),
             limit,
-            ...Array(6).fill(job.shop_id),
+            ...Array(5).fill(job.shop_id),
             remainingBytes,
           )
         : (c.env.DB as LegacyD1Database).prepare(sql).bind(

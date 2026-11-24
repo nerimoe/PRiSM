@@ -183,7 +183,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players` | 创建新玩家，支持在创建时直接给予初始化资产。 |
 | `PATCH` | `/rpc/staff/players/:playerId/status` | 设置玩家状态（`active` / `disabled` / `banned`）。 |
 | `POST` | `/rpc/staff/players/:playerId/identities` | 绑定玩家外部物理卡或 平台身份。 |
-| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定；删除后该 平台身份、卡号或扫码身份不再自动指向此玩家。 |
+| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定（后台「身份与状态」为平台身份提供删除按钮，PRiSM 账号与 Aime 卡不在此删除）；删除后该 平台身份、卡号或扫码身份不再自动指向此玩家，也不再算作玩家账号的平台身份。 |
 | `POST` | `/rpc/staff/players/:playerId/session/preview` | 预览为玩家开始一个方案会新增、结束、保留哪些方案。请求 `{pricingConfigId}`，必须指定（没有默认方案，不传返回 `PRICING_TARGET_REQUIRED`）；响应 `{pricingConfigId, planName, revision, changed, started, stopped, kept}`（方案名）。 |
 | `POST` | `/rpc/staff/players/:playerId/session/start` | 店员为玩家开始一个方案的计费，请求 `{pricingConfigId?, expectedRevision?}`（旧的 `pricingConfigIds` 最多一个）；必须指定方案，不传返回 `PRICING_TARGET_REQUIRED`。带预览的 `expectedRevision` 时，状态已变化返回 `409 PRICING_STATE_REVISION_MISMATCH`。一条 session 只计一个方案；同一方案最多一条，再次开始已在计费的方案返回原 session（`billing.created: false`）。响应 `{session, billing}`，`billing` 同扫码确认。与扫码、前台收银、机器人走同一个入口，见 [计费状态编排](pricing-sessions.md)。 |
 | `GET` | `/rpc/staff/players/:playerId/assets` | 检查并审计指定玩家的资产持有和变更流水。 |
@@ -458,7 +458,7 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 `POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 与 `integration/platform-binding/confirm` 接收 `{ code, provider, subject, displayName? }`，分别由拥有该店玩家管理权限的负责人/管理员或店铺 Bot 调用；Bot 命令 `/bind` 也会将发送者昵称（`displayName`）一并记录到对应身份的 `player_identities.display_name`（并在玩家仍为占位昵称时补全玩家名称）。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, displayName?, verifiedAt }] }`，按 `provider, subject` 排序；玩家端右上角账号菜单「平台身份」只读展示当前全部已绑定身份，玩家不能在此自行追加绑定；新增身份由店员在玩家资料「身份与状态」中处理。
 
-同一网页账号在同店可绑定多个平台，也可在同一平台绑定多个身份（如多个 `onebot` 账号，需应用迁移 `migrations/0062_multi_platform_bindings.sql`），均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。同一 `(provider, subject)` 在同店只能归属一个网页账号，不能被其他网页账号认领，已有不同玩家档案不自动合并。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
+同一网页账号在同店可绑定多个平台，也可在同一平台绑定多个身份（如多个 `onebot` 账号），均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。玩家档案的全部身份只保存在 `player_identities`：网页账号与档案的关联就是档案上的一条 `web-account` 身份（`subject` 为账号用户 ID；部分唯一索引 `player_identities_one_account` 保证一个档案最多一个账号，主键保证一个账号在同店只属于一个档案），档案上除 `web-account` 与 `aime` 以外的身份即该账号的平台身份（`GET platform-binding` 返回的列表与 `identityBindingRequired` 判断都由此推出）。迁移 `0063_identities_in_player_identities.sql` 把原 `shop_player_accounts`（以其为准）与 `shop_platform_bindings` 并入 `player_identities` 后删除这两张表；迁移期间临时移除并恢复 `player_identities` 的导出锁触发器，避免正在导出的店铺被跳过，并重建不再引用旧表的 `auth_identities` 导出锁触发器。同一 `(provider, subject)` 在同店只能属于一个玩家档案，已归属其他账号的档案不能被认领，已有不同玩家档案不自动合并；店员在玩家资料「身份与状态」中删除某个平台身份后，该身份立即从玩家账号移除，并可被其他账号重新绑定。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
 
 ### 店铺绑定要求与身份转换
 

@@ -18,7 +18,9 @@ import { getOrCreateShopDependencies } from "../../middleware/tenant.js";
 import { reconnectImportedAccount } from "../shops/data/shop-data-accounts.js";
 import { findLegacyShopByCode } from "../../legacy/tenant-resolver.js";
 import { resolveResourceTicket } from "./resource-ticket.js";
+import { accountHasPlatformIdentity } from "../../resources/platform-identities.js";
 import { logger } from "../../log.js";
+import { ACCOUNT_PROFILES_SQL, accountPlayerId } from "../../resources/account-profiles.js";
 
 const log = logger("machine-login");
 
@@ -62,15 +64,13 @@ export async function getShopForMachine(c:C, shopCode:string): Promise<TenantSho
 export async function requireShopPlayer(c:C,shop:TenantShop):Promise<{id:string,status:string}> {
   const user=requireUser(c);
   const find=()=>c.env.DB.prepare(
-    `SELECT p.id,p.status FROM shop_player_accounts a
+    `SELECT p.id,p.status FROM ${ACCOUNT_PROFILES_SQL} a
       JOIN players p ON p.shop_id=a.shop_id AND p.id=a.player_id
       WHERE a.shop_id=? AND a.user_id=?`,
   ).bind(shop.id,user.id).first<{id:string;status:string}>();
   let player=await find();
   if(shop.identity_binding_required) {
-    const bound=await c.env.DB.prepare(
-      "SELECT 1 FROM shop_platform_bindings WHERE shop_id=? AND user_id=? LIMIT 1",
-    ).bind(shop.id,user.id).first();
+    const bound=await accountHasPlatformIdentity(c.env.DB,shop.id,user.id);
     if(!bound)jsonError(403,"请先绑定平台身份","PLATFORM_BINDING_REQUIRED");
   }
   if(!player) {
@@ -85,9 +85,7 @@ export async function requireShopPlayer(c:C,shop:TenantShop):Promise<{id:string,
           identity:{provider:"web-account",subject:user.id},autoRegister:true,
           displayName:user.displayName || user.username || "玩家",
         });
-        await c.env.DB.prepare(
-          "INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?)",
-        ).bind(shop.id,user.id,created.id,nowIso()).run();
+        // Registering by the `web-account` identity is what links the account.
         return {id:created.id,status:created.status};
       },
     );
@@ -164,9 +162,7 @@ async function handleLogin(c:C,routePublicId?:string) {
   // Swiping a card through a shop's page binds it to the player there, so the
   // shop's readers know whose card it is. A shop without billing knows the
   // player only once they have one here.
-  const cardPlayerId=playerId??(await c.env.DB.prepare(
-    "SELECT player_id FROM shop_player_accounts WHERE shop_id=? AND user_id=?",
-  ).bind(shop.id,user.id).first<{player_id:string}>())?.player_id??null;
+  const cardPlayerId=playerId??await accountPlayerId(c.env.DB,shop.id,user.id);
   // The card number reaches the machine only; the log keeps the card id. A
   // direct-connect machine reports when the game took the card, which this
   // waits for; through a relay all we learn is that it was sent.

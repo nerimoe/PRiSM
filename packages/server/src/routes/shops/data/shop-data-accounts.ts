@@ -23,36 +23,14 @@ export function accountLinkStatements(
     statements.push(
       db
         .prepare(
-          `INSERT INTO shop_player_accounts(shop_id,user_id,player_id,verified_at) VALUES (?,?,?,?)
-      ON CONFLICT(shop_id,user_id) DO UPDATE SET player_id=CASE WHEN shop_player_accounts.player_id=excluded.player_id
-        THEN shop_player_accounts.player_id ELSE NULL END`,
-        )
-        .bind(shopId, userId, link.player_id, link.verified_at ?? now),
-    );
-    statements.push(
-      db
-        .prepare(
           `INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES (?,?,'web-account',?,?)
       ON CONFLICT(shop_id,provider,subject) DO UPDATE SET player_id=CASE WHEN player_identities.player_id=excluded.player_id
         THEN player_identities.player_id ELSE NULL END`,
         )
         .bind(shopId, link.player_id, userId, link.verified_at ?? now),
     );
-    const bindings = JSON.parse(link.platform_bindings_json) as {
-      provider: string;
-      subject: string;
-      verified_at: string;
-    }[];
-    for (const binding of bindings)
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO shop_platform_bindings(shop_id,user_id,provider,subject,verified_at)
-      VALUES (?,?,?,?,?) ON CONFLICT(shop_id,provider,subject) DO UPDATE SET user_id=CASE WHEN shop_platform_bindings.user_id=excluded.user_id
-        THEN shop_platform_bindings.user_id ELSE NULL END`,
-          )
-          .bind(shopId, userId, binding.provider, binding.subject, binding.verified_at),
-      );
+    // Platform identities come back with the profile's own `player_identities` rows;
+    // `platform_bindings_json` in older backups is no longer needed.
   }
   if (link.member_role)
     statements.push(

@@ -11,6 +11,7 @@ import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { getShopDeps } from "../../middleware/tenant.js";
 import type { PrismAppDependencies } from "../../bindings.js";
 import { recordChatNames } from "../../resources/player-names.js";
+import { accountPlayerId, linkAccountStatement, profileAccountId } from "../../resources/account-profiles.js";
 
 /** What binding needs of where it runs: a route's context, or the shop hub for a bot's command. */
 export type BindingRuntime = Pick<Context<AppBindings>, "env"> & { executionCtx: { waitUntil(promise: Promise<unknown>): void } };
@@ -92,21 +93,8 @@ export async function confirmBinding(
                 jsonError(410, "验证码已失效，请重新生成", "BINDING_CODE_EXPIRED");
               }
 
-              const existingBinding = await c.env.DB.prepare(
-                "SELECT user_id FROM shop_platform_bindings WHERE shop_id = ? AND provider = ? AND subject = ?",
-              )
-                .bind(shop.id, body.provider, body.subject)
-                .first<{ user_id: string }>();
-
-              if (existingBinding && existingBinding.user_id !== code.user_id) {
-                jsonError(409, "该平台身份已绑定其他账号", "PLATFORM_BINDING_CONFLICT");
-              }
-
-              const membership = await c.env.DB.prepare(
-                "SELECT player_id FROM shop_player_accounts WHERE shop_id = ? AND user_id = ?",
-              )
-                .bind(shop.id, code.user_id)
-                .first<{ player_id: string }>();
+              const membershipPlayerId = await accountPlayerId(c.env.DB, shop.id, code.user_id);
+              const membership = membershipPlayerId ? { player_id: membershipPlayerId } : null;
 
               const existing = await repos.playerIdentities.findPlayerByIdentity(body.provider, body.subject);
               if (membership && existing && existing.id !== membership.player_id) {
@@ -129,27 +117,17 @@ export async function confirmBinding(
                 jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
               }
 
-              const occupied = await c.env.DB.prepare(
-                "SELECT user_id FROM shop_player_accounts WHERE shop_id = ? AND player_id = ?",
-              )
-                .bind(shop.id, player.id)
-                .first<{ user_id: string }>();
-
-              if (occupied && occupied.user_id !== code.user_id) {
+              const occupiedBy = await profileAccountId(c.env.DB, shop.id, player.id);
+              if (occupiedBy && occupiedBy !== code.user_id) {
                 jsonError(409, "玩家档案已绑定其他账号", "PLATFORM_BINDING_CONFLICT");
               }
 
               const now = new Date().toISOString();
               await c.env.DB.batch([
-                c.env.DB.prepare(
-                  "INSERT INTO shop_player_accounts (shop_id, user_id, player_id, verified_at) VALUES (?, ?, ?, ?) ON CONFLICT(shop_id, user_id) DO NOTHING",
-                ).bind(shop.id, code.user_id, player.id, now),
+                linkAccountStatement(c.env.DB, shop.id, code.user_id, player.id, now),
                 c.env.DB.prepare(
                   "INSERT INTO player_identities (shop_id, player_id, provider, subject, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO NOTHING",
                 ).bind(shop.id, player.id, body.provider, body.subject, now),
-                c.env.DB.prepare(
-                  "INSERT INTO shop_platform_bindings (shop_id, user_id, provider, subject, verified_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(shop_id, provider, subject) DO NOTHING",
-                ).bind(shop.id, code.user_id, body.provider, body.subject, now),
                 c.env.DB.prepare(
                   "DELETE FROM platform_binding_codes WHERE shop_id = ? AND user_id = ? AND code_hash = ?",
                 ).bind(shop.id, code.user_id, codeHash),
