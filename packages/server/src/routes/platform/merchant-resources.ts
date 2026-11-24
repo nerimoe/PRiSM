@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { recordBindingEdit } from "../../pricing-changes.js";
 import { createD1Executor, type D1BoundStatementLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { AppBindings, AuthUser } from "../../bindings.js";
@@ -1514,7 +1515,7 @@ async function changeResource(c: C, machineId?: string) {
       `INSERT INTO machines(id,public_id,shop_id,name,enabled,kind,aliases_json,hinata_url_encrypted,resource_group_id,pricing_config_override_id,capacity,occupancy_minutes)
        VALUES (?,?,?,?,?,?,?,'',?,?,?,?)`,
     ).bind(id, randomToken(12), shopId, name, enabled, kind, JSON.stringify(aliases), binding.groupId, binding.overrideId, capacity, binding.occupancyMinutes);
-  await c.env.DB.batch([
+  const write = () => c.env.DB.batch([
     identity,
     ...connections.map((connection) => writeHaConnection(c.env.DB, shopId, connection)),
     ...nodeStatements,
@@ -1522,9 +1523,18 @@ async function changeResource(c: C, machineId?: string) {
     ...bot.statements,
     ...locationStatements,
   ]);
+  // Changing an existing resource's plan or its table's game plan is a price change.
+  if (current && (body.pricingConfigOverrideId !== undefined || body.table !== undefined)) {
+    await recordBindingEdit(c.env.DB, shopId, user.id, write);
+  } else {
+    await write();
+  }
   for (const nodeId of syncNodes) await syncNodeConfig(c.env.DB, c.env, shopId, nodeId);
   if (iotChanged) await refreshShopHub(c.env, shopId).catch(() => {});
+  // Bots are told the shop's tables and doors, and each its own settings.
   notifyBotsChangedAfter(c, shopId);
+  // A new Home Assistant gets its read-only account in the background; a failure
+  // is recorded on the connection and shown on the board, never on this save.
   for (const connection of connections) scheduleReadAccess(c, shopId, connection.id);
   afterHaChange(c, shopId);
   const updated = await loadResource(c.env.DB, shopId, id);

@@ -390,7 +390,7 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 ### 边缘节点直连（内嵌中继：HINATA IO / PRiSM Launcher / IoT 控制器）
 
-`transport: "embedded"` 的 HINATA IO 与 PRiSM Launcher、独立 IoT 硬件节点统一纳入店铺级节点表 `shop_nodes`（迁移 `0064_shop_nodes.sql`），共享同一套令牌鉴权、心跳活性、配置下发与 Durable Object 中继生命周期，仅线协议帧格式按节点类型适配（详见 [边缘节点接入与通信协议](nodes-protocol.md)）。
+`transport: "embedded"` 的 HINATA IO 与 PRiSM Launcher、独立 IoT 硬件节点统一纳入店铺级节点表 `shop_nodes`（迁移 `0065_shop_nodes.sql`），共享同一套令牌鉴权、心跳活性、配置下发与 Durable Object 中继生命周期，仅线协议帧格式按节点类型适配（详见 [边缘节点接入与通信协议](nodes-protocol.md)）。
 
 - 公开 WebSocket 路径为 `/node/ws`（同时保留 `/io/ws` 兼容已部署 HINATA IO，两者均列入 `wrangler.jsonc` 的 `run_worker_first`）。
 - 令牌只存 SHA-256（`shop_nodes.credential_hash`），**只在签发/轮换响应里返回一次**；既有 `hinata_io` 迁移时保留原 `channel` 与 `credential_hash`，现场机台不断线。通过 `POST/PATCH /api/v1/merchant/machines` 启用直连或 `rotateRelayToken: true` 会自动同步对应的 `hinata_io` 节点。

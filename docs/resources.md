@@ -6,7 +6,7 @@
 
 资源是玩家扫码的对象：机台、空调、门锁、桌游桌（`table` 能力，适用麻将、桌游等多人同桌场景），或者只是贴在墙上的二维码（例如休息区入口）。资源仍存放在 `machines` 表，资源 ID、公开 ID、已打印的二维码和硬件能力都不变。
 
-硬件能力（电源 `power`、空调 `climate`、刷卡 `hinata_io`、机台按键 `keys`、投币 `coin`、启动器 `host`、IoT 控制器 `iot`、门锁 `door`、桌游 `table`、店铺机器人 `bot`）是可选的，由声明式冲突、依赖与链接规则约束（`packages/server/src/resources/capabilities/catalog.ts`）：`bot` 与所有其它能力冲突，`iot` 与 `table`/`door`/`climate` 冲突，`coin` 依赖 `keys`；`bot` 与 `iot` 声明无需玩家链接，因此纯 `bot` 或纯 `iot` 资源自动不显示二维码且不可扫码，而没有任何能力的资源或挂有任意玩家侧能力的资源（如 `iot + keys + coin`）均保有二维码。直连的现场软硬件（HINATA IO、PRiSM Launcher、IoT 控制器）由对应能力在后台自动同步至 `shop_nodes`（迁移 `0064_shop_nodes.sql`），无需单独的硬件节点中心，详见 [边缘节点接入与通信协议](nodes-protocol.md)。此外，每个带玩家链接的资源还可在「基本信息」里设置「定位设置覆盖」（跟随店铺 / 仅 GPS / 仅蓝牙信标 / 无定位），覆盖店铺「设置 → 位置与设备」中的默认位置校验策略。
+硬件能力（电源 `power`、空调 `climate`、刷卡 `hinata_io`、机台按键 `keys`、投币 `coin`、启动器 `host`、IoT 控制器 `iot`、门锁 `door`、桌游 `table`、店铺机器人 `bot`）是可选的，由声明式冲突、依赖与链接规则约束（`packages/server/src/resources/capabilities/catalog.ts`）：`bot` 与所有其它能力冲突，`iot` 与 `table`/`door`/`climate` 冲突，`coin` 依赖 `keys`；`bot` 与 `iot` 声明无需玩家链接，因此纯 `bot` 或纯 `iot` 资源自动不显示二维码且不可扫码，而没有任何能力的资源或挂有任意玩家侧能力的资源（如 `iot + keys + coin`）均保有二维码。直连的现场软硬件（HINATA IO、PRiSM Launcher、IoT 控制器）由对应能力在后台自动同步至 `shop_nodes`（迁移 `0065_shop_nodes.sql`），无需单独的硬件节点中心，详见 [边缘节点接入与通信协议](nodes-protocol.md)。此外，每个带玩家链接的资源还可在「基本信息」里设置「定位设置覆盖」（跟随店铺 / 仅 GPS / 仅蓝牙信标 / 无定位），覆盖店铺「设置 → 位置与设备」中的默认位置校验策略。
 
 资源只决定计费方案，不保存价格：
 

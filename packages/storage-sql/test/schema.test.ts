@@ -64,6 +64,7 @@ describe("sqliteSchema", () => {
       "players",
       "presents",
       "pricing_cap_history_entries",
+      "pricing_changes",
       "pricing_config_versions",
       "pricing_configs",
       "pricing_effects",

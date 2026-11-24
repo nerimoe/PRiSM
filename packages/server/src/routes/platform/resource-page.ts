@@ -9,7 +9,7 @@ import { coinLimit, ioConnected } from "../../resources/capabilities/cabinet.js"
 import { readDeviceState } from "../../resources/capabilities/device-state.js";
 import { pageCode, renderPage, type Page } from "../../resources/page.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
-import { readShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
 import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
@@ -41,7 +41,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
     const ioWaiting = !!ready && !!device && io?.transport === "embedded" && (capabilities.card || capabilities.coin)
       && state?.power !== "off" && !(await ioConnected(c.env.DB, shopId, device.id));
     const coinButton = ready && device && capabilities.coin && state?.power !== "off" && !ioWaiting;
-    const [coin, table, billing, locationSettings] = await Promise.all([
+    const [coin, table, billing] = await Promise.all([
       coinButton ? coinLimit(c.env.DB, shopId, device) : null,
       ready && device && capabilities.table ? tableState(c, machine, undefined, device) : null,
       user
@@ -51,8 +51,8 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
              WHERE a.shop_id=? AND a.user_id=? LIMIT 1`,
           ).bind(shopId, user.id).first()
         : null,
-      readShopLocationSettings(c.env.DB, shopId),
     ]);
+    const locationSettings = parseShopLocationSettings(machine.location_settings_json);
     const checkinPolicy = gated?.shop
       ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "checkin", settings: locationSettings, deviceId: machine.id })
       : null;

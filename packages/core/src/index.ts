@@ -11,6 +11,7 @@ export * from "./location-time-zone";
 export * from "./money";
 export * from "./pricing-config";
 export * from "./pricing-relations";
+export * from "./pricing-snapshot";
 export * from "./pricing-clock";
 export * from "./pricing-time";
 export * from "./redeem";

@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { applyAllDuePricingChanges } from "./pricing-changes.js";
 import type {
   D1BoundStatementLike,
   D1DatabaseLike,
@@ -600,6 +601,12 @@ export function createLocalServer(
       return app.fetch(request, env);
     },
   });
+
+  // No cron here: scheduled price changes are swept every minute instead.
+  const sweep = setInterval(() => {
+    applyAllDuePricingChanges(d1).catch(() => undefined);
+  }, 60_000);
+  (sweep as { unref?: () => void }).unref?.();
 
   return Object.assign(server, { db, env });
 }

@@ -23,7 +23,7 @@ import {
 } from "./merchant/shared";
 import { DashboardPage } from "./merchant/Dashboard";
 import { PlayerWorkspace } from "./merchant/PlayerWorkspace";
-import { PricingPage } from "./merchant/Pricing";
+import { PricingPage } from "./merchant/PricingWorkbench";
 import { AssetsPage } from "./merchant/Assets";
 import { ReportsPage } from "./merchant/Reports";
 import { SettingsPage } from "./merchant/Settings";
@@ -68,7 +68,7 @@ function MerchantContent() {
       />
     );
   return (
-    <section className="merchant-workspace mx-auto grid w-full max-w-7xl min-w-0 gap-6">
+    <section className="merchant-workspace mx-auto grid w-full max-w-7xl min-w-0 gap-3">
       {shop ? (
         <Workspace
           key={shop.id}
@@ -200,53 +200,53 @@ function Workspace({
         cashierEnabled: state.cashierEnabled,
       }}
     >
-      <header className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="min-w-0">
-            <select
-              aria-label={t("切换店铺")}
-              className="focus-ring max-w-full bg-transparent pr-7 text-2xl font-semibold"
-              value={shop.publicId}
-              onChange={(e) => navigate(`/merchant/${e.target.value}`)}
-            >
-              {shops.map((s) => (
-                <option value={s.publicId} key={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
+      {/* Shop switcher and merchant tabs share one compact bar on desktop. */}
+      <header className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-ink/10">
+        <div className="flex min-w-0 shrink-0 items-center gap-1.5 py-1">
+          <select
+            aria-label={t("切换店铺")}
+            className="focus-ring max-w-[14rem] truncate rounded-lg bg-transparent py-1 pr-6 text-lg font-semibold"
+            value={shop.publicId}
+            onChange={(e) => navigate(`/merchant/${e.target.value}`)}
+          >
+            {shops.map((s) => (
+              <option value={s.publicId} key={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
-            className={`${button} px-3`}
+            className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg border border-ink/15 text-ink/65 transition-colors hover:bg-ink/5 hover:text-ink"
             aria-label={t("新建店铺")}
+            title={t("新建店铺")}
             onClick={create}
           >
-            <Plus size={18} />
+            <Plus size={15} />
           </button>
         </div>
-
+        <span className="hidden h-5 w-px bg-ink/10 md:block" aria-hidden="true" />
+        {/* The fade lives on the wrapper: a pseudo-element inside a scrolling box
+            is painted at the scroll origin, so it would slide away with the tabs. */}
+        <div className="scroll-fade min-w-0 flex-1">
+          <nav
+            ref={navRef}
+            aria-label={t("店家导航")}
+            className="flex gap-1 overflow-x-auto"
+          >
+            {tabs.map(([key, label]) => (
+              <NavLink
+                key={key}
+                to={`/merchant/${shop.publicId}/${key}`}
+                aria-current={section === key ? "page" : undefined}
+                className={`focus-ring whitespace-nowrap border-b-2 px-3 py-2.5 text-sm ${section === key ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"}`}
+              >
+                {t(label!)}
+              </NavLink>
+            ))}
+          </nav>
+        </div>
       </header>
-      {/* The fade lives on the wrapper: a pseudo-element inside a scrolling box
-          is painted at the scroll origin, so it would slide away with the tabs. */}
-      <div className="scroll-fade">
-        <nav
-          ref={navRef}
-          aria-label={t("店家导航")}
-          className="flex gap-1 overflow-x-auto border-b border-ink/10"
-        >
-          {tabs.map(([key, label]) => (
-            <NavLink
-              key={key}
-              to={`/merchant/${shop.publicId}/${key}`}
-              aria-current={section === key ? "page" : undefined}
-              className={`focus-ring whitespace-nowrap border-b-2 px-4 py-3 text-sm ${section === key ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"}`}
-            >
-              {t(label!)}
-            </NavLink>
-          ))}
-        </nav>
-      </div>
       <div key={section}>
         {section === "guide" && state.owner ? (
           <SetupContext.Provider value={setup}>
