@@ -2159,7 +2159,7 @@ function Segmented({
             aria-checked={value === key}
             className={`focus-ring rounded-lg px-3 py-2 text-sm transition-colors ${
               value === key
-                ? "bg-mint/12 font-medium text-ink shadow-xs"
+                ? "bg-mint/[0.12] font-medium text-ink shadow-sm"
                 : "text-ink/60 hover:text-ink"
             }`}
             onClick={() => onChange(key)}
