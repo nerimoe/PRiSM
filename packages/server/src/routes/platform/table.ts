@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { applyDuePricingChanges } from "../../pricing-changes.js";
 import { PLAYER_BILLING_LOCK_SCOPE, withOperationLease, type PricingSessionChange, type PricingSessionOrchestrator } from "@prism/application";
 import { assertNotBanned, getShopForMachine as getBillingShop, requireShopPlayer } from "./machine-login.js";
 import { createD1Executor, createD1Repositories } from "@prism/adapter-d1";
@@ -27,6 +28,8 @@ export type TableRuntime = Pick<C, "env"> & { executionCtx: { waitUntil(promise:
 export type { TableConfig } from "../../resources/capabilities/catalog.js";
 /** The table's plan and size; its size is the resource's capacity. */
 async function tableConfig(c: Pick<C, "env">, machine: ScannedResource, known?: Resource | null) {
+  // A due scheduled price change may switch the table's plan: put it in place first.
+  await applyDuePricingChanges(c.env.DB, machine.shop_id);
   const device = known ?? await loadResource(c.env.DB, machine.shop_id, machine.id);
   const config = device ? tableConfigOf(device) : null;
   return device && config ? { ...config, capacity: device.capacity } : null;

@@ -120,5 +120,6 @@ describe("what reading a scanned page costs", () => {
   });
 });
 
-const READY_LIMIT = 11;
-const ENTRY_LIMIT = 15;
+// +1: the first read of a shop checks once whether a scheduled price change is due (pricing-changes.ts).
+const READY_LIMIT = 12;
+const ENTRY_LIMIT = 16;

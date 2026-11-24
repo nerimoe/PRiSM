@@ -1,6 +1,7 @@
 import { cashierSchema } from "./cashier-schema";
 import { deviceEventSchema } from "./device-event-schema";
 import { pricingVersionSchema } from "./pricing-version-schema";
+import { pricingChangeSchema } from "./pricing-change-schema";
 import { utcPricingSchema } from "./utc-pricing-schema";
 
 export const sqliteSchema = [
@@ -425,11 +426,13 @@ export const sqliteSchema = [
   `CREATE INDEX IF NOT EXISTS idx_api_tokens_role_status ON api_tokens(shop_id, role, status)`,
   `CREATE INDEX IF NOT EXISTS idx_operation_locks_expires_at ON operation_locks(shop_id, expires_at)`,
   ...pricingVersionSchema,
+  ...pricingChangeSchema,
   ...utcPricingSchema,
   ...cashierSchema,
 ] as const;
 
 export { cashierSchema } from "./cashier-schema";
+export { pricingChangeSchema } from "./pricing-change-schema";
 export { deviceEventSchema } from "./device-event-schema";
 export { createDeviceEventRepository } from "./device-event-repository";
 export * from "./repositories";

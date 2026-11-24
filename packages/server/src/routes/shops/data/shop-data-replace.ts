@@ -82,6 +82,10 @@ export function replaceBusinessStatements(
         .bind(shopId, userId),
     );
   }
+  // The price list history points at the versions being replaced, and its
+  // scheduled changes at the plans being replaced: it starts again from the
+  // imported price list (see pricing-changes.ts, ensurePricingBaseline).
+  remove("pricing_changes");
   for (const table of [...businessTables].reverse()) remove(table);
   if (full) {
     remove("app_settings");

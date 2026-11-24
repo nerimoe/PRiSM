@@ -1,32 +1,26 @@
 import { PricingRing } from "./PricingRing";
-import { PlanRelationGraph } from "./PlanRelationGraph";
-import { useResourceGroups } from "./ResourceGroups";
-import { BillingSimulator } from "./BillingSimulator";
 import { pricingInZone, toggleWeekday, WEEKDAY_ORDER, weekdayKey } from "./pricing-clock";
-import { billTime } from "../bill-time";
+import { billTime, displayDateTime } from "../bill-time";
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
 import { BillingManualButton } from "./BillingExplainer";
 import { ChevronDown, Plus } from "lucide-react";
 import { useI18n } from "../../i18n";
 import {
   ActionForm,
   Field,
-  Modal,
   NumberInput,
-  State,
-  Table,
-  button,
   buttonQuiet,
-  cell,
   input,
   money,
-  primary,
   segment,
   useMerchant,
-  useResource,
   useStaffApi,
 } from "./shared";
+
+/**
+ * The plan editor and the shapes it edits. The pricing page itself, version
+ * by version, is in PricingWorkbench.tsx.
+ */
 
 type Unit = {
   unitMinutes: number;
@@ -34,7 +28,7 @@ type Unit = {
   roundGraceMinutes: number;
   priceCap: number;
 };
-type Rule = {
+export type Rule = {
   id: string;
   label: string;
   priority: number;
@@ -63,14 +57,18 @@ export type Pricing = {
   };
   /** How a time plan runs alongside others; only `time.priority` carries it. */
   relations?: { requires: string[]; conflicts: string[] };
+  createdAt?: string;
 };
-const kinds = {
+/** A scheduled change that will override a direct save, as the server reports it. */
+export type PendingConflict = { changeId: string; effectiveAt: string; plans: string[]; bindings: string[] };
+
+export const kinds = {
   "time.priority": "按时计费",
   "charge.fixed": "固定收费",
   "time.cap": "消费封顶",
 };
 /** A time-plan period: it has a price and the plan's cap. */
-const newRule = (): Rule => ({
+export const newRule = (): Rule => ({
   id: crypto.randomUUID(),
   label: "",
   priority: 0,
@@ -99,244 +97,8 @@ const newCapRule = (): Rule => ({
 /** A period of the right shape for the kind being edited. */
 const newRuleFor = (kind: Pricing["kind"]): Rule => (kind === "time.cap" ? newCapRule() : newRule());
 
-export function PricingPage() {
-  const { t } = useI18n();
-  const { canWrite, shopCode, shopId, owner } = useMerchant();
-  const resourceGroups = useResourceGroups(shopId);
-  const resource = useResource<{ pricingConfigs: Pricing[] }>(
-    "pricing-configs",
-  );
-  const request = useStaffApi();
-  const [edit, setEdit] = useState<Pricing | null>(null);
-  const [archive, setArchive] = useState<Pricing | null>(null);
-  const [showArchived, setShowArchived] = useState(false);
-  const [params] = useSearchParams();
-  const [showSimulator, setShowSimulator] = useState(() => params.get("simulate") === "1");
-  const rows = resource.data?.pricingConfigs.filter(
-    (row) => showArchived || row.status !== "archived",
-  );
-  return (
-    <div className="grid gap-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex items-center gap-1">
-          <h2 className="text-xl font-semibold">{t("计费规则")}</h2>
-          <BillingManualButton />
-        </div>
-        {canWrite && (
-          <button
-            className={primary}
-            onClick={() =>
-              setEdit({
-                id: "",
-                kind: "time.priority",
-                name: "",
-                enabled: true,
-                status: "active",
-                provider: { id: crypto.randomUUID(), rules: [newRule()] },
-              })
-            }
-          >
-            <Plus size={16} />
-            {t("添加规则")}
-          </button>
-        )}
-      </header>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={showArchived}
-            onChange={(e) => setShowArchived(e.target.checked)}
-          />
-          {t("显示已归档")}
-        </label>
-        <div className="flex flex-wrap gap-2">
-        {canWrite && (
-          <button
-            type="button"
-            className={button}
-            onClick={() => setShowSimulator(true)}
-          >
-            {t("计费模拟器")}
-          </button>
-        )}
-        </div>
-      </div>
-      {showSimulator && resource.data && (
-        <Modal title={t("计费模拟器")} close={() => setShowSimulator(false)} xl>
-          <BillingSimulator pricingConfigs={resource.data.pricingConfigs} />
-        </Modal>
-      )}
-      {!rows ? (
-        <State error={resource.error} />
-      ) : !rows.length ? (
-        <div className="rounded-xl border border-dashed border-ink/20 px-6 py-14 text-center">
-          <p className="font-medium">{t("还没有计费规则")}</p>
-          <p className="mx-auto mt-2 max-w-sm text-sm text-ink/55">
-            {t("规则决定玩家什么时段、按什么价格付费。给资源组选上规则后，组里的资源才开始计费。")}
-          </p>
-          {canWrite && (
-            <button
-              className={`${primary} mt-5`}
-              onClick={() =>
-                setEdit({
-                  id: "",
-                  kind: "time.priority",
-                  name: "",
-                  enabled: true,
-                  status: "active",
-                  provider: { id: crypto.randomUUID(), rules: [newRule()] },
-                })
-              }
-            >
-              <Plus size={16} />
-              {t("添加规则")}
-            </button>
-          )}
-        </div>
-      ) : (
-        <>
-        <p className="text-sm text-ink/60">
-          {t("新建的规则要被资源组、资源或其他规则的「依赖」引用才会计费。")}
-          {owner && (
-            <>
-              {" "}
-              <Link
-                className="underline"
-                to={`/merchant/${segment(shopCode)}/resources`}
-              >
-                {t("资源组")}
-              </Link>
-            </>
-          )}
-        </p>
-        {resource.data && resource.data.pricingConfigs.filter((row) => row.kind === "time.priority" && row.status !== "archived").length > 1 && (
-          <details className="grid gap-3" open>
-            <summary className="cursor-pointer text-sm font-semibold">{t("规则关系")}</summary>
-            <div className="mt-3">
-              <PlanRelationGraph
-                plans={resource.data.pricingConfigs}
-                groups={resourceGroups.groups ?? []}
-                onSelect={canWrite ? (plan) => setEdit(structuredClone(plan)) : undefined}
-              />
-            </div>
-          </details>
-        )}
-        <Table headers={["名称", "计费方式", "时段", "状态", "操作"]}>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td className={`${cell} font-medium`}>
-                {row.name}
-              </td>
-              <td className={cell}>
-                {t(kinds[row.kind])}
-                {row.kind === "charge.fixed" && (
-                  <span className="ml-2">{money(row.provider.amount)}</span>
-                )}
-              </td>
-              <td className={`${cell} text-ink/60`}>
-                {row.kind === "charge.fixed"
-                  ? t("单次收取")
-                  : t("{count} 个时段", {
-                      count: row.provider.rules?.length ?? 0,
-                    })}
-              </td>
-              <td className={cell}>
-                {/* Enabled state decides whether the rule bills anyone, so it
-                    is a pill with a dot rather than plain grey text. */}
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                    row.status === "archived"
-                      ? "bg-ink/5 text-ink/50"
-                      : row.enabled
-                        ? "bg-mint/12 text-mint"
-                        : "bg-coral/10 text-coral"
-                  }`}
-                >
-                  <span
-                    className={`size-1.5 rounded-full ${
-                      row.status === "archived"
-                        ? "bg-ink/30"
-                        : row.enabled
-                          ? "bg-mint"
-                          : "bg-coral"
-                    }`}
-                    aria-hidden="true"
-                  />
-                  {t(
-                    row.status === "archived"
-                      ? "已归档"
-                      : row.enabled
-                        ? "启用"
-                        : "停用",
-                  )}
-                </span>
-              </td>
-              <td className={cell}>
-                {canWrite && (
-                  <div className="flex gap-2">
-                    <button
-                      className={button}
-                      onClick={() => setEdit(structuredClone(row))}
-                    >
-                      {t("编辑")}
-                    </button>
-                    <button className={button} onClick={() => setArchive(row)}>
-                      {t(row.status === "archived" ? "恢复" : "归档")}
-                    </button>
-                  </div>
-                )}
-              </td>
-            </tr>
-          ))}
-        </Table>
-        </>
-      )}
-      {edit && (
-        <Modal
-          title={edit.id ? "编辑规则" : "添加规则"}
-          close={() => setEdit(null)}
-          xl
-        >
-          <PricingEditor
-            value={edit}
-            all={resource.data?.pricingConfigs ?? []}
-            done={() => {
-              setEdit(null);
-              resource.reload();
-            }}
-          />
-        </Modal>
-      )}
-      {archive && (
-        <Modal
-          title={archive.status === "archived" ? "恢复规则" : "归档规则"}
-          close={() => setArchive(null)}
-        >
-          <ActionForm
-            label="确认"
-            done={() => {
-              setArchive(null);
-              resource.reload();
-            }}
-            submit={() =>
-              request(
-                `pricing-configs/${segment(archive.id)}/${archive.status === "archived" ? "restore" : "archive"}`,
-                "POST",
-                {},
-              )
-            }
-          >
-            <p>{archive.name}</p>
-          </ActionForm>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
 /** The one line a collapsed period shows, so its settings stay readable. */
-function ruleSummary(rule: Rule, kind: Pricing["kind"], t: (key: string) => string) {
+export function ruleSummary(rule: Rule, kind: Pricing["kind"], t: (key: string) => string) {
   const time = rule.timeRange
     ? `${rule.timeRange.start}–${rule.timeRange.end}`
     : null;
@@ -360,14 +122,29 @@ function ruleSummary(rule: Rule, kind: Pricing["kind"], t: (key: string) => stri
     .join(" · ");
 }
 
-function PricingEditor({
+export function PricingEditor({
   value,
   all,
   done,
+  onSave,
+  submitLabel,
+  onConflicts,
+  onSaved,
 }: {
   value: Pricing;
   all: Pricing[];
   done: () => void;
+  /**
+   * Keeps the plan instead of saving it: the workbench stages edits across
+   * rules and saves the whole version at once. Gets the plan as stored (UTC
+   * clocks), with an ID even when new.
+   */
+  onSave?: (plan: Pricing) => void | Promise<unknown>;
+  submitLabel?: string;
+  /** Scheduled changes that will override this save, from the server. */
+  onConflicts?: (conflicts: PendingConflict[]) => void;
+  /** The saved plan's ID, once the server has it. */
+  onSaved?: (id: string | undefined) => void;
 }) {
   const { t } = useI18n();
   const request = useStaffApi();
@@ -412,14 +189,14 @@ function PricingEditor({
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         document
-          .querySelector(`dialog[open] [data-period="${index}"]`)
+          .querySelector(`[data-period="${index}"]`)
           ?.scrollIntoView({ block: "nearest" });
       });
     });
   };
   /** Returns the first reason the draft cannot be saved. */
   const firstProblem = (): { message: string; period?: number } | null => {
-    if (!draft.name.trim()) return { message: t("请填写规则名称") };
+    if (!draft.name.trim()) return { message: t("请填写方案名称") };
     if (draft.kind === "charge.fixed") {
       if (!draft.provider.label?.trim())
         return { message: t("请填写账单名称") };
@@ -445,6 +222,7 @@ function PricingEditor({
     <ActionForm
       sticky
       noValidate
+      label={submitLabel}
       done={done}
       submit={() => {
         const problem = firstProblem();
@@ -454,19 +232,27 @@ function PricingEditor({
           if (problem.period !== undefined) openPeriod(problem.period);
           throw new Error(problem.message);
         }
-        return request(
+        const body = {
+          kind: draft.kind,
+          name: draft.name.trim(),
+          enabled: draft.enabled,
+          provider: pricingInZone(draft, displayTimeZone, "UTC", day).provider,
+          ...(draft.kind === "time.priority"
+            ? { relations: draft.relations ?? { requires: [], conflicts: [] } }
+            : {}),
+        };
+        if (onSave) {
+          return Promise.resolve(onSave({ ...draft, ...body, id: draft.id || crypto.randomUUID(), status: draft.status || "active" }));
+        }
+        return request<{ pendingConflicts?: PendingConflict[]; pricingConfig?: { id: string } }>(
           `pricing-configs${draft.id ? `/${segment(draft.id)}` : ""}`,
           draft.id ? "PATCH" : "POST",
-          {
-            kind: draft.kind,
-            name: draft.name.trim(),
-            enabled: draft.enabled,
-            provider: pricingInZone(draft, displayTimeZone, "UTC", day).provider,
-            ...(draft.kind === "time.priority"
-              ? { relations: draft.relations ?? { requires: [], conflicts: [] } }
-              : {}),
-          },
-        );
+          body,
+        ).then((result) => {
+          if (result?.pendingConflicts?.length) onConflicts?.(result.pendingConflicts);
+          onSaved?.(result?.pricingConfig?.id);
+          return result;
+        });
       }}
     >
       {/* Name, kind and whether it bills, on one line; the periods below are the work. */}
@@ -664,7 +450,7 @@ function PlanRelations({
               type="button"
               aria-pressed={on}
               disabled={fixed || (blocked && !on)}
-              title={fixed ? t("由该规则设置") : undefined}
+              title={fixed ? t("由该方案设置") : undefined}
               className={`focus-ring rounded-full border px-3 py-1 text-sm transition-colors disabled:opacity-40 ${
                 on
                   ? field === "requires"
@@ -683,11 +469,11 @@ function PlanRelations({
   );
   return (
     <section className="grid gap-3 border-t border-ink/10 pt-4">
-      <h3 className="text-sm font-semibold">{t("规则关系")}</h3>
+      <h3 className="text-sm font-semibold">{t("方案关系")}</h3>
       {row("requires", "依赖")}
       {row("conflicts", "冲突")}
       <p className="text-xs leading-relaxed text-ink/55">
-        {t("开始本规则时，依赖的规则会同时开始（已在计费的不重新计时），冲突的规则会结束（已产生的费用仍在账单里）。冲突是双向的。")}
+        {t("开始本方案时，依赖的方案会同时开始（已在计费的不重新计时），冲突的方案会结束（已产生的费用仍在账单里）。冲突是双向的。")}
       </p>
     </section>
   );
@@ -714,8 +500,9 @@ function PeriodCard({
   onRemove: () => void;
   onChange: (patch: Partial<Rule>) => void;
   weekdaysLabel: (day: number) => string;
-  t: (key: string) => string;
+  t: (key: string, values?: Record<string, string | number>) => string;
 }) {
+  const { timeZone } = useMerchant();
   return (
     <div
       data-period={index}
@@ -899,36 +686,18 @@ function PeriodCard({
                 />
               </Field>
               {rule.dateTimeRange && (
-                <>
-                  <Field label="生效时间">
-                    <input
-                      className={input}
-                      value={rule.dateTimeRange.start}
-                      onChange={(e) =>
-                        onChange({
-                          dateTimeRange: {
-                            ...rule.dateTimeRange!,
-                            start: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                  <Field label="结束时间">
-                    <input
-                      className={input}
-                      value={rule.dateTimeRange.end}
-                      onChange={(e) =>
-                        onChange({
-                          dateTimeRange: {
-                            ...rule.dateTimeRange!,
-                            end: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </Field>
-                </>
+                // Only prism-neo imports carry an absolute start and end. Dates a
+                // price list changes from are a scheduled change now, so this
+                // is shown, not edited; the period can still be removed.
+                <p className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-ink/15 px-3 py-2 text-xs text-ink/60">
+                  {t("旧系统导入的一次性时段：{start} – {end}", {
+                    start: displayDateTime(rule.dateTimeRange.start, timeZone),
+                    end: displayDateTime(rule.dateTimeRange.end, timeZone),
+                  })}
+                  {new Date(rule.dateTimeRange.end).getTime() < Date.now() && (
+                    <span className="rounded-full bg-coral/10 px-2 py-0.5 text-coral">{t("已过期")}</span>
+                  )}
+                </p>
               )}
               <label className="flex gap-2 text-sm">
                 <input

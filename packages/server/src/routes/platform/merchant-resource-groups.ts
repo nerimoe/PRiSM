@@ -8,6 +8,7 @@ import { DEFAULT_RESOURCE_GROUP_ID } from "../../resources/billing.js";
 import { ensureDefaultGroupStatement, findResourceGroup, listResourceGroups } from "../../resources/repository.js";
 import { assertResourceShop, canConfigureResource } from "./merchant-resources.js";
 import { notifyBotsChangedAfter } from "../../durable-objects/shop-hub-client.js";
+import { recordBindingEdit } from "../../pricing-changes.js";
 
 /**
  * Resource groups: a name and the plan the resources in them bill. The shop's
@@ -103,7 +104,7 @@ merchantResourceGroupRouter.patch("/resource-groups/:id", async (c) => {
   if (id === DEFAULT_RESOURCE_GROUP_ID) await ensureDefaultGroupStatement(c.env.DB, body.shopId).run();
   const group = await findResourceGroup(c.env.DB, body.shopId, id);
   if (!group) jsonError(404, "没有找到这个资源组", "RESOURCE_GROUP_NOT_FOUND");
-  await c.env.DB.prepare(
+  const write = () => c.env.DB.prepare(
     `UPDATE resource_groups SET name = ?, enabled = ?, default_pricing_config_id = ?, updated_at = ?
      WHERE shop_id = ? AND id = ?`,
   ).bind(
@@ -114,6 +115,9 @@ merchantResourceGroupRouter.patch("/resource-groups/:id", async (c) => {
     body.shopId,
     id,
   ).run();
+  // A change of plan is a price change: it goes into the history.
+  if (body.defaultPricingConfigId !== undefined) await recordBindingEdit(c.env.DB, body.shopId, requireUser(c).id, write);
+  else await write();
   // A bot in this group may now bill on entry, or no longer.
   notifyBotsChangedAfter(c, body.shopId);
   return c.json({ resourceGroup: (await view(c, body.shopId)).find((group) => group.id === id) });

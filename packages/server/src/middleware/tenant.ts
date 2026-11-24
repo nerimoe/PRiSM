@@ -37,6 +37,7 @@ import {
   type StartPlayerSessionCommand,
 } from "@prism/application";
 import { createResourceBilling } from "../resources/activation.js";
+import { applyDuePricingChanges, forgetPricingChangeSchedule, pendingPlanUsers } from "../pricing-changes.js";
 import { withOrigin, type FactOrigin } from "../events/shop-facts.js";
 import { createOccupancy } from "../resources/occupancy/service.js";
 import { createRoster } from "../resources/roster.js";
@@ -60,6 +61,7 @@ let depsCache = new WeakMap<D1DatabaseLike, Map<string, CachedShopDependencies>>
 
 export function clearShopDependenciesCache(): void {
   depsCache = new WeakMap();
+  forgetPricingChangeSchedule();
 }
 
 /**
@@ -263,7 +265,7 @@ export function createShopDependencies(input: {
     id,
   });
 
-  const resourceBilling = createResourceBilling({
+  const billingByResource = createResourceBilling({
     db: input.db,
     shopId,
     pricingCatalog,
@@ -292,6 +294,19 @@ export function createShopDependencies(input: {
     },
     now,
   });
+
+  // A scheduled price change that is due is put in place before anything reads
+  // or starts a resource's billing, so entering after the moment always gets
+  // the new prices, whether or not a timer has fired yet.
+  const dueChanges = () => applyDuePricingChanges(input.db, shopId, now());
+  const resourceBilling: typeof billingByResource = {
+    ...billingByResource,
+    planOf: async (resourceId) => (await dueChanges(), billingByResource.planOf(resourceId)),
+    preview: async (target) => (await dueChanges(), billingByResource.preview(target)),
+    activate: async (target) => (await dueChanges(), billingByResource.activate(target)),
+    rulesOf: async (target) => (await dueChanges(), billingByResource.rulesOf(target)),
+    admits: async (target) => (await dueChanges(), billingByResource.admits(target)),
+  };
 
   const deviceActions = createDeviceActionService({
     db: input.db,
@@ -477,7 +492,10 @@ export function createShopDependencies(input: {
 
   const staffPricingCommands = createStaffPricingService({
     pricingConfigs: repos.pricingConfigs,
-    planUsers: (planId) => resourcePlanUsers(input.db, shopId, planId),
+    planUsers: async (planId) => [
+      ...(await resourcePlanUsers(input.db, shopId, planId)),
+      ...(await pendingPlanUsers(input.db, shopId, planId, input.shop.time_zone || "UTC")),
+    ],
     async getDefaultTimeZone() {
       return input.shop.time_zone || "UTC";
     },

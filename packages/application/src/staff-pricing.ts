@@ -64,6 +64,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
       };
       // Spending history is keyed by the provider ID, so a provider never goes without one.
       const provider = { ...input.provider, id: input.provider.id || base.id } as typeof input.provider;
+      assertNoNewDateTimeRange(provider, null);
       const config = withRelations(await createPricingConfigForKind(input.kind, provider, base, dependencies), input.relations);
 
       validatePricingConfig(config);
@@ -78,6 +79,7 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
         throw new PrismDomainError("Pricing config not found.", "PRICING_CONFIG_NOT_FOUND");
       }
       const status = existing.status ?? "active";
+      assertNoNewDateTimeRange(input.provider, existing);
 
       const config = withRelations(
         await createPricingConfigForKind(
@@ -176,6 +178,81 @@ export function createStaffPricingService(dependencies: StaffPricingServiceDepen
       });
     },
   };
+}
+
+export type PricingConfigDraft = {
+  id: string;
+  kind: PricingConfigKind;
+  name: string;
+  enabled: boolean;
+  status?: "active" | "archived";
+  provider: PricingConfig["provider"];
+  relations?: PricingConfigRelations;
+};
+
+/**
+ * A plan as the editor sends it (clocks in the shop's zone, prices in yuan),
+ * stored the way a save stores it: UTC clocks, whole cents, relations checked
+ * against the kind. Used for plans held in a scheduled change, which are saved
+ * later in one go. An archived plan is never enabled.
+ */
+export async function normalizePricingConfigDraft(
+  draft: PricingConfigDraft,
+  dependencies: Pick<StaffPricingServiceDependencies, "now"> & {
+    existing?: PricingConfig | null;
+    /** Read-only simulation may normalize historical schedules that still hold retired dateTimeRange periods. */
+    allowLegacyDateTimeRange?: boolean;
+  },
+): Promise<PricingConfig> {
+  const status = draft.status ?? "active";
+  const now = dependencies.now();
+  const provider = { ...draft.provider, id: draft.provider.id || draft.id } as PricingConfig["provider"];
+  if (!dependencies.allowLegacyDateTimeRange) assertNoNewDateTimeRange(provider, dependencies.existing ?? null);
+  const config = withRelations(
+    await createPricingConfigForKind(
+      draft.kind,
+      provider,
+      {
+        id: draft.id,
+        name: draft.name,
+        enabled: status === "archived" ? false : draft.enabled,
+        status,
+        createdAt: dependencies.existing?.createdAt ?? now,
+        updatedAt: now,
+      },
+      { ...dependencies, pricingConfigs: undefined as never, id: () => draft.id },
+    ),
+    draft.relations,
+  );
+  return config;
+}
+
+/**
+ * A period with an absolute start and end (`dateTimeRange`) only comes from
+ * prism-neo imports; when a price list changes from a date on, that is a
+ * scheduled change. A save may keep such a period exactly as stored, but not
+ * add one or move its dates.
+ */
+export function assertNoNewDateTimeRange(provider: PricingConfig["provider"], existing: PricingConfig | null): void {
+  if (!("rules" in provider)) return;
+  const stored = new Map<string, string>();
+  if (existing && "rules" in existing.provider) {
+    for (const rule of existing.provider.rules) {
+      if (rule.dateTimeRange) stored.set(rule.id, dateTimeRangeKey(rule.dateTimeRange));
+    }
+  }
+  for (const rule of provider.rules as ReadonlyArray<{ id: string; dateTimeRange?: { start: Date | string; end: Date | string } }>) {
+    if (!rule.dateTimeRange) continue;
+    if (stored.get(rule.id) !== dateTimeRangeKey(rule.dateTimeRange))
+      throw new PrismDomainError(
+        "时段不能再设置生效与结束时间，请用调价计划安排从某个时刻起生效的价目。",
+        "PRICING_RULE_DATE_TIME_RANGE_RETIRED",
+      );
+  }
+}
+
+function dateTimeRangeKey(range: { start: Date | string; end: Date | string }): string {
+  return `${new Date(range.start).toISOString()}/${new Date(range.end).toISOString()}`;
 }
 
 function withRelations(config: PricingConfig, relations: PricingConfigRelations | undefined): PricingConfig {

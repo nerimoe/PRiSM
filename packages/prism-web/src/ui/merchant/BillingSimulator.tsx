@@ -1,5 +1,5 @@
 import { parseLocalDateTime } from "@prism/core";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useI18n } from "../../i18n";
 import { BillTimeline, BillTotal } from "../BillTimeline";
 import { displayDateTime } from "../bill-time";
@@ -37,7 +37,16 @@ function toInstant(value: string, timeZone: string): string {
   return parsed.toISOString();
 }
 
-export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[] }) {
+export function BillingSimulator({
+  pricingConfigs,
+  scheduleLabel,
+  useProvidedConfigs = false,
+}: {
+  pricingConfigs: Pricing[];
+  scheduleLabel?: string;
+  /** Send `pricingConfigs` to the preview endpoint so future, past, or draft schedules simulate accurately. */
+  useProvidedConfigs?: boolean;
+}) {
   const { t } = useI18n();
   const { timeZone } = useMerchant();
   const request = useStaffApi();
@@ -49,6 +58,13 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
+
+  useEffect(() => {
+    generation.current++;
+    setResult(null);
+    setError("");
+    setBusy(false);
+  }, [pricingConfigs]);
 
   function changeSessions(next: DraftSession[]) {
     generation.current++;
@@ -71,6 +87,21 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
           endedAt: toInstant(row.endedAt, zone),
           pricingConfigId: row.pricingConfigId,
         })),
+        ...(useProvidedConfigs
+          ? {
+              pricingConfigs: pricingConfigs
+                .filter((plan) => plan.status !== "archived")
+                .map((plan) => ({
+                  id: plan.id,
+                  kind: plan.kind,
+                  name: plan.name,
+                  enabled: plan.enabled,
+                  status: "active" as const,
+                  provider: { ...plan.provider, timeZone: plan.provider.timeZone ?? "UTC" },
+                  ...(plan.kind === "time.priority" ? { relations: plan.relations ?? { requires: [], conflicts: [] } } : {}),
+                })),
+            }
+          : {}),
       });
       if (generation.current === current) setResult(response);
     } catch (cause) {
@@ -87,7 +118,10 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
           {t("逐行填写 Session 的开启时间、关闭时间和计费方案；最早开启为入场时间，最晚关闭为退场时间。Session 可以重叠。")}
         </p>
         <p className="text-xs text-ink/60">
-          {t("时间使用店铺时区")}：{zone}。{t("按当前启用的计费规则和全局封顶模拟，不包含余额、优惠券及既往消费历史；不会生成真实账单。")}
+          {t("时间使用店铺时区")}：{zone}。
+          {scheduleLabel
+            ? t("按「{schedule}」中启用的方案和全局封顶模拟，不包含余额、优惠券及既往消费历史；不会生成真实账单。", { schedule: scheduleLabel })
+            : t("按当前启用的计费规则和全局封顶模拟，不包含余额、优惠券及既往消费历史；不会生成真实账单。")}
         </p>
         {!!caps.length && <p className="text-xs text-ink/60">
           {t("自动参与计算的跨方案封顶")}：{caps.map(cap => cap.name).join("、")}
@@ -99,7 +133,7 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
         {sessions.map((session, index) => (
           <fieldset key={session.id} className="grid gap-3 rounded-xl border border-ink/10 p-4">
             <legend className="px-1 text-sm font-semibold">Session {index + 1}</legend>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3">
               <Field label="开启时间">
                 <input className={input} type="datetime-local" step="60" required
                   value={session.startedAt}
@@ -110,15 +144,13 @@ export function BillingSimulator({ pricingConfigs }: { pricingConfigs: Pricing[]
                   value={session.endedAt}
                   onChange={event => changeSessions(sessions.map(row => row.id === session.id ? { ...row, endedAt: event.target.value } : row))} />
               </Field>
-              <div className="sm:col-span-2">
-                <Field label="计费方案">
-                  <select className={input} required value={session.pricingConfigId}
-                    onChange={event => changeSessions(sessions.map(row => row.id === session.id ? { ...row, pricingConfigId: event.target.value } : row))}>
-                    <option value="">{t("选择方案")}</option>
-                    {plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
-                  </select>
-                </Field>
-              </div>
+              <Field label="计费方案">
+                <select className={input} required value={session.pricingConfigId}
+                  onChange={event => changeSessions(sessions.map(row => row.id === session.id ? { ...row, pricingConfigId: event.target.value } : row))}>
+                  <option value="">{t("选择方案")}</option>
+                  {plans.map(plan => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                </select>
+              </Field>
             </div>
             {sessions.length > 1 && <button type="button" className={button + " justify-self-end"}
               onClick={() => changeSessions(sessions.filter(row => row.id !== session.id))}>

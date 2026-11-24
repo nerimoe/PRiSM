@@ -330,13 +330,14 @@ describe("reading and acting on the page", () => {
     const { sqlite, page, act, books } = await fixture();
     books(0);
     const entering = await page();
-    expect(entering.queries).toBeLessThanOrEqual(16);
+    // +1: whether a scheduled price change is due, checked once per shop (pricing-changes.ts).
+    expect(entering.queries).toBeLessThanOrEqual(17);
     const button = entering.page.blocks.at(-1);
     await act("entry", { ...button.payload, consent: true });
     clearShopDependenciesCache();
     const ready = await page();
     expect(blockIds(ready.page)).toEqual(["cards", "coin"]);
-    expect(ready.queries).toBeLessThanOrEqual(13);
+    expect(ready.queries).toBeLessThanOrEqual(14);
     sqlite.close();
   });
 
