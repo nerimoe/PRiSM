@@ -18,6 +18,10 @@
   --color-coral: #d94f45;
   /* Outcome colours for feedback shown where the player acted. */
   --color-warning: #b86e00;
+  /* Dedicated tutorial highlight palette, distinct from primary blue. */
+  --color-tour: #c26400;
+  --color-tour-fill: #c26400;
+  --color-tour-glow: #f59e0b;
   --radius: 0.75rem;
   --shadow-soft: 0 8px 32px rgba(29, 29, 31, 0.045);
 
@@ -40,6 +44,9 @@
     --color-on-primary: #ffffff;
     --color-coral: #e06056;
     --color-warning: #ffb340;
+    --color-tour: #fbbf24;
+    --color-tour-fill: #d97706;
+    --color-tour-glow: #f59e0b;
     --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.12);
 
     color: #f5f5f7;
@@ -1134,4 +1141,57 @@ button.credential-row:not(:disabled):active {
 .player-climate :is(button):focus-visible {
   outline: 3px solid var(--climate-accent);
   outline-offset: 2px;
+}
+
+.tour-spotlight-ring {
+  border: 2.5px solid var(--color-tour-glow);
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--color-tour-glow) 30%, transparent),
+    0 0 24px color-mix(in srgb, var(--color-tour-glow) 35%, transparent),
+    0 10px 30px rgb(0 0 0 / 0.22);
+  animation: tour-ring-pulse 1.8s ease-in-out infinite;
+}
+.tour-pointer-tag {
+  background: var(--color-tour-fill);
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.28);
+  animation: tour-tag-bob 1.5s ease-in-out infinite;
+}
+.tour-btn {
+  background: var(--color-tour-fill);
+  color: #ffffff;
+  border-color: transparent;
+}
+.tour-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+@keyframes tour-ring-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 4px color-mix(in srgb, var(--color-tour-glow) 30%, transparent),
+      0 0 24px color-mix(in srgb, var(--color-tour-glow) 35%, transparent),
+      0 10px 30px rgb(0 0 0 / 0.22);
+  }
+  50% {
+    box-shadow:
+      0 0 0 9px color-mix(in srgb, var(--color-tour-glow) 12%, transparent),
+      0 0 32px color-mix(in srgb, var(--color-tour-glow) 45%, transparent),
+      0 10px 30px rgb(0 0 0 / 0.22);
+  }
+}
+@keyframes tour-tag-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-spotlight-ring,
+  .tour-pointer-tag {
+    animation: none;
+  }
 }

@@ -19,6 +19,7 @@ import {
   isValidNumericDraft,
   parseNumericDraft,
 } from "./number-input";
+import { TourModalBanner, useRegisterTourModal } from "./tour-context";
 
 export const MerchantContext = createContext({
   shopCode: "",
@@ -178,6 +179,7 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const { t } = useI18n();
+  useRegisterTourModal();
   useEffect(() => {
     const dialog = ref.current!;
     dialog.showModal();
@@ -202,6 +204,7 @@ export function Modal({
           <X size={18} />
         </button>
       </header>
+      <TourModalBanner />
       <div className="p-5">{children}</div>
     </dialog>
   );

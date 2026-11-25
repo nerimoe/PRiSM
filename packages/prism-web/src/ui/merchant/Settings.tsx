@@ -270,7 +270,7 @@ export function SettingsPage({
             </div>
           </div>
           <div hidden={group.id !== "devices"}>
-            <div className="grid gap-5">
+            <div data-tour="settings-devices-panel" className="grid gap-5">
               {!settings.data ? (
                 <State error={settings.error} />
               ) : (
@@ -407,7 +407,7 @@ function BindingPromptSettings({ shopCode }: { shopCode: string }) {
     }
   }
   return (
-    <form onSubmit={save} className="grid gap-5 rounded-xl border border-ink/10 bg-panel p-5">
+    <form data-tour="settings-binding-prompt" onSubmit={save} className="grid gap-5 rounded-xl border border-ink/10 bg-panel p-5">
       <h4 className="font-semibold">{t("绑定提示")}</h4>
       <div className="grid gap-3 lg:grid-cols-2">
         <label className="grid content-start gap-2 text-sm font-medium">
@@ -457,7 +457,7 @@ function TTLockConnection({
     (connection.accessToken || connection.appAccount)
   );
   return (
-    <details className="rounded-xl border border-ink/10 bg-panel p-5">
+    <details data-tour="settings-ttlock" className="rounded-xl border border-ink/10 bg-panel p-5">
       <summary className="cursor-pointer font-semibold">
         {t("TTLock 门锁账号")}
         <span className={`ml-3 text-xs font-normal ${connected ? "text-mint" : "text-ink/50"}`}>

@@ -31,6 +31,7 @@ import { BillingSetupFields, defaultBillingSetup } from "./merchant/BillingSetup
 import { ResourcesPage } from "./merchant/Resources";
 import { ShopForm, MembersPanel } from "./merchant/ShopDetails";
 import { SetupContext, ShopGuide, useSetupStatus } from "./merchant/ShopGuide";
+import { SetupTourProvider } from "./merchant/SetupTour";
 import type { StaffMeView } from "@prism/core";
 
 export function MerchantPage() {
@@ -200,86 +201,93 @@ function Workspace({
         cashierEnabled: state.cashierEnabled,
       }}
     >
-      {/* Shop switcher and merchant tabs share one compact bar on desktop. */}
-      <header className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-ink/10">
-        <div className="flex min-w-0 shrink-0 items-center gap-1.5 py-1">
-          <select
-            aria-label={t("切换店铺")}
-            className="focus-ring max-w-[14rem] truncate rounded-lg bg-transparent py-1 pr-6 text-lg font-semibold"
-            value={shop.publicId}
-            onChange={(e) => navigate(`/merchant/${e.target.value}`)}
-          >
-            {shops.map((s) => (
-              <option value={s.publicId} key={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg border border-ink/15 text-ink/65 transition-colors hover:bg-ink/5 hover:text-ink"
-            aria-label={t("新建店铺")}
-            title={t("新建店铺")}
-            onClick={create}
-          >
-            <Plus size={15} />
-          </button>
-        </div>
-        <span className="hidden h-5 w-px bg-ink/10 md:block" aria-hidden="true" />
-        {/* The fade lives on the wrapper: a pseudo-element inside a scrolling box
-            is painted at the scroll origin, so it would slide away with the tabs. */}
-        <div className="scroll-fade min-w-0 flex-1">
-          <nav
-            ref={navRef}
-            aria-label={t("店家导航")}
-            className="flex gap-1 overflow-x-auto"
-          >
-            {tabs.map(([key, label]) => (
-              <NavLink
-                key={key}
-                to={`/merchant/${shop.publicId}/${key}`}
-                aria-current={section === key ? "page" : undefined}
-                className={`focus-ring whitespace-nowrap border-b-2 px-3 py-2.5 text-sm ${section === key ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"}`}
+      <SetupContext.Provider value={setup}>
+        <SetupTourProvider
+          shopCode={shop.publicId}
+          status={setup.status}
+          reload={setup.reload}
+          enabled={state.owner}
+        >
+          {/* Shop switcher and merchant tabs share one compact bar on desktop. */}
+          <header className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-ink/10">
+            <div className="flex min-w-0 shrink-0 items-center gap-1.5 py-1">
+              <select
+                aria-label={t("切换店铺")}
+                className="focus-ring max-w-[14rem] truncate rounded-lg bg-transparent py-1 pr-6 text-lg font-semibold"
+                value={shop.publicId}
+                onChange={(e) => navigate(`/merchant/${e.target.value}`)}
               >
-                {t(label!)}
-              </NavLink>
-            ))}
-          </nav>
-        </div>
-      </header>
-      <div key={section}>
-        {section === "guide" && state.owner ? (
-          <SetupContext.Provider value={setup}>
-            <ShopGuide />
-          </SetupContext.Provider>
-        ) : section === "resources" ? (
-          <ResourcesPage />
-        ) : section === "cashier" ? (
-          <CashierRedirect shopCode={shop.publicId} />
-        ) : section === "dashboard" ? (
-          <DashboardPage />
-        ) : section === "players" ? (
-          <PlayerWorkspace />
-        ) : section === "pricing" ? (
-          <PricingPage />
-        ) : section === "assets" ? (
-          <AssetsPage />
-        ) : section === "history" ? (
-          <ReportsPage />
-        ) : section === "settings" && state.owner ? (
-          <div className="mx-auto w-full max-w-5xl">
-            <SettingsPage
-              shopDetails={<section className="rounded-xl border border-ink/10 bg-panel p-5">
-                <ShopForm shop={shop} onSaved={async () => { await reload(); }} />
-              </section>}
-              members={<StaffMembers shopId={shop.id} />}
-              guide={!!setup.status}
-            />
+                {shops.map((s) => (
+                  <option value={s.publicId} key={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="focus-ring grid size-8 shrink-0 place-items-center rounded-lg border border-ink/15 text-ink/65 transition-colors hover:bg-ink/5 hover:text-ink"
+                aria-label={t("新建店铺")}
+                title={t("新建店铺")}
+                onClick={create}
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+            <span className="hidden h-5 w-px bg-ink/10 md:block" aria-hidden="true" />
+            {/* The fade lives on the wrapper: a pseudo-element inside a scrolling box
+                is painted at the scroll origin, so it would slide away with the tabs. */}
+            <div className="scroll-fade min-w-0 flex-1">
+              <nav
+                ref={navRef}
+                aria-label={t("店家导航")}
+                className="flex gap-1 overflow-x-auto"
+              >
+                {tabs.map(([key, label]) => (
+                  <NavLink
+                    key={key}
+                    to={`/merchant/${shop.publicId}/${key}`}
+                    aria-current={section === key ? "page" : undefined}
+                    className={`focus-ring whitespace-nowrap border-b-2 px-3 py-2.5 text-sm ${section === key ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"}`}
+                  >
+                    {t(label!)}
+                  </NavLink>
+                ))}
+              </nav>
+            </div>
+          </header>
+          <div key={section}>
+            {section === "guide" && state.owner ? (
+              <ShopGuide />
+            ) : section === "resources" ? (
+              <ResourcesPage />
+            ) : section === "cashier" ? (
+              <CashierRedirect shopCode={shop.publicId} />
+            ) : section === "dashboard" ? (
+              <DashboardPage />
+            ) : section === "players" ? (
+              <PlayerWorkspace />
+            ) : section === "pricing" ? (
+              <PricingPage />
+            ) : section === "assets" ? (
+              <AssetsPage />
+            ) : section === "history" ? (
+              <ReportsPage />
+            ) : section === "settings" && state.owner ? (
+              <div className="mx-auto w-full max-w-5xl">
+                <SettingsPage
+                  shopDetails={<section className="rounded-xl border border-ink/10 bg-panel p-5">
+                    <ShopForm shop={shop} onSaved={async () => { await reload(); }} />
+                  </section>}
+                  members={<StaffMembers shopId={shop.id} />}
+                  guide={!!setup.status}
+                />
+              </div>
+            ) : (
+              <Navigate to={`/merchant/${shop.publicId}`} replace />
+            )}
           </div>
-        ) : (
-          <Navigate to={`/merchant/${shop.publicId}`} replace />
-        )}
-      </div>
+        </SetupTourProvider>
+      </SetupContext.Provider>
     </MerchantContext.Provider>
   );
 }

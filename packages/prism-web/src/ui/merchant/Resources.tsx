@@ -291,7 +291,7 @@ export function ResourcesPage() {
             </button>
           )}
           {canWrite && (
-            <button className={primary} onClick={() => setGroupEditing("new")}>
+            <button data-tour="resources-add-group" className={primary} onClick={() => setGroupEditing("new")}>
               <Plus size={17} />
               {t("添加资源组")}
             </button>
@@ -367,7 +367,12 @@ export function ResourcesPage() {
           .map(({ group, resources }) => {
             const plan = planName(group.defaultPricingConfigId);
             return (
-              <section key={group.id} className="grid gap-3" aria-label={t(group.name)}>
+              <section
+                key={group.id}
+                data-tour={group.isDefault ? "resources-default-group" : undefined}
+                className="grid gap-3"
+                aria-label={t(group.name)}
+              >
                 <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ink/10 pb-2">
                   <h3 className="text-base font-semibold">{t(group.name)}</h3>
                   {/* Groups that could not be read are not described, nor edited from a stand-in. */}
@@ -382,7 +387,12 @@ export function ResourcesPage() {
                         <Pencil size={14} aria-hidden="true" />
                         {t("编辑")}
                       </button>}
-                      <button type="button" className={`${button} min-h-9 px-3 py-1 text-xs`} onClick={() => setEditing({ groupId: group.id })}>
+                      <button
+                        type="button"
+                        data-tour={group.isDefault ? "resources-add-btn" : undefined}
+                        className={`${button} min-h-9 px-3 py-1 text-xs`}
+                        onClick={() => setEditing({ groupId: group.id })}
+                      >
                         <Plus size={14} aria-hidden="true" />
                         {t("添加资源")}
                       </button>
@@ -818,6 +828,7 @@ function ResourceCard({
           {hasResourceLink(caps) && (
             <button
               type="button"
+              data-tour="resource-qr-btn"
               className="focus-ring inline-flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 text-xs font-medium text-ink/70 ring-1 ring-inset ring-ink/15 hover:bg-ink/5 hover:text-ink"
               aria-label={`${t("资源二维码")} ${device.name}`}
               onClick={onQR}

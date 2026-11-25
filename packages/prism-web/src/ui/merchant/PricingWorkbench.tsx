@@ -480,7 +480,7 @@ export function PricingPage() {
     <div className="grid gap-3">
       {/* One workbench, sized to fill the desktop viewport without outer scroll:
           the list on the left and the detail/editor on the right each scroll. */}
-      <div className="flex flex-col overflow-hidden rounded-2xl border border-ink/10 bg-panel shadow-soft lg:h-[calc(100dvh-8.75rem)] lg:min-h-[36rem]">
+      <div data-tour="pricing-workbench" className="flex flex-col overflow-hidden rounded-2xl border border-ink/10 bg-panel shadow-soft lg:h-[calc(100dvh-8.75rem)] lg:min-h-[36rem]">
         <VersionBar
           model={changes}
           selected={shown}
@@ -556,6 +556,7 @@ export function PricingPage() {
                       key={key}
                       type="button"
                       role="tab"
+                      data-tour={key === "plans" ? "pricing-tab-plans" : "pricing-tab-bindings"}
                       aria-selected={tab === key}
                       className={`focus-ring inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg px-2 text-[13px] font-medium transition-colors ${
                         tab === key ? "bg-panel text-ink shadow-sm" : "text-ink/55 hover:text-ink"
@@ -681,6 +682,7 @@ export function PricingPage() {
                 {canWrite && (
                   <button
                     type="button"
+                    data-tour="pricing-simulator-btn"
                     aria-current={!edit && picked?.kind === "simulator" ? "true" : undefined}
                     className={`focus-ring flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs font-medium transition-colors ${
                       !edit && picked?.kind === "simulator"
