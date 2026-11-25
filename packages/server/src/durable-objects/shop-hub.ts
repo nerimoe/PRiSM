@@ -1381,6 +1381,11 @@ export class ShopHub extends BaseDurableObject<Env> {
         const entry = settled[machineId];
         if (entry && entry.term === term) {
           entry.leaseUntil = Date.now() + LEASE_MS;
+          // Held does not undo that the connection delivered its state: the IO will not send this
+          // snapshot again, so a later heartbeat that lifts the hold must find it already recorded.
+          const link = (entry.links[connection] ??= { connected: false, snapshot: false });
+          link.connected = true;
+          if (report.params.full) link.snapshot = true;
           await this.ctx.storage.put("watchers", settled);
         }
         return;

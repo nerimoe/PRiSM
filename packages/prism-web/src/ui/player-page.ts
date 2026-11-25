@@ -1,42 +1,8 @@
+import type { Page, PageCode } from "@prism/page-protocol";
 import type { Notice } from "../api";
 import { pageReport } from "./page-report";
 
-/** The page as the platform generates it. `docs/player-page.md` has what clients must do with it. */
-export type PageButton = {
-  kind: "button";
-  id: string;
-  label: string;
-  againLabel?: string;
-  icon?: "coin" | "power" | "door";
-  style?: "primary";
-  enabled: boolean;
-  action: string;
-  answerOnButton?: boolean;
-  payload?: Record<string, unknown>;
-  requires?: string;
-  needsLocation: boolean;
-};
-export type PageCards = { kind: "cards"; id: string; enabled: boolean; capture: boolean; action: string; needsLocation: boolean };
-export type PageBlock =
-  | PageButton
-  | PageCards
-  | { kind: "text"; id: string; text: string; style?: "heading"; level?: "error" }
-  | { kind: "signin"; id: string }
-  | { kind: "binding"; id: string }
-  | { kind: "pricing"; id: string; rules: unknown; changes: unknown }
-  | { kind: "consent"; id: string; text: string }
-  | { kind: "climate"; id: string; state: unknown; needsLocation: boolean }
-  | { kind: "table"; id: string; title: string; status: string; capacity: number; emptyLabel: string; mineLabel: string; seats: Array<{ name: string; mine: boolean }> };
-export type Page = {
-  shop: string;
-  shopCode: string;
-  heroUrl: string | null;
-  resource: string;
-  publicId: string;
-  billingActive: boolean;
-  blocks: PageBlock[];
-};
-export type PageCode = { title: string; value: string; expiresAt: string; expiresLabel: string; hint: string };
+/** How a scanned page travels. What it is made of is in `@prism/page-protocol`. */
 export type ActionAnswer = { ok: boolean; page: Page; notices: Notice[]; code?: PageCode };
 
 /**

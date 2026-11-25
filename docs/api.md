@@ -465,7 +465,7 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 新店铺（无论是否启用计费）创建时写入 `identityBindingRequired: true`、`autoRegister: true`：要求绑定平台身份，第一次通过 Bot 绑定时自动建档。`autoRegister` 只影响 Bot 绑定与 Bot 命令的建档；不要求绑定时，网页账号第一次进店总会自动建档。
 
-`settings.botContact` 是玩家绑定身份时看到的**绑定提示**（最多 500 字）：逐行显示，包含 `{code}` 的那一行替换为绑定码并作为可复制的命令；为空时客户端显示「向店铺 Bot 发送 bind 绑定码」（Koishi 插件的绑定命令是 `bind`，旧命令 `prism.bind` 仍可用）。旧数据里不含 `{code}` 的联系文字照常保存与显示（客户端在其后补上标准命令）；修改为新的非空内容时必须包含 `{code}`，否则返回 `400 BINDING_PROMPT_CODE_REQUIRED`。`POST /api/v1/shops/:shopCode/platform-binding` 的响应同样带 `botContact`，网页和 App Clip 按同一规则渲染。
+`settings.botContact` 是玩家绑定身份时看到的**绑定提示**（最多 500 字）：逐行显示，包含 `{code}` 的那一行替换为绑定码并作为可复制的命令；为空时客户端显示「向店铺 Bot 发送 bind 绑定码」（Koishi 插件的绑定命令是 `bind`，旧命令 `prism.bind` 仍可用）。旧数据里不含 `{code}` 的联系文字照常保存与显示（客户端在其后补上标准命令）；修改为新的非空内容时必须包含 `{code}`，否则返回 `400 BINDING_PROMPT_CODE_REQUIRED`。`POST /api/v1/shops/:shopCode/platform-binding` 的响应除 `botContact`（供旧版 App Clip 自行渲染）外，同时返回服务端按请求语言渲染好的 `lines`（`[{ text, command }]`），网页和当前 App Clip 直接渲染 `lines`。
 
 仅店主可以调用 `POST /api/v1/shops/:shopCode/identity-conversion/preview`，输入 `{ sourceProvider, targetProvider }`。返回玩家数、身份数、网页绑定数、样例、冲突和数据 `fingerprint`。`apply` 接收同样标识及预览的 `fingerprint`、UUID `operationId`，检查预览未过期且无冲突后，在一笔 D1 事务内转换身份表和绑定表，保留身份值、玩家 ID、余额、会话及账单。相同玩家已拥有相同目标身份时去重，同一用户在目标平台拥有其他身份不再视为冲突；其他玩家／账号占用同一目标 `(targetProvider, subject)` 的冲突阻止整批写入。重复操作编号返回原结果，数据变化必须重新预览。
 

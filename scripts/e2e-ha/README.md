@@ -12,6 +12,7 @@ mkdir -p .e2e/ha && cp scripts/e2e-ha/ha-config/configuration.yaml .e2e/ha/
 docker run -d --name prism-e2e-ha -p 8123:8123 -v "$PWD/.e2e/ha:/config" ghcr.io/home-assistant/home-assistant:stable
 bun run scripts/e2e-ha/ha-onboard.ts        # 建管理员、完成引导、发长期令牌 → .e2e/ha.json
 # 之后再用：docker start prism-e2e-ha；用完：docker stop prism-e2e-ha（数据留在 .e2e/ha）
+# 长期令牌 30 天过期（脚本请求 HA 返回 401）：重跑 ha-onboard.ts 换新令牌，再重跑 seed.ts
 
 # 2. 平台（本地 D1 放在 .e2e/state）
 bunx wrangler d1 migrations apply DB --local --persist-to .e2e/state
@@ -62,7 +63,7 @@ PRISM_PLAYWRIGHT_MODULE=/path/to/playwright node scripts/e2e-ha/browser-watchers
 - `idle`：「店里没人 1 分钟后关机」生效后，五个电源和空调实体全部被关掉，包括没有任何存储状态的休息室；被关掉的机台 IO 立刻让出监听。
 - `bots`：用插件真实代码跑的 Bot（`bot-sim.ts`）当监听器：Bot 上线顶掉机台、两个 Bot 占满、让位期间看板没有听到一次「不再实时」、Bot 和机台同时监听同一个变化只推一次、Bot 掉线机台补位、店主改数量 403 / 管理员改成功、数量 1 / 4 / 回 2 各自的结果、越界 422、只有一个 Bot 没有机台时连接也能实时。
 - 浏览器：看板只显示后端发来的（标签只是显示）、进入页面不发 HTTP 读取、刷新按钮一次整店读取由后端决定问谁、面板操作靠响应的读回、IO 掉线后 Hub 替看板问 HA；玩家页 hub 的招呼不等 HA、值随后由 hub 补发、页面不读 `/session/device`、开机以后端读回为准、调温 1 秒防抖、IO 掉线后 hub 替页面问一次 HA、回来后不再读。
-- App Clip：同样的玩家页行为，经真实 `URLSessionWebSocketTask`。
+- App Clip（`hinata_go` 的 `run-prism-real-check.sh`，经真实 `URLSessionWebSocketTask`）：没人监听的设备每次读页面向 HA 每个实体问一次、不轮询；监听中的变化靠推送、平台不读 HA；机台断电时装在里面的 IO 立刻失去监听（模拟器进程还在上报，平台照常存储但不再当作实时）；IO 掉线后页面重读时问 HA，回来后恢复推送。平台不在 8787 端口时，给 `seed.ts` 传 `PLATFORM_ORIGIN`，`wrangler dev` 的 `APP_ORIGIN` 一并改掉。
 
 ## 注意
 

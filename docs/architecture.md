@@ -18,6 +18,7 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
   - `shop-announcements`：Bot 可播报的类型目录（事件／请求／提醒三组，各带可读名称），以及 Bot 设置里的类型列表与旧版五个开关的互相换算。服务端、后台编辑器和兼容逻辑都读这一处。
   - `storage-ports`：场次、资产、兑换记录、结算、设备命令、玩家和计费配置的仓储契约（Repository Ports）。
 - `packages/storage-sql`：兼容 SQLite/D1 的 DDL、写仓储和 SQL 读模型。需要聚合多张表的列表由这里用单条关联查询完成，再调用 core 的统一领域判断；运行时适配器仅提供 SQL 执行器。
+- `packages/page-protocol`：扫码页的区块类型、容器遍历与表单规则，服务端与网页共用同一份定义，不依赖任何运行时。见 [扫码页](player-page.md)。
 - `packages/adapter-sqlite`：本地部署下的 Bun SQLite 执行器包装。
 - `packages/adapter-d1`：Cloudflare Worker 部署下的 D1 执行器包装。
 - `packages/server`：统一合并的 PRiSM 服务端包，收拢原 `platform`、`runtime` 与 `server-hono` 的服务端能力。

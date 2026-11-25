@@ -29,25 +29,14 @@
  * and pushes what it learns (see the shop hub and `readAfterAction`).
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
+import type { ClimateState } from "@prism/page-protocol";
 import { getHomeAssistantEntity, getHomeAssistantEntityState } from "../../hardware/home-assistant.js";
 import { listResources, readSecret, type Resource } from "../resource.js";
 import type { HaEntityConfig } from "./catalog.js";
 import { openHaConnection } from "./ha-connections.js";
 import type { DeviceRuntime } from "./runtime.js";
 
-/** What a climate entity is doing and what it offers. */
-export type ClimateState = {
-  /** `off`, or the running HVAC mode such as `cool`, `heat`, `dry`, `fan_only`, `auto`. */
-  mode: string;
-  modes: string[];
-  temperature: number | null;
-  currentTemperature: number | null;
-  minTemperature: number | null;
-  maxTemperature: number | null;
-  temperatureStep: number | null;
-  fanMode: string | null;
-  fanModes: string[];
-};
+export type { ClimateState };
 
 const numberOrNull = (value: unknown) =>
   typeof value === "number" && Number.isFinite(value) ? value : null;

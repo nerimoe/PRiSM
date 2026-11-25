@@ -12,19 +12,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useI18n } from "../i18n";
+import type { ClimateState, PageClimate } from "@prism/page-protocol";
 
-/** What a climate entity reports, as returned by the device state endpoints. */
-export type ClimateState = {
-  mode: string;
-  modes: string[];
-  temperature: number | null;
-  currentTemperature: number | null;
-  minTemperature: number | null;
-  maxTemperature: number | null;
-  temperatureStep: number | null;
-  fanMode: string | null;
-  fanModes: string[];
-};
+export type { ClimateState };
 
 const modeNames: Record<string, string> = {
   off: "已关闭",
@@ -81,6 +71,15 @@ export function climateSummary(state: ClimateState | null, t: Translate): string
     .join(" · ");
 }
 
+/** What the platform calls these actions where a page does not name them itself. */
+const CLIMATE_ACTIONS: PageClimate["actions"] = {
+  on: "climate.on",
+  off: "climate.off",
+  setMode: "climate.set_mode",
+  setTemperature: "climate.set_temperature",
+  setFanMode: "climate.set_fan_mode",
+};
+
 type Draft = { mode?: string; fanMode?: string; temperature?: number };
 
 /** How long a choice is shown before the entity has to confirm it. */
@@ -100,10 +99,11 @@ export const TEMPERATURE_SETTLE_MS = 1000;
  * temperature taps become one request, so a location check or an HA call is
  * not repeated for every step.
  */
-function useClimate(
+export function useClimate(
   state: ClimateState | null,
   blocked: boolean,
   send: (action: string, extra?: Record<string, unknown>) => void,
+  actions: PageClimate["actions"] = CLIMATE_ACTIONS,
 ) {
   const [draft, setDraft] = useState<Draft>({});
   const [changedAt, setChangedAt] = useState(0);
@@ -142,12 +142,12 @@ function useClimate(
     const timer = window.setTimeout(() => {
       sentTemperature.current = wanted;
       setChangedAt(Date.now());
-      send("climate.set_temperature", { temperature: wanted });
+      send(actions.setTemperature, { temperature: wanted });
     }, TEMPERATURE_SETTLE_MS);
     return () => window.clearTimeout(timer);
     // `send` is recreated on every render of the caller.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wanted, blocked]);
+  }, [wanted, blocked, actions.setTemperature]);
 
   const view: ClimateState | null = state && {
     ...state,
@@ -168,12 +168,12 @@ function useClimate(
     chooseMode(mode: string) {
       if (mode === view?.mode) return;
       change({ mode });
-      send("climate.set_mode", { mode });
+      send(actions.setMode, { mode });
     },
     chooseFan(fanMode: string) {
       if (fanMode === view?.fanMode) return;
       change({ fanMode });
-      send("climate.set_fan_mode", { fanMode });
+      send(actions.setFanMode, { fanMode });
     },
     nudge(direction: 1 | -1) {
       const current = view?.temperature;
@@ -273,159 +273,5 @@ export function ClimateControls({
         </div>
       )}
     </div>
-  );
-}
-
-/** Up to six options share one row; a longer list wraps instead of crushing labels. */
-const segments = (count: number) =>
-  count <= 6 ? { gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` } : undefined;
-
-/**
- * The player's air conditioner on the device page. Off, it is one clear
- * button; on, the target temperature is the centre of the card with mode and
- * fan speed as segmented rows underneath. The card takes the running mode's
- * colour, so cooling and heating read at a glance.
- */
-export function PlayerClimate({
-  state,
-  busy,
-  blocked,
-  send,
-}: {
-  state: ClimateState | null;
-  /** The climate action in flight, if any. */
-  busy: string;
-  /** Another action or a card swipe is running. */
-  blocked: boolean;
-  send: (action: string, extra?: Record<string, unknown>) => void;
-}) {
-  const { t } = useI18n();
-  const climate = useClimate(state, blocked, send);
-  const { view } = climate;
-  const spinner = <Loader2 size={20} className="animate-spin" aria-hidden="true" />;
-  const room =
-    state?.currentTemperature !== null && state?.currentTemperature !== undefined
-      ? t("室温 {value}°", { value: state.currentTemperature })
-      : "";
-  const status = !state
-    ? t("空调状态未知")
-    : [climate.on ? t(climateModeName(view?.mode ?? state.mode)) : t("已关闭"), room]
-        .filter(Boolean)
-        .join(" · ");
-  const powerButton = (on: boolean, primary: boolean) => (
-    <button
-      type="button"
-      className={`session-action${primary ? " primary" : ""}`}
-      disabled={blocked}
-      onClick={() => send(on ? "climate.on" : "climate.off")}
-    >
-      {busy === (on ? "climate.on" : "climate.off") ? spinner : <Power size={20} aria-hidden="true" />}
-      {t(on ? "开空调" : "关空调")}
-    </button>
-  );
-  return (
-    <section
-      className="player-climate"
-      data-mode={climate.on ? view?.mode : "off"}
-      aria-label={t("空调")}
-    >
-      <header className="player-climate-head">
-        <div>
-          <h2>{t("空调")}</h2>
-          <p>{status}</p>
-        </div>
-        {climate.on && (
-          <button
-            type="button"
-            className="player-climate-off"
-            disabled={blocked}
-            onClick={() => send("climate.off")}
-          >
-            {busy === "climate.off" ? spinner : <Power size={16} aria-hidden="true" />}
-            {t("关空调")}
-          </button>
-        )}
-      </header>
-      {!state ? (
-        <div className="player-climate-power">
-          {powerButton(true, true)}
-          {powerButton(false, false)}
-        </div>
-      ) : !climate.on ? (
-        powerButton(true, true)
-      ) : (
-        <>
-          {view?.temperature !== null && view?.temperature !== undefined && (
-            <div className="player-climate-temp" role="group" aria-label={t("设定温度")}>
-              <button
-                type="button"
-                aria-label={t("调低温度")}
-                disabled={view.temperature <= climate.min}
-                onClick={() => climate.nudge(-1)}
-              >
-                <Minus size={24} />
-              </button>
-              <div>
-                <output aria-live="polite">
-                  {view.temperature}
-                  <span>°</span>
-                </output>
-                <small>{t("设定温度")}</small>
-              </div>
-              <button
-                type="button"
-                aria-label={t("调高温度")}
-                disabled={view.temperature >= climate.max}
-                onClick={() => climate.nudge(1)}
-              >
-                <Plus size={24} />
-              </button>
-            </div>
-          )}
-          {climate.modes.length > 0 && (
-            <div className="player-climate-group">
-              <span className="player-climate-label">{t("模式")}</span>
-              <div className="player-climate-segments" role="group" aria-label={t("模式")} style={segments(climate.modes.length)}>
-                {climate.modes.map((mode) => {
-                  const Icon = modeIcons[mode];
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      aria-pressed={view?.mode === mode}
-                      disabled={blocked}
-                      onClick={() => climate.chooseMode(mode)}
-                    >
-                      {busy === "climate.set_mode" && view?.mode === mode
-                        ? spinner
-                        : Icon && <Icon size={20} aria-hidden="true" />}
-                      <span>{t(climateModeName(mode))}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          {!!view?.fanModes.length && (
-            <div className="player-climate-group">
-              <span className="player-climate-label">{t("风速")}</span>
-              <div className="player-climate-segments is-text" role="group" aria-label={t("风速")} style={segments(view.fanModes.length)}>
-                {view.fanModes.map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-pressed={view.fanMode === mode}
-                    disabled={blocked}
-                    onClick={() => climate.chooseFan(mode)}
-                  >
-                    <span>{t(fanName(mode))}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </section>
   );
 }

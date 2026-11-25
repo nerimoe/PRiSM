@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { Page } from "@prism/page-protocol";
 import { api, ApiError } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
@@ -6,7 +7,7 @@ import { operationLocation } from "./BillingPages";
 import { pageReport } from "./page-report";
 import {
   ACTION_RETRY, FRESH_READ_MS, openPageChannel, pageChannelUrl, READ_RETRY, RECHECK_MS, StillRunning, withRetries,
-  type ActionAnswer, type Page,
+  type ActionAnswer,
 } from "./player-page";
 
 /**

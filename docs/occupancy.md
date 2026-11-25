@@ -24,7 +24,7 @@
 
 ### 在读卡器上添加卡片
 
-扫码页「选择卡片」右侧的加号（只在直连平台的 HINATA IO 机台上出现，`machine.cardCapture`）：
+扫码页 `cards` 块（`capture: true`、带 `captureUi`）下的「选择卡片」右侧加号，以及还没有可用卡片时下发的 `cards.capture`（「添加卡片」）动作（只在直连平台的 HINATA IO 机台上出现，`machine.cardCapture`；网页和 App Clip 扫码页均不跳往 `/cards`）：
 
 1. `POST /api/v1/devices/session/cards/capture`，请求带 `{ticket, location?}`，打开 60 秒的添加窗口。机台不在线时返回 `DEVICE_UNAVAILABLE`。
 2. 页面只显示「请把卡片放在「机台名」的读卡器上」和取消按钮，卡片列表和投币暂时隐藏；页面轮询 `GET /api/v1/devices/session/cards/capture/:id?ticket=`。

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { isPageChanged, openPageChannel, pageChannelUrl, StillRunning, withRetries } from "../src/ui/player-page";
+import {
+  isPageChanged,
+  openPageChannel,
+  pageChannelUrl,
+  StillRunning,
+  withRetries,
+} from "../src/ui/player-page";
 import { TEMPERATURE_SETTLE_MS } from "../src/ui/ClimateControls";
 
 const quick = { timeoutMs: 20, attempts: 3, waitMs: 1 };

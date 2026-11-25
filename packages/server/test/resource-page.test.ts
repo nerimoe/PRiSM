@@ -7,7 +7,10 @@ import { createApp } from "../src/app.js";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
 import { clearShopDependenciesCache } from "../src/middleware/tenant.js";
 import { sha256 } from "../src/crypto.js";
+import { walkPageBlocks, type PageBlock } from "@prism/page-protocol";
 import { renderPage, type PageInput } from "../src/resources/page.js";
+import { renderBindingPromptLines } from "../src/resources/page-text.js";
+import { pageUi } from "../src/resources/page-ui.js";
 import { mintResourceTicket } from "../src/routes/platform/resource-ticket.js";
 import type { Env } from "../src/bindings.js";
 
@@ -36,6 +39,13 @@ describe("what the page shows", () => {
     expect(ids({ signedIn: false })).toEqual(["empty"]);
     expect(ids({})).toEqual(["empty"]);
     expect(ids({ billed: true })).toEqual(["empty"]);
+  });
+
+  it("offers a passkey only where there is something to use", () => {
+    expect(renderPage(input()).offerPasskeySetup).toBe(false);
+    expect(renderPage(input({ ...caps("coin"), signedIn: false })).offerPasskeySetup).toBe(false);
+    expect(renderPage(input(caps("coin"))).offerPasskeySetup).toBe(true);
+    expect(renderPage(input({ ...caps("coin"), gate: "binding" })).offerPasskeySetup).toBe(true);
   });
 
   it("asks a stranger to sign in before anything else", () => {
@@ -101,10 +111,99 @@ describe("what the page shows", () => {
   });
 
   it("is worded in the player's language, with no text left behind", () => {
-    const over = { ...caps("coin"), locale: "en" as const, gate: "entry" as const, billing: {} };
+    const enHead = { shop: "Shop", shopCode: "s", heroUrl: null, resource: "maimai", publicId: "p" };
+    const over = { ...caps("coin"), head: enHead, locale: "en" as const, gate: "entry" as const, billing: { rules: { plans: [] } } };
     expect(block(over, "entry").label).toBe("Confirm");
     expect(block(over, "consent").text).not.toMatch(/[一-鿿]/);
-    expect(block({ ...caps("coin"), locale: "en" }, "coin").label).toBe("Insert coin");
+    expect(block({ ...caps("coin"), head: enHead, locale: "en" }, "coin").label).toBe("Insert coin");
+    const enClimate = {
+      mode: "cool",
+      modes: ["off", "cool", "heat", "dry", "fan_only", "auto", "heat_cool"],
+      temperature: 24,
+      currentTemperature: 26.5,
+      minTemperature: 16,
+      maxTemperature: 30,
+      temperatureStep: 0.5,
+      fanMode: "medium",
+      fanModes: ["auto", "silent", "low", "medium", "high", "turbo"],
+    };
+    const pages = [
+      renderPage(input({ ...caps("coin"), head: enHead, locale: "en", signedIn: false })),
+      renderPage(input({ ...caps("coin"), head: enHead, locale: "en", gate: "binding" })),
+      renderPage(input(over)),
+      renderPage(input({ ...caps("power"), head: enHead, locale: "en", power: "off" })),
+      renderPage(input({ ...caps("climate", "card", "coin"), head: enHead, locale: "en", cardCapture: true, climate: enClimate })),
+      renderPage(input({ ...caps("climate"), head: enHead, locale: "en", climate: null })),
+      renderPage(input({ ...caps("table"), head: enHead, locale: "en", table: { capacity: 2, seats: [{ name: "Player", mine: true, playing: false }] } })),
+    ];
+    for (const page of pages) expect(JSON.stringify(page.blocks)).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it("drives cards, climate, signin, binding, pricing, and button waits from the server without /cards links", () => {
+    const withCapture = block({ ...caps("card", "coin"), cardCapture: true }, "cards");
+    expect(withCapture.empty.actions.map((a: any) => a.action)).toEqual(["cards.capture", "cards.reload"]);
+    // Without the cards there is only reading them again, and it is the page's one thing to do.
+    expect(withCapture.loadError.actions).toEqual([{ id: "refresh", label: "刷新", action: "cards.reload", style: "primary" }]);
+    expect(withCapture.captureUi).toMatchObject({
+      title: "添加卡片",
+      waitingText: "请把卡片放在「舞萌」的读卡器上",
+      outcomes: { added: "已添加卡片" },
+    });
+    expect(JSON.stringify(withCapture)).not.toContain("/cards");
+    expect(block({ ...caps("card", "coin"), cardCapture: true }, "coin").hideDuringCapture).toBe(true);
+
+    const withoutCapture = block({ ...caps("card"), cardCapture: false }, "cards");
+    expect(withoutCapture.empty.actions).toEqual([{ id: "refresh", label: "刷新", action: "cards.reload" }]);
+    expect(withoutCapture.captureUi).toBeUndefined();
+    expect(JSON.stringify(withoutCapture)).not.toContain("/cards");
+
+    const enCards = block({ ...caps("card"), locale: "en", cardCapture: true, head: { shop: "Shop", shopCode: "s", heroUrl: null, resource: "maimai", publicId: "p" } }, "cards");
+    expect(enCards.empty.actions.map((a: any) => a.label)).toEqual(["Add card", "Refresh"]);
+    expect(enCards.loadError.actions.map((a: any) => a.label)).toEqual(["Refresh"]);
+
+    const power = block({ ...caps("power"), power: "off" }, "power");
+    expect(power.wait).toEqual({ ms: 15_000, timeoutMessage: "未检测到开机，请重试" });
+
+    const signIn = block({ ...caps("coin"), signedIn: false }, "signin");
+    expect(signIn.methods.map((m: any) => m.provider)).toEqual(["munet", "passkey"]);
+
+    const binding = block({ ...caps("coin"), gate: "binding" }, "binding");
+    expect(binding).toMatchObject({ title: "绑定平台身份", copyLabel: "复制", copiedLabel: "已复制" });
+
+    const pricing = block({ ...caps("coin"), gate: "entry", billing: { rules: { plans: [] } } }, "pricing");
+    expect(pricing.labels).toMatchObject({ title: "计费规则", listSeparator: "、" });
+
+    const climate = block({
+      ...caps("climate"),
+      climate: {
+        mode: "cool", modes: ["off", "cool", "heat"], temperature: 25, currentTemperature: 27.5,
+        minTemperature: 16, maxTemperature: 30, temperatureStep: 0.5, fanMode: "turbo", fanModes: ["auto", "turbo"],
+      },
+    }, "climate");
+    expect(climate).toMatchObject({
+      roomText: "室温 27.5°",
+      currentModeLabel: "制冷",
+      modes: [{ value: "cool", label: "制冷", icon: "cool" }, { value: "heat", label: "制热", icon: "heat" }],
+      fanModes: [{ value: "auto", label: "自动" }, { value: "turbo", label: "强劲" }],
+      actions: { on: "climate.on", off: "climate.off", setMode: "climate.set_mode", setTemperature: "climate.set_temperature", setFanMode: "climate.set_fan_mode" },
+    });
+
+    expect(renderBindingPromptLines("zh", "", "AB12")).toEqual([
+      { text: "向店铺 Bot 发送", command: false },
+      { text: "bind AB12", command: true },
+    ]);
+    expect(renderBindingPromptLines("en", "", "AB12")).toEqual([
+      { text: "Send to this shop’s bot", command: false },
+      { text: "bind AB12", command: true },
+    ]);
+    expect(renderBindingPromptLines("zh", "加入 QQ 群", "AB12")).toEqual([
+      { text: "加入 QQ 群", command: false },
+      { text: "bind AB12", command: true },
+    ]);
+    expect(renderBindingPromptLines("zh", "私聊 Bot\n/bind {code}", "AB12")).toEqual([
+      { text: "私聊 Bot", command: false },
+      { text: "/bind AB12", command: true },
+    ]);
   });
 });
 
@@ -393,5 +492,139 @@ describe("reading and acting on the page", () => {
     const unlinkedVisit = sqlite.query("SELECT player_id, payload_json FROM device_events WHERE name='resource.visited' AND player_id IS NULL").get() as any;
     expect(unlinkedVisit).toEqual({ player_id: null, payload_json: JSON.stringify({ userId: "u_new" }) });
     sqlite.close();
+  });
+
+  it("returns server-rendered lines on POST /platform-binding across templates and locales", async () => {
+    const { sqlite, app, env, headers } = await fixture();
+
+    const readBinding = async (locale: "zh" | "en") => {
+      const response = await app.fetch(
+        new Request("https://prism.test/api/v1/shops/shop-code/platform-binding", {
+          method: "POST",
+          headers: { ...headers(), "accept-language": locale },
+        }),
+        env,
+      );
+      expect(response.status).toBe(200);
+      const json = await response.json() as any;
+      return json.data;
+    };
+
+    const zhDefault = await readBinding("zh");
+    expect(zhDefault.lines).toEqual([
+      { text: "向店铺 Bot 发送", command: false },
+      { text: `bind ${zhDefault.code}`, command: true },
+    ]);
+
+    const enDefault = await readBinding("en");
+    expect(enDefault.lines).toEqual([
+      { text: "Send to this shop’s bot", command: false },
+      { text: `bind ${enDefault.code}`, command: true },
+    ]);
+
+    sqlite.run("UPDATE shop_billing_settings SET bot_contact=? WHERE shop_id='shop'", ["加入群 12345"]);
+    const legacyContact = await readBinding("zh");
+    expect(legacyContact.lines).toEqual([
+      { text: "加入群 12345", command: false },
+      { text: `bind ${legacyContact.code}`, command: true },
+    ]);
+
+    sqlite.run("UPDATE shop_billing_settings SET bot_contact=? WHERE shop_id='shop'", ["私聊 Bot\n/bind {code}"]);
+    const templated = await readBinding("zh");
+    expect(templated.lines).toEqual([
+      { text: "私聊 Bot", command: false },
+      { text: `/bind ${templated.code}`, command: true },
+    ]);
+
+    sqlite.close();
+  });
+});
+
+describe("declarative SDUI primitives", () => {
+  it("builds nested layout, display, form inputs, and button confirm/collect payloads cleanly", () => {
+    const built: PageBlock[] = [
+      pageUi.banner("notice", "活动进行中，请选择时段", { title: "预约说明", level: "info" }),
+      pageUi.section("booking", [
+        pageUi.kv("summary", [
+          { label: "机台", value: "舞萌 DX" },
+          { id: "status", label: "状态", value: "空闲", tone: "success" },
+        ]),
+        pageUi.divider("sep"),
+        pageUi.image("cover", "/assets/banner.png", { alt: "活动海报", aspectRatio: 1.5 }),
+        pageUi.select("slot", [
+          { value: "14:00", label: "14:00 - 15:00", detail: "余 2 位" },
+          { value: "15:00", label: "15:00 - 16:00", disabled: true },
+        ], { name: "slot", label: "选择时段", style: "list", defaultValue: "14:00", required: true }),
+        pageUi.input("note", {
+          name: "remark",
+          label: "备注",
+          placeholder: "选填",
+          inputType: "text",
+          maxLength: 20,
+          helperText: "最多 20 字",
+        }),
+        pageUi.toggle("notify", "到号提醒", { name: "notify", defaultValue: true }),
+        pageUi.row("actions", [
+          pageUi.button("submit", "提交预约", "custom.reserve", {
+            icon: "check",
+            style: "primary",
+            collect: ["slot", "note", "notify"],
+            payload: { expectedVersion: 3 },
+            confirm: {
+              title: "确认预约",
+              body: "提交后将锁定该时段",
+              confirmLabel: "确认",
+              cancelLabel: "取消",
+            },
+          }),
+          pageUi.button("cancel", "取消", "custom.cancel", {
+            icon: "close",
+            style: "destructive",
+            confirm: {
+              title: "确认取消",
+              body: "将释放当前名额",
+              confirmLabel: "确认取消",
+              cancelLabel: "返回",
+              destructive: true,
+            },
+          }),
+        ]),
+      ], { title: "机台预约", subtitle: "当日有效", style: "card" }),
+    ];
+
+    const serialized = JSON.parse(JSON.stringify(built)) as PageBlock[];
+    expect(serialized).toHaveLength(2);
+    expect(walkPageBlocks(serialized).map((b) => b.id)).toEqual([
+      "notice",
+      "booking",
+      "summary",
+      "sep",
+      "cover",
+      "slot",
+      "note",
+      "notify",
+      "actions",
+      "submit",
+      "cancel",
+    ]);
+  });
+
+  it("caps recursive container walking at maxDepth", () => {
+    const deep = (depth: number): PageBlock =>
+      depth >= 12
+        ? pageUi.text(`leaf-${depth}`, "leaf")
+        : pageUi.section(`sec-${depth}`, [deep(depth + 1)]);
+    const tree = [deep(0)];
+    const flattened = walkPageBlocks(tree, 8).map((b) => b.id);
+    expect(flattened).toEqual([
+      "sec-0",
+      "sec-1",
+      "sec-2",
+      "sec-3",
+      "sec-4",
+      "sec-5",
+      "sec-6",
+      "sec-7",
+    ]);
   });
 });

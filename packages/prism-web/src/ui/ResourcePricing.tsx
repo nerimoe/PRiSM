@@ -1,5 +1,4 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { useI18n } from "../i18n";
 import { billTime } from "./bill-time";
 import { usePlansDaySegments, type Segment } from "./merchant/PricingRing";
 import { pricingInZone } from "./merchant/pricing-clock";
@@ -7,6 +6,7 @@ import type { Pricing } from "./merchant/Pricing";
 import { money } from "./merchant/shared";
 import { periodRows, type PeriodRow } from "./period-rows";
 import { planColor } from "./plan-colors";
+import type { PagePricingLabels } from "@prism/page-protocol";
 
 /** How far a cap is used up now, as the server counted it. */
 export type CapProgressView = {
@@ -36,7 +36,6 @@ export type ResourceRules = {
 };
 
 type PlanChange = { planId: string; planName: string };
-type Translate = (key: string) => string;
 
 const DAY = 1440;
 
@@ -50,12 +49,13 @@ const DAY = 1440;
 export function ResourcePricing({
   rules,
   changes,
+  labels,
 }: {
   rules: ResourceRules;
   /** What confirming starts, ends and keeps. */
   changes?: { started: PlanChange[]; stopped: PlanChange[]; kept: PlanChange[] };
+  labels: PagePricingLabels;
 }) {
-  const { t } = useI18n();
   const zone = rules.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   const now = billTime(new Date().toISOString(), zone);
   const [hour, minute] = now.time.split(":").map(Number);
@@ -71,9 +71,13 @@ export function ResourcePricing({
   );
   const { segments, error, loading } = usePlansDaySegments([...plans, ...capConfigs], now.date, zone);
   const change = (planId: string) =>
-    changes?.started.some((item) => item.planId === planId) ? "新增" : changes?.kept.some((item) => item.planId === planId) ? "保留" : null;
+    changes?.started.some((item) => item.planId === planId)
+      ? labels.startedTag
+      : changes?.kept.some((item) => item.planId === planId)
+        ? labels.keptTag
+        : null;
   return (
-    <section className="grid gap-3 text-left" aria-label={t("计费规则")} aria-busy={loading}>
+    <section className="grid gap-3 text-left" aria-label={labels.title} aria-busy={loading}>
       {error && <p role="alert" className="text-sm text-coral">{error}</p>}
       <div className="grid gap-5 rounded-2xl bg-ink/[0.04] p-4">
         {plans.map((plan, index) => (
@@ -85,13 +89,14 @@ export function ResourcePricing({
             segments={segments[index] ?? []}
             nowMinute={nowMinute}
             caps={rules.caps?.plans.filter((cap) => cap.pricingConfigId === plan.id) ?? []}
+            labels={labels}
           />
         ))}
         {shared.length > 0 && (
           <div className="grid gap-4 border-t border-ink/10 pt-3">
-            <h3 className="-mb-2 text-xs text-ink/50">{t("跨方案封顶")}</h3>
+            <h3 className="-mb-2 text-xs text-ink/50">{labels.sharedCapsTitle}</h3>
             {shared.map((cap, index) => (
-              <CapLane key={cap.pricingConfigId} cap={cap} segments={segments[plans.length + index] ?? []} nowMinute={nowMinute} />
+              <CapLane key={cap.pricingConfigId} cap={cap} segments={segments[plans.length + index] ?? []} nowMinute={nowMinute} labels={labels} />
             ))}
           </div>
         )}
@@ -99,8 +104,8 @@ export function ResourcePricing({
         {/* The running bill is not repeated here: the account menu has it, in full. */}
         {!!changes?.stopped.length && (
           <div className="flex items-baseline justify-between gap-3 border-t border-ink/10 pt-3 text-sm">
-            <span className="text-ink/60">{t("确认后结束")}</span>
-            <span className="truncate">{changes.stopped.map((item) => item.planName).join("、")}</span>
+            <span className="text-ink/60">{labels.stoppedTitle}</span>
+            <span className="truncate">{changes.stopped.map((item) => item.planName).join(labels.listSeparator)}</span>
           </div>
         )}
       </div>
@@ -116,6 +121,7 @@ function PlanLane({
   segments,
   nowMinute,
   caps,
+  labels,
 }: {
   plan: Pricing;
   tag: string | null;
@@ -123,15 +129,15 @@ function PlanLane({
   segments: Segment[];
   nowMinute: number;
   caps: CapProgressView[];
+  labels: PagePricingLabels;
 }) {
-  const { t } = useI18n();
   const rows = periodRows(segments);
   const { row, pick, picked } = usePickedRow(rows, nowMinute);
   const title = (
     <>
       <span className="size-2.5 shrink-0 rounded-full" style={{ background: color }} aria-hidden="true" />
       <span className="truncate font-semibold">{plan.name}</span>
-      {tag && <span className="shrink-0 rounded-full bg-ink/[0.06] px-2 py-0.5 text-[11px] font-normal text-ink/60">{t(tag)}</span>}
+      {tag && <span className="shrink-0 rounded-full bg-ink/[0.06] px-2 py-0.5 text-[11px] font-normal text-ink/60">{tag}</span>}
     </>
   );
   // A fixed charge has no day to draw: it is billed once for the visit.
@@ -139,7 +145,7 @@ function PlanLane({
     return (
       <div className="grid gap-2">
         <LaneHeader title={title} value={money(plan.provider.amount ?? 0)} />
-        <p className="text-xs text-ink/55">{t("单次收取")}</p>
+        <p className="text-xs text-ink/55">{labels.fixedFee}</p>
       </div>
     );
   }
@@ -152,7 +158,7 @@ function PlanLane({
     s.isClosed ? { background: "rgb(var(--color-ink) / .1)" } : { background: color, opacity: top > 0 ? 0.55 + 0.45 * (rate(s) / top) ** 2 : 1 };
   return (
     <div className="grid gap-2">
-      <LaneHeader title={title} value={first ? priceText(first, t) : ""} />
+      <LaneHeader title={title} value={first ? priceText(first, labels) : ""} />
       <Strip
         segments={segments}
         rows={rows}
@@ -165,11 +171,11 @@ function PlanLane({
       />
       {row && first && (
         <p className="truncate text-xs tabular-nums text-ink/55">
-          {first.isClosed ? t("不计费") : first.label} {row.startLabel}–{row.endLabel}
+          {first.isClosed ? labels.notBilled : first.label} {row.startLabel}–{row.endLabel}
           {cap
-            ? ` · ${capText(cap, t)}`
+            ? ` · ${capText(cap, labels)}`
             : !first.isClosed && (first.pricing?.priceCap ?? 0) > 0
-              ? ` · ${t("封顶")} ${money(first.pricing!.priceCap)}`
+              ? ` · ${labels.cap} ${money(first.pricing!.priceCap)}`
               : ""}
         </p>
       )}
@@ -178,8 +184,7 @@ function PlanLane({
 }
 
 /** One cap across plans: its windows over the day, the current one filled as far as it is used up. */
-function CapLane({ cap, segments, nowMinute }: { cap: SharedCapView; segments: Segment[]; nowMinute: number }) {
-  const { t } = useI18n();
+function CapLane({ cap, segments, nowMinute, labels }: { cap: SharedCapView; segments: Segment[]; nowMinute: number; labels: PagePricingLabels }) {
   const rows = periodRows(segments);
   const { row, pick, picked } = usePickedRow(rows, nowMinute);
   const first = row?.pieces[0];
@@ -201,7 +206,7 @@ function CapLane({ cap, segments, nowMinute }: { cap: SharedCapView; segments: S
     <div className="grid gap-2">
       <LaneHeader
         title={<span className="truncate font-semibold">{cap.name}</span>}
-        value={first ? (counted ? capText(cap, t) : capWindowText(first, t)) : ""}
+        value={first ? (counted ? capText(cap, labels) : capWindowText(first, labels)) : ""}
         quiet
       />
       <Strip
@@ -215,14 +220,14 @@ function CapLane({ cap, segments, nowMinute }: { cap: SharedCapView; segments: S
           s.isClosed
             ? { border: "1px dashed rgb(var(--color-ink) / .3)", borderRadius: 9999 }
             : { background: "rgb(var(--color-ink) / .12)" }}
-        name={(s) => (s.isClosed ? t("未覆盖") : s.label)}
+        name={(s) => (s.isClosed ? labels.notCovered : s.label)}
         fill={(s) => filled.get(s) ?? 0}
         picked={picked}
         pick={pick}
       />
       {row && first && (
         <p className="truncate text-xs tabular-nums text-ink/55">
-          {first.isClosed ? t("未覆盖") : first.label} {row.startLabel}–{row.endLabel}
+          {first.isClosed ? labels.notCovered : first.label} {row.startLabel}–{row.endLabel}
         </p>
       )}
     </div>
@@ -331,23 +336,23 @@ function isNow(row: PeriodRow | null | undefined, nowMinute: number) {
   return !!row?.pieces.some((s) => nowMinute >= s.startMinute && nowMinute < s.endMinute);
 }
 
-function capText(cap: CapProgressView, t: Translate) {
+function capText(cap: CapProgressView, labels: PagePricingLabels) {
   return cap.paidBefore >= cap.priceCap
-    ? `${t("已达封顶")} ${money(cap.priceCap)}`
-    : `${t("累计")} ${money(cap.paidBefore)} / ${t("封顶")} ${money(cap.priceCap)}`;
+    ? `${labels.capReached} ${money(cap.priceCap)}`
+    : `${labels.accumulated} ${money(cap.paidBefore)} / ${labels.cap} ${money(cap.priceCap)}`;
 }
 
 /** A cap window not yet counting: its cap, or none when no window covers it or its cap is 0. */
-function capWindowText(s: Segment, t: Translate) {
-  return s.isClosed ? t("未覆盖") : (s.priceCap ?? 0) > 0 ? `${t("封顶")} ${money(s.priceCap!)}` : t("不封顶");
+function capWindowText(s: Segment, labels: PagePricingLabels) {
+  return s.isClosed ? labels.notCovered : (s.priceCap ?? 0) > 0 ? `${labels.cap} ${money(s.priceCap!)}` : labels.uncapped;
 }
 
-function priceText(s: Segment, t: Translate) {
+function priceText(s: Segment, labels: PagePricingLabels) {
   return s.isClosed
-    ? t("不计费")
+    ? labels.notBilled
     : s.pricing
-      ? `${money(s.pricing.unitPrice)} / ${s.pricing.unitMinutes} ${t("分钟")}`
+      ? `${money(s.pricing.unitPrice)} / ${s.pricing.unitMinutes} ${labels.minuteUnit}`
       : s.priceCap != null
-        ? `${t("封顶")} ${money(s.priceCap)}`
+        ? `${labels.cap} ${money(s.priceCap)}`
         : s.label;
 }

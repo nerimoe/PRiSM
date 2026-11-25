@@ -51,11 +51,16 @@
         "@prism/storage-sql": "workspace:*",
       },
     },
+    "packages/page-protocol": {
+      "name": "@prism/page-protocol",
+      "version": "0.0.0",
+    },
     "packages/prism-web": {
       "name": "@prism/web",
       "dependencies": {
         "@prism/application": "workspace:*",
         "@prism/core": "workspace:*",
+        "@prism/page-protocol": "workspace:*",
         "@simplewebauthn/browser": "^14.0.0",
         "exceljs": "^4.4.0",
         "leaflet": "^1.9.4",
@@ -86,6 +91,7 @@
         "@prism/adapter-sqlite": "workspace:*",
         "@prism/application": "workspace:*",
         "@prism/core": "workspace:*",
+        "@prism/page-protocol": "workspace:*",
         "@prism/storage-sql": "workspace:*",
         "@simplewebauthn/server": "^14.0.0",
         "hono": "^4.10.7",
@@ -342,6 +348,8 @@
     "@prism/core": ["@prism/core@workspace:packages/core"],
 
     "@prism/migration": ["@prism/migration@workspace:packages/migration"],
+
+    "@prism/page-protocol": ["@prism/page-protocol@workspace:packages/page-protocol"],
 
     "@prism/server": ["@prism/server@workspace:packages/server"],
 
