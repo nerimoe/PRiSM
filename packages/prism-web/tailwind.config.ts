@@ -12,6 +12,7 @@ export default {
         // Hex variables cannot take an opacity modifier on their own; mixing
         // with transparent lets `bg-mint/10` and friends generate.
         mint: "color-mix(in srgb, var(--color-mint) calc(<alpha-value> * 100%), transparent)",
+        tour: "color-mix(in srgb, var(--color-tour) calc(<alpha-value> * 100%), transparent)",
         primary: {
           DEFAULT: "var(--color-primary)",
           foreground: "var(--color-on-primary)",

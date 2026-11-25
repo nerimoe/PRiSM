@@ -280,7 +280,7 @@ export function DashboardPage() {
       </header>
 
       {/* Live Operational KPI Strip */}
-      <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+      <div data-tour="dashboard-kpi-strip" className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
         <button
           type="button"
           onClick={() => scrollTo("dashboard-live-players")}
@@ -405,6 +405,7 @@ export function DashboardPage() {
       {/* Live Devices Overview */}
       <section
         id="dashboard-devices"
+        data-tour="dashboard-devices"
         className="grid min-w-0 content-start gap-3.5 scroll-mt-6 rounded-2xl border border-ink/10 bg-panel p-5 shadow-soft"
         aria-label={t("设备概览")}
       >

@@ -276,14 +276,14 @@ export function MembersPanel({
   };
 
   return (
-    <section className="rounded-xl border border-ink/10 bg-panel p-5">
+    <section data-tour="members-panel" className="rounded-xl border border-ink/10 bg-panel p-5">
       <h3 className="font-semibold">{t("店铺成员")}</h3>
       {error && (
         <p className="mt-3 rounded border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">
           {errorText(error)}
         </p>
       )}
-      <form className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]" onSubmit={submit}>
+      <form data-tour="members-invite-form" className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]" onSubmit={submit}>
         <input
           className={input}
           aria-label={t("MuNET 用户名或 ID")}
