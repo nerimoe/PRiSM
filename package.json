@@ -9,6 +9,7 @@
     "packages/application",
     "packages/core",
     "packages/migration",
+    "packages/page-protocol",
     "packages/server",
     "packages/storage-sql",
     "packages/prism-web"

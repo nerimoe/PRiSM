@@ -27,6 +27,7 @@ Player Web supports device QR/NFC flows and the shop page for bills, redemption,
 packages/core            Pure domain rules.
 packages/application     Use-case services and adapter-neutral query contracts.
 packages/storage-sql     SQLite/D1 schema, write repositories, and SQL read models.
+packages/page-protocol   Scanned-page block types and form rules shared by server and web.
 packages/adapter-sqlite  Bun SQLite adapter.
 packages/adapter-d1      Cloudflare D1 adapter.
 packages/server          Unified server API, multi-tenant & legacy routes, hardware drivers, Worker & Bun entrypoints.

@@ -7,6 +7,8 @@ import { formatLocalDate, PrismDomainError } from "@prism/core";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { sha256 } from "../../crypto.js";
+import { requestLocale } from "../../notices.js";
+import { renderBindingPromptLines } from "../../resources/page-text.js";
 import { jsonError } from "../../http.js";
 import { optionalUser, requireUser, staffPrincipal } from "../../middleware/auth.js";
 import { getShop, getShopDeps, tenantMiddleware } from "../../middleware/tenant.js";
@@ -362,7 +364,13 @@ shopRouter.post("/platform-binding", async (c) => {
     )
     .run();
 
-  return c.json({ code, expiresAt, botContact: shop.bot_contact });
+  const lines = renderBindingPromptLines(
+    requestLocale(c.req.header("accept-language")),
+    shop.bot_contact,
+    code,
+  );
+
+  return c.json({ code, expiresAt, botContact: shop.bot_contact, lines });
 });
 
 // List Platform Bindings

@@ -10,6 +10,7 @@
   "dependencies": {
     "@prism/application": "workspace:*",
     "@prism/core": "workspace:*",
+    "@prism/page-protocol": "workspace:*",
     "@simplewebauthn/browser": "^14.0.0",
     "exceljs": "^4.4.0",
     "leaflet": "^1.9.4",

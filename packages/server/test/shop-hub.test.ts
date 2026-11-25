@@ -625,6 +625,27 @@ describe("ShopHub watchers", () => {
     expect(watched()).toEqual([connectionId]);
   });
 
+  it("goes live once the IO beats, when its very first snapshot is what showed the machine was off", async () => {
+    // The platform last saw the machine on. A new assignment's first, full snapshot says it is
+    // off: that report cannot vouch for the IO, so the watcher is held. It still delivered the
+    // connection and its full state, so the next heartbeat must be enough: asking the IO for a
+    // snapshot it has already sent would wait for ever.
+    const { hub, state, watched, connectionId } = await fixture();
+    await hub.relayOnline(SHOP, "m1", "chan-a");
+    await hub.haReport(SHOP, "m1", states(1, connectionId, [["switch.a", "on", NOON], ["switch.b", "on", NOON]]));
+    await hub.relayOnline(SHOP, "m1", "chan-a", { session: "restarted", restart: true });
+    const term = (state.get("watchers") as Record<string, { term: number }>).m1!.term;
+    expect(term).toBeGreaterThan(1);
+    await hub.haReport(SHOP, "m1", states(term, connectionId, [["switch.a", "off", "2026-10-21T10:00:00.000Z"], ["switch.b", "on", NOON]]));
+    // Held: not announced on the say-so of the report that revealed the power-off.
+    expect(watched()).toEqual([]);
+    expect((state.get("watchers") as Record<string, { held?: number }>).m1!.held).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await hub.haReport(SHOP, "m1", status(term, connectionId, true));
+    expect((state.get("watchers") as Record<string, { held?: number }>).m1!.held).toBeUndefined();
+    expect(watched()).toEqual([connectionId]);
+  });
+
   it("counts one power-off once, however many times it is reported", async () => {
     // The platform's own command and Home Assistant's report of the state change
     // are the same power-off arriving twice; it must not become two observations

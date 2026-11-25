@@ -1,6 +1,28 @@
 # 玩家扫码页
 
-扫码页长什么样只由平台决定。`packages/server/src/resources/page.ts` 的 `renderPage` 是唯一生成页面的地方，客户端（网页、App Clip）只负责把它画出来。日常改按钮、文案、显示条件不需要发 App Clip。
+扫码页长什么样只由平台决定。`packages/server/src/resources/page.ts` 是唯一决定页面内容的地方，客户端（网页、App Clip）只负责把它画出来。日常改按钮、文案、表单、布局或显示条件不需要发客户端。
+
+## 代码在哪
+
+| 内容 | 位置 |
+| --- | --- |
+| 区块类型、容器遍历、表单校验与提交内容、图片地址规则 | `packages/page-protocol`（服务端与网页共用同一份） |
+| 决定显示哪些区块 | `packages/server/src/resources/page.ts` |
+| 各业务区块怎么填 | `packages/server/src/resources/page-blocks/` |
+| 页面文案与英文翻译、绑定提示渲染 | `packages/server/src/resources/page-text.ts` |
+| 区块构造器 `pageUi`（原有页面也用它构造基础区块） | `packages/server/src/resources/page-ui.ts` |
+| 网页渲染：一类区块一个组件，`BlockView.tsx` 分发 | `packages/prism-web/src/ui/page-blocks/` |
+| App Clip：模型 `PrismPage.swift`、表单规则 `PrismPageForm.swift`、一类区块一个视图 | `hinata_go` 仓库 `ios/PrismClip/`（视图在 `Page/`，`ClipPageView.swift` 分发） |
+
+新增一种区块：在 `page-protocol` 加类型，两端各加一个组件并在分发处加一行，App Clip 的 `PrismPage.swift` 同步模型。只用现有区块拼新页面则只改服务端。
+
+改了页面的结构后，重新生成 App Clip 原生检查用的页面数据，并在 `hinata_go` 跑 `test/native/run-prism-visit-check.sh`：
+
+```sh
+bun scripts/swift-page-fixtures.ts <hinata_go>/test/native/fixtures/prism-page
+```
+
+数据由服务端真实的 `renderPage` 生成；检查会解码每一页，Swift 模型读不懂任何一个区块就失败。新增场景加在脚本里。
 
 ## 接口
 
@@ -16,9 +38,41 @@ POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, l
   "shop": "E2E 店", "shopCode": "e2e-shop", "heroUrl": null,
   "resource": "舞萌", "publicId": "SHHZ...",
   "billingActive": true,
+  "offerPasskeySetup": true, // 有可用的东西时，刚登录的玩家可以先被引导添加 Passkey（仅网页使用）
   "blocks": [
-    { "kind": "cards", "id": "cards", "enabled": true, "capture": true, "action": "card.swipe", "needsLocation": false },
-    { "kind": "button", "id": "coin", "label": "达到机台投币上限", "icon": "coin", "enabled": false, "action": "coin", "needsLocation": false }
+    {
+      "kind": "cards", "id": "cards", "enabled": true, "capture": true,
+      "action": "card.swipe", "needsLocation": false,
+      "title": "选择卡片", "loadingLabel": "正在加载卡片", "locatingLabel": "确认位置…",
+      "swipingLabel": "正在登录…", "endingTemplate": "尾号 {digits}",
+      "empty": {
+        "text": "还没有可用卡片，请先添加卡片",
+        "actions": [
+          { "id": "capture", "label": "添加卡片", "action": "cards.capture" },
+          { "id": "refresh", "label": "刷新", "action": "cards.reload" }
+        ]
+      },
+      "loadError": {
+        "title": "无法加载卡片",
+        "actions": [{ "id": "refresh", "label": "刷新", "action": "cards.reload", "style": "primary" }]
+      },
+      "captureUi": {
+        "title": "添加卡片", "addLabel": "添加卡片", "startingText": "正在连接机台…",
+        "waitingText": "请把卡片放在「舞萌」的读卡器上", "cancelLabel": "取消", "doneLabel": "完成",
+        "leftPageText": "离开页面后已取消添加，请重新添加",
+        "outcomes": {
+          "added": "已添加卡片",
+          "taken": "这张卡已绑定到本店的其他玩家",
+          "unsupported": "不支持这种卡片",
+          "expired": "没有读到卡片"
+        }
+      }
+    },
+    {
+      "kind": "button", "id": "coin", "label": "达到机台投币上限", "icon": "coin",
+      "enabled": false, "action": "coin", "answerOnButton": true,
+      "hideDuringCapture": true, "needsLocation": false
+    }
   ]
 }
 ```
@@ -36,14 +90,77 @@ POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, l
 
 被拒绝（投币到上限、位置不对、冷却中）是正常回答，状态码 200，带上最新页面。只有页面答不了的才是错误：登录或票据失效（`notice.flow` 是 `signin` / `expired`），以及 5xx，包括设备连不上时的 502。
 
+## 声明式 UI 原语（SDUI）
+
+除了既有的业务专有块（`signin`、`binding`、`pricing`、`climate`、`table`/`mahjong`、`cards`、`consent`），协议提供一套通用的声明式布局、展示、表单与按钮组合原语。服务端可通过 `packages/server/src/resources/page-ui.ts` 导出的 `pageUi` 构造器在 `/session/page` 内任意拼装新画面，而无需新建客户端页面或路由。
+
+### 布局与展示块
+
+- `section`: `{ kind: "section", id, title?, subtitle?, style?: "card" | "plain", blocks: PageBlock[] }` — 纵向容器；`style: "card"` 渲染圆角面板。
+- `row`: `{ kind: "row", id, blocks: PageBlock[] }` — 横向等宽排列容器（窄屏 Web 自动换行，iOS 使用 `HStack`）。
+- `kv`: `{ kind: "kv", id, items: Array<{ id?, label, value, tone?: "default" | "muted" | "accent" | "success" | "warning" | "error" }> }` — 键值对列表（状态、预约信息、摘要）。
+- `banner`: `{ kind: "banner", id, title?, body, level?: "info" | "success" | "warning" | "error" }` — 带图标的提示横幅。
+- `divider`: `{ kind: "divider", id }` — 分割线。
+- `image`: `{ kind: "image", id, url, alt?, aspectRatio? }` — 图片展示（客户端仅允许站内 `/...` 相对路径（非 `//`）、`https://` 或同源 `http://`；拒绝 `javascript:`、`data:`、`file:` 与跨源 `http://`）。
+- `text`: `{ kind: "text", id, text, style?: "heading" | "body" | "caption", level?: "error" | "muted" }` — 文本块；省略 `style` 时保持居中副标题外观，`body`/`caption` 为左对齐正文与小字说明。
+
+### 表单输入块
+
+- `input`: `{ kind: "input", id, name?, label?, placeholder?, inputType?: "text" | "number", defaultValue?, required?, maxLength?, helperText?, enabled? }` — 文本或数字输入；提交值始终为 `string` 以保留前导零，`inputType: "number"` 切换数字键盘。
+- `select`: `{ kind: "select", id, name?, label?, style?: "list" | "segmented", options: Array<{ value, label, detail?, disabled? }>, defaultValue?, required?, enabled? }` — 单选列表或分段选择器。
+- `toggle`: `{ kind: "toggle", id, name?, label, description?, defaultValue?, required?, enabled? }` — 开关控件。
+
+### `button` 扩展能力
+
+- `icon`: 支持语义图标 `coin` | `power` | `door` | `plus` | `refresh` | `check` | `lock` | `info` | `warning` | `close` | `arrow-right`。
+- `style`: `"primary"` | `"destructive"`（危险/取消动作样式）。
+- `collect?: string[]`: 声明提交时需要校验并采集的表单块 `id` 列表（支持 `input`、`select`、`toggle`、`consent`）。
+- `confirm?: { title, body, confirmLabel, cancelLabel, destructive? }`: 点击后先弹出原生确认弹窗（Web 使用 `PlayerDialog`，iOS 使用 `.alert`），用户确认后才发送 `/session/action`。
+
+### `pageUi` 用法示例
+
+```ts
+import { pageUi } from "../resources/page-ui.js";
+
+const blocks = [
+  pageUi.banner("tips", "请确认时段后提交", { level: "info" }),
+  pageUi.section("booking", [
+    pageUi.kv("info", [{ label: "当前状态", value: "可预约", tone: "success" }]),
+    pageUi.select("slot", [
+      { value: "14:00", label: "14:00 - 15:00", detail: "余 2 位" },
+    ], { name: "slot", label: "时段", required: true }),
+    pageUi.input("remark", { name: "remark", label: "备注", maxLength: 30 }),
+    pageUi.button("submit", "确认预约", "booking.create", {
+      icon: "check",
+      style: "primary",
+      collect: ["slot", "remark"],
+      confirm: { title: "确认预约", body: "提交后将锁定名额", confirmLabel: "确认", cancelLabel: "取消" },
+    }),
+  ], { title: "预约", style: "card" }),
+];
+```
+
 ## 客户端的约定
 
-- 不认识的 `kind` 跳过，这样新增一种块不会弄坏旧版本。
-- 用 `id` 对应前后两次读到的块，勾了一半的同意框、转圈的按钮不会被重置。这类临时状态留在客户端。
-- 按钮有 `requires` 时，对应的块同意之后才能按，并在 `payload` 里带上 `consent: true`。
+- 不认识的 `kind`、图标名、子动作（如 `cards` 动作、`signin.methods[].provider`）直接跳过，这样新增块或交互不会弄坏旧版本。
+- 容器递归深度上限为 8 层（`MAX_PAGE_DEPTH = 8`），客户端在遍历与渲染时均强制截断，避免深层嵌套导致异常。
+- 所有块的可见文案、按钮标签、状态提示、操作动作与列表顺序均由服务端随页面下发（按请求 `Accept-Language` 翻译）：
+  - `signin` 下发 `methods`（`provider`: `munet` / `passkey`、标签、加载中文案及 Passkey 不可用提示）。
+  - `binding` 下发标题、过期标签、复制/已复制/重试文案；引导文字与指令由 `POST /api/v1/shops/:code/platform-binding` 返回的 `lines` 给出。
+  - `pricing` 下发 `labels`（标题、跨方案封顶、确认后结束、新增/保留标签、单次收取、不计费/未覆盖/不封顶/封顶文案与列表分隔符）。
+  - `climate` 下发标题、状态文案（含 `roomText`、`currentModeLabel`）、按钮标签、可选 `modes`（含语义图标 `cool`/`heat`/`dry`/`fan`/`auto`）、`fanModes` 及动作名 `actions`。
+  - `button` 支持 `hideDuringCapture`（添加卡片期间隐藏，例如投币按钮）和 `wait`（`{ ms, timeoutMessage }`，如开机按钮等待设备回报并在超时后提示）。
+  - `table` 下发标题、状态、容量、空位标签、`mineLabel` 和座位列表（客户端同时兼容旧名 `mahjong`）。
+- 客户端不为页面区块保留备用文案或备用判断：协议里的必填字段缺失时，该区块按看不懂处理、整块跳过。所以给区块新增必填字段时，**服务端必须先于 App Clip 发布，且不能回滚到不下发该字段的版本**。旧版 App Clip 忽略新字段，可以直接连新服务端。网页和服务端一起部署。
+- 只用于补充说明的字段读不懂时不能连累整块：`pricing.changes` 读不懂时照常显示计费规则（只是没有新增/保留/结束标记）；`climate.state` 读不懂时按状态未知显示开、关按钮。
+- 用 `id` 对应前后两次读到的块：在场的同意框与表单控件（`input`、`select`、`toggle`、`consent`）保留玩家当前输入，新出现的表单按 `defaultValue` 初始化，已离开页面的字段 `id` 自动清理（再次回到该步骤时重新开始）；转圈与等待状态也按 `id` 保持在客户端。
+- 校验与提交规则：
+  - 按钮有 `requires` 时，对应的块同意之后才能按；`collect` 中的必填项（`consent` 须勾选，`input` `required` 须非空，`select` `required` 须选中可用项，`toggle` `required` 须开启）未满足时按钮保持禁用。
+  - 发送 `payload` 的合并优先级为：先按 `field.name ?? field.id` 写入 `collect` 收集的值，再用静态 `button.payload` 覆盖，若存在 `requires` 则再写入 `consent: true`（防止用户输入覆盖服务端签名字段）。
 - 有 `needsLocation` 时带上 `location`。入场和门禁看 `checkin_geo`，其他看 `machine_geo`。
 - `code` 显示在按钮上方直到过期，它只存在于这次回答里，重读页面不会再给。`againLabel` 在此期间替换按钮文字。
-- 卡片不在页面里：`cards` 块只标明位置，卡片在打开页面和添加卡片之后单独读。
+- 卡片不在页面里：`cards` 块只标明位置并下发卡片区域的全部文案、加载/空态/失败动作（`cards.capture` 与 `cards.reload`）以及读卡窗口文案 `captureUi`；卡片本身在打开页面和添加卡片之后单独读。没有可用卡片时按服务器下发的动作渲染按钮（直连机台下发「添加卡片」与「刷新」，其余只下发「刷新」），绝不跳往 `/cards`。
+- 卡片读取失败时，页面只显示 `loadError` 的标题、错误原因和它的动作（服务端只下发一个主按钮样式的「刷新」）：卡片标题与加号、投币、门禁、空调等其他区块全部不显示，刷新成功后恢复整页。店铺卡片、账户菜单这类页面外的内容不受影响。
 
 ## 推送
 

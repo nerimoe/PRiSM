@@ -8,7 +8,7 @@ import { browserCheckoutPreview } from "../browser-billing";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 import { shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
-import { ShopHero, SessionSignIn, PlatformBinding } from "./SessionContent";
+import { ShopHero, ShopSignIn, ShopPlatformBinding } from "./SessionContent";
 import { BillTotal, BillTimeline } from "./BillTimeline";
 import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
 
@@ -53,8 +53,8 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   return <section className={`machine-session shop-session ${bill ? "has-checkout" : ""}`}>
     {info && <ShopHero name={info.shop.name || shopCode} heroUrl={info.shop.heroUrl} subtitle={!user ? "" : bill ? t("计费中") : receipt ? t("结账成功") : busy ? t("正在加载") : t("未入场")} />}
     {error && <div role="alert" className="text-coral">{error}<button className="ml-3 underline" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></div>}
-    {loading || (busy && !info) ? <Loader2 className="mx-auto animate-spin" /> : info && !user ? <SessionSignIn /> : busy && !bill && !receipt ? <Loader2 className="mx-auto animate-spin" /> : info && user && <SessionPasskeySetup>
-      {!bill && info.shop.identityBindingRequired && !info.membership?.identityBound ? <PlatformBinding code={shopCode} />
+    {loading || (busy && !info) ? <Loader2 className="mx-auto animate-spin" /> : info && !user ? <ShopSignIn /> : busy && !bill && !receipt ? <Loader2 className="mx-auto animate-spin" /> : info && user && <SessionPasskeySetup>
+      {!bill && info.shop.identityBindingRequired && !info.membership?.identityBound ? <ShopPlatformBinding code={shopCode} />
         : bill ? <div className="grid gap-5"><BillTotal preview={bill} /><BillTimeline preview={bill} /></div>
         : receipt ? <SettledBill receipt={receipt} />
         : !error && <p className="session-subtitle">{t("请碰一下 NFC 或扫描机台上的二维码")}</p>}

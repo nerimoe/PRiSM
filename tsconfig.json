@@ -17,6 +17,9 @@
       "path": "./packages/adapter-d1"
     },
     {
+      "path": "./packages/page-protocol"
+    },
+    {
       "path": "./packages/server"
     },
     {
