@@ -164,11 +164,11 @@ export function Cashier({ onChanged }: { onChanged: () => void }) {
   }
   if (!canWrite) return <p className="py-10 text-ink/60">{t("只读账号不能操作前台收银")}</p>;
   const at = (value: string) => displayDateTime(value, timeZone || undefined);
-  return <section ref={panel} className="grid scroll-mt-5 gap-5 rounded-xl border border-ink/10 p-4 sm:p-5" aria-label={t("前台收银")}>
+  return <section ref={panel} data-tour="cashier-panel" className="grid scroll-mt-5 gap-5 rounded-xl border border-ink/10 p-4 sm:p-5" aria-label={t("前台收银")}>
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div><h3 className="text-lg font-semibold">{t("前台收银")}</h3><p className="mt-1 text-sm text-ink/60">{t("低安全模式 · 卡片仅用于计时，现场收款，不预存余额")}</p></div>
-      {readerName ? <button className={button} onClick={() => { void reader.current?.disconnect(); setReaderError(""); setReaderDetail(""); }}>{t("断开读卡器")}</button>
-        : <button className={primary} disabled={connecting} onClick={connect}><Plug size={18} />{t(connecting ? "连接中..." : "连接读卡器")}</button>}
+      {readerName ? <button data-tour="cashier-connect-btn" className={button} onClick={() => { void reader.current?.disconnect(); setReaderError(""); setReaderDetail(""); }}>{t("断开读卡器")}</button>
+        : <button data-tour="cashier-connect-btn" className={primary} disabled={connecting} onClick={connect}><Plug size={18} />{t(connecting ? "连接中..." : "连接读卡器")}</button>}
     </header>
     {!browserHid() && <p className="rounded-xl bg-ink/5 p-4 text-sm">{t("此浏览器不支持 WebHID，请使用桌面版 Chrome 或 Edge")}</p>}
     <div className="flex items-center gap-3 rounded-xl border border-ink/10 bg-panel p-4" role="status">

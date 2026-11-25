@@ -250,54 +250,58 @@ export function BillingSettings({
                   {t("资源组与计费")}
                 </Link>
               </p>
-              <label className="grid gap-2">
-                <span className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={settings.cashierEnabled}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        cashierEnabled: e.target.checked,
-                      })
-                    }
-                  />
-                  {t("启用前台收银")}
-                </span>
-                <span className="pl-7 text-sm leading-relaxed text-ink/60">
-                  {t(
-                    "默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。",
-                  )}
-                </span>
-              </label>
-              {settings.cashierEnabled && (
-                <label className="grid gap-2 pl-7 text-sm">
-                  <span className="font-medium">{t("前台资源")}</span>
-                  <select
-                    className="focus-ring min-h-11 rounded-lg border border-ink/20 bg-panel px-3 py-2"
-                    value={settings.cashierResourceId ?? ""}
-                    onChange={(e) => setSettings({ ...settings, cashierResourceId: e.target.value || null })}
-                  >
-                    <option value="">{t("请选择")}</option>
-                    {resources.map((resource) => (
-                      <option key={resource.id} value={resource.id}>{resource.name}</option>
-                    ))}
-                  </select>
-                  <span className="text-ink/60">
-                    {t("前台刷卡入场按这个资源计费：它自己的方案，否则是它所在资源组的方案。")}
+              <div data-tour="settings-billing-cashier" className="grid gap-4">
+                <label className="grid gap-2">
+                  <span className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={settings.cashierEnabled}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          cashierEnabled: e.target.checked,
+                        })
+                      }
+                    />
+                    {t("启用前台收银")}
+                  </span>
+                  <span className="pl-7 text-sm leading-relaxed text-ink/60">
+                    {t(
+                      "默认关闭。开启后，在「在店」页面连接读卡器，使用卡片昵称档案计时并现场收款。关闭前须结清前台账单。",
+                    )}
                   </span>
                 </label>
-              )}
+                {settings.cashierEnabled && (
+                  <label className="grid gap-2 pl-7 text-sm">
+                    <span className="font-medium">{t("前台资源")}</span>
+                    <select
+                      className="focus-ring min-h-11 rounded-lg border border-ink/20 bg-panel px-3 py-2"
+                      value={settings.cashierResourceId ?? ""}
+                      onChange={(e) => setSettings({ ...settings, cashierResourceId: e.target.value || null })}
+                    >
+                      <option value="">{t("请选择")}</option>
+                      {resources.map((resource) => (
+                        <option key={resource.id} value={resource.id}>{resource.name}</option>
+                      ))}
+                    </select>
+                    <span className="text-ink/60">
+                      {t("前台刷卡入场按这个资源计费：它自己的方案，否则是它所在资源组的方案。")}
+                    </span>
+                  </label>
+                )}
+              </div>
             </>
           )}
           {section === "players" && (
-            <IdentityPolicyPicker
-              name="settings-identity-policy"
-              value={identityPolicy(settings)}
-              change={(policy) =>
-                setSettings({ ...settings, ...identityPolicySettings(policy) })
-              }
-            />
+            <div data-tour="settings-identity-picker">
+              <IdentityPolicyPicker
+                name="settings-identity-policy"
+                value={identityPolicy(settings)}
+                change={(policy) =>
+                  setSettings({ ...settings, ...identityPolicySettings(policy) })
+                }
+              />
+            </div>
           )}
           {section === "devices" && (
             <div className="grid gap-3">

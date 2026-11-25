@@ -169,6 +169,7 @@ export function AssetsPage() {
         <h2 className="text-xl font-semibold">{t("资产与兑换")}</h2>
         {canWrite && (
           <button
+            data-tour="assets-create-btn"
             className={primary}
             onClick={startCreate}
           >
@@ -181,6 +182,7 @@ export function AssetsPage() {
         <div className="scroll-fade min-w-0 flex-1">
           <nav
             ref={tabRef}
+            data-tour="assets-nav"
             className="flex gap-1 overflow-x-auto border-b border-ink/10"
             aria-label={t("资产分类")}
           >

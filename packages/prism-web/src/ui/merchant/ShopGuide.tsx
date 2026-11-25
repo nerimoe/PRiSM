@@ -9,26 +9,24 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 import {
-  ArrowRight,
+  BookOpen,
   Bot,
   CheckCircle2,
+  ChevronDown,
   Coins,
+  Compass,
   CreditCard,
   Database,
-  Gamepad2,
   Gift,
   Layers,
-  LogIn,
   MapPin,
   MessageCircle,
-  Nfc,
-  Power,
+  Play,
   Receipt,
-  ShieldCheck,
+  RotateCcw,
   Ticket,
   Timer,
   Users,
-  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { Api, api } from "../../api";
@@ -37,6 +35,7 @@ import { useI18n } from "../../i18n";
 import { shopApi, type Settings } from "../BillingPages";
 import { BindingPrompt } from "../SessionContent";
 import { BillingExplainer } from "./BillingExplainer";
+import { GuideDiagram } from "./GuideDiagrams";
 import { IdentityPolicyPicker } from "./IdentityPolicyPicker";
 import { idlePath } from "./IdlePowerSettings";
 import { Modal, button, buttonQuiet, primary, useCopy, useMerchant } from "./shared";
@@ -49,6 +48,7 @@ import {
   type SetupStatus,
   type SetupStepId,
 } from "./setup-guide";
+import { useSetupTour } from "./tour-context";
 
 const trialKey = (shopCode: string) => `prism.setup.trial.${shopCode}`;
 const SUPPORT_QQ_GROUP = "1135111765";
@@ -176,21 +176,24 @@ export const SetupContext = createContext<{
 }>({ status: null, reload: async () => {} });
 
 const modeNames: Record<OperatingMode, [string, string]> = {
-  self: ["自助计费（无前台）", "玩家在手机上入场计时、离店自助结账，从预存余额扣款。"],
-  desk: ["前台收银", "玩家在前台刷实体卡入场，离店时在前台现场付款；带手机的玩家也可以自助。"],
-  devices: ["不使用计费", "还没有资源组或资源设置计费方案：PRiSM 只运行设备，收费在你自己的其它经营平台完成。"],
+  self: ["自助计费（无前台）", "玩家扫码入场计时，离店用预存余额自助结账。"],
+  desk: ["前台收银", "玩家在前台刷卡入场并现场付款；带手机的玩家也可自助。"],
+  devices: ["不使用计费", "只运行 PRiSM 设备功能，收费在其它经营平台完成。"],
 };
 
 export function ShopGuide() {
   const { t } = useI18n();
   const { shopCode, shopId } = useMerchant();
   const { status, reload } = useContext(SetupContext);
+  const tour = useSetupTour();
   const [explaining, setExplaining] = useState(false);
   const [idlePowerEnabled, setIdlePowerEnabled] = useState(false);
   const [haReadIssues, setHaReadIssues] = useState(0);
+
   useEffect(() => {
     void reload();
   }, [reload]);
+
   useEffect(() => {
     if (!shopId) return;
     let active = true;
@@ -214,61 +217,105 @@ export function ShopGuide() {
       active = false;
     };
   }, [shopId]);
+
   if (!status)
     return (
       <p role="status" className="py-10 text-center text-sm text-ink/60">
         {t("加载中...")}
       </p>
     );
+
+  const total = status.steps.length;
   const done = status.steps.filter((step) => step.done).length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 100;
   const next = status.steps.find((step) => !step.done)?.id;
   const base = `/merchant/${encodeURIComponent(shopCode)}`;
   const [modeTitle, modeDescription] = modeNames[status.mode];
+
   return (
-    <div className="grid gap-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <h2 className="text-xl font-semibold">{t("开店指引")}</h2>
-        <p className="text-sm text-ink/60" role="status">
-          {status.complete
-            ? t("基础接入已完成")
-            : t("已完成 {done} / {total}", { done, total: status.steps.length })}
-        </p>
-      </header>
-      <PlatformSupport />
-      <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ink/10 bg-panel p-5">
-        <div className="min-w-0">
-          <p className="text-xs text-ink/50">{t("经营方式")}</p>
-          <p className="mt-1 font-semibold">{t(modeTitle)}</p>
-          <p className="mt-1 text-sm leading-relaxed text-ink/60">{t(modeDescription)}</p>
-        </div>
-        <Link className={buttonQuiet + " px-3 py-2"} to={`${base}/settings?group=billing`}>
-          {t("更改")}
-        </Link>
-      </section>
-      <StoreModel />
-      <PlayerJourney mode={status.mode} identity={status.identity !== "web" && status.identityMatters} />
-      <OwnerDaily mode={status.mode} />
-      {status.billing && (
-        <>
-          <MoneyFlow mode={status.mode} />
-          <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink/10 bg-panel p-5">
-            <div className="min-w-0">
-              <h3 className="font-semibold">{t("计费说明书")}</h3>
-              <p className="mt-1 text-sm leading-relaxed text-ink/60">
-                {t("计费图解、字段说明与配置注意事项。")}
-              </p>
+    <div className="grid gap-5">
+      {/* Hero launchpad: progress, operating mode, and game-style tour entry */}
+      <section className="grid gap-4 rounded-2xl border border-mint/30 bg-panel p-5 shadow-soft">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-xl font-semibold">{t("开店指引")}</h2>
+              <span className="rounded-full bg-mint/15 px-2.5 py-0.5 text-xs font-semibold text-mint">
+                {t(modeTitle)}
+              </span>
+              <Link
+                className="text-xs text-ink/55 underline hover:text-ink"
+                to={`${base}/settings?group=billing`}
+              >
+                {t("更改方式")}
+              </Link>
             </div>
-            <button type="button" className={button} onClick={() => setExplaining(true)}>
-              {t("查看说明书")}
+            <p className="mt-1.5 text-sm leading-relaxed text-ink/65">
+              {t(modeDescription)}{" "}
+              {t("可启动互动引导逐步跳转对应页面，或直接在下方逐项配置。")}
+            </p>
+          </div>
+          <div className="text-right text-sm tabular-nums">
+            <span className="font-semibold text-ink">
+              {status.complete
+                ? t("基础接入已完成")
+                : t("已完成 {done} / {total}", { done, total })}
+            </span>
+          </div>
+        </div>
+
+        <div className="h-2 w-full overflow-hidden rounded-full bg-ink/10" aria-hidden="true">
+          <div
+            className="h-full rounded-full bg-mint transition-[width] duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            className={`${button} tour-btn`}
+            onClick={() => tour.start({ fromIncomplete: !status.complete })}
+          >
+            <Play size={16} aria-hidden="true" />
+            {t(
+              status.complete
+                ? "重新体验引导"
+                : done > 0
+                  ? "继续新手引导"
+                  : "开始新手引导",
+            )}
+          </button>
+          {done > 0 && !status.complete && (
+            <button
+              type="button"
+              className={button}
+              onClick={() => tour.start()}
+            >
+              <RotateCcw size={15} aria-hidden="true" />
+              {t("从头引导")}
             </button>
-          </section>
-        </>
-      )}
+          )}
+          {status.billing && (
+            <button type="button" className={button} onClick={() => setExplaining(true)}>
+              <BookOpen size={15} aria-hidden="true" />
+              {t("计费图解说明书")}
+            </button>
+          )}
+        </div>
+      </section>
+
+      {/* Actionable setup checklist right below hero */}
       <section className="grid gap-3" aria-labelledby="setup-steps">
-        <h3 id="setup-steps" className="font-semibold">
-          {t("接入步骤")}
-        </h3>
-        <ol className="grid gap-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 id="setup-steps" className="font-semibold">
+            {t("接入步骤")}
+          </h3>
+          <span className="text-xs text-ink/55">
+            {t("可点「带我操作」自动跳页并高亮按钮，也可直接前往页面。")}
+          </span>
+        </div>
+        <ol className="grid gap-2.5">
           {status.steps.map((step, index) => (
             <StepCard
               key={step.id}
@@ -280,11 +327,28 @@ export function ShopGuide() {
               haReadIssues={haReadIssues}
               shopCode={shopCode}
               reload={reload}
+              onGuide={() => tour.start({ setupStep: step.id })}
             />
           ))}
         </ol>
       </section>
-      <Optional status={status} idlePowerEnabled={idlePowerEnabled} shopCode={shopCode} />
+
+      {/* Visual concept gallery replacing wall-of-text sections */}
+      <ConceptGallery
+        mode={status.mode}
+        billing={status.billing}
+        onOpenBillingManual={() => setExplaining(true)}
+      />
+
+      {/* Collapsible optional configurations */}
+      <Optional
+        status={status}
+        idlePowerEnabled={idlePowerEnabled}
+        shopCode={shopCode}
+      />
+
+      <PlatformSupport />
+
       {explaining && (
         <Modal title="计费说明书" close={() => setExplaining(false)} xl>
           <BillingExplainer />
@@ -294,209 +358,224 @@ export function ShopGuide() {
   );
 }
 
-function StoreModel() {
+type GalleryTab = "structure" | "player" | "money" | "daily";
+type StoreExampleKey = "yuegong" | "override" | "zone";
+
+function ConceptGallery({
+  mode,
+  billing,
+  onOpenBillingManual,
+}: {
+  mode: OperatingMode;
+  billing: boolean;
+  onOpenBillingManual: () => void;
+}) {
   const { t } = useI18n();
-  const pillars: [LucideIcon, string, string][] = [
+  const [tab, setTab] = useState<GalleryTab>("structure");
+  const [example, setExample] = useState<StoreExampleKey>("yuegong");
+  const effectiveTab: GalleryTab = tab === "money" && !billing ? "structure" : tab;
+
+  const storeExamples: [
+    StoreExampleKey,
+    string,
+    "store-hierarchy" | "store-example-override" | "store-example-zone",
+    string,
+  ][] = [
     [
-      Layers,
-      "资源组决定怎么收费",
-      "默认资源组和自定义资源组（如游戏区、休息区、桌游区）各自绑定计费方案，不设方案即免费；店铺没有整店计费开关。单个资源也可以设专属方案覆盖资源组。",
+      "yuegong",
+      "例 1：「月宫」实配（仅默认组）",
+      "store-hierarchy",
+      "真实音游店「月宫」没有新建任何资源组：舞萌DX、中二节奏-左/右、音击与门锁全留在「默认资源组」绑一套基础计划（¥4/30分 · 封顶¥40），扫门锁或任一机台入场后全店通用（若空调只供已入场玩家调，同样放默认组即可，不会多收钱）。",
     ],
     [
-      Power,
-      "资源与 7 种能力",
-      "资源是玩家扫码或碰 NFC 使用的对象（机台、空调、门锁、桌游桌或纯入场二维码）。给它加上电源、空调、刷卡 · HINATA IO（默认直连，支持后台按键）、投币、开门密码或桌游能力，就能控制对应硬件。",
+      "override",
+      "例 2：单台例外（仍不用建组）",
+      "store-example-override",
+      "假如希望玩家未入场前也能免费开空调，或添 1 张不收音游门票的独立桌游桌：依然不用新建资源组——留在默认组里，直接给空调绑一条 ¥0 专属方案（桌游设 ¥0 等位专属方案 + 对局方案）即可单台覆盖。",
     ],
     [
-      Bot,
-      "Bot、占用与事件",
-      "店铺 Bot 也是资源（不供扫码），负责群内命令、绑定身份、同步昵称和按听众分组的播报组。刷卡、投币和桌游座位会自动记录占用，用来查在店位置和触发闲置自动关机。",
+      "zone",
+      "例 3：多台分区（才需建新组）",
+      "store-example-zone",
+      "只有新辟出一整片包含多台设备的区域（如二楼 VIP 包间多台框体 + 门锁 + 空调统一按 ¥6/30分 计费，或公共休息区多件免入场设施），为了成批绑定方案、一键整组改价或暂停开放，才需要新建第 2 个资源组。",
     ],
   ];
+  const activeExample =
+    storeExamples.find(([key]) => key === example) ?? storeExamples[0]!;
+
+  const tabs: [GalleryTab, string][] = [
+    ["structure", "店铺与设备结构"],
+    ["player", "玩家怎么用"],
+    ...(billing ? [["money", "钱从哪来、怎么扣"] as [GalleryTab, string]] : []),
+    ["daily", "日常后台怎么管"],
+  ];
+
+  const dailyChips: [string, string][] =
+    mode === "devices"
+      ? [
+          ["资源", "控设备 · 管 Bot · 二维码"],
+          ["设置", "位置校验 · 门锁 · 备份"],
+        ]
+      : [
+          ["仪表板", "看在店 · 控设备 · 收银结账"],
+          ["玩家", "查余额 · 手动充值 · 绑身份"],
+          ["资源", "改设备 · 设资源组 · 二维码"],
+          ["计费", "改价 · 定时计划 · 模拟器"],
+          ...(mode === "self" ? [["资产", "建礼物 · 导出兑换码"] as [string, string]] : []),
+          ["历史", "营收趋势 · 导出 Excel"],
+        ];
+
   return (
-    <section className="grid gap-3 rounded-xl border border-ink/10 bg-panel p-5" aria-labelledby="store-model">
-      <h3 id="store-model" className="font-semibold">{t("这套系统怎么组织店铺")}</h3>
-      <div className="grid gap-3 md:grid-cols-3">
-        {pillars.map(([Icon, title, description]) => (
-          <div key={title} className="grid content-start gap-2 rounded-lg bg-ink/[0.03] p-3.5 text-sm">
-            <span className="flex items-center gap-2 font-semibold">
-              <Icon size={16} className="shrink-0 text-mint" aria-hidden="true" />
-              {t(title)}
-            </span>
-            <p className="leading-relaxed text-ink/60">{t(description)}</p>
-          </div>
-        ))}
+    <section
+      className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5"
+      aria-labelledby="visual-gallery"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 id="visual-gallery" className="font-semibold">
+            {t("系统结构与流程示意")}
+          </h3>
+          <p className="mt-0.5 text-xs text-ink/55">
+            {t("切换右侧分类，对照查看店铺结构、玩家流程、扣款顺序与日常管理。")}
+          </p>
+        </div>
+        <div
+          className="flex flex-wrap gap-1 rounded-xl bg-ink/[0.04] p-1"
+          role="tablist"
+          aria-label={t("系统图解")}
+        >
+          {tabs.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={effectiveTab === key}
+              className={`focus-ring rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                effectiveTab === key
+                  ? "bg-panel text-ink shadow-sm"
+                  : "text-ink/60 hover:text-ink"
+              }`}
+              onClick={() => setTab(key)}
+            >
+              {t(label)}
+            </button>
+          ))}
+        </div>
       </div>
-    </section>
-  );
-}
 
-type Stage = [LucideIcon, string, string];
-
-function Flow({ stages }: { stages: Stage[] }) {
-  const { t } = useI18n();
-  return (
-    <ol className="grid gap-2 sm:grid-cols-2 lg:grid-flow-col lg:grid-cols-none lg:auto-cols-fr">
-      {stages.map(([Icon, title, description], index) => (
-        <li key={title} className="relative flex gap-3 rounded-lg bg-ink/[0.03] p-3 lg:flex-col lg:gap-2">
-          <span className="flex items-center gap-2">
-            <span className="grid size-8 shrink-0 place-items-center rounded-full bg-mint/10 text-mint">
-              <Icon size={16} aria-hidden="true" />
-            </span>
-            {index < stages.length - 1 && (
-              <ArrowRight className="hidden text-ink/25 lg:block" size={16} aria-hidden="true" />
-            )}
-          </span>
-          <span className="min-w-0">
-            <strong className="block text-sm">
-              {index + 1}. {t(title)}
-            </strong>
-            <span className="mt-0.5 block text-sm leading-relaxed text-ink/60">{t(description)}</span>
-          </span>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function PlayerJourney({ mode, identity }: { mode: OperatingMode; identity: boolean }) {
-  const { t } = useI18n();
-  const scan: Stage = [
-    Nfc,
-    "碰 NFC 或扫码",
-    "资源的 NFC 标签和二维码是同一个链接。iPhone 碰一下直接打开 PRiSM Link（App Clip，免安装，支持灵动岛实时看账单），其它手机用浏览器打开。",
-  ];
-  const login: Stage = [LogIn, "登录", "用 MuNET 或 Passkey 登录。"];
-  const bind: Stage = [
-    ShieldCheck,
-    "第一次来：绑定身份",
-    "按你写的绑定提示，把绑定码发给店铺 Bot；Bot 会自动同步玩家在聊天平台上的昵称。以后不用再绑。",
-  ];
-  const stages: Stage[] =
-    mode === "desk"
-      ? [
-          [CreditCard, "前台刷卡", "第一次来由店员登记一个昵称，之后刷卡就能认出。"],
-          [Receipt, "店员点入场", "按「前台资源」的计费方案开始计时（它自己的方案，否则所在资源组的方案）。"],
-          [Gamepad2, "游玩", "计时进行中，店员可以在「仪表板」页按位置查人、随时看实时账单。"],
-          [Wallet, "回前台付款", "店员按屏幕金额收微信、支付宝或现金，确认收款后结账。"],
-        ]
-      : mode === "self"
-        ? [
-            scan,
-            login,
-            ...(identity ? [bind] : []),
-            [Receipt, "确认计费规则", "看到这里今天的计费规则和封顶进度，确认后开始计时；换到别的资源时，会说明要新增、保留或结束哪些计费。"],
-            [Gamepad2, "用设备", "在手机上开机、调空调、刷卡（直连机台可在读卡器直接加卡，也可刷卡后自动投币）、投币、开门、延迟关机，或上桌游桌（扫另一桌直接换桌）。"],
-            [Wallet, "离店结账", "一键结账，从余额扣款并停止计时；iPhone 灵动岛也会同步结束（店员或 Bot 代结账同样会同步）。"],
-          ]
-        : [
-            scan,
-            login,
-            ...(identity ? [bind] : []),
-            [Gamepad2, "操作设备", "开机、调空调、刷卡（直连机台可在读卡器直接加卡）、投币、开门或上桌游桌，不计费。"],
-          ];
-  return (
-    <section className="grid gap-3 rounded-xl border border-ink/10 bg-panel p-5" aria-labelledby="player-journey">
-      <h3 id="player-journey" className="font-semibold">{t("正常营业时，玩家这样用")}</h3>
-      <Flow stages={stages} />
-      {mode === "desk" && (
-        <p className="text-sm leading-relaxed text-ink/60">
-          {t("带手机的玩家也可以不经过前台：扫店内的二维码或碰 NFC 入场，离店时用余额自助结账。")}
-        </p>
-      )}
-    </section>
-  );
-}
-
-function OwnerDaily({ mode }: { mode: OperatingMode }) {
-  const { t } = useI18n();
-  const items: [string, string][] =
-    mode === "desk"
-      ? [
-          ["仪表板", "前台用桌面 Chrome 或 Edge 连读卡器刷卡入场收款；也可按位置分组查人、看实时账单、代结账或按住 Ctrl/Shift 批量结账。"],
-          ["玩家", "查档案、余额、绑定的平台身份（Bot 自动同步昵称）和历史结账记录；给预存余额的玩家充值。"],
-          ["资源", "按资源组看实时状态磁贴、点磁贴远程操作（含后台自定义按键、免冷却投币、上下桌游桌）、查占用和完整操作记录。"],
-          ["计费", "编辑分时段规则、消费封顶与规则间的依赖和冲突，并用计费模拟器试算。"],
-          ["历史", "营收趋势、入场与在场分析及每笔结账记录，支持按时间导出 Excel；现场收款和余额结算分开统计，可归档测试账单。"],
-        ]
-      : mode === "self"
-        ? [
-            ["仪表板", "按位置分组看谁在店里、实时账单，必要时替玩家结账、充值结账或按住 Ctrl/Shift 批量结账。"],
-            ["玩家", "余额不够时在这里充值；查档案、绑定的平台身份（Bot 自动同步昵称）和完整历史账单。"],
-            ["资源", "看电源/空调实时状态、IO 在线与机内币数、闲置关机倒计时；远程操作、管理 Bot 与查操作记录。"],
-            ["计费", "编辑分时段规则、消费封顶与规则间的依赖和冲突，并用计费模拟器试算。"],
-            ["资产", "建充值礼物、优惠券，批量生成并导出兑换码，拿到群里或网店售卖。"],
-            ["历史", "营收趋势、入场与在场分析及每笔结账记录，支持按时间导出 Excel；测试账单可归档，不计入营业额。"],
-          ]
-        : [
-            ["资源", "看电源/空调实时状态、IO 在线与占用玩家；远程开关机、调空调、按后台按键、开门、管理 Bot 和查操作记录。"],
-            ["设置", "位置与范围、玩家身份与绑定提示、投币冷却、闲置自动关机、门锁账号、成员和备份迁移。"],
-          ];
-  return (
-    <section className="grid gap-3 rounded-xl border border-ink/10 bg-panel p-5" aria-labelledby="owner-daily">
-      <h3 id="owner-daily" className="font-semibold">{t("你每天在后台做什么")}</h3>
-      <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-        {items.map(([tab, purpose]) => (
-          <div key={tab} className="flex gap-3">
-            <dt className="min-w-12 shrink-0 font-medium">{t(tab)}</dt>
-            <dd className="leading-relaxed text-ink/60">{t(purpose)}</dd>
+      {effectiveTab === "structure" &&
+        (billing ? (
+          <div className="grid gap-4">
+            <div className="grid gap-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium text-ink/75">
+                  {t("1. 计费组怎么用？以音游店「月宫」为例一步步看")}
+                </p>
+                <div
+                  className="flex flex-wrap gap-1 rounded-lg bg-ink/[0.04] p-1"
+                  role="tablist"
+                  aria-label={t("开店分组示例")}
+                >
+                  {storeExamples.map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={activeExample[0] === key}
+                      className={`focus-ring rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                        activeExample[0] === key
+                          ? "bg-mint/15 text-mint"
+                          : "text-ink/60 hover:text-ink"
+                      }`}
+                      onClick={() => setExample(key)}
+                    >
+                      {t(label)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <GuideDiagram id={activeExample[2]} mode={mode} />
+              <p className="text-xs leading-relaxed text-ink/60">
+                {t(activeExample[3])}
+              </p>
+            </div>
+            <div className="grid gap-2">
+              <p className="text-xs font-medium text-ink/75">
+                {t("2. 每个资源按需插上 10 种硬件 / Bot 能力")}
+              </p>
+              <GuideDiagram id="resource-abilities" mode={mode} wide />
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 lg:grid-cols-2">
+            <div className="grid gap-2">
+              <p className="text-xs font-medium text-ink/70">
+                {t("1. 默认资源组统一管理设备（Bot 独立无二维码）")}
+              </p>
+              <GuideDiagram id="store-hierarchy" mode={mode} />
+            </div>
+            <div className="grid gap-2">
+              <p className="text-xs font-medium text-ink/70">
+                {t("2. 单个资源按需叠加 10 种硬件/Bot 能力")}
+              </p>
+              <GuideDiagram id="resource-abilities" mode={mode} />
+            </div>
           </div>
         ))}
-      </dl>
-    </section>
-  );
-}
 
-function MoneyFlow({ mode }: { mode: OperatingMode }) {
-  const { t } = useI18n();
-  const sources: [LucideIcon, string, string][] = [
-    [Ticket, "兑换码", "在「资产」建充值礼物、生成并导出兑换码，拿到任何渠道售卖。玩家在网页、App Clip 或 Bot 里兑换后到账。"],
-    [Users, "店员充值", "在「玩家」页给玩家充值或扣款，可选充值余额或赠送余额。"],
-    [Gift, "礼物与活动", "新玩家礼物、活动兑换码，发放赠送余额或优惠券。"],
-  ];
-  return (
-    <section className="grid gap-4 rounded-xl border border-ink/10 bg-panel p-5" aria-labelledby="money-flow">
-      <h3 id="money-flow" className="font-semibold">{t("钱从哪来、怎么扣")}</h3>
-      {mode === "desk" && (
-        <div className="flex gap-3 rounded-lg border border-mint/30 bg-mint/5 p-3 text-sm">
-          <CreditCard className="mt-0.5 shrink-0 text-mint" size={18} aria-hidden="true" />
-          <p className="leading-relaxed">
-            <strong>{t("前台收银")}</strong>
-            {"："}
-            {t("刷卡入场的玩家在前台用微信、支付宝或现金付款，店员勾选「已收款」后结账。这笔钱不进玩家余额，系统只记录金额、收款方式和收银员。")}
+      {effectiveTab === "player" && (
+        <div className="grid gap-2">
+          <GuideDiagram
+            id={mode === "desk" ? "cashier-flow" : "qr-nfc-entry"}
+            mode={mode}
+          />
+          <p className="text-xs leading-relaxed text-ink/60">
+            {t(
+              mode === "desk"
+                ? "前台刷卡按「前台资源」方案计时，离店收款后停表；手机扫码也可走预存余额自助结账。"
+                : mode === "self"
+                  ? "资源二维码和 NFC 共用同一链接，iPhone 支持免安装灵动岛实时看账单；换桌或换区会自动说明计费变化。"
+                  : "扫码或碰 NFC 即可操控设备、开关机、调空调、直连读卡器加卡或上桌游桌，不产生计费。",
+            )}
           </p>
         </div>
       )}
-      <p className="text-sm leading-relaxed text-ink/60">
-        {t(mode === "desk"
-          ? "用手机自助的玩家走预存余额。系统没有接入在线支付，余额只有下面几种来源："
-          : "系统没有接入在线支付，玩家先预存余额，结账时从余额扣款。余额只有下面几种来源：")}
-      </p>
-      <div className="grid items-stretch gap-3 lg:grid-cols-[minmax(0,1.4fr)_auto_minmax(0,0.8fr)_auto_minmax(0,1fr)]">
-        <ul className="grid gap-2">
-          {sources.map(([Icon, title, description]) => (
-            <li key={title} className="flex gap-3 rounded-lg bg-ink/[0.03] p-3 text-sm">
-              <Icon className="mt-0.5 shrink-0 text-ink/50" size={16} aria-hidden="true" />
-              <span>
-                <strong className="block">{t(title)}</strong>
-                <span className="mt-0.5 block leading-relaxed text-ink/60">{t(description)}</span>
+
+      {effectiveTab === "money" && billing && (
+        <div className="grid gap-3">
+          <GuideDiagram id="money-flow" mode={mode} />
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink/60">
+            <span>
+              {t("想看按单位计费、宽限时长与封顶的阶梯图？")}
+            </span>
+            <button
+              type="button"
+              className={`${buttonQuiet} px-2.5 py-1 text-xs font-medium text-mint`}
+              onClick={onOpenBillingManual}
+            >
+              <BookOpen size={14} aria-hidden="true" />
+              {t("打开计费说明书")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {effectiveTab === "daily" && (
+        <div className="grid gap-3">
+          <GuideDiagram id="daily-dashboard" mode={mode} />
+          <div className="flex flex-wrap gap-2">
+            {dailyChips.map(([tabName, purpose]) => (
+              <span
+                key={tabName}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-ink/[0.04] px-2.5 py-1.5 text-xs"
+              >
+                <strong className="font-semibold text-ink">{t(tabName)}</strong>
+                <span className="text-ink/60">{t(purpose)}</span>
               </span>
-            </li>
-          ))}
-        </ul>
-        <ArrowRight className="hidden self-center text-ink/25 lg:block" size={20} aria-hidden="true" />
-        <div className="grid content-center gap-2 rounded-lg bg-ink/[0.03] p-3 text-sm">
-          <strong>{t("玩家余额")}</strong>
-          <span className="rounded-md bg-mint/10 px-3 py-2">{t("赠送余额")}</span>
-          <span className="rounded-md bg-mint/20 px-3 py-2">{t("充值余额")}</span>
+            ))}
+          </div>
         </div>
-        <ArrowRight className="hidden self-center text-ink/25 lg:block" size={20} aria-hidden="true" />
-        <div className="grid content-center gap-2 rounded-lg bg-ink/[0.03] p-3 text-sm">
-          <strong>{t("结账时")}</strong>
-          <span className="leading-relaxed text-ink/70">{t("先抵扣优惠券，再扣赠送余额，最后扣充值余额。")}</span>
-          <span className="leading-relaxed text-coral">{t("余额不够：结不了账，计时继续。店员可以在「仪表板」页用「充值结账」或「改价结账」处理，也可让 Bot 把结账失败播报给店员。")}</span>
-        </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -510,6 +589,7 @@ function StepCard({
   haReadIssues,
   shopCode,
   reload,
+  onGuide,
 }: {
   index: number;
   id: SetupStepId;
@@ -519,12 +599,12 @@ function StepCard({
   haReadIssues: number;
   shopCode: string;
   reload: () => Promise<void>;
+  onGuide: () => void;
 }) {
   const { t } = useI18n();
   const base = `/merchant/${encodeURIComponent(shopCode)}`;
-  const action = next ? primary : button;
-  const go = (to: string, text: string, quiet = done) => (
-    <Link className={quiet ? buttonQuiet + " px-3 py-2" : action} to={to}>
+  const go = (to: string, text: string, quiet = true) => (
+    <Link className={quiet ? `${buttonQuiet} min-h-9 px-3 py-1.5 text-xs` : button} to={to}>
       {t(text)}
     </Link>
   );
@@ -544,10 +624,10 @@ function StepCard({
       ? t("{count} 条 Home Assistant 连接还没有启用只读账号，实时状态暂不可用", { count: haReadIssues })
       : "",
   ].filter(Boolean);
+
   const content: {
     title: string;
-    why?: string;
-    points?: string[];
+    why: string;
     fact?: string;
     warn?: string;
     warns?: string[];
@@ -558,7 +638,7 @@ function StepCard({
     id === "pricing"
       ? {
           title: "设定收费标准",
-          why: "店铺按资源组和资源专属方案计费，没有整店计费开关。玩家或前台操作资源时，按资源自己的方案，否则按所在资源组的方案计时。",
+          why: "通常只需给「默认资源组」绑好入场方案即可全店通用（前台模式需确保「前台资源」有方案）；单台特价或桌游对局可单独指定。",
           warn:
             status.pricingProblem === "assets"
               ? "缺少可用的余额资产，玩家无法结账。"
@@ -569,46 +649,46 @@ function StepCard({
                   : undefined,
           actions: (
             <>
-              {status.pricingProblem === "assets" && go(`${base}/assets`, "恢复余额资产")}
-              {status.deskProblem === "missing" && go(`${base}/settings?group=billing`, "选择前台资源")}
-              {status.deskProblem === "unbilled" && go(`${base}/resources`, "设置资源组方案")}
-              {go(`${base}/pricing`, "查看计费规则", true)}
+              {status.pricingProblem === "assets" && go(`${base}/assets`, "恢复余额资产", false)}
+              {status.deskProblem === "missing" && go(`${base}/settings?group=billing`, "选择前台资源", false)}
+              {status.deskProblem === "unbilled" && go(`${base}/resources`, "设置资源组方案", false)}
+              {go(`${base}/pricing`, "前往计费页")}
             </>
           ),
         }
       : id === "reader"
         ? {
             title: "准备前台读卡器",
-            why: "前台用 HINATA 读卡器读玩家的实体卡（IC 卡或 FeliCa 卡）。在前台电脑上用桌面版 Chrome 或 Edge 打开「仪表板」页，点「连接读卡器」授权一次，之后会自动连接。",
+            why: "用桌面版 Chrome 或 Edge 打开「仪表板」，授权一次 HINATA 读卡器后自动重连。",
             fact:
               status.reader === null
-                ? "这个浏览器不支持读卡器，需要桌面版 Chrome 或 Edge。"
+                ? "当前浏览器不支持读卡器，请换桌面版 Chrome 或 Edge。"
                 : status.reader
-                  ? "这台电脑的浏览器已授权读卡器。"
-                  : "这台电脑的浏览器还没有授权读卡器。",
-            actions: go(`${base}/dashboard`, "打开「仪表板」页"),
+                  ? "已授权读卡器。"
+                  : "还没有授权读卡器。",
+            actions: go(`${base}/dashboard`, "前往仪表板"),
           }
         : id === "staff"
           ? {
               title: "给前台店员开账号",
-              why: "店员用自己的 MuNET 账号登录后台。要在前台收款，店员的计费权限需要设为「管理」；「只读」只能查看。店员绑定平台身份后会自动成为店铺 Bot 的管理员，不用单独填表。",
+              why: "邀请店员的 MuNET 账号并将计费权限设为「管理」即可收款（绑平台身份后自动成为 Bot 管理员）。",
               fact: t("成员：{count}", { count: status.members }),
-              actions: go(`${base}/settings?group=members`, "邀请店员"),
+              actions: go(`${base}/settings?group=members`, "前往成员设置"),
             }
           : id === "identity"
             ? {
                 title: "确认玩家身份与 Bot",
                 why:
                   status.mode === "devices"
-                    ? "开门或上桌游桌前，平台需要确认玩家是本店玩家。"
+                    ? "决定玩家开门或上桌游桌前是否需要通过 Bot 绑定群身份。"
                     : status.mode === "desk"
-                      ? "前台刷卡的玩家不需要绑定；用手机自助入场的玩家需要先确认身份。"
-                      : "入场前，平台需要确认玩家是谁。",
+                      ? "前台刷卡不用绑；手机自助玩家建议通过 Bot 绑定并同步群昵称。"
+                      : "推荐要求绑定平台身份，入场前用 Bot 核验群成员并同步昵称。",
                 warn: done
                   ? undefined
                   : status.botIssued
-                    ? "已创建 Bot 凭据，但还没有 Bot 用它连接过。新玩家扫码后会卡在绑定身份这一步。"
-                    : "当前要求绑定 Bot 身份，但店铺还没有接入 Bot。新玩家扫码后会卡在绑定身份这一步。",
+                    ? "已创建 Bot 凭据，但还没有 Bot 连上来；玩家扫码会卡在绑定步骤。"
+                    : "已开启绑定但还没接入店铺 Bot；玩家扫码会卡在绑定步骤。",
                 body: (
                   <IdentityStep
                     value={status.identity}
@@ -621,11 +701,7 @@ function StepCard({
             : id === "prepaid"
               ? {
                   title: "准备玩家储值",
-                  why: "玩家自助结账从余额扣款，余额不够就结不了账。系统没有接入在线支付，余额靠这两种方式充进去：",
-                  points: [
-                    "兑换码：在「资产 → 礼物」建一个充值礼物（例如花 50 元得 52 元余额），在「兑换码」批量生成并导出售卖。",
-                    "店员充值：在「玩家」页直接给玩家加余额，适合线上转账后手动到账。",
-                  ],
+                  why: "先建充值礼物并批量生成兑换码售卖，或在「玩家」页手动充值。",
                   fact:
                     status.redeemCodes || status.fundedPlayers
                       ? [
@@ -635,16 +711,16 @@ function StepCard({
                       : undefined,
                   actions: (
                     <>
-                      {go(`${base}/assets?tab=gifts`, "建充值礼物")}
-                      {go(`${base}/assets?tab=codes`, "生成兑换码", true)}
-                      {go(`${base}/players`, "打开玩家页", true)}
+                      {go(`${base}/assets?tab=gifts`, "建礼物")}
+                      {go(`${base}/assets?tab=codes`, "生成兑换码")}
+                      {go(`${base}/players`, "玩家页")}
                     </>
                   ),
                 }
               : id === "devices"
                 ? {
                     title: "添加资源并配置能力",
-                    why: "资源是玩家扫码使用的对象：机台、空调、门锁、桌游桌，或没有硬件、只用来开始计费的二维码（Bot 资源单独用于机器人，不供扫码）。给资源加上「电源控制」「空调」「刷卡 · HINATA IO」「投币」「开门密码」或「桌游」等能力即可联动硬件；想只用二维码计费时，把它放进有计费方案的资源组即可。",
+                    why: "为机台、门锁、桌游桌或纯入场二维码创建资源，并按需叠加电源/空调/IO/按键/投币等能力。",
                     fact: !status.devices
                       ? "还没有资源"
                       : status.unconfigured
@@ -659,26 +735,22 @@ function StepCard({
                         : undefined,
                     actions: go(
                       status.devices ? `${base}/resources` : `${base}/resources?add=1`,
-                      status.devices ? "打开资源页" : "添加资源",
+                      status.devices ? "前往资源页" : "添加资源",
                     ),
                   }
                 : id === "door"
                   ? {
                       title: "连接 TTLock 账号",
-                      why: "开门密码由店铺的 TTLock 开放平台账号生成，没连接时开门会失败。",
+                      why: "配置 TTLock 开放平台应用凭据，以便生成一次性开门密码。",
                       fact: t("{count} 个资源启用了开门密码", { count: status.doorDevices }),
-                      actions: go(`${base}/settings?group=devices`, done ? "查看 TTLock 设置" : "连接 TTLock"),
+                      actions: go(`${base}/settings?group=devices`, "前往门锁设置"),
                     }
                   : {
                       title: "贴好二维码或 NFC，自己试一次",
-                      why: "每个资源都有专属二维码，打印后贴在对应位置；同一个链接也可以写进 NFC 标签（NDEF 网址记录），iPhone 碰一下会直接打开 PRiSM Link（App Clip）。支持直连读卡器的机台，玩家还可以在扫码页点「+」直接加卡。",
-                      points: [
+                      why:
                         status.mode === "desk"
-                          ? "在前台刷一张卡，入场后再收一次款；再用手机扫一次码，走一遍自助流程。"
-                          : status.mode === "self"
-                            ? "用自己的手机走一遍：登录、绑定身份、入场、操作设备、结账。"
-                            : "用自己的手机走一遍：登录并操作设备。",
-                      ],
+                          ? "在前台刷卡入场并收款，再用手机试扫一次资源二维码。"
+                          : "打印资源二维码或写入 NFC，自己手机走一遍入场与操作流程。",
                       fact:
                         status.billing && status.players
                           ? t("已有 {count} 位玩家", { count: status.players })
@@ -690,43 +762,51 @@ function StepCard({
                         </>
                       ),
                     };
+
   return (
     <li
       data-step={id}
-      className={`rounded-xl border bg-panel p-5 ${next ? "border-mint/50" : "border-ink/10"}`}
+      className={`rounded-xl border bg-panel p-4 transition-colors ${next ? "border-mint/60 ring-1 ring-mint/15" : "border-ink/10"}`}
     >
-      <div className="flex gap-4">
+      <div className="flex items-start gap-3.5">
         <span
           aria-hidden="true"
-          className={`grid size-8 shrink-0 place-items-center rounded-full text-sm font-semibold ${done ? "bg-mint/10 text-mint" : next ? "bg-primary text-primary-foreground" : "bg-ink/5 text-ink/60"}`}
+          className={`grid size-7 shrink-0 place-items-center rounded-full text-xs font-semibold ${done ? "bg-mint/15 text-mint" : next ? "bg-primary text-primary-foreground" : "bg-ink/5 text-ink/60"}`}
         >
-          {done ? <CheckCircle2 size={18} /> : index}
+          {done ? <CheckCircle2 size={16} /> : index}
         </span>
-        <div className="grid min-w-0 flex-1 gap-2">
-          <h4 className="flex flex-wrap items-center gap-x-3 gap-y-1 font-semibold">
-            {t(content.title)}
-            <span className={`text-xs font-normal ${done ? "text-mint" : "text-ink/50"}`}>
-              {t(done ? "已完成" : "待完成")}
-            </span>
-          </h4>
-          {content.why && <p className="text-sm leading-relaxed text-ink/60">{t(content.why)}</p>}
-          {content.points && (
-            <ul className="grid list-disc gap-1 pl-5 text-sm leading-relaxed text-ink/60">
-              {content.points.map((point) => (
-                <li key={point}>{t(point)}</li>
-              ))}
-            </ul>
-          )}
-          {content.fact && <p className="text-sm">{t(content.fact)}</p>}
-          {content.warn && <p className="text-sm text-coral">{t(content.warn)}</p>}
+        <div className="grid min-w-0 flex-1 gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm font-semibold">
+              {t(content.title)}
+              <span className={`text-xs font-normal ${done ? "text-mint" : next ? "text-mint font-medium" : "text-ink/50"}`}>
+                {t(done ? "已完成" : next ? "当前推荐" : "待完成")}
+              </span>
+            </h4>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={onGuide}
+                className={
+                  next
+                    ? `${button} tour-btn !min-h-8 !rounded-lg !px-3 !py-1 !text-xs`
+                    : `${button} !min-h-8 !rounded-lg !border-tour/35 !px-2.5 !py-1 !text-xs text-tour hover:bg-tour/10`
+                }
+              >
+                <Compass size={13} aria-hidden="true" />
+                {t("带我操作")}
+              </button>
+              {content.actions}
+            </div>
+          </div>
+          <p className="text-xs leading-relaxed text-ink/65">{t(content.why)}</p>
+          {content.fact && <p className="text-xs font-medium text-ink/80">{t(content.fact)}</p>}
+          {content.warn && <p className="text-xs text-coral">{t(content.warn)}</p>}
           {content.warns?.map((warning) => (
-            <p key={warning} className="text-sm text-coral">{warning}</p>
+            <p key={warning} className="text-xs text-coral">{warning}</p>
           ))}
           {content.hint && <p className="text-xs leading-relaxed text-ink/55">{content.hint}</p>}
-          {content.body}
-          {content.actions && (
-            <div className="mt-1 flex flex-wrap items-center gap-2">{content.actions}</div>
-          )}
+          {content.body && <div className="pt-1">{content.body}</div>}
         </div>
       </div>
     </li>
@@ -819,7 +899,7 @@ function TrialToggle({
   const { t } = useI18n();
   const [checked, setChecked] = useState(() => readTrial(shopCode));
   return (
-    <label className="flex min-h-11 items-center gap-2 px-2 text-sm">
+    <label className="flex min-h-9 items-center gap-2 px-2 text-xs">
       <input
         type="checkbox"
         checked={checked}
@@ -860,8 +940,7 @@ function Optional({
     {
       icon: Bot,
       title: "Bot 播报组与命令回复",
-      description:
-        "在「资源」里配置 Bot 的播报组（按听众分组订阅尝试、事实和提醒事件，支持私聊店员）、自定义命令回复文案、入场自动给开门密码，以及用 Bot 优先监听 Home Assistant。",
+      description: "按听众分组订阅事件提醒，自定义命令文案、入场自动发密码。",
       state: status.botConnected
         ? status.botAnnounceGroups > 0
           ? t("已连接 · {count} 个播报组", { count: status.botAnnounceGroups })
@@ -874,16 +953,14 @@ function Optional({
     {
       icon: Timer,
       title: "闲置自动关机",
-      description:
-        "按真实占用自动关闭闲置机台和空调，支持店内无人与单台闲置两条规则、keep 延迟关机、单台排除，以及 Bot 提前发送关机提醒。",
+      description: "按店内无人或单台闲置自动关闭机台与空调，支持提前提醒。",
       state: idlePowerEnabled ? "已开启" : undefined,
       to: `${base}/settings?group=devices`,
     },
     {
       icon: Coins,
       title: "投币上限、自动投币与后台按键",
-      description:
-        "全店投币冷却在「设置」调整；直连 HINATA IO 可在资源的「投币」能力设置机内投币上限与刷卡后自动投币，并在「刷卡 · HINATA IO」添加仅店员可见的测试／服务按键。",
+      description: "全店投币冷却、单台投币上限、刷卡自动投币与店员专用按键。",
       to: `${base}/settings?group=devices`,
     },
     ...(status.billing
@@ -892,7 +969,7 @@ function Optional({
             icon: Layers,
             title: "资源组与分区计费",
             description:
-              "按区域建资源组（如游戏区、休息区、桌游包间）并设置不同方案，配合规则「依赖 / 冲突」实现换区切换计费或叠加计费。",
+              "单台特殊设备直接改「专属/对局方案」即可；只有多台设备组成独立区域（如 VIP 包间、多设施休息区）需要成批换价或整区启停时，再新建资源组。",
             to: `${base}/resources`,
           },
         ]
@@ -902,10 +979,7 @@ function Optional({
           {
             icon: Users,
             title: "邀请店员",
-            description:
-              status.mode === "self"
-                ? "无前台的店也可以有店员：帮玩家充值、处理问题、远程操作设备；绑定平台身份后自动成为 Bot 管理员。"
-                : "店员可以查看和远程操作设备；绑定平台身份后自动成为 Bot 管理员。",
+            description: "添加店员帮玩家充值与控设备，绑定后自动同步为 Bot 管理员。",
             state: status.members > 1 ? t("成员：{count}", { count: status.members }) : undefined,
             to: `${base}/settings?group=members`,
           },
@@ -916,14 +990,14 @@ function Optional({
           {
             icon: Gift,
             title: "新玩家礼物",
-            description: "玩家第一次建档时自动发放，例如一张满 10 减 6 的券或一点体验余额，用来拉新。",
+            description: "新玩家首次建档自动发放体验券或赠送余额。",
             state: status.defaultPresent ? "已设置" : undefined,
             to: `${base}/settings?group=players`,
           },
           {
             icon: Ticket,
             title: "优惠与活动",
-            description: "优惠券在结账时自动抵扣；活动礼物可以通过兑换码发放。",
+            description: "配置满减/折扣优惠券或通过活动礼物兑换码发放。",
             to: `${base}/assets?tab=effects`,
           },
         ]
@@ -933,7 +1007,7 @@ function Optional({
           {
             icon: CreditCard,
             title: "开启前台收银",
-            description: "店里有前台时，可以让玩家刷实体卡入场、在前台现场付款。",
+            description: "店里有前台时，可同时支持刷实体卡入场、现场收款。",
             to: `${base}/settings?group=billing`,
           },
         ]
@@ -942,7 +1016,7 @@ function Optional({
             {
               icon: Receipt,
               title: "改用 PRiSM 计费",
-              description: "按时长向玩家收费，管理玩家余额和离店结账。",
+              description: "按时长向玩家收费，管理余额与离店结账。",
               to: `${base}/settings?group=billing`,
             },
           ]
@@ -950,40 +1024,52 @@ function Optional({
     {
       icon: MapPin,
       title: "到店位置校验",
-      description: "要求玩家在店铺范围内才能入场、开门、开关电源、调空调、刷卡和投币，离店结账须离开店铺范围。",
+      description: "校验 GPS 或蓝牙信标，确保玩家在店内才可入场或操控设备。",
       state: status.locationEnabled ? "已开启" : undefined,
       to: `${base}/settings?group=devices`,
     },
     {
       icon: Database,
       title: "数据备份与从 prism-neo 迁移",
-      description: "导出和恢复 JSON 店铺备份，或导入 prism-neo 的玩家、余额与计费规则（导入的规则默认停用，核对后再启用）。",
+      description: "导出恢复 JSON 备份，或导入 prism-neo 的玩家余额与规则。",
       to: `${base}/settings?group=data`,
     },
   ];
   return (
-    <section className="grid gap-3" aria-labelledby="setup-optional">
-      <h3 id="setup-optional" className="font-semibold">
-        {t("按需配置")}
-      </h3>
-      <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <details className="group rounded-xl border border-ink/10 bg-panel p-5" aria-labelledby="setup-optional">
+      <summary
+        id="setup-optional"
+        className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 [&::-webkit-details-marker]:hidden"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-semibold">{t("按需进阶功能")}</span>
+          <span className="text-xs text-ink/55">
+            {t("闲置关机 · Bot 播报 · 位置校验 · 优惠礼物 · 备份迁移")}
+          </span>
+        </div>
+        <span className="inline-flex items-center gap-1 text-xs text-ink/55">
+          {t("展开全部 {count} 项", { count: items.length })}
+          <ChevronDown size={15} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+        </span>
+      </summary>
+      <ul className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((item) => (
           <li key={item.title}>
             <Link
               to={item.to}
-              className="focus-ring flex h-full gap-3 rounded-xl border border-ink/10 bg-panel p-4 transition-colors hover:border-ink/25"
+              className="focus-ring flex h-full gap-3 rounded-xl border border-ink/10 bg-ink/[0.015] p-3.5 transition-colors hover:border-ink/25"
             >
-              <item.icon className="mt-0.5 shrink-0 text-ink/50" size={18} aria-hidden="true" />
+              <item.icon className="mt-0.5 shrink-0 text-ink/50" size={17} aria-hidden="true" />
               <span className="grid min-w-0 content-start gap-1">
                 <strong className="text-sm">{t(item.title)}</strong>
-                <span className="text-sm leading-relaxed text-ink/60">{t(item.description)}</span>
+                <span className="text-xs leading-relaxed text-ink/60">{t(item.description)}</span>
                 {item.state && <span className="text-xs text-mint">{t(item.state)}</span>}
               </span>
             </Link>
           </li>
         ))}
       </ul>
-    </section>
+    </details>
   );
 }
 
@@ -992,29 +1078,26 @@ function PlatformSupport() {
   const [copyState, copy] = useCopy();
   return (
     <section
-      className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-ink/10 bg-panel px-5 py-4"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-ink/10 bg-panel px-4 py-3"
       aria-labelledby="platform-support"
     >
-      <div className="flex min-w-0 gap-3">
-        <MessageCircle className="mt-0.5 shrink-0 text-mint" size={18} aria-hidden="true" />
-        <div className="min-w-0">
-          <h3 id="platform-support" className="font-semibold">
-            {t("PRiSM 接入支持与反馈")}
-          </h3>
-          <p className="mt-1 text-sm leading-relaxed text-ink/60">
-            {t("你在接入或日常使用 PRiSM 时遇到问题，或有功能建议，欢迎加入 PRiSM 官方 QQ 群 {group} 向我们咨询与反馈。", {
-              group: SUPPORT_QQ_GROUP,
-            })}
-          </p>
-        </div>
+      <div className="flex min-w-0 items-center gap-2.5">
+        <MessageCircle className="shrink-0 text-mint" size={16} aria-hidden="true" />
+        <p id="platform-support" className="text-xs leading-relaxed text-ink/65">
+          <strong className="font-medium text-ink">{t("PRiSM 接入支持与反馈")}</strong>
+          {" · "}
+          {t("遇到问题欢迎加入官方 QQ 群 {group} 咨询。", {
+            group: SUPPORT_QQ_GROUP,
+          })}
+        </p>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <code className="select-all rounded-lg bg-ink/[0.04] px-3 py-2 text-sm font-medium tabular-nums">
+        <code className="select-all rounded-lg bg-ink/[0.04] px-2.5 py-1 text-xs font-medium tabular-nums">
           {SUPPORT_QQ_GROUP}
         </code>
         <button
           type="button"
-          className={button}
+          className={`${button} !min-h-8 !rounded-lg !px-2.5 !py-1 !text-xs`}
           onClick={() => void copy(SUPPORT_QQ_GROUP)}
         >
           {copyState === "copied"
