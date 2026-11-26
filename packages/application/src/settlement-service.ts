@@ -106,6 +106,7 @@ export type GlobalCapResolverContext = {
 
 export type PlayerCheckoutInput = {
   playerId: string;
+  staffId?: string;
   closeSessionsBeforeBalanceCheck?: boolean;
 };
 
@@ -192,7 +193,7 @@ export type SettlementService = {
   checkoutExternal(input: ExternalCheckoutInput): Promise<SettlePlayerCheckoutResult>;
   previewCheckout(input: PlayerCheckoutInput): Promise<PreviewPlayerCheckoutResult>;
   checkout(input: PlayerCheckoutInput): Promise<SettlePlayerCheckoutResult>;
-  stopSession(input: { playerId: string; sessionId: string }): Promise<Session & { status: "closed"; endedAt: Date }>;
+  stopSession(input: { playerId: string; sessionId: string; staffId?: string }): Promise<Session & { status: "closed"; endedAt: Date }>;
   checkoutWithOverride(input: StaffCheckoutOverrideInput): Promise<SettlePlayerCheckoutResult>;
   checkoutWithRecharge(input: StaffRechargeCheckoutInput): Promise<SettlePlayerCheckoutResult>;
 };

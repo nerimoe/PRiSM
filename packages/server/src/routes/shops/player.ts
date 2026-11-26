@@ -3,12 +3,14 @@ import { activityBill, refreshActivityBill } from "../../durable-objects/live-ac
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { isKnownLiveActivityBundle, type LiveActivityEnvironment } from "../../durable-objects/live-activity-push.js";
 import { Hono, type Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser, staffPrincipal } from "../../middleware/auth.js";
-import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import { getShop, getShopDeps, requestOrigin } from "../../middleware/tenant.js";
+import { publishShopErrorFact } from "../../events/shop-facts.js";
 import { checkResourceLocation } from "../../middleware/geo.js";
 import { can, loadResource, type Resource } from "../../resources/resource.js";
 import { createRuntimeBus } from "../../resources/capabilities/runtime.js";
@@ -356,7 +358,26 @@ playerRouter.post("/checkout/confirm", async (c) => {
   const shop = getShop(c);
   const player = await requireShopPlayer(c, shop);
   const body = (await c.req.json<{ location?: unknown; operationId?: string }>().catch(() => ({}))) as { location?: unknown; operationId?: string };
-  await checkResourceLocation({ db: c.env.DB, shop, action: "checkout", location: body.location });
+  try {
+    await checkResourceLocation({ db: c.env.DB, shop, action: "checkout", location: body.location });
+  } catch (error) {
+    if (error instanceof HTTPException) {
+      const errBody = await error.res?.clone().json().catch(() => null) as { error?: { code?: unknown; message?: unknown } } | null;
+      if (typeof errBody?.error?.code === "string") {
+        await publishShopErrorFact(
+          { db: c.env.DB, env: c.env, shopId: shop.id },
+          c.get("factOrigin") ?? requestOrigin(c, "page"),
+          {
+            name: "checkout.refused",
+            playerId: player.id,
+            code: errBody.error.code,
+            message: typeof errBody.error.message === "string" ? errBody.error.message : "",
+          },
+        );
+      }
+    }
+    throw error;
+  }
   const deps = getShopDeps(c);
 
   return runPlayerOperation(c, shop.id, "checkout/confirm", body, async () => {
