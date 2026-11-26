@@ -72,7 +72,8 @@ routes/
 - `POST /players/:playerId/assets/adjustments`: 店员调整玩家的资产持有量。
 - `POST /players/:playerId/wallet/adjustment`: 店员快捷调整玩家的充值钱包余额。
 - `POST /players/:playerId/identities`: 为玩家绑定外部账号身份。
-- `DELETE /players/:playerId/identities/:provider/:subject`: 解绑玩家外部身份。
+- `DELETE /players/:playerId/identities/:provider/:subject`: 解绑本店档案身份，包括 PRiSM 账号。
+- `DELETE /players/:playerId/identities`：传入列表中的原始 `{ provider, subject }`，精确解绑对应身份。
 - `POST /players/:playerId/session/preview`、`POST /players/:playerId/session/start`: 预览并开始一个方案的计费，与扫码、机器人同一个入口。
 - `GET /roster`: 在店的人，每人只列在一处（占用的资源或最具体的方案）；`?name=` 时只列一个资源或一个方案。
 - `GET /sessions/active`: 查看全店当前活跃会话列表。

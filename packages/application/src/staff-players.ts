@@ -38,6 +38,7 @@ export type StaffBindPlayerIdentityInput = {
 };
 
 export type StaffDeletePlayerIdentityInput = {
+  exact?: boolean;
   playerId: string;
   provider: string;
   subject: string;
@@ -148,7 +149,7 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
 
       const identity: PlayerIdentity = {
         playerId: input.playerId,
-        ...editableIdentity(input),
+        ...bindableIdentity(input),
         createdAt: dependencies.now(),
       };
       await dependencies.playerIdentities.save(identity);
@@ -165,7 +166,7 @@ export function createStaffPlayerService(dependencies: StaffPlayerServiceDepende
         throw new PrismDomainError("Player not found.", "PLAYER_NOT_FOUND");
       }
 
-      const identity = editableIdentity(input);
+      const identity = input.exact ? input : normalizeExternalIdentity(input);
       await dependencies.playerIdentities.delete(input.playerId, identity.provider, identity.subject);
     },
 
@@ -242,7 +243,7 @@ async function resolveDefaultRegistrationGrants(
   };
 }
 
-function editableIdentity(input: { provider: string; subject: string }) {
+function bindableIdentity(input: { provider: string; subject: string }) {
   const identity = normalizeExternalIdentity(input);
   if (identity.provider === "web-account") {
     throw new PrismDomainError("PRiSM 账号请通过绑定码关联，不能手工修改", "ACCOUNT_IDENTITY_READ_ONLY");
