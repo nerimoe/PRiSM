@@ -92,6 +92,13 @@ export const actionLabels: Record<string, string> = {
   "host.screenshot": "截取画面",
   "host.reboot": "重启主机",
   "host.shutdown": "关闭主机",
+  "host.fs.list": "列出目录",
+  "host.fs.read": "读取文件",
+  "host.fs.write": "写入文件",
+  "host.fs.mkdir": "创建目录",
+  "host.fs.rename": "重命名路径",
+  "host.fs.delete": "删除路径",
+  "host.powershell": "执行 PowerShell",
   "reader.connected": "读卡器插入",
   "reader.disconnected": "读卡器拔出",
   // What happened at the shop without a device doing anything (capability `shop`).

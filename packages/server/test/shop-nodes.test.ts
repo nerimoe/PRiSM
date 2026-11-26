@@ -381,6 +381,50 @@ describe("IoT & Launcher server-driven node architecture", () => {
     expect(keyFrame).toMatchObject({ jsonrpc: "2.0", method: "key.press", params: { key: 32, count: 1 } });
     await lnRelay.relay.webSocketMessage(lnWs as any, JSON.stringify({ jsonrpc: "2.0", id: keyFrame.id, result: {} }));
     expect((await coinPromise).operation.status).toBe("succeeded");
+
+    // Host fs.list and powershell through DeviceBus + MachineRelay.
+    const fsPromise = bus.perform({
+      device,
+      action: "host.fs.list",
+      actor: { type: "staff", staffId: "staff-1" },
+      payload: { path: "D:\\Games" },
+    });
+    await Bun.sleep(10);
+    const fsFrame = JSON.parse(lnWs.sent.at(-1)!);
+    expect(fsFrame).toMatchObject({ jsonrpc: "2.0", method: "host.fs.list", params: { path: "D:\\Games" } });
+    await lnRelay.relay.webSocketMessage(
+      lnWs as any,
+      JSON.stringify({ jsonrpc: "2.0", id: fsFrame.id, result: { path: "D:\\Games", entries: [], truncated: false } }),
+    );
+    const fsOutcome = await fsPromise;
+    expect(fsOutcome.operation.status).toBe("succeeded");
+    expect(fsOutcome.result).toEqual({ path: "D:\\Games", entries: [], truncated: false });
+
+    const psPromise = bus.perform({
+      device,
+      action: "host.powershell",
+      actor: { type: "staff", staffId: "staff-1" },
+      payload: { timeoutMs: 45_000, shell: "powershell" },
+      transient: { script: "Get-Process" },
+    });
+    await Bun.sleep(10);
+    const psFrame = JSON.parse(lnWs.sent.at(-1)!);
+    expect(psFrame).toMatchObject({
+      jsonrpc: "2.0",
+      method: "host.powershell",
+      params: { script: "Get-Process", timeoutMs: 45_000, shell: "powershell" },
+    });
+    await lnRelay.relay.webSocketMessage(
+      lnWs as any,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: psFrame.id,
+        result: { stdout: "proc\n", stderr: "", exitCode: 0, timedOut: false, durationMs: 30 },
+      }),
+    );
+    const psOutcome = await psPromise;
+    expect(psOutcome.operation.status).toBe("succeeded");
+    expect(psOutcome.result).toMatchObject({ stdout: "proc\n", exitCode: 0, timedOut: false });
   });
 
   it("ranks dedicated IoT hardware ahead of bots and HINATA IOs in ShopHub HA watcher pool", async () => {

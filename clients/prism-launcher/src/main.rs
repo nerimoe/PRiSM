@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod desktop;
+mod host_ops;
 mod log;
 mod protocol;
 mod ws;
@@ -25,21 +26,26 @@ use ws::{ConnectError, init_websocket, resolve_endpoint};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_INBOUND_FRAME_BYTES: usize = 1024 * 1024;
 
 struct LauncherState {
     cache_path: PathBuf,
     games: desktop::Games,
     programs: HashMap<String, String>,
+    local_allowed_roots: Vec<String>,
+    remote_allowed_roots: Vec<String>,
     started: bool,
     replay: ReplayCache,
 }
 
 impl LauncherState {
-    fn new(cache_path: PathBuf) -> Self {
+    fn new(cache_path: PathBuf, local_allowed_roots: Vec<String>) -> Self {
         Self {
             cache_path,
             games: desktop::Games::new(),
             programs: HashMap::new(),
+            local_allowed_roots,
+            remote_allowed_roots: Vec::new(),
             started: false,
             replay: ReplayCache::default(),
         }
@@ -57,6 +63,7 @@ impl LauncherState {
             fs::rename(&tmp, &self.cache_path).map_err(|e| format!("保存配置缓存失败: {e}"))?;
         }
         self.programs = programs;
+        self.remote_allowed_roots = cfg.allowed_roots.clone();
         if !self.started {
             if let Some(default_name) = &cfg.default {
                 self.games.switch(default_name, &self.programs)?;
@@ -68,6 +75,10 @@ impl LauncherState {
 
     fn current_program(&self) -> Option<String> {
         self.games.current()
+    }
+
+    fn allowed_roots(&self) -> (Vec<String>, Vec<String>) {
+        (self.local_allowed_roots.clone(), self.remote_allowed_roots.clone())
     }
 }
 
@@ -119,6 +130,78 @@ fn execute_action(state: &Arc<Mutex<LauncherState>>, action: HostAction) -> Resu
         HostAction::Shutdown => {
             desktop::power(false)?;
             Ok(serde_json::json!({}))
+        }
+        HostAction::FsList { path } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_list(&path, &local_roots, &remote_roots)
+        }
+        HostAction::FsRead { path, encoding } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_read(&path, encoding, &local_roots, &remote_roots)
+        }
+        HostAction::FsWrite {
+            path,
+            content,
+            encoding,
+            create_dirs,
+        } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_write(&path, &content, encoding, create_dirs, &local_roots, &remote_roots)
+        }
+        HostAction::FsMkdir { path, recursive } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_mkdir(&path, recursive, &local_roots, &remote_roots)
+        }
+        HostAction::FsRename {
+            from,
+            to,
+            overwrite,
+        } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_rename(&from, &to, overwrite, &local_roots, &remote_roots)
+        }
+        HostAction::FsDelete { path, recursive } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            host_ops::fs_delete(&path, recursive, &local_roots, &remote_roots)
+        }
+        HostAction::PowerShell {
+            script,
+            cwd,
+            timeout_ms,
+            shell,
+        } => {
+            let (local_roots, remote_roots) = state
+                .lock()
+                .map_err(|_| "内部状态锁定失败".to_string())?
+                .allowed_roots();
+            let fallback = app_root();
+            host_ops::run_powershell(
+                &script,
+                cwd.as_deref(),
+                timeout_ms,
+                shell,
+                &local_roots,
+                &remote_roots,
+                Some(&fallback),
+            )
         }
     }
 }
@@ -183,7 +266,7 @@ fn handle_inbound(
     out_tx: &mpsc::Sender<String>,
     booted_at: Instant,
 ) {
-    if raw.len() > 256 * 1024 {
+    if raw.len() > MAX_INBOUND_FRAME_BYTES {
         warn!("忽略超大入站消息 ({} bytes)", raw.len());
         return;
     }
@@ -297,7 +380,10 @@ async fn main() {
     };
 
     let cache_path = cache_file_for(&dir, &endpoint, &local_cfg.token);
-    let state = Arc::new(Mutex::new(LauncherState::new(cache_path.clone())));
+    let state = Arc::new(Mutex::new(LauncherState::new(
+        cache_path.clone(),
+        local_cfg.allowed_roots.clone(),
+    )));
 
     if cache_path.exists() {
         match fs::read_to_string(&cache_path)

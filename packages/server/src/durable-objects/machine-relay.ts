@@ -105,6 +105,9 @@ type Attachment = ClientCapabilities & {
 };
 
 const NODE_CALL_TIMEOUT_MS = 35_000;
+const MAX_NODE_CALL_TIMEOUT_MS = 150_000;
+const MAX_NODE_FRAME_BYTES = 1_000_000;
+const TEXT_ENCODER = new TextEncoder();
 
 function channelKind(channel: Channel | null | undefined): NodeKind {
   return channel?.kind ?? "hinata_io";
@@ -220,8 +223,12 @@ export class MachineRelay extends BaseDurableObject<Env> {
     const id = options.id ?? crypto.randomUUID();
     if (this.nodeCalls.has(id)) return { ok: false, error: "指令已在执行" };
     const expiresAt = options.expiresAt ?? Date.now() + 30_000;
-    const timeoutMs = options.timeoutMs ?? NODE_CALL_TIMEOUT_MS;
+    const timeoutMs = Math.min(Math.max(options.timeoutMs ?? NODE_CALL_TIMEOUT_MS, 1_000), MAX_NODE_CALL_TIMEOUT_MS);
     const kind = this.socketKind(ws);
+    const frame = encodeNodeCommand(kind, { id, method, params, expiresAt });
+    if (TEXT_ENCODER.encode(frame).byteLength > MAX_NODE_FRAME_BYTES) {
+      return { ok: false, error: "指令负载超过 WebSocket 传输上限" };
+    }
     return new Promise((resolve) => {
       const finish = (reply: NodeCallReply) => {
         clearTimeout(timer);
@@ -231,7 +238,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
       const timer = setTimeout(() => finish({ ok: false, error: "节点响应超时，执行结果未知" }), timeoutMs);
       this.nodeCalls.set(id, { ws, finish });
       try {
-        ws.send(encodeNodeCommand(kind, { id, method, params, expiresAt }));
+        ws.send(frame);
       } catch {
         finish({ ok: false, error: "节点已断线" });
       }
