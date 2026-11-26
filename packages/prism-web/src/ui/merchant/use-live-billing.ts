@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LivePlayer } from "./shared";
 
 /** A new API snapshot replaces the worker; stale calculations cannot update the new list. */
@@ -102,8 +102,7 @@ export function useLiveBilling(
         playerIds: [selectedId],
       });
   }, [selectedId]);
-  return {
-    players: snapshot
+  const billedPlayers = useMemo(() => snapshot
       ? players.map((player) =>
           result.source === players && result.quotes.has(player.playerId)
             ? result.quotes.get(player.playerId)!
@@ -116,6 +115,6 @@ export function useLiveBilling(
                 quoteError: result.error,
               },
         )
-      : players,
-  };
+      : players, [players, snapshot, result]);
+  return { players: billedPlayers };
 }
