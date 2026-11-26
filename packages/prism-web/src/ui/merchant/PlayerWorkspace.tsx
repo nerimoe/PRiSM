@@ -1082,10 +1082,13 @@ function PlayerPanel({
   onChanged: () => void;
 }) {
   const { t } = useI18n();
-  const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
+  const { canWrite, shopCode, cashierEnabled, timeZone, privacyModeEnabled } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
-  const reportSettings = useResource<{ excluded: boolean; isStaff: boolean }>(`${base}/report-settings`);
+  const playerOptions = useResource<{
+    options: { excludeFromReports: boolean; privacyMode: boolean };
+    meta: { isStaff: boolean; privacyModeEnabled: boolean };
+  }>(`${base}/options`);
   const assets = useResource<Holdings>(`${base}/assets`);
   const definitions = useResource<{ assetDefinitions: Asset[] }>("asset-definitions");
   const plans = useResource<{ pricingConfigs: EntryPlan[] }>("pricing-configs");
@@ -1099,19 +1102,19 @@ function PlayerPanel({
   );
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
-  const [reportSaving, setReportSaving] = useState(false);
+  const [optionSaving, setOptionSaving] = useState(false);
   const [removingIdentity, setRemovingIdentity] = useState<
     { provider: string; subject: string; label: string } | null
   >(null);
   const [error, setError] = useState("");
-  async function toggleReportExclusion(excluded: boolean) {
-    setReportSaving(true);
+  async function updatePlayerOption(patch: { excludeFromReports?: boolean; privacyMode?: boolean }) {
+    setOptionSaving(true);
     setError("");
     try {
-      await request(`${base}/report-settings`, "PUT", { excluded });
-      reportSettings.reload();
+      await request(`${base}/options`, "PUT", patch);
+      playerOptions.reload();
     } catch (e) { setError(staffMessage(e instanceof Error ? e : new Error(String(e)))); }
-    finally { setReportSaving(false); }
+    finally { setOptionSaving(false); }
   }
   const [overrideTotal, setOverrideTotal] = useState("");
   const [rechargeAmount, setRechargeAmount] = useState("");
@@ -1220,7 +1223,7 @@ function PlayerPanel({
     ["checkouts", "消费记录", null],
     ["ledger", "资产流水", ledgerEntries.length],
     ["identity", "身份与状态", identities.length],
-    ["settings", "设置", null],
+    ["settings", "选项", null],
   ];
 
   return (
@@ -2100,25 +2103,25 @@ function PlayerPanel({
 
         {effectiveTab === "settings" && (
           <div role="tabpanel" className="grid gap-3">
-            {reportSettings.error ? (
+            {playerOptions.error ? (
               <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
-                <span className="text-xs text-ink/60">{t("排除经营统计")}</span>
+                <span className="text-xs text-ink/60">{t("选项")}</span>
                 <button
                   type="button"
                   className={compactButton}
-                  onClick={reportSettings.reload}
+                  onClick={playerOptions.reload}
                 >
                   {t("重试")}
                 </button>
               </div>
-            ) : !reportSettings.data ? (
+            ) : !playerOptions.data ? (
               <State />
             ) : (
-              <div className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+              <div className="bill-entry !mb-0 grid gap-3 px-4 py-3 text-sm">
                 <label className="flex w-full cursor-pointer items-center justify-between gap-3">
                   <span className="text-ink">
                     {t(
-                      reportSettings.data.isStaff
+                      playerOptions.data.meta.isStaff
                         ? "店员自动排除统计"
                         : "排除经营统计",
                     )}
@@ -2126,11 +2129,26 @@ function PlayerPanel({
                   <input
                     type="checkbox"
                     className="size-4 accent-[var(--color-mint)]"
-                    checked={reportSettings.data.excluded}
+                    checked={playerOptions.data.options.excludeFromReports}
                     disabled={
-                      !canWrite || reportSaving || reportSettings.data.isStaff
+                      !canWrite || optionSaving || playerOptions.data.meta.isStaff
                     }
-                    onChange={(e) => void toggleReportExclusion(e.target.checked)}
+                    onChange={(e) => void updatePlayerOption({ excludeFromReports: e.target.checked })}
+                  />
+                </label>
+                <label className="flex w-full cursor-pointer items-center justify-between gap-3 border-t border-ink/10 pt-3">
+                  <span className="text-ink">
+                    {t("隐私模式")}
+                    {!(playerOptions.data.meta.privacyModeEnabled ?? privacyModeEnabled) && (
+                      <span className="ml-1.5 text-xs text-ink/50">{t("（店铺未开启隐私模式，暂不生效）")}</span>
+                    )}
+                  </span>
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-[var(--color-mint)]"
+                    checked={playerOptions.data.options.privacyMode}
+                    disabled={!canWrite || optionSaving}
+                    onChange={(e) => void updatePlayerOption({ privacyMode: e.target.checked })}
                   />
                 </label>
               </div>

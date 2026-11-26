@@ -419,9 +419,13 @@ export async function deriveNodeRuntimeConfig(
     const match = rows.find((r) => r.capability === "host" && parseJson(r.config_json).nodeId === node.id);
     if (!match) return { default: null, programs: [] } satisfies LauncherRuntimeConfig;
     const cfg = parseJson(match.config_json) as Partial<HostConfig>;
+    const allowedRoots = Array.isArray(cfg.allowedRoots)
+      ? cfg.allowedRoots.filter((r): r is string => typeof r === "string" && r.trim().length > 0)
+      : [];
     return {
       default: typeof cfg.defaultProgram === "string" ? cfg.defaultProgram : null,
       programs: Array.isArray(cfg.programs) ? cfg.programs : [],
+      ...(allowedRoots.length ? { allowedRoots } : {}),
     } satisfies LauncherRuntimeConfig;
   }
 

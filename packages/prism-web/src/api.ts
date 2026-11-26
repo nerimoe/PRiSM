@@ -103,6 +103,8 @@ export type DeviceEvent = {
   device?: { id: string; name: string | null } | null;
   /** Whom it was about: the player who asked, or the one staff acted for. */
   player?: { id: string; name: string | null } | null;
+  /** The staff member who triggered or handled the operation, when applicable. */
+  staff?: { id: string; name: string | null } | null;
   /**
    * Where it came into the platform; `resource` names the shop's own resource
    * it came through (a bot), when that is not the one whose history this is.
@@ -306,6 +308,7 @@ export type HostConfig = {
   nodeId: string;
   defaultProgram: string | null;
   programs: HostProgram[];
+  allowedRoots?: string[];
 };
 
 export type IotConfig = {
@@ -325,7 +328,7 @@ export type HostStatus = {
   program: string | null;
   version: string | null;
   nodeId: string | null;
-  config: { default: string | null; programs: HostProgram[] } | null;
+  config: { default: string | null; programs: HostProgram[]; allowedRoots?: string[] } | null;
 };
 
 export type CoinFeedbackSignal = "cabinet.coin" | "cabinet.consumed" | "cabinet.activity";
@@ -342,17 +345,43 @@ export type ResourceCoinConfig = {
   feedbackSignal?: CoinFeedbackSignal;
 };
 
+export type HostFsEntry = {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  modifiedMs: number | null;
+};
+
+export type HostPowerShellResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdoutTruncated?: boolean;
+  stderrTruncated?: boolean;
+};
+
 export type HostCommandInput =
   | { action: "switch"; name: string }
   | { action: "key"; key: string | number; count?: number }
   | { action: "text"; text: string }
   | { action: "screenshot" }
   | { action: "reboot" }
-  | { action: "shutdown" };
+  | { action: "shutdown" }
+  | { action: "fs.list"; path: string }
+  | { action: "fs.read"; path: string; encoding?: "utf8" | "base64" }
+  | { action: "fs.write"; path: string; content: string; encoding?: "utf8" | "base64"; createDirs?: boolean }
+  | { action: "fs.mkdir"; path: string; recursive?: boolean }
+  | { action: "fs.rename"; from: string; to: string; overwrite?: boolean }
+  | { action: "fs.delete"; path: string; recursive?: boolean }
+  | { action: "powershell"; script: string; cwd?: string; timeoutMs?: number; shell?: "powershell" | "pwsh" };
 
 /** What a shop bot offers players and staff; everything else it is told comes from the platform. */
 export type BotSettings = {
   replyTemplates?: Record<string, string>;
+  replyGroups?: import("@prism/core").BotReplyGroup[];
   playerCommands: "all" | "readonly";
   readOnlyNotice: string;
   staffCommands: boolean;

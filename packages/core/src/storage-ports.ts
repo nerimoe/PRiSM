@@ -278,6 +278,19 @@ export type DeviceRecord = {
   states?: readonly { write: DeviceStateWrite; event?: DeviceEvent }[];
 };
 
+export type DeviceEventScope = "all" | "non_resource" | "resource";
+
+export type ListShopEventsInput = {
+  scope?: DeviceEventScope;
+  deviceId?: string;
+  capability?: string;
+  excludeCapabilities?: readonly string[];
+  names?: readonly string[];
+  playerId?: string;
+  limit: number;
+  before?: string;
+};
+
 export type DeviceEventRepository = {
   /**
    * Returns the events that were written, in the order given. A `change` whose
@@ -289,6 +302,11 @@ export type DeviceEventRepository = {
    * events that came through it (`via.resourceId`), each listed once.
    */
   listEvents(input: { deviceId: string; limit: number; before?: string }): Promise<DeviceEvent[]>;
+  /**
+   * Shop-wide operation and event history across all resources and non-resource
+   * shop events, newest first, with optional filtering and cursor pagination.
+   */
+  listShopEvents?(input: ListShopEventsInput): Promise<DeviceEvent[]>;
   getOperation(id: string): Promise<DeviceOperation | null>;
   listOperationsByPlayer(playerId: string): Promise<DeviceOperation[]>;
   listRecentOperations(limit: number): Promise<DeviceOperation[]>;

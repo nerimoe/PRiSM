@@ -30,7 +30,7 @@ bun scripts/swift-page-fixtures.ts <hinata_go>/test/native/fixtures/prism-page
 GET  /api/v1/devices/session/page?ticket=
 POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, location? }
 
-GET  /api/v1/shops/:shopCode/player/page?view=shop|bill|redeem|history|wallet|bindings[&item=][&cursor=]
+GET  /api/v1/shops/:shopCode/player/page?view=shop|bill|redeem|history|wallet|bindings|options[&item=][&cursor=]
 POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, payload?, location? }
 ```
 
@@ -99,7 +99,7 @@ POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, paylo
 
 ## 声明式 UI 原语（SDUI）
 
-除了既有的业务专有块（`signin`、`binding`、`pricing`、`climate`、`table`/`mahjong`、`cards`、`consent`），协议提供一套通用的声明式布局、展示、表单与按钮组合原语。服务端可通过 `packages/server/src/resources/page-ui.ts` 导出的 `pageUi` 构造器在 `/session/page` 与 `/shops/:shopCode/player/page` 内任意拼装新画面，而无需新建客户端页面或路由。其中店铺账号面板的「身份」页只读展示已绑定身份（不附加刷新按钮），「钱包」页自动将充值余额（`paid`）与赠送余额（`free`）置顶并附带类型图标与着色标签胶囊。
+除了既有的业务专有块（`signin`、`binding`、`pricing`、`climate`、`table`/`mahjong`、`cards`、`consent`），协议提供一套通用的声明式布局、展示、表单与按钮组合原语。服务端可通过 `packages/server/src/resources/page-ui.ts` 导出的 `pageUi` 构造器在 `/session/page` 与 `/shops/:shopCode/player/page` 内任意拼装新画面，而无需新建客户端页面或路由。其中店铺账号面板的「身份」页只读展示已绑定身份（不附加刷新按钮），「钱包」页自动将充值余额（`paid`）与赠送余额（`free`）置顶并附带类型图标与着色标签胶囊，「选项」页签仅在店铺存在对玩家可见的选项（如店铺已启用隐私模式时的 `privacyMode`）时下发至 `accountMenu.tabs`（无可见选项时隐藏「选项」菜单入口，且 `view=options` 也不渲染 `privacyMode` 开关块）。
 
 ### 布局与展示块
 
@@ -201,7 +201,7 @@ WebSocket 不保证送达，所以页面在回到前台时、以及可见期间�
 
 发通知都走 `shop-hub-client.ts` 的 `pagesChanged`。Hub 只负责转发，不计算页面。
 
-添加卡片不走这条路，也不轮询。读卡器读到卡时，平台只把卡暂存起来，给等待中的玩家在这台机器上的页面发 `event.cardRead`，其他页面都收不到。客户端收到后调 `GET /session/cards/capture/:id`，这时才真正绑定。页面关了就没人来取，卡在窗口过期后丢弃。页面一旦切到后台，客户端就结束等待、不再来取，所以别人这时刷的卡不会绑定。客户端另外只在重连后和窗口结束时各问一次。
+添加卡片不走这条路，也不轮询。读卡器读到卡时，平台只把卡暂存起来，给等待中的玩家在这台机器上的页面发 `event.cardRead`，其他页面都收不到。客户端收到后调 `GET /session/cards/capture/:id`，这时才真正绑定。页面关了就没人来取，卡在窗口过期后丢弃。页面一旦切到后台，客户端就结束等待、不再来取，所以别人这时刷的卡不会绑定。客户端另外只在重连后和窗口结束时各问一次。账号卡片页（`/cards`）已关闭手动输入卡号添加入口，仅保留卡片列表管理与 MuNET 同步，并引导用户去 MuNET 添加卡片或在店铺内使用读卡器添加卡片。
 
 已知的延迟：商户改投币上限后，机台保存的「是否到上限」要等下一次币数变化或连接变化才更新。IO 进程没来得及断开连接就没了的话，平台要等心跳超时（150 秒）才知道它掉线，这段时间页面还会显示刷卡和投币。
 

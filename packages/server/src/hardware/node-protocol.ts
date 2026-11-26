@@ -103,6 +103,7 @@ export function safeParseNodeConfig(kind: NodeKind, raw: unknown) {
 // ---------------------------------------------------------------------------
 
 export const programNameSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+export const launcherRootSchema = z.string().trim().min(1).max(512);
 
 export const launcherProgramSchema = z.object({
   name: programNameSchema,
@@ -113,6 +114,7 @@ export type LauncherProgram = z.infer<typeof launcherProgramSchema>;
 export type LauncherRuntimeConfig = {
   default: string | null;
   programs: LauncherProgram[];
+  allowedRoots?: string[];
 };
 
 export type IotOutputPinConfig = {
@@ -146,6 +148,10 @@ export type NodeRuntimeConfig = LauncherRuntimeConfig | IotRuntimeConfig;
 // Commands & RPC replies
 // ---------------------------------------------------------------------------
 
+export const MAX_HOST_FILE_BYTES = 512 * 1024;
+export const MAX_HOST_PS_TIMEOUT_MS = 120_000;
+export const DEFAULT_HOST_PS_TIMEOUT_MS = 15_000;
+
 export const hostCommandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("switch"), name: programNameSchema }),
   z.object({ action: z.literal("key"), key: z.number().int().min(1).max(65535), count: z.number().int().min(1).max(20).default(1) }),
@@ -153,6 +159,42 @@ export const hostCommandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("screenshot") }),
   z.object({ action: z.literal("reboot") }),
   z.object({ action: z.literal("shutdown") }),
+  z.object({ action: z.literal("fs.list"), path: z.string().min(1).max(1024) }),
+  z.object({
+    action: z.literal("fs.read"),
+    path: z.string().min(1).max(1024),
+    encoding: z.enum(["utf8", "base64"]).default("utf8"),
+  }),
+  z.object({
+    action: z.literal("fs.write"),
+    path: z.string().min(1).max(1024),
+    content: z.string().max(750_000),
+    encoding: z.enum(["utf8", "base64"]).default("utf8"),
+    createDirs: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal("fs.mkdir"),
+    path: z.string().min(1).max(1024),
+    recursive: z.boolean().default(true),
+  }),
+  z.object({
+    action: z.literal("fs.rename"),
+    from: z.string().min(1).max(1024),
+    to: z.string().min(1).max(1024),
+    overwrite: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal("fs.delete"),
+    path: z.string().min(1).max(1024),
+    recursive: z.boolean().default(false),
+  }),
+  z.object({
+    action: z.literal("powershell"),
+    script: z.string().min(1).max(32_768),
+    cwd: z.string().min(1).max(1024).optional(),
+    timeoutMs: z.number().int().min(1_000).max(MAX_HOST_PS_TIMEOUT_MS).default(DEFAULT_HOST_PS_TIMEOUT_MS),
+    shell: z.enum(["powershell", "pwsh"]).default("powershell"),
+  }),
 ]);
 export type HostCommand = z.infer<typeof hostCommandSchema>;
 

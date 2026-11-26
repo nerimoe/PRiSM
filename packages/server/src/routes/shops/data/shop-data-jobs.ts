@@ -358,7 +358,7 @@ async function previewJob(
       json_extract(json_extract(payload_json,'$.value_json'),'$.coinCooldownMs') AS cooldown,
       json_extract(json_extract(payload_json,'$.value_json'),'$.defaultPresentId') AS present
       FROM shop_data_rows WHERE job_id=? AND table_name='app_settings'
-      AND json_extract(payload_json,'$.key') IN ('cashier.settings','venue.operations','player.registration')`,
+      AND json_extract(payload_json,'$.key') IN ('cashier.settings','venue.operations','player.registration','player.privacy')`,
       )
         .bind(job.id)
         .all<DataRow>()
@@ -379,6 +379,9 @@ async function previewJob(
       cashierEnabled: !!settingRows.find((r) => r.key === "cashier.settings")?.enabled,
       coinCooldownMs: settingRows.find((r) => r.key === "venue.operations")?.cooldown ?? 60000,
       defaultPresentId: settingRows.find((r) => r.key === "player.registration")?.present ?? null,
+      ...(settings.privacyModeEnabled === undefined
+        ? {}
+        : { privacyModeEnabled: !!settingRows.find((r) => r.key === "player.privacy")?.enabled }),
     };
     if (
       Object.entries(expected).some(
@@ -825,6 +828,7 @@ async function applyJob(
       ["cashier.settings", { enabled: s.cashierEnabled }],
       ["venue.operations", { timeZone: "UTC", coinCooldownMs: s.coinCooldownMs }],
       ["player.registration", { defaultPresentId: s.defaultPresentId }],
+      ["player.privacy", { enabled: !!s.privacyModeEnabled }],
     ] as const)
       statements.push(
         db

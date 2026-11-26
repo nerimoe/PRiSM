@@ -4,7 +4,7 @@ import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { getShop, getShopDeps, tenantMiddleware } from "../../middleware/tenant.js";
-import { requestLocale, type Notice } from "../../notices.js";
+import { notice, requestLocale, type Notice } from "../../notices.js";
 import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 import { shopBillsSql } from "../../resources/billed-sql.js";
 import { readShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
@@ -122,6 +122,7 @@ async function readShopView(
       needsBinding: false,
       shopBills: false,
       identityBindingRequired: !!shop.identity_binding_required,
+      privacyModeEnabled: !!shop.privacy_mode_enabled,
       checkoutGeo: false,
       liveBill: null,
       settledReceipt: null,
@@ -186,6 +187,7 @@ async function readShopView(
         needsBinding,
         shopBills,
         identityBindingRequired: !!shop.identity_binding_required,
+        privacyModeEnabled: !!shop.privacy_mode_enabled,
         checkoutGeo,
         liveBill,
         settledReceipt,
@@ -261,6 +263,37 @@ async function readShopView(
     });
   }
 
+  if (view === "options") {
+    const privacyModeEnabled = !!shop.privacy_mode_enabled;
+    if (needsBinding) {
+      return renderAccountSheetPage({
+        locale,
+        view: "options",
+        head,
+        needsBinding: true,
+        checkoutGeo: false,
+        privacyModeEnabled,
+      });
+    }
+    const player = await requireShopPlayer(c, shop);
+    let privacyMode = false;
+    if (privacyModeEnabled) {
+      const row = await c.env.DB.prepare("SELECT privacy_mode FROM players WHERE shop_id = ? AND id = ?")
+        .bind(shop.id, player.id)
+        .first<{ privacy_mode: number }>();
+      privacyMode = Boolean(row?.privacy_mode);
+    }
+    return renderAccountSheetPage({
+      locale,
+      view: "options",
+      head,
+      needsBinding: false,
+      checkoutGeo: false,
+      privacyModeEnabled,
+      playerOptions: privacyModeEnabled ? { privacyMode } : {},
+    });
+  }
+
   // view === "wallet"
   if (needsBinding) {
     return renderAccountSheetPage({
@@ -316,6 +349,7 @@ export function createShopPlayerPageRouter(dispatch: (c: C, request: Request) =>
     }
 
     let targetPath: string;
+    let method: "POST" | "PUT" = "POST";
     let payload: Record<string, unknown>;
     if (body.action === "checkout.confirm") {
       targetPath = `/api/v1/shops/${encodeURIComponent(shop.public_id)}/player/checkout/confirm`;
@@ -326,6 +360,10 @@ export function createShopPlayerPageRouter(dispatch: (c: C, request: Request) =>
         operationId: body.operationId,
         code: typeof body.payload?.code === "string" ? body.payload.code : "",
       };
+    } else if (body.action === "options.save") {
+      method = "PUT";
+      targetPath = `/api/v1/shops/${encodeURIComponent(shop.public_id)}/player/options`;
+      payload = body.payload ?? {};
     } else {
       jsonError(400, "Unsupported action.", "UNSUPPORTED_ACTION");
     }
@@ -336,7 +374,7 @@ export function createShopPlayerPageRouter(dispatch: (c: C, request: Request) =>
     const answered = await dispatch(
       c,
       new Request(new URL(targetPath, c.req.url), {
-        method: "POST",
+        method,
         headers,
         body: JSON.stringify(payload),
       }),
@@ -362,6 +400,14 @@ export function createShopPlayerPageRouter(dispatch: (c: C, request: Request) =>
         notices: [],
         celebration: checkoutCelebration(t),
         receipt,
+      });
+    }
+
+    if (body.action === "options.save") {
+      return c.json({
+        ok: true,
+        page: await readShopView(c, body.view),
+        notices: [notice("PLAYER_OPTIONS_SAVED", requestLocale(c.req.header("accept-language")))],
       });
     }
 

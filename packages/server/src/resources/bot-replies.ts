@@ -7,7 +7,19 @@
  * Times are shown at the shop's clock: the views carry UTC instants, which
  * the API boundary would otherwise convert only in the JSON, not in the words.
  */
-import { botMessage, renderBotReplyTemplate, formatOffsetTimestamp, type BotMessage, type BotMessagePlayer } from "@prism/core";
+import {
+  botMessage,
+  renderBotReplyTemplate,
+  formatOffsetTimestamp,
+  normalizeBotReplyChannel,
+  resolveBotReplyTarget,
+  type BotMessage,
+  type BotMessagePlayer,
+  type BotReplyGroup,
+  type ResolvedBotReplyTarget,
+} from "@prism/core";
+
+export { normalizeBotReplyChannel, resolveBotReplyTarget, type BotReplyGroup, type ResolvedBotReplyTarget };
 
 type R = Record<string, any>;
 

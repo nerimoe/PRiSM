@@ -176,4 +176,43 @@ describe("device event repository", () => {
     });
     expect(written.map((e) => e.id)).toEqual(["s1", "c3"]);
   });
+
+  it("lists shop-wide events across resources and non-resource shop operations with scope, category, and cursor filters", async () => {
+    const { db, repo } = fixture();
+    const t1 = new Date("2026-02-01T10:00:01.000Z");
+    const t2 = new Date("2026-02-01T10:00:02.000Z");
+    const t3 = new Date("2026-02-01T10:00:03.000Z");
+    const t4 = new Date("2026-02-01T10:00:04.000Z");
+    await repo.record({
+      events: [
+        event({ id: "dev-1", deviceId: "m1", capability: "power", kind: "request", name: "power.on", playerId: "p1", occurredAt: t1 }),
+        event({ id: "chk-fail", deviceId: null, capability: "shop", kind: "signal", name: "checkout.refused", origin: "platform", playerId: "p1", occurredAt: t2, payload: { code: "INSUFFICIENT_BALANCE" } }),
+        event({ id: "wallet-1", deviceId: null, capability: "shop", kind: "signal", name: "wallet.adjusted", origin: "platform", playerId: "p1", staffId: "st-1", occurredAt: t3 }),
+        event({ id: "chk-ok", deviceId: null, capability: "shop", kind: "signal", name: "checkout.settled", origin: "platform", playerId: "p1", occurredAt: t4 }),
+      ],
+    });
+    const otherShop = createDeviceEventRepository({ ...executorFor(db), shopId: "other" });
+    await otherShop.record({
+      events: [event({ id: "other-chk", deviceId: null, capability: "shop", kind: "signal", name: "checkout.settled", origin: "platform", occurredAt: t4 })],
+    });
+
+    const all = await repo.listShopEvents!({ scope: "all", limit: 10 });
+    expect(all.map((e) => e.id)).toEqual(["chk-ok", "wallet-1", "chk-fail", "dev-1"]);
+
+    const nonResource = await repo.listShopEvents!({ scope: "non_resource", limit: 10 });
+    expect(nonResource.map((e) => e.id)).toEqual(["chk-ok", "wallet-1", "chk-fail"]);
+
+    const resourceOnly = await repo.listShopEvents!({ scope: "resource", limit: 10 });
+    expect(resourceOnly.map((e) => e.id)).toEqual(["dev-1"]);
+
+    const checkouts = await repo.listShopEvents!({ scope: "non_resource", names: ["checkout.settled", "checkout.refused"], limit: 10 });
+    expect(checkouts.map((e) => e.id)).toEqual(["chk-ok", "chk-fail"]);
+
+    const page1 = await repo.listShopEvents!({ scope: "non_resource", limit: 2 });
+    expect(page1.map((e) => e.id)).toEqual(["chk-ok", "wallet-1"]);
+    const page2 = await repo.listShopEvents!({ scope: "non_resource", limit: 2, before: page1.at(-1)!.id });
+    expect(page2.map((e) => e.id)).toEqual(["chk-fail"]);
+
+    expect(await repo.listShopEvents!({ scope: "non_resource", limit: 5, before: "other-chk" })).toEqual([]);
+  });
 });

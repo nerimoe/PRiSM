@@ -4,7 +4,8 @@ import { PLAYER_BILLING_LOCK_SCOPE, withOperationLease } from "@prism/applicatio
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { staffPrincipal } from "../../middleware/auth.js";
-import { getShop, getShopDeps } from "../../middleware/tenant.js";
+import { getShop, getShopDeps, requestOrigin } from "../../middleware/tenant.js";
+import { publishShopErrorFact, publishShopFacts } from "../../events/shop-facts.js";
 import {
   toPlayerCheckoutPreviewView,
   toPlayerCheckoutResultView,
@@ -116,7 +117,7 @@ cashierRouter.get("/profiles/:playerId/billing-inputs", async (c) => {
 // Register Card Profile
 cashierRouter.post("/register", async (c) => {
   const shop = getShop(c);
-  await staffPrincipal(c, shop);
+  const staff = await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
   const body = z
     .object({
@@ -155,6 +156,17 @@ cashierRouter.post("/register", async (c) => {
         ).bind(shop.id, id, body.card.kind, body.card.uid, now),
       ]);
 
+      await publishShopFacts(
+        { db: c.env.DB, env: c.env, shopId: shop.id },
+        c.get("factOrigin") ?? requestOrigin(c, "merchant"),
+        [{
+          name: "player.changed",
+          playerId: id,
+          staffId: staff.staffId,
+          payload: { action: "cashier.register", cardKind: body.card.kind },
+        }],
+      );
+
       return c.json({ profile: await getCashierProfile(c, shop, id) }, 201);
     },
   );
@@ -176,16 +188,34 @@ cashierRouter.post("/profiles/:playerId/entry", async (c) => {
     },
     async () => {
       const profile = await getCashierProfile(c, shop, playerId);
+      const origin = c.get("factOrigin") ?? requestOrigin(c, "merchant");
       if (profile.status !== "active") {
+        await publishShopErrorFact(
+          { db: c.env.DB, env: c.env, shopId: shop.id },
+          origin,
+          { name: "entry.refused", playerId, staffId: staff.staffId, code: "PLAYER_DISABLED", message: "店铺玩家资格已停用" },
+        );
         jsonError(403, "店铺玩家资格已停用", "PLAYER_DISABLED");
       }
       if (profile.sessions.some((session) => session.status === "closed")) {
+        await publishShopErrorFact(
+          { db: c.env.DB, env: c.env, shopId: shop.id },
+          origin,
+          { name: "entry.refused", playerId, staffId: staff.staffId, code: "CASHIER_UNPAID_VISIT", message: "请先结清上次账单" },
+        );
         jsonError(409, "请先结清上次账单", "CASHIER_UNPAID_VISIT");
       }
 
       // The front desk is a resource: its check-in bills its group's plan, or its own.
       const resourceId = await cashierResourceId(c.env.DB, shop.id);
-      if (!resourceId) jsonError(409, "请先选择前台资源", "CASHIER_RESOURCE_REQUIRED");
+      if (!resourceId) {
+        await publishShopErrorFact(
+          { db: c.env.DB, env: c.env, shopId: shop.id },
+          origin,
+          { name: "entry.refused", playerId, staffId: staff.staffId, code: "CASHIER_RESOURCE_REQUIRED", message: "请先选择前台资源" },
+        );
+        jsonError(409, "请先选择前台资源", "CASHIER_RESOURCE_REQUIRED");
+      }
       const { session } = await deps.resourceBilling.activate({
         playerId,
         resourceId,

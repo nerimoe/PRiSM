@@ -18,7 +18,7 @@
  */
 import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { StaffActiveSessionListItem } from "@prism/application";
-import { botMessage, buildPricingRelationGraph, isStartablePricingKind, type BotMessage, type BotMessagePlayer, type PricingConfig, type PricingRelationGraph } from "@prism/core";
+import { ANONYMOUS_PLAYER_LABEL, botMessage, buildPricingRelationGraph, isStartablePricingKind, type BotMessage, type BotMessagePlayer, type PricingConfig, type PricingRelationGraph } from "@prism/core";
 import type { OccupancyService, ResourceOccupancy } from "./occupancy/service.js";
 
 export type RosterMember = {
@@ -26,6 +26,7 @@ export type RosterMember = {
   displayName: string | null;
   identities: Array<{ provider: string; subject: string; name?: string }>;
   since: Date;
+  privacyMode?: boolean;
 };
 
 export type RosterGroup =
@@ -114,11 +115,21 @@ export function createRoster(dependencies: {
     // Everyone's identities, each with what its platform calls them, for a bot there to say.
     const everyone = [...players.keys(), ...strangers];
     const identities = new Map<string, Array<{ provider: string; subject: string; name?: string }>>();
+    const privacyById = new Map<string, boolean>();
     if (everyone.length) {
-      const rows = await db.prepare(
-        `SELECT player_id, provider, subject, display_name FROM player_identities
-         WHERE shop_id = ? AND player_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, provider, subject`,
-      ).bind(shopId, JSON.stringify(everyone)).all<{ player_id: string; provider: string; subject: string; display_name: string | null }>();
+      const [rows, privacyRows] = await Promise.all([
+        db.prepare(
+          `SELECT player_id, provider, subject, display_name FROM player_identities
+           WHERE shop_id = ? AND player_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, provider, subject`,
+        ).bind(shopId, JSON.stringify(everyone)).all<{ player_id: string; provider: string; subject: string; display_name: string | null }>(),
+        db.prepare(
+          `SELECT id, privacy_mode FROM players
+           WHERE shop_id = ? AND id IN (SELECT value FROM json_each(?))`,
+        ).bind(shopId, JSON.stringify(everyone)).all<{ id: string; privacy_mode: number }>(),
+      ]);
+      for (const row of privacyRows.results) {
+        privacyById.set(row.id, Boolean(row.privacy_mode));
+      }
       for (const row of rows.results) {
         identities.set(row.player_id, [...(identities.get(row.player_id) ?? []),
           { provider: row.provider, subject: row.subject, ...(row.display_name ? { name: row.display_name } : {}) }]);
@@ -131,7 +142,7 @@ export function createRoster(dependencies: {
       }
     }
     const names = new Map(plans.map((plan) => [plan.id, plan.name]));
-    return { players, resources, identities, graph: relationGraph(plans), nameOf: (id: string) => names.get(id) ?? id, plans };
+    return { players, resources, identities, privacyById, graph: relationGraph(plans), nameOf: (id: string) => names.get(id) ?? id, plans };
   }
 
   type Read = Awaited<ReturnType<typeof read>>;
@@ -143,11 +154,16 @@ export function createRoster(dependencies: {
       displayName: occupant.displayName ?? player?.displayName ?? null,
       identities: player?.identities ?? state.identities.get(occupant.playerId) ?? [],
       since: occupant.since,
+      privacyMode: state.privacyById.get(occupant.playerId) ?? false,
     };
   }
 
-  const inShopMember = (player: InShop, since: Date): RosterMember => ({
-    playerId: player.playerId, displayName: player.displayName, identities: player.identities, since,
+  const inShopMember = (state: Read, player: InShop, since: Date): RosterMember => ({
+    playerId: player.playerId,
+    displayName: player.displayName,
+    identities: player.identities,
+    since,
+    privacyMode: state.privacyById.get(player.playerId) ?? false,
   });
 
   const total = (groups: RosterGroup[]) => groups.reduce((sum, group) => sum + group.members.length, 0);
@@ -171,7 +187,7 @@ export function createRoster(dependencies: {
         const id = session.pricingConfigId ?? null;
         const key = id ?? "";
         const group = planGroups.get(key) ?? { kind: "plan" as const, id, name: id ? state.nameOf(id) : PLACEHOLDER_PLAN_NAME, members: [] };
-        group.members.push(inShopMember(player, session.startedAt));
+        group.members.push(inShopMember(state, player, session.startedAt));
         planGroups.set(key, group);
       }
       const resourceGroups: RosterGroup[] = state.resources.flatMap((resource) => {
@@ -215,7 +231,7 @@ export function createRoster(dependencies: {
       if (!plan) return null;
       const members = [...state.players.values()].flatMap((player) => {
         const session = player.sessions.find((candidate) => candidate.pricingConfigId === plan.id);
-        return session ? [inShopMember(player, session.startedAt)] : [];
+        return session ? [inShopMember(state, player, session.startedAt)] : [];
       });
       return { total: members.length, groups: [{ kind: "plan", id: plan.id, name: plan.name, members }] };
     },
@@ -248,7 +264,7 @@ const OTHER_PLAYERS_LABEL = "其他";
  * they occupy and everyone else together under 「其他」, whatever plan they
  * bill; one resource or plan asked for by name (`named`) is listed as it is.
  */
-export function rosterMessage(roster: Roster, named = false): BotMessage {
+export function rosterMessage(roster: Roster, named = false, options: { hidePrivate?: boolean } = {}): BotMessage {
   const groups: Array<{ heading: (count: number) => string; members: RosterMember[] }> = [];
   const heading = (group: RosterGroup) => (count: number) =>
     group.kind === "resource" ? `${group.name} ( ${count}/${group.capacity} )` : `${group.name} ( ${count}人 )`;
@@ -267,8 +283,11 @@ export function rosterMessage(roster: Roster, named = false): BotMessage {
   const parts: Array<string | BotMessagePlayer> = [`[总计 ${total} 人]`];
   for (const group of shown) {
     parts.push(`\n\n${group.heading(group.members.length)}：\n`);
-    group.members.forEach(({ playerId, displayName, identities }, index) =>
-      parts.push(index ? ", - " : "- ", { playerId, displayName, identities }));
+    group.members.forEach(({ playerId, displayName, identities, privacyMode }, index) =>
+      parts.push(
+        index ? ", - " : "- ",
+        options.hidePrivate && privacyMode ? ANONYMOUS_PLAYER_LABEL : { playerId, displayName, identities },
+      ));
   }
   return botMessage(...parts);
 }

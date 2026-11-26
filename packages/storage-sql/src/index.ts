@@ -57,6 +57,7 @@ export const sqliteSchema = [
     id TEXT NOT NULL,
     display_name TEXT NOT NULL,
     report_excluded INTEGER NOT NULL DEFAULT 0 CHECK (report_excluded IN (0, 1)),
+    privacy_mode INTEGER NOT NULL DEFAULT 0 CHECK (privacy_mode IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'banned')),
     created_at TEXT NOT NULL,
     PRIMARY KEY (shop_id, id)

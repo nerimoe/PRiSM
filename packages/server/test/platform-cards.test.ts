@@ -4,8 +4,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { splitD1MigrationStatements } from "@prism/storage-sql";
-import type { AppBindings } from "../src/bindings.js";
+import type { AppBindings, Env } from "../src/bindings.js";
+import { createApp } from "../src/app.js";
+import { sha256 } from "../src/crypto.js";
 import { createD1DatabaseFromSqlite } from "../src/local-server.js";
+import { bindReaderCard } from "../src/resources/card-capture.js";
 import { createCardStore } from "../src/resources/cards.js";
 import { cardsRouter } from "../src/routes/platform/cards.js";
 
@@ -57,7 +60,8 @@ async function fixture() {
   // Account links are identities too; count the cards and chat identities the test is about.
   const count = (table: string) =>
     (sqlite.query(`SELECT COUNT(*) AS n FROM ${table}${table === "player_identities" ? " WHERE provider <> 'web-account'" : ""}`).get() as { n: number }).n;
-  return { sqlite, store, remove, count };
+  const env = { DB: db, APP_ORIGIN: "https://example.test", URL_ENCRYPTION_KEY: KEY } as unknown as Env;
+  return { sqlite, db, app, env, store, remove, count };
 }
 
 describe("deleting an account card", () => {
@@ -108,5 +112,86 @@ describe("deleting an account card", () => {
     sqlite.run("DELETE FROM player_identities WHERE provider = 'web-account' AND subject = 'u1'");
     expect((await remove("card", "")).status).toBe(200);
     expect(sqlite.query("SELECT id FROM cards WHERE id='card'").get()).toBeNull();
+  });
+});
+
+describe("manual card addition disabled & reader/MuNET flows preserved", () => {
+  it("rejects manual card-number creation on cardsRouter and /api/v1/cards without inserting a card", async () => {
+    const { sqlite, db, app, env, count } = await fixture();
+    const res = await app.request(
+      "/cards",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "New Card", accessCode: "11112222333344445555" }),
+      },
+      env,
+    );
+    expect(res.status).toBe(410);
+    const json = (await res.json()) as { error: { code: string; message: string } };
+    expect(json.error.code).toBe("MANUAL_CARD_ADD_DISABLED");
+    expect(json.error.message).toContain("MuNET");
+    expect(json.error.message).toContain("读卡器");
+    expect(count("cards")).toBe(3);
+
+    // Full app route enforces auth and returns localized notice/message.
+    sqlite.run("INSERT INTO auth_sessions(id,user_id,token_hash,expires_at) VALUES ('s1','u1',?,?)", [
+      await sha256("user-token"),
+      new Date(Date.now() + 86_400_000).toISOString(),
+    ]);
+    const fullApp = createApp();
+    const unauth = await fullApp.fetch(
+      new Request("https://example.test/api/v1/cards", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "New Card", accessCode: "11112222333344445555" }),
+      }),
+      env,
+    );
+    expect(unauth.status).toBe(401);
+
+    const enRes = await fullApp.fetch(
+      new Request("https://example.test/api/v1/cards", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer user-token",
+          "accept-language": "en-US",
+        },
+        body: JSON.stringify({ label: "New Card", accessCode: "11112222333344445555" }),
+      }),
+      env,
+    );
+    expect(enRes.status).toBe(410);
+    const enJson = (await enRes.json()) as { error: { code: string; message: string; notice: { code: string } } };
+    expect(enJson.error.code).toBe("MANUAL_CARD_ADD_DISABLED");
+    expect(enJson.error.message).toContain("MuNET");
+    expect(enJson.error.message).toContain("card reader");
+    expect(enJson.error.notice.code).toBe("MANUAL_CARD_ADD_DISABLED");
+    expect(count("cards")).toBe(3);
+  });
+
+  it("keeps listing cards, MuNET sync check, and store card-reader capture working", async () => {
+    const { db, app, env, store } = await fixture();
+    const readerCard = "11112222333344445555";
+    const captured = await bindReaderCard(
+      db,
+      KEY,
+      { id: "cap-1", shopId: "shop1", userId: "u1", playerId: "p1", expiresAt: Date.now() + 15_000 },
+      { type: "aime", accessCode: readerCard },
+    );
+    expect(captured).toEqual({ status: "added", cardType: "aime" });
+    expect(await store("shop1").playerOf(readerCard)).toBe("p1");
+
+    const listRes = await app.request("/cards", { method: "GET" }, env);
+    expect(listRes.status).toBe(200);
+    const listJson = (await listRes.json()) as { cards: Array<{ accessCode: string; source: string }> };
+    expect(listJson.cards.some((card) => card.accessCode === readerCard && card.source === "reader")).toBe(true);
+
+    const syncRes = await app.request("/cards/sync", { method: "POST" }, env);
+    expect(syncRes.status).toBe(200);
+    const syncJson = (await syncRes.json()) as { authorizationRequired: boolean; cards: Array<{ accessCode: string }> };
+    expect(syncJson.authorizationRequired).toBe(true);
+    expect(syncJson.cards.some((card) => card.accessCode === readerCard)).toBe(true);
   });
 });

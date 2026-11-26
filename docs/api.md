@@ -102,8 +102,8 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `POST` | `/rpc/player/redeem` | 输入 CDK 兑换码兑换礼物。 |
 | `POST` | `/rpc/player/business-items/:businessItemId/purchase` | 购买前台发布的非计时服务商品（如门票、预约费等），要求处于活跃会话内，并即时扣减余额。 |
 | `GET` | `/rpc/player/business-item-orders` | 列出该玩家本人的非计时服务购买履约订单。 |
-| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
-| `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
+| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings\|options[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
+| `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`options.save`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
 
 ### 玩家接口调用示例
 
@@ -242,6 +242,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `GET` | `/rpc/staff/machine-connections` | 获取游戏机器软件的 WebSocket 在线状态、能力列表、连接时间、最后心跳和断开时间。 |
 | `POST` | `/rpc/staff/device-actions` | 员工从后台直接发起设备动作。设备看板使用它发送 `power.on` / `power.off` / `door.open` / `ac.set_temperature` / `coin` / `aime.scan`，请求体为 `{ type, target: { kind, id }, payload? }`，返回 `{ action }`。 |
 | `GET` | `/rpc/staff/device-commands?limit=50` | 审计近期所有硬件发送指令的流水。失败命令会在 `payload.executorFailure.message` 中返回执行器原因，设备看板会直接展示。 |
+| `GET` | `/rpc/staff/events`（以及平台路由 `GET /api/v1/merchant/events?shopId=`） | 查询全店操作记录（同时覆盖绑定资源的设备动作、入场/上机，以及不绑定单个资源的结账、结账失败、余额调整、兑换、订单与店铺设置变更，`device` 为 `null`）。支持 `scope=all\|non_resource\|resource`、`category=all\|checkout\|session\|wallet\|redeem\|device\|shop`、`resourceId`、`playerId`、`capability`、`limit`（1–200）及游标 `before` 分页；返回 `{ nextCursor, events }`，每条附带 `device`、`player`、`staff`、`via` 与按店铺时区格式化的 `at`。 |
 | `GET` | `/rpc/staff/reports/summary?from=<iso>&to=<iso>` | 查询特定时段内未归档账单的收入；消费笔数、分发道具数和投币次数仍含归档账单。 |
 | `GET` | `/rpc/staff/reports/analytics?days=7\|14\|30` 或 `?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` | 商户「历史」页与首页「仪表板」共用的经营统计汇总：支持 `days=7\|14\|30` 预设或自定义本地日期区间（含首尾最多 366 天，非法范围返回 400 `INVALID_REPORT_RANGE`）。按店铺时区归属自然日与小时，返回今日/昨日、当前周期/上一周期对比（含按店铺「单次有效在店时长上限」（默认 12 小时）截断计算的 `medianDurationMinutes`、`avgDurationMinutes`、`totalEffectiveDurationMinutes`、`totalInactiveDurationMinutes`、`inactiveCheckoutCount` 与 `medianTicket`/`avgTicket`）、每日趋势（营收、结账笔数、到店人次、投币次数）、24 小时客流分布、收款方式分布（余额结算及前台微信/支付宝/现金/其他，均排除已归档账单），以及按综合热度降序的 `topDevicesByHeat`（`plays > 0`；同一玩家在同一资源 3 分钟内的投币/刷卡/访问/游玩操作合并为一次游玩 `plays`，平局依次比较参与玩家数 `players` 与原始信号总数）。为兼容已有调用方仍返回按投币降序的 `topDevices`（`coins > 0`）。每个资源条目均含 `operations`、`coins`、`swipes`、`visits`、`plays`、`players`。 |
 | `GET` / `PUT` | `/api/v1/shops/:shopCode/staff/reports/settings` | 店铺统计设置 `{ settings: { stayCapHours } }`：每次计时从入场起最多计入多少小时有效在店时长，超出部分视为忘记结账（默认 12，整数 1–72，超出范围返回 422）。读取需店员身份，修改仅限店铺负责人；保存在 `app_settings` 的 `reports.settings`，统计汇总与 `source=1` 事实批次（返回 `stayCapHours`）均使用该值。 |
@@ -453,7 +454,7 @@ curl -X POST https://prism.example.com/rpc/integration/players/by-identity/devic
 
 HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请求带 `Authorization: Bearer <deviceToken>`。令牌在设备看板把 HINATA IO 设为直连后签发、只显示一次；令牌无效或设备停用返回 401。平台通过这条连接下发 `SET_CARD`、`KEY_PRESS`，机台回报 `event.cardStateChanged`、`event.cardConsumed`、`event.ledSet`。扫码刷卡在直连机台上会等到游戏取走卡再返回（不等读卡器结果灯），响应的 `card` 字段为 `read`／`not_read`（外部中继为 `sent`）。协议、能力模型和设备日志见 [集成与设备](integrations-and-machines.md)。
 
-机台回报的卡片事件不保存卡号：平台认出卡主人后记在事件的玩家上，日志里只留卡类型和来源。扫码页可以在直连机台的读卡器上添加卡片：`POST /api/v1/devices/session/cards/capture`（`{ticket, location?}`）打开 60 秒的窗口，`GET /api/v1/devices/session/cards/capture/:id?ticket=` 读取结果（`waiting`、`added`、`bound`、`exists`、`taken`、`unsupported`、`expired`）。扫码确认页（`state.gate` 为 `entry`）的 `state.billing.rules.caps` 给出未结账账单到现在的金额 `unsettled`、每个方案当前时段的封顶（封顶为 0 的时段不封顶，不列出）和包含这些方案的跨方案封顶，各带 `priceCap` 与此前已计的 `paidBefore`，见 [资源与资源组](resources.md)。资源的 `capacity`（容量）与 `occupancyMinutes`（占用时长）在商户资源接口里读写；桌游桌的开桌人数就是 `capacity`（2–8，否则 `TABLE_CAPACITY_INVALID`；有人在座时修改返回 `TABLE_IN_USE`），`table` 能力的配置包含 `pricingConfigIds` 与 `startWhen`；当前占用 `GET /api/v1/merchant/machines/occupancy?shopId=`，占用记录 `GET /api/v1/merchant/machines/:id/occupancy`。见 [卡片、占用与查人](occupancy.md)。
+机台回报的卡片事件不保存卡号：平台认出卡主人后记在事件的玩家上，日志里只留卡类型和来源。账号级卡片管理使用 `/api/v1/cards`（`GET` 列出卡片、`POST /api/v1/cards/sync` 同步 MuNET 卡片、`DELETE /api/v1/cards/:id` 删除卡片；手动输入卡号新增卡片的 `POST /api/v1/cards` 已关闭，返回 `410 MANUAL_CARD_ADD_DISABLED`，提示前往 MuNET（页面内附直达 `https://portal.mumur.net` 按钮）添加或使用店内读卡器添加）。扫码页可以在直连机台的读卡器上添加卡片：`POST /api/v1/devices/session/cards/capture`（`{ticket, location?}`）打开 60 秒的窗口，`GET /api/v1/devices/session/cards/capture/:id?ticket=` 读取结果（`waiting`、`added`、`bound`、`exists`、`taken`、`unsupported`、`expired`）。扫码确认页（`state.gate` 为 `entry`）的 `state.billing.rules.caps` 给出未结账账单到现在的金额 `unsettled`、每个方案当前时段的封顶（封顶为 0 的时段不封顶，不列出）和包含这些方案的跨方案封顶，各带 `priceCap` 与此前已计的 `paidBefore`，见 [资源与资源组](resources.md)。资源的 `capacity`（容量）与 `occupancyMinutes`（占用时长）在商户资源接口里读写；桌游桌的开桌人数就是 `capacity`（2–8，否则 `TABLE_CAPACITY_INVALID`；有人在座时修改返回 `TABLE_IN_USE`），`table` 能力的配置包含 `pricingConfigIds` 与 `startWhen`；当前占用 `GET /api/v1/merchant/machines/occupancy?shopId=`，占用记录 `GET /api/v1/merchant/machines/:id/occupancy`。见 [卡片、占用与查人](occupancy.md)。
 
 原先只在本地 Bun 服务端提供的 `GET /rpc/machine/ws`（`hello`/`ack`/`ping` 协议、`machine_ws` 执行器）已移除。
 
@@ -523,3 +524,16 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 历史页玩家筛选：`GET /api/v1/shops/:shopCode/staff/reports/player-options` 返回 `{ players: [{ id, displayName, isStaff }] }`，需员工只读权限。`reports/analytics?source=1`、`reports/checkouts` 接受 `excludePlayers=<JSON string array>`（最多 2000 个非空玩家编号）；过滤在分页前执行，缺省不排除，非法参数为 400 `INVALID_REPORT_FILTER`。事实结果返回 `source.excludedPlayerIds`，前端用来避免切换筛选期间展示旧数据。
 
 持久统计排除：`GET/PUT staff/players/:playerId/report-settings` 读取/修改本店玩家 `{ excluded: boolean }`（PUT 需管理权限）；当前店主和店员自动排除。`GET staff/reports/exclusions` 返回 `{ excludedPlayerIds }`。`reports/analytics?source=1` 自动排除持久名单；`reports/checkouts?archive=active` 为默认（未归档且未被排除），`archive=all` 和 `archive=archived` 包含被排除玩家。
+
+## 玩家选项与隐私模式
+
+- **统一选项注册表（`@prism/core` `playerOptionsRegistry`）**：每个玩家选项声明 `playerVisible: boolean`：
+  - `excludeFromReports`（「排除经营统计」，迁移 `0059`）：`playerVisible: false`，仅限店员端读取与修改；玩家接口读取或修改均返回 `403 PLAYER_OPTION_FORBIDDEN`。
+  - `privacyMode`（「隐私模式」，迁移 `0066_player_privacy_mode.sql`）：`playerVisible: true`，仅在店铺设置开启 `privacyModeEnabled` 时对玩家可见并可编辑。
+- **店铺开关**：`privacyModeEnabled` 默认 `false`（存储在 `app_settings` 键 `player.privacy`），通过 `GET /api/v1/shops/:shopCode` 公开返回 `shop.privacyModeEnabled`，并通过 `GET/PUT settings` 及 `staff/settings` 读写（需管理权限）。
+- **玩家接口与服务端驱动面板**：
+  - `GET /api/v1/shops/:shopCode/player/options`：仅返回当前对玩家可见的选项键值（`{ options }`）；店铺关闭隐私模式时返回 `{ options: {} }`。
+  - `GET /api/v1/shops/:shopCode/player/options/:key`、`PUT/PATCH /api/v1/shops/:shopCode/player/options`：校验选项必须存在且 `playerVisible: true`，否则拒绝（`excludeFromReports` 返回 `403 PLAYER_OPTION_FORBIDDEN`；店铺关闭隐私模式时写 `privacyMode` 返回 `403 PRIVACY_MODE_DISABLED`；无效键名或非布尔值返回 `400`）。
+  - 服务端驱动页 `GET /api/v1/shops/:shopCode/player/page` 在店铺关闭 `privacyModeEnabled`（即 0 个玩家可见选项）时不向 `accountMenu.tabs` 下发 `options` 页签，菜单隐藏「选项」入口；且 `view=options` 也不返回 `privacyMode` 开关块。店铺开启隐私模式时下发 `options` 页签与开关，并通过 `POST /player/action`（`action: "options.save"`）保存。
+- **店员接口**：`GET/PUT /api/v1/shops/:shopCode/staff/players/:playerId/options` 统一返回和更新 `{ options: { excludeFromReports, privacyMode }, meta: { isStaff, privacyModeEnabled } }`（原 `staff/players/:playerId/report-settings` 兼容保留）。
+- **数据备份**：v1/v7 备份导出与导入保留 `players.privacy_mode` 与 `app_settings` 中的 `player.privacy`；导入缺少 `privacy_mode` 的旧备份时默认回退为 `0`。

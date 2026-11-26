@@ -103,3 +103,65 @@ export function renderBotReplyTemplate(
   }
   return botMessage(...parts, text.slice(start));
 }
+
+/** Per-group command reply configuration, mirroring `AnnouncementGroup` destinations. */
+export type BotReplyGroup = {
+  id: string;
+  name: string;
+  /** Target groups/chats (`onebot:42`, `onebot:private:10001`). Use `["*"]` to match any chat not matched specifically. */
+  to: readonly string[];
+  /** Command reply templates for this group, overriding bot-level `replyTemplates`. */
+  templates: Readonly<Record<string, string>>;
+  /** When true, commands in these chats ignore player privacy mode (e.g. `/list`). */
+  ignorePrivacyMode?: boolean;
+};
+
+export function normalizeBotReplyChannel(channel: string, provider?: string): string {
+  const trimmed = channel.trim();
+  if (provider && trimmed.startsWith("private:")) return `${provider}:${trimmed}`;
+  return trimmed;
+}
+
+export type ResolvedBotReplyTarget = {
+  allowed: boolean;
+  group: BotReplyGroup | null;
+  templates: Record<string, string>;
+  ignorePrivacyMode: boolean;
+};
+
+/** Resolves whether a chat/channel is allowed for command replies and which templates & privacy override apply. */
+export function resolveBotReplyTarget(
+  config: { replyTemplates?: Readonly<Record<string, string>>; replyGroups?: readonly BotReplyGroup[] },
+  channel: string,
+  provider?: string,
+): ResolvedBotReplyTarget {
+  const groups = config.replyGroups ?? [];
+  const baseTemplates = config.replyTemplates ?? {};
+  if (!groups.length) {
+    return {
+      allowed: true,
+      group: null,
+      templates: { ...baseTemplates },
+      ignorePrivacyMode: false,
+    };
+  }
+  const normalized = normalizeBotReplyChannel(channel, provider);
+  const candidates = new Set([channel.trim(), normalized].filter(Boolean));
+  const exact = groups.find((group) => group.to.some((target) => candidates.has(target.trim())));
+  const wildcard = groups.find((group) => group.to.some((target) => target.trim() === "*"));
+  const matched = exact ?? wildcard ?? null;
+  if (!matched) {
+    return {
+      allowed: false,
+      group: null,
+      templates: { ...baseTemplates },
+      ignorePrivacyMode: false,
+    };
+  }
+  return {
+    allowed: true,
+    group: matched,
+    templates: { ...baseTemplates, ...matched.templates },
+    ignorePrivacyMode: !!matched.ignorePrivacyMode,
+  };
+}

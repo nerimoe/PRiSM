@@ -26,7 +26,8 @@ import {
   Ungroup,
 } from "lucide-react";
 import { Api, api, playerOperation, type DeviceEvent, type OccupancyHistoryEntry, type Resource, type ResourceGroup, type ResourceOccupancyView } from "../../api";
-import { ClimateControls, climateModeIcon, climateModeName, climateSummary } from "../ClimateControls";
+import { ClimateControls, climateModeIcon, climateSummary } from "../ClimateControls";
+import { OperationEventList, ShopOperationHistory, actionLabels } from "./OperationHistory";
 import { useI18n } from "../../i18n";
 import { billTime, groupByDate, shortDateLabel } from "../bill-time";
 import {
@@ -108,6 +109,7 @@ export function ResourcesPage() {
   const [qr, setQR] = useState<Resource | null>(null);
   const [acting, setActing] = useState<Resource | null>(null);
   const [history, setHistory] = useState<Resource | null>(null);
+  const [globalHistory, setGlobalHistory] = useState(false);
   const [editorLocked, setEditorLocked] = useState(false);
   const [editorWide, setEditorWide] = useState<boolean | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -279,6 +281,14 @@ export function ResourcesPage() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <h2 className="text-xl font-semibold">{t("店内资源")}</h2>
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className={button}
+            onClick={() => setGlobalHistory(true)}
+          >
+            <History size={16} aria-hidden="true" />
+            {t("操作记录")}
+          </button>
           {(hasStateDevices || hasConnections) && (
             <button
               type="button"
@@ -449,6 +459,15 @@ export function ResourcesPage() {
           xl
         >
           <ResourceRecords device={history} playerHref={(playerId) => `/merchant/${segment(shopCode)}/dashboard?player=${segment(playerId)}`} />
+        </Modal>
+      )}
+      {globalHistory && (
+        <Modal
+          title="操作记录"
+          close={() => setGlobalHistory(false)}
+          wide
+        >
+          <ShopOperationHistory shopId={shopId} shopCode={shopCode} devices={devices ?? []} />
         </Modal>
       )}
       {editing && (() => {
@@ -843,117 +862,6 @@ function ResourceCard({
     </article>
   );
 }
-
-/**
- * Pair each request with its result so an action is one line. A result whose
- * request fell outside the loaded page is shown on its own.
- */
-function timeline(events: DeviceEvent[]) {
-  const results = new Map(
-    events.filter((e) => e.kind === "result" && e.operationId).map((e) => [e.operationId!, e]),
-  );
-  const requested = new Set(events.filter((e) => e.kind === "request").map((e) => e.operationId));
-  return events
-    .filter((e) => e.kind !== "result" || !requested.has(e.operationId))
-    .map((event) => ({
-      event: event.kind === "result" ? { ...event, kind: "request" as const } : event,
-      result: event.kind === "result" ? event : event.operationId ? results.get(event.operationId) : undefined,
-    }));
-}
-
-function changeLabel(event: DeviceEvent, t: (message: string, values?: Record<string, string | number>) => string): string {
-  const to = event.payload.to;
-  if (event.name === "power") return t(to === "on" ? "电源已开启" : "电源已关闭");
-  if (event.name === "link") return t(to === "online" ? "机台已连接" : "机台已断开");
-  if (event.name === "idle") return t(to === true ? "已闲置" : "恢复使用");
-  if (event.name === "climate" && to && typeof to === "object") {
-    const setting = to as { mode?: string; temperature?: number | null };
-    const mode = t(climateModeName(String(setting.mode ?? "")));
-    return setting.mode !== "off" && typeof setting.temperature === "number"
-      ? t("空调：{mode} {value}°", { mode, value: setting.temperature })
-      : t("空调：{mode}", { mode });
-  }
-  return event.name;
-}
-
-/**
- * Where a request came from, for the channels a person or a rule stands behind.
- * A machine's own reports (`relay`, `ha`) already say so by their direction.
- */
-const viaLabels: Partial<Record<NonNullable<DeviceEvent["via"]>["channel"], string>> = {
-  page: "扫码页",
-  merchant: "商户后台",
-  bot: "Bot",
-  api: "接口",
-  system: "平台规则",
-};
-
-const commandOutcomes: Record<string, string> = { answered: "已回复", refused: "已拒绝", failed: "出错" };
-
-/** Who said a command to a bot, as the chat named them. */
-function chatName(value: unknown): string {
-  const who = (value ?? {}) as { name?: unknown; subject?: unknown };
-  return typeof who.name === "string" && who.name ? who.name : typeof who.subject === "string" ? who.subject : "";
-}
-
-const actionLabels: Record<string, string> = {
-  checkout: "结账",
-  "power.on": "开机",
-  "power.off": "关机",
-  "power.keep": "延迟关机",
-  "climate.on": "开空调",
-  "climate.off": "关空调",
-  "climate.set_mode": "切换空调模式",
-  "climate.set_temperature": "设定温度",
-  "climate.set_fan_mode": "调整风速",
-  coin: "投币",
-  "key.press": "按键",
-  "door.open": "获取开门密码",
-  "aime.scan": "刷卡",
-  "card.state": "读卡状态变化",
-  "card.consumed": "卡片已送入游戏",
-  "led.set": "灯光",
-  "cabinet.coin": "机台投币",
-  "cabinet.credit": "机内加币",
-  "cabinet.consumed": "机内扣币",
-  "cabinet.activity": "机台活动",
-  "cabinet.reset": "投币计数清零",
-  "host.switch": "切换游戏",
-  "host.key": "远程按键",
-  "host.text": "文字输入",
-  "host.screenshot": "截取画面",
-  "host.reboot": "重启主机",
-  "host.shutdown": "关闭主机",
-  "reader.connected": "读卡器插入",
-  "reader.disconnected": "读卡器拔出",
-  // What happened at the shop without a device doing anything (capability `shop`).
-  "session.started": "入场",
-  "session.stopped": "停止计费",
-  "checkout.settled": "结账",
-  "checkout.refused": "结账失败",
-  "resource.visited": "访问资源链接",
-  "wallet.adjusted": "调整余额",
-  "assets.adjusted": "调整资产",
-  "gift.redeemed": "兑换礼物",
-  "card.bound": "添加卡片",
-  "occupancy.started": "上机",
-  "seat.changed": "上下桌",
-};
-
-/** Why a request was turned away, for the reasons a shop meets most; otherwise the platform's own words or code. */
-const refusalReasons: Record<string, string> = {
-  DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION: "玩家未入场",
-  COIN_COMMAND_COOLDOWN_ACTIVE: "投币冷却中",
-  COIN_COOLDOWN: "投币冷却中",
-  COIN_CABINET_FULL: "达到机台投币上限",
-  COIN_VIA_SWIPE: "请通过刷卡投币",
-  DEVICE_POWER_OFF: "设备未开机",
-  DEVICE_NOT_FOUND: "没有这个设备",
-  DEVICE_DISABLED: "资源已停用",
-  DEVICE_ACTION_UNSUPPORTED: "这里不支持此操作",
-  SCAN_IDENTITY_NOT_BOUND_TO_PLAYER: "玩家没有绑定的卡片",
-  INSUFFICIENT_BALANCE: "余额不足",
-};
 
 type Books = {
   players: Array<{ credit: number; remain: number }>;
@@ -1718,12 +1626,6 @@ function ResourceHistory({ device }: { device: Resource }) {
     void load();
   }, [load]);
 
-  const todayDate = billTime(new Date().toISOString(), timeZone || undefined).date;
-  const groups = useMemo(
-    () => (events ? groupByDate(timeline(events), (item) => item.event.at, timeZone || undefined) : []),
-    [events, timeZone],
-  );
-
   return (
     <HistoryColumn
       title="操作记录"
@@ -1752,127 +1654,7 @@ function ResourceHistory({ device }: { device: Resource }) {
       ) : !events.length ? (
         <State empty />
       ) : (
-        <div className="grid gap-3">
-          {groups.map((group) => (
-            <div key={group.localDate} className="grid gap-1.5">
-              <div className="px-1 text-xs font-medium text-ink/45">
-                {shortDateLabel(group.localDate, todayDate)}
-              </div>
-              <div className="bill-entry !mb-0 !p-0 divide-y divide-ink/[0.06] overflow-hidden">
-                {group.items.map(({ event: e, result }) => {
-                  const inbound = e.kind === "signal";
-                  const outcome = result ? String(result.payload.outcome) : null;
-                  const detail: string[] = [];
-                  if (e.kind === "signal" && e.name.startsWith("cabinet.")) {
-                    const { coins, credits, credit, previousCredit, previousTotalCoin, totalCoin } = e.payload;
-                    if (e.name === "cabinet.coin" && typeof coins === "number") detail.push(t("投入 {coins} 枚", { coins }));
-                    if (e.name === "cabinet.credit" && typeof credits === "number") detail.push(t("增加 {credits} 币", { credits }));
-                    if (e.name === "cabinet.consumed" && typeof credits === "number") detail.push(t("消耗 {credits} 币", { credits }));
-                    if (typeof credit === "number") detail.push(typeof previousCredit === "number"
-                      ? t("本次读数：{before} → {after} 币", { before: previousCredit, after: credit })
-                      : t("机内剩余 {credit} 币", { credit }));
-                    if (e.name === "cabinet.reset" && typeof previousTotalCoin === "number" && typeof totalCoin === "number") {
-                      detail.push(t("累计投币：{before} → {after} 枚", { before: previousTotalCoin, after: totalCoin }));
-                    }
-                  }
-                  if (result && typeof result.payload.message === "string") detail.push(result.payload.message);
-                  // A card sent from a page or a bot, and a coin the cabinet's rule added: the rest are the usual kind.
-                  if (e.kind === "signal" && e.payload.card && e.payload.cardFrom === "platform") detail.push(t("虚拟刷卡"));
-                  if (e.kind === "request" && e.name === "coin" && e.payload.cause === "card") detail.push(t("自动投币"));
-                  if (e.name === "card.bound" && typeof e.payload.type === "string") detail.push(e.payload.type);
-                  const command = e.name === "bot.command" ? e.payload : null;
-                  // A request turned away before it reached the device, and what happened at the shop itself.
-                  const refusedAction = e.kind === "signal" && e.name.endsWith(".refused") ? e.name.slice(0, -".refused".length) : null;
-                  const ours = e.kind === "signal" && e.origin === "platform";
-                  if (e.player && !command) detail.unshift(t("玩家：{name}", { name: e.player.name ?? e.player.id }));
-                  if (refusedAction) {
-                    const code = String(e.payload.code ?? "");
-                    const message = typeof e.payload.message === "string" ? e.payload.message : "";
-                    detail.push(refusalReasons[code] ? t(refusalReasons[code]) : message || code);
-                  }
-                  if (command) {
-                    const from = chatName(command.from);
-                    const target = chatName(command.target);
-                    if (from) detail.push(target ? t("{from} 代 {target}", { from, target }) : from);
-                  } else {
-                    // Something done through this resource happened to another one.
-                    if (e.device) detail.push(t("设备：{name}", { name: e.device.name ?? e.device.id }));
-                    const source = e.via && e.kind !== "change" ? viaLabels[e.via.channel] : undefined;
-                    if (source) detail.push(t("来自：{source}", { source: e.via!.resource?.name ? `${t(source)} ${e.via!.resource.name}` : t(source) }));
-                  }
-                  const statusText = command
-                    ? t(commandOutcomes[String(command.outcome)] ?? "已回复")
-                    : refusedAction
-                      ? t("已拒绝")
-                      : ours
-                        ? t("已完成")
-                        : e.kind === "signal"
-                          ? t("机台回报")
-                          : e.kind === "change"
-                            ? t(e.origin === "observer" ? "检测到" : "机台回报")
-                            : outcome === "ok"
-                              ? t("已完成")
-                              : outcome === "failed"
-                                ? t("失败")
-                                : t("结果待确认");
-                  const statusBadgeTone =
-                    refusedAction || outcome === "failed"
-                      ? "bg-coral/10 text-coral"
-                      : ours || outcome === "ok"
-                        ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400"
-                        : "bg-ink/[0.05] text-ink/60";
-                  return (
-                    <div
-                      className="flex items-start justify-between gap-3 px-3.5 py-2.5 text-sm"
-                      key={e.id}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <span className="flex flex-wrap items-center gap-1.5 font-medium text-ink">
-                          {/* Direction is the difference between "we asked" and
-                              "the machine reported", which is what makes a card event
-                              worth logging at all. */}
-                          {e.kind !== "change" && !command && !ours && (
-                            <span
-                              className={inbound ? "text-mint" : "text-ink/45"}
-                              title={inbound ? t("机台回报") : t("平台下发")}
-                            >
-                              {inbound ? "←" : "→"}
-                            </span>
-                          )}
-                          {command
-                            ? `/${[String(command.command ?? ""), ...(Array.isArray(command.args) ? command.args.map(String) : [])].join(" ")}`
-                            : refusedAction
-                            ? t("{action}被拒绝", { action: t(actionLabels[refusedAction] ?? refusedAction) })
-                            : e.kind === "change"
-                            ? changeLabel(e, t)
-                            : e.name === "card.login"
-                              ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
-                              : t(actionLabels[e.name] ?? e.name)}
-                        </span>
-                        {detail.length > 0 && (
-                          <p className="mt-0.5 text-xs text-ink/65">{detail.join(" · ")}</p>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${statusBadgeTone}`}
-                        >
-                          {statusText}
-                        </span>
-                        <time
-                          dateTime={e.at}
-                          className="text-[11px] text-ink/45 tabular-nums"
-                        >
-                          {billTime(e.at, timeZone || undefined).time}
-                        </time>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
+        <OperationEventList events={events} grouped timeZone={timeZone || undefined} />
       )}
     </HistoryColumn>
   );

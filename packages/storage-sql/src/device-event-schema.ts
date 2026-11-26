@@ -120,6 +120,7 @@ export const deviceEventSchema = [
   `CREATE INDEX IF NOT EXISTS resource_occupancies_open ON resource_occupancies(shop_id, resource_id, ended_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS device_capabilities_credential ON device_capabilities(credential_hash) WHERE credential_hash IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS device_events_device ON device_events(shop_id, device_id, occurred_at)`,
+  `CREATE INDEX IF NOT EXISTS device_events_shop_occurred ON device_events(shop_id, occurred_at, id)`,
   `CREATE INDEX IF NOT EXISTS device_events_operation ON device_events(shop_id, operation_id)`,
   `CREATE INDEX IF NOT EXISTS device_events_via ON device_events(shop_id, via_resource_id, occurred_at) WHERE via_resource_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS device_operations_player ON device_operations(shop_id, player_id, requested_at)`,

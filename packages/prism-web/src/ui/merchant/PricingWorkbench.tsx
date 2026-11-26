@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, Calculator, Layers, Network, Pencil, Plus, Save, Unplug } from "lucide-react";
-import type { ResourceGroup } from "../../api";
+import { Api, type Resource, type ResourceGroup } from "../../api";
 import { useI18n } from "../../i18n";
 import { displayDateTime } from "../bill-time";
 import { planColor } from "../plan-colors";
@@ -29,6 +29,12 @@ import {
   type VersionRef,
 } from "./PricingVersions";
 import { useResourceGroups } from "./ResourceGroups";
+import { hasResourceLink, resourceCapabilities } from "./resource-capabilities";
+import {
+  buildPricingBindingTree,
+  effectiveResourcePlan,
+  resolveResourceGroup,
+} from "./resource-group-grouping";
 import {
   State,
   buttonQuiet,
@@ -58,12 +64,6 @@ type Pick =
 type BindingSection = "groups" | "resources" | "tables";
 type BindingKey = `${BindingSection}:${string}`;
 type Snapshot = { configs: Pricing[]; bindings: PricingBindingsView | null };
-
-const BINDING_SECTIONS: Array<[BindingSection, string]> = [
-  ["groups", "资源组"],
-  ["resources", "资源专属方案"],
-  ["tables", "桌游"],
-];
 
 const listAction =
   "focus-ring inline-flex min-h-8 items-center gap-1 whitespace-nowrap rounded-lg border border-mint/25 bg-mint/10 px-2.5 text-xs font-medium text-mint transition-colors hover:bg-mint/15";
@@ -137,6 +137,20 @@ export function PricingPage() {
   const { canWrite, shopCode, shopId, owner } = useMerchant();
   const request = useStaffApi();
   const resourceGroups = useResourceGroups(shopId);
+  const [machines, setMachines] = useState<Resource[] | null>(null);
+  const loadMachines = useCallback(() => {
+    if (!shopId) {
+      setMachines([]);
+      return Promise.resolve();
+    }
+    return Api.machines(shopId)
+      .then((result) => setMachines(result.machines ?? []))
+      .catch(() => setMachines([]));
+  }, [shopId]);
+  useEffect(() => {
+    setMachines(null);
+    void loadMachines();
+  }, [loadMachines]);
   const resource = useResource<{ pricingConfigs: Pricing[] }>("pricing-configs");
   const changes = usePricingChanges(resource.reload);
   const [params] = useSearchParams();
@@ -194,16 +208,20 @@ export function PricingPage() {
   // rules are stored as `archived` underneath to preserve bill references).
   const rows = all.filter((row) => row.status !== "archived");
   const timePlans = rows.filter((row) => row.kind === "time.priority");
-  /** Groups as this version (including staged edits) binds them, for the relation graph. */
+  /** Groups as this version (including staged edits) binds them, for the relation graph and resource grouping. */
   const versionGroups: ResourceGroup[] = (resourceGroups.groups ?? []).map((group) => ({
     ...group,
-    defaultPricingConfigId: bindings?.groups[group.id] ?? group.defaultPricingConfigId,
+    defaultPricingConfigId:
+      bindings?.groups && group.id in bindings.groups
+        ? (bindings.groups[group.id] ?? null)
+        : group.defaultPricingConfigId,
   }));
 
   const reloadAll = () => {
     resource.reload();
     changes.reload();
     detail.reload();
+    void loadMachines();
   };
 
   /** Guard leaving an open rule editor (keeps version-level staged draft intact). */
@@ -383,16 +401,36 @@ export function PricingPage() {
     });
   });
 
+  const machineById = useMemo(
+    () => new Map((machines ?? []).map((machine) => [machine.id, machine])),
+    [machines],
+  );
+  const groupIdOfResource = (id: string) =>
+    machines === null
+      ? undefined
+      : machineById.has(id)
+        ? machineById.get(id)!.resourceGroupId
+        : "__ungrouped__";
   const bindingName = (key: BindingSection, id: string) =>
     key === "groups" ? names.groups[id] ?? id : names.resources[id] ?? id;
-  const bindingRows = BINDING_SECTIONS.map(([key, label]) => ({
-    key,
-    label,
-    items: Object.entries(bindings?.[key] ?? {})
-      // A resource without a plan of its own follows its group; those are
-      // listed after the ones that have one.
-      .sort(([a, planA], [b, planB]) => Number(!planA) - Number(!planB) || bindingName(key, a).localeCompare(bindingName(key, b))),
-  }));
+  const bindingTree = buildPricingBindingTree({
+    bindings,
+    groups: versionGroups,
+    names,
+    groupIdOfResource,
+    shouldExcludeResource: (id, info) => {
+      if (machines === null) return false;
+      const machine = machineById.get(id);
+      if (!machine) return false;
+      return (
+        !hasResourceLink(resourceCapabilities(machine))
+        && info.resourcePlan === null
+        && !info.hasTablePlan
+        && !staged.bindingKeys.has(`resources:${id}`)
+        && !marks.bindings.has(`resources:${id}`)
+      );
+    },
+  });
 
   // What the right pane shows: the pick if this version has it, otherwise the
   // first thing the tab lists.
@@ -402,15 +440,20 @@ export function PricingPage() {
     if (pick?.kind === "relations" && tab === "plans" && timePlans.length > 1) return pick;
     if (pick?.kind === "binding" && tab === "bindings") {
       const [key, id] = pick.key.split(/:(.*)/s) as [BindingSection, string];
+      if (key === "tables" && bindings && id in (bindings.resources ?? {})) {
+        return { kind: "binding", key: `resources:${id}` };
+      }
       if (bindings && id in (bindings[key] ?? {})) return pick;
     }
     if (tab === "plans") {
       const first = rows[0];
       return first ? { kind: "plan", id: first.id } : null;
     }
-    for (const section of bindingRows) {
-      const first = section.items[0]?.[0];
-      if (first) return { kind: "binding", key: `${section.key}:${first}` };
+    const firstGroup = bindingTree.find((node) => node.hasGroupBinding && node.id !== null);
+    if (firstGroup?.id) return { kind: "binding", key: `groups:${firstGroup.id}` };
+    const firstItem = bindingTree.flatMap((node) => node.resources)[0];
+    if (firstItem) {
+      return { kind: "binding", key: `${firstItem.kind === "resource" ? "resources" : "tables"}:${firstItem.id}` };
     }
     return null;
   })();
@@ -474,6 +517,12 @@ export function PricingPage() {
     const [key, id] = picked.key.split(/:(.*)/s) as [BindingSection, string];
     return { key, id, plan: bindings?.[key]?.[id] ?? null };
   })() : null;
+  const pickedGroup = pickedBinding && pickedBinding.key !== "groups"
+    ? resolveResourceGroup(groupIdOfResource(pickedBinding.id), versionGroups)
+    : null;
+  const pickedEffectivePlan = pickedBinding?.key === "resources"
+    ? effectiveResourcePlan({ pricingConfigOverrideId: pickedBinding.plan }, pickedGroup, all)
+    : null;
   const planName = (id: string | null) => (id ? all.find((plan) => plan.id === id)?.name ?? names.plans[id] ?? id : null);
 
   return (
@@ -649,32 +698,80 @@ export function PricingPage() {
                     )}
                   </ul>
                 ) : (
-                  bindingRows.map((section) => section.items.length > 0 && (
-                    <div key={section.key}>
-                      <p className="px-4 pb-1 pt-2.5 text-xs font-semibold text-ink/60">{t(section.label)}</p>
-                      <ul className="grid gap-0.5 px-2">
-                        {section.items.map(([id, plan]) => {
-                          const key = `${section.key}:${id}` as BindingKey;
-                          const selected = picked?.kind === "binding" && picked.key === key;
-                          return (
-                            <li key={key}>
-                              <button type="button" aria-current={selected ? "true" : undefined} className={rowClass(selected)} onClick={() => setPick({ kind: "binding", key })}>
-                                <span className="grid min-w-0 flex-1 gap-0.5">
-                                  <span className="flex min-w-0 items-center gap-1.5">
-                                    <span className="truncate text-sm font-medium text-ink">{bindingName(section.key, id)}</span>
-                                    {staged.bindingKeys.has(key) ? unsavedTag : marks.bindings.has(key) && markTag("changed")}
-                                  </span>
-                                  <span className={`truncate text-xs ${plan ? "text-ink/55" : "text-ink/40"}`}>
-                                    {planName(plan) ?? t(section.key === "resources" ? "跟随资源组" : "不计费")}
-                                  </span>
+                  <div className="space-y-2 px-2">
+                    {bindingTree.map((groupNode) => {
+                      const groupKey = groupNode.id !== null ? (`groups:${groupNode.id}` as BindingKey) : null;
+                      const groupSelected = Boolean(groupKey && picked?.kind === "binding" && picked.key === groupKey);
+                      return (
+                        <div key={groupNode.id ?? "__ungrouped__"}>
+                          {groupNode.hasGroupBinding && groupKey ? (
+                            <button
+                              type="button"
+                              aria-current={groupSelected ? "true" : undefined}
+                              className={rowClass(groupSelected)}
+                              onClick={() => setPick({ kind: "binding", key: groupKey })}
+                            >
+                              <Layers size={14} className="shrink-0 text-ink/50" aria-hidden="true" />
+                              <span className="grid min-w-0 flex-1 gap-0.5">
+                                <span className="flex min-w-0 items-center gap-1.5">
+                                  <span className="truncate text-sm font-semibold text-ink">{groupNode.name}</span>
+                                  {staged.bindingKeys.has(groupKey) ? unsavedTag : marks.bindings.has(groupKey) && markTag("changed")}
                                 </span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  ))
+                                <span className={`truncate text-xs ${groupNode.groupPlan ? "text-ink/55" : "text-ink/40"}`}>
+                                  {planName(groupNode.groupPlan) ?? t("不计费")}
+                                </span>
+                              </span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-ink/55">
+                              <Layers size={13} className="shrink-0 opacity-60" aria-hidden="true" />
+                              <span className="truncate">{t(groupNode.name)}</span>
+                            </div>
+                          )}
+                          {groupNode.resources.length > 0 && (
+                            <ul className="ml-4 mt-1 grid gap-0.5 border-l border-ink/10 pl-2">
+                              {groupNode.resources.map((item) => {
+                                const rowKey = (item.kind === "resource" ? `resources:${item.id}` : `tables:${item.id}`) as BindingKey;
+                                const tableKey = `tables:${item.id}` as BindingKey;
+                                const selected = picked?.kind === "binding" && (picked.key === rowKey || (item.kind === "resource" && picked.key === tableKey));
+                                const isUnsaved = staged.bindingKeys.has(rowKey) || (item.hasTablePlan && staged.bindingKeys.has(tableKey));
+                                const isChanged = marks.bindings.has(rowKey) || (item.hasTablePlan && marks.bindings.has(tableKey));
+                                const resourcePlanText = planName(item.resourcePlan) ?? t("跟随资源组");
+                                const subtitle = item.kind === "table"
+                                  ? t("对局：{plan}", { plan: planName(item.tablePlan) ?? t("不计费") })
+                                  : item.hasTablePlan
+                                    ? `${resourcePlanText} · ${t("对局：{plan}", { plan: planName(item.tablePlan) ?? t("不计费") })}`
+                                    : resourcePlanText;
+                                const hasExplicitPlan = item.kind === "table"
+                                  ? Boolean(item.tablePlan)
+                                  : Boolean(item.resourcePlan || item.tablePlan);
+                                return (
+                                  <li key={rowKey}>
+                                    <button
+                                      type="button"
+                                      aria-current={selected ? "true" : undefined}
+                                      className={rowClass(selected)}
+                                      onClick={() => setPick({ kind: "binding", key: rowKey })}
+                                    >
+                                      <span className="grid min-w-0 flex-1 gap-0.5">
+                                        <span className="flex min-w-0 items-center gap-1.5">
+                                          <span className="truncate text-sm font-medium text-ink">{item.name}</span>
+                                          {isUnsaved ? unsavedTag : isChanged && markTag("changed")}
+                                        </span>
+                                        <span className={`truncate text-xs ${hasExplicitPlan ? "text-ink/55" : "text-ink/40"}`}>
+                                          {subtitle}
+                                        </span>
+                                      </span>
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
               </nav>
 
@@ -796,47 +893,106 @@ export function PricingPage() {
                     </p>
                   )}
                 </div>
-              ) : tab === "bindings" && pickedBinding ? (
-                <div className="grid gap-4">
-                  <div className="flex items-center gap-3">
-                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ink/[0.05] text-ink/55" aria-hidden="true">
-                      {pickedBinding.key === "groups" ? <Layers size={16} /> : <Unplug size={16} />}
-                    </span>
-                    <div className="grid min-w-0 gap-0.5">
-                      <h3 className="truncate text-lg font-semibold tracking-tight">{bindingName(pickedBinding.key, pickedBinding.id)}</h3>
-                      <p className="text-xs text-ink/50">{t(BINDING_SECTIONS.find(([key]) => key === pickedBinding.key)![1])}</p>
+              ) : tab === "bindings" && pickedBinding ? (() => {
+                const hasTableBinding = pickedBinding.key === "resources"
+                  && Boolean(bindings?.tables && Object.prototype.hasOwnProperty.call(bindings.tables, pickedBinding.id));
+                const tablePlan = hasTableBinding ? (bindings?.tables?.[pickedBinding.id] ?? null) : null;
+                const detailSubtitle = pickedBinding.key === "groups"
+                  ? t("资源组")
+                  : `${t(pickedBinding.key === "tables" ? "桌游对局方案" : hasTableBinding ? "桌游" : "资源")} · ${t(pickedGroup?.name ?? "未分组")}`;
+                const primarySelectLabel = pickedBinding.key === "tables"
+                  ? "桌游对局方案"
+                  : hasTableBinding
+                    ? "入场 / 等位方案"
+                    : "使用的方案";
+                const primaryDefaultLabel = pickedBinding.key === "resources" ? "跟随资源组" : "不计费";
+                const primaryPlans = all.filter((plan) =>
+                  plan.status !== "archived"
+                  && plan.kind !== "time.cap"
+                  && (pickedBinding.key !== "tables" || (plan.kind === "time.priority" && plan.enabled)));
+                return (
+                  <div className="grid gap-4">
+                    <div className="flex items-center gap-3">
+                      <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ink/[0.05] text-ink/55" aria-hidden="true">
+                        {pickedBinding.key === "groups" ? <Layers size={16} /> : <Unplug size={16} />}
+                      </span>
+                      <div className="grid min-w-0 gap-0.5">
+                        <h3 className="truncate text-lg font-semibold tracking-tight">{bindingName(pickedBinding.key, pickedBinding.id)}</h3>
+                        <p className="text-xs text-ink/50">{detailSubtitle}</p>
+                      </div>
                     </div>
-                  </div>
-                  <section className="grid gap-2 rounded-xl border border-ink/10 p-4">
-                    <label className="text-sm font-semibold text-ink" htmlFor="binding-plan">{t("使用的方案")}</label>
-                    {editable ? (
-                      <select
-                        id="binding-plan"
-                        className={`${input} max-w-sm`}
-                        value={pickedBinding.plan ?? ""}
-                        onChange={(event) => stageBinding(pickedBinding.key, pickedBinding.id, event.target.value || null)}
-                      >
-                        <option value="">{t(pickedBinding.key === "resources" ? "跟随资源组" : "不计费")}</option>
-                        {all
-                          .filter((plan) => plan.status !== "archived" && plan.kind !== "time.cap" && (pickedBinding.key !== "tables" || (plan.kind === "time.priority" && plan.enabled)))
-                          .map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
-                      </select>
-                    ) : (
-                      <p className="text-sm text-ink/75">{planName(pickedBinding.plan) ?? t(pickedBinding.key === "resources" ? "跟随资源组" : "不计费")}</p>
+                    <section className="grid gap-2 rounded-xl border border-ink/10 p-4">
+                      <label className="text-sm font-semibold text-ink" htmlFor="binding-plan">{t(primarySelectLabel)}</label>
+                      {editable ? (
+                        <select
+                          id="binding-plan"
+                          className={`${input} max-w-sm`}
+                          value={pickedBinding.plan ?? ""}
+                          onChange={(event) => stageBinding(pickedBinding.key, pickedBinding.id, event.target.value || null)}
+                        >
+                          <option value="">{t(primaryDefaultLabel)}</option>
+                          {primaryPlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                        </select>
+                      ) : (
+                        <p className="text-sm text-ink/75">{planName(pickedBinding.plan) ?? t(primaryDefaultLabel)}</p>
+                      )}
+                      {pickedEffectivePlan?.kind === "group" ? (
+                        <p className="text-xs text-ink/60">
+                          {t("跟随资源组（{plan}）", { plan: pickedEffectivePlan.plan?.name ?? t("未知方案") })}
+                          {pickedEffectivePlan.groupDisabled ? ` · ${t("资源组已停用")}` : ""}
+                        </p>
+                      ) : pickedEffectivePlan?.kind === "free" && pickedGroup ? (
+                        <p className="text-xs text-ink/60">{t("跟随资源组（资源组未设置方案）")}</p>
+                      ) : null}
+                      {pickedBinding.plan && (
+                        <button type="button" className={`${buttonQuiet} justify-self-start px-2 text-sm`} onClick={() => { setTab("plans"); setPick({ kind: "plan", id: pickedBinding.plan! }); }}>
+                          {t("查看方案「{name}」", { name: planName(pickedBinding.plan) ?? "" })}
+                        </button>
+                      )}
+                      {!hasTableBinding && (
+                        <p className="text-xs text-ink/50">
+                          {mode === "past"
+                            ? t("历史计划只读。")
+                            : t("修改会先暂存，点顶部「保存全部修改」后统一生效。")}
+                        </p>
+                      )}
+                    </section>
+                    {hasTableBinding && (
+                      <section className="grid gap-2 rounded-xl border border-ink/10 p-4">
+                        <label className="text-sm font-semibold text-ink" htmlFor="binding-table-plan">{t("桌游对局方案")}</label>
+                        {editable ? (
+                          <select
+                            id="binding-table-plan"
+                            className={`${input} max-w-sm`}
+                            value={tablePlan ?? ""}
+                            onChange={(event) => stageBinding("tables", pickedBinding.id, event.target.value || null)}
+                          >
+                            <option value="">{t("不计费")}</option>
+                            {all
+                              .filter((plan) => plan.status !== "archived" && plan.kind === "time.priority" && plan.enabled)
+                              .map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                          </select>
+                        ) : (
+                          <p className="text-sm text-ink/75">{planName(tablePlan) ?? t("不计费")}</p>
+                        )}
+                        <p className="text-xs text-ink/50">
+                          {t("满员开桌后按此方案计费；未开桌前的入场或等位按上方方案计费。")}
+                        </p>
+                        {tablePlan && (
+                          <button type="button" className={`${buttonQuiet} justify-self-start px-2 text-sm`} onClick={() => { setTab("plans"); setPick({ kind: "plan", id: tablePlan }); }}>
+                            {t("查看方案「{name}」", { name: planName(tablePlan) ?? "" })}
+                          </button>
+                        )}
+                        <p className="text-xs text-ink/50">
+                          {mode === "past"
+                            ? t("历史计划只读。")
+                            : t("修改会先暂存，点顶部「保存全部修改」后统一生效。")}
+                        </p>
+                      </section>
                     )}
-                    <p className="text-xs text-ink/50">
-                      {mode === "past"
-                        ? t("历史计划只读。")
-                        : t("修改会先暂存，点顶部「保存全部修改」后统一生效。")}
-                    </p>
-                  </section>
-                  {pickedBinding.plan && (
-                    <button type="button" className={`${buttonQuiet} justify-self-start px-2 text-sm`} onClick={() => { setTab("plans"); setPick({ kind: "plan", id: pickedBinding.plan! }); }}>
-                      {t("查看方案「{name}」", { name: planName(pickedBinding.plan) ?? "" })}
-                    </button>
-                  )}
-                </div>
-              ) : tab === "plans" && !rows.length && mode === "now" && canWrite ? (
+                  </div>
+                );
+              })() : tab === "plans" && !rows.length && mode === "now" && canWrite ? (
                 <div className="mx-auto my-8 max-w-sm rounded-xl border border-dashed border-ink/20 px-6 py-10 text-center">
                   <p className="font-medium">{t("还没有计费方案")}</p>
                   <p className="mt-2 text-sm text-ink/55">

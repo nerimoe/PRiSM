@@ -4,6 +4,7 @@ import {
   deltaIndicator,
   diffLocalDays,
   formatDurationSummary,
+  ioStatusLabel,
   paymentShares,
   peakHourSummary,
   summarizeDashboardDevices,
@@ -180,5 +181,14 @@ describe("dashboard metrics", () => {
     expect(diffLocalDays("2026-11-22", "2026-11-22")).toBe(0);
     expect(diffLocalDays("2026-11-23", "2026-11-22")).toBe(-1);
     expect(Number.isNaN(diffLocalDays("2026-02-30", "2026-03-01"))).toBe(true);
+  });
+
+  it("formats dashboard IO status without reader counts when readers are online", () => {
+    expect(ioStatusLabel({ tone: "off", readers: 1 })).toBe("IO 离线");
+    expect(ioStatusLabel({ tone: "on", readers: 0 })).toBe("无读卡器");
+    expect(ioStatusLabel({ tone: "on", readers: 1 })).toBe("IO 在线");
+    expect(ioStatusLabel({ tone: "on", readers: 2 })).toBe("IO 在线");
+    expect(ioStatusLabel({ tone: "on", readers: null })).toBe("IO 在线");
+    expect(ioStatusLabel({ tone: "unsure", readers: null })).toBe("IO 连接未知");
   });
 });

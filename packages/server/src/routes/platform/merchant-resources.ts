@@ -2,10 +2,17 @@ import { Hono, type Context } from "hono";
 import { recordBindingEdit } from "../../pricing-changes.js";
 import { createD1Executor, type D1BoundStatementLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import { clampEventLimit, listShopOperationEvents, presentOperationEvents } from "../../events/operation-history.js";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
-import { hostCommandSchema, launcherProgramSchema, programNameSchema } from "../../hardware/node-protocol.js";
+import {
+  MAX_HOST_FILE_BYTES,
+  hostCommandSchema,
+  launcherProgramSchema,
+  launcherRootSchema,
+  programNameSchema,
+} from "../../hardware/node-protocol.js";
 import { vkFromKeyText } from "@prism/core";
 import { machineRelayPath, nodeRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
@@ -56,6 +63,7 @@ import {
   announceGroupSchema,
   botReplyTemplatesSchema,
   capabilities,
+  replyGroupSchema,
   validateCapabilitySet,
   type BotConfig,
   type CoinConfig,
@@ -436,6 +444,23 @@ merchantResourceRouter.get("/machines", async (c) => {
   return c.json({ machines: await presentWithStatus(c, ordered, await shopPublicId(c, shopId), canConfigure) });
 });
 
+merchantResourceRouter.get("/events", async (c) => {
+  const user = requireUser(c);
+  const shopId = c.req.query("shopId");
+  if (!shopId) jsonError(400, "请选择店铺", "SHOP_REQUIRED");
+  await assertResourceShop(c, user, shopId);
+  await shopTimes(c, shopId);
+  return c.json(await listShopOperationEvents(c.env.DB, shopId, {
+    scope: c.req.query("scope"),
+    resourceId: c.req.query("resourceId") ?? c.req.query("deviceId"),
+    category: c.req.query("category"),
+    capability: c.req.query("capability"),
+    playerId: c.req.query("playerId"),
+    limit: c.req.query("limit"),
+    before: c.req.query("before"),
+  }));
+});
+
 merchantResourceRouter.get("/machines/:id/events", async (c) => {
   const user = requireUser(c);
   const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
@@ -443,44 +468,12 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c, user, machine.shop_id);
   await shopTimes(c, machine.shop_id);
-  const limit = Math.floor(Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200));
+  const limit = clampEventLimit(c.req.query("limit"));
   const before = c.req.query("before");
   if (before && before.length > 200) jsonError(400, "无效的记录游标", "INVALID_CURSOR");
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
     .listEvents({ deviceId: c.req.param("id"), limit: limit + 1, before });
-  const page = events.slice(0, limit);
-  const others = [...new Set(page.flatMap((event) => [event.deviceId, event.via?.resourceId ?? null])
-    .filter((id): id is string => !!id && id !== c.req.param("id")))];
-  const names = new Map(others.length
-    ? (await c.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-        .bind(machine.shop_id, JSON.stringify(others)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name])
-    : []);
-  const named = (id: string | null | undefined) =>
-    id && id !== c.req.param("id") ? { id, name: names.get(id) ?? null } : null;
-  const playerOf = (event: (typeof page)[number]) =>
-    event.playerId ?? (typeof event.payload.forPlayerId === "string" ? event.payload.forPlayerId : null);
-  const playerIds = [...new Set(page.map(playerOf).filter((id): id is string => !!id))];
-  const players = new Map(playerIds.length
-    ? (await c.env.DB.prepare("SELECT id, display_name FROM players WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-        .bind(machine.shop_id, JSON.stringify(playerIds)).all<{ id: string; display_name: string | null }>()).results.map((row) => [row.id, row.display_name])
-    : []);
-  return c.json({
-    nextCursor: events.length > limit ? page.at(-1)!.id : null,
-    events: page.map((event) => ({
-      id: event.id,
-      device: named(event.deviceId),
-      player: playerOf(event) ? { id: playerOf(event)!, name: players.get(playerOf(event)!) ?? null } : null,
-      via: event.via ? { channel: event.via.channel, resource: named(event.via.resourceId) } : null,
-      capability: event.capability,
-      kind: event.kind,
-      name: event.name,
-      origin: event.origin,
-      operationId: event.operationId,
-      parentOperationId: event.parentOperationId,
-      at: event.occurredAt.toISOString(),
-      payload: event.payload,
-    })),
-  });
+  return c.json(await presentOperationEvents(c.env.DB, machine.shop_id, events, limit, c.req.param("id")));
 });
 
 merchantResourceRouter.get("/machines/:id/cabinet", async (c) => {
@@ -545,7 +538,11 @@ merchantResourceRouter.get("/machines/:id/host", async (c) => {
     program: live?.program ?? null,
     version: live?.version ?? null,
     nodeId: host.nodeId,
-    config: { default: host.defaultProgram, programs: host.programs },
+    config: {
+      default: host.defaultProgram,
+      programs: host.programs,
+      ...(host.allowedRoots?.length ? { allowedRoots: host.allowedRoots } : {}),
+    },
   });
 });
 
@@ -554,6 +551,7 @@ const hostConfigPutSchema = z.object({
   default: programNameSchema.nullable().optional(),
   defaultProgram: programNameSchema.nullable().optional(),
   programs: z.array(launcherProgramSchema).max(64),
+  allowedRoots: z.array(launcherRootSchema).max(32).optional(),
 });
 
 merchantResourceRouter.put("/machines/:id/host/config", async (c) => {
@@ -570,10 +568,12 @@ merchantResourceRouter.put("/machines/:id/host/config", async (c) => {
     : parsed.data.default !== undefined
       ? parsed.data.default
       : existing?.defaultProgram ?? null;
+  const allowedRoots = parsed.data.allowedRoots !== undefined ? parsed.data.allowedRoots : existing?.allowedRoots;
   const nextHost = capabilities.host.config.safeParse({
     nodeId,
     defaultProgram,
     programs: parsed.data.programs,
+    ...(allowedRoots !== undefined ? { allowedRoots } : {}),
   });
   if (!nextHost.success) jsonError(422, "默认程序必须存在于程序列表中且程序名必须唯一", "INVALID_HOST_CONFIG");
   const stored = await storedCapabilities(c.env.DB, shopId, device.id);
@@ -592,18 +592,85 @@ merchantResourceRouter.post("/machines/:id/host/commands", async (c) => {
   const parsed = hostCommandSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) jsonError(422, "Launcher 指令无效", "INVALID_HOST_COMMAND");
   const cmd = parsed.data;
-  const action = (`host.${cmd.action}` as "host.switch" | "host.key" | "host.text" | "host.screenshot" | "host.reboot" | "host.shutdown");
-  const payload: Record<string, unknown> =
-    cmd.action === "switch" ? { name: cmd.name }
-    : cmd.action === "key" ? { key: cmd.key, count: cmd.count }
-    : cmd.action === "text" ? { text: cmd.text }
-    : {};
+  if (cmd.action === "fs.write") {
+    if (cmd.encoding === "utf8") {
+      if (new TextEncoder().encode(cmd.content).byteLength > MAX_HOST_FILE_BYTES) {
+        jsonError(422, "写入内容超过 512 KiB 上限", "HOST_FILE_TOO_LARGE");
+      }
+    } else {
+      let decodedLen = 0;
+      try {
+        decodedLen = atob(cmd.content.trim()).length;
+      } catch {
+        jsonError(422, "Base64 内容无效", "INVALID_HOST_COMMAND");
+      }
+      if (decodedLen > MAX_HOST_FILE_BYTES) {
+        jsonError(422, "写入内容超过 512 KiB 上限", "HOST_FILE_TOO_LARGE");
+      }
+    }
+  }
+  const action = `host.${cmd.action}` as
+    | "host.switch"
+    | "host.key"
+    | "host.text"
+    | "host.screenshot"
+    | "host.reboot"
+    | "host.shutdown"
+    | "host.fs.list"
+    | "host.fs.read"
+    | "host.fs.write"
+    | "host.fs.mkdir"
+    | "host.fs.rename"
+    | "host.fs.delete"
+    | "host.powershell";
+  let payload: Record<string, unknown> = {};
+  let transient: Record<string, unknown> | undefined;
+  switch (cmd.action) {
+    case "switch":
+      payload = { name: cmd.name };
+      break;
+    case "key":
+      payload = { key: cmd.key, count: cmd.count };
+      break;
+    case "text":
+      payload = { text: cmd.text };
+      break;
+    case "fs.list":
+      payload = { path: cmd.path };
+      break;
+    case "fs.read":
+      payload = { path: cmd.path, encoding: cmd.encoding };
+      break;
+    case "fs.write":
+      payload = { path: cmd.path, encoding: cmd.encoding, createDirs: cmd.createDirs };
+      transient = { content: cmd.content };
+      break;
+    case "fs.mkdir":
+      payload = { path: cmd.path, recursive: cmd.recursive };
+      break;
+    case "fs.rename":
+      payload = { from: cmd.from, to: cmd.to, overwrite: cmd.overwrite };
+      break;
+    case "fs.delete":
+      payload = { path: cmd.path, recursive: cmd.recursive };
+      break;
+    case "powershell":
+      payload = {
+        ...(cmd.cwd ? { cwd: cmd.cwd } : {}),
+        timeoutMs: cmd.timeoutMs,
+        shell: cmd.shell,
+        scriptPreview: cmd.script.slice(0, 256),
+      };
+      transient = { script: cmd.script };
+      break;
+  }
   const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId, via: { channel: "merchant", resourceId: null } });
   const outcome = await bus.perform({
     device,
     action,
     actor: { type: "staff", staffId: user.id },
     payload,
+    ...(transient ? { transient } : {}),
   });
   c.header("Cache-Control", "no-store");
   if (outcome.operation.status !== "succeeded") {
@@ -794,6 +861,7 @@ const machineInput = z.object({
     defaultProgram: programNameSchema.nullable().optional(),
     default: programNameSchema.nullable().optional(),
     programs: z.array(launcherProgramSchema).max(64).default([]),
+    allowedRoots: z.array(launcherRootSchema).max(32).optional(),
   }).nullable().optional(),
   rotateHostToken: z.boolean().optional(),
   /** Hardware-agnostic IoT controller capability (`iot`) — auto-owns a 1:1 `iot` node. */
@@ -820,6 +888,7 @@ const machineInput = z.object({
   rotateRelayToken: z.boolean().optional(),
   bot: z.object({
     replyTemplates: botReplyTemplatesSchema.optional(),
+    replyGroups: z.array(replyGroupSchema).max(10).optional(),
     playerCommands: z.enum(["all", "readonly"]).optional(),
     readOnlyNotice: z.string().max(200).optional(),
     staffCommands: z.boolean().optional(),
@@ -1097,10 +1166,12 @@ async function nextCapabilities(
       : body.host?.default !== undefined
         ? body.host.default
         : hostBefore?.defaultProgram ?? null;
+    const allowedRoots = body.host?.allowedRoots !== undefined ? body.host.allowedRoots : hostBefore?.allowedRoots;
     const parsedHost = capabilities.host.config.safeParse({
       nodeId,
       defaultProgram,
       programs,
+      ...(allowedRoots !== undefined ? { allowedRoots } : {}),
     });
     if (!parsedHost.success) jsonError(422, "主机启动配置无效", "INVALID_HOST_CONFIG");
     let credentialHash: string | null = null;

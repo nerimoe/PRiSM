@@ -16,7 +16,7 @@
  */
 import { z } from "zod";
 import { botReplyTemplateError, isAnnouncementKey, isShopAnnouncementSource } from "@prism/core";
-import { launcherProgramSchema, programNameSchema } from "../../hardware/node-protocol.js";
+import { launcherProgramSchema, launcherRootSchema, programNameSchema } from "../../hardware/node-protocol.js";
 
 export const botReplyTemplatesSchema = z.record(z.string(), z.string()).superRefine((templates, ctx) => {
   for (const [key, text] of Object.entries(templates)) {
@@ -56,6 +56,13 @@ export type ActionName =
   | "host.screenshot"
   | "host.reboot"
   | "host.shutdown"
+  | "host.fs.list"
+  | "host.fs.read"
+  | "host.fs.write"
+  | "host.fs.mkdir"
+  | "host.fs.rename"
+  | "host.fs.delete"
+  | "host.powershell"
   | "door.open";
 
 export type ActionSpec = {
@@ -224,6 +231,7 @@ const hostConfig = z.object({
   nodeId: z.string().min(1),
   defaultProgram: programNameSchema.nullable().default(null),
   programs: z.array(launcherProgramSchema).max(64).default([]),
+  allowedRoots: z.array(launcherRootSchema).max(32).optional(),
 }).refine(
   (cfg) =>
     new Set(cfg.programs.map((p) => p.name)).size === cfg.programs.length &&
@@ -444,6 +452,13 @@ export const host: CapabilitySpec<HostConfig> = {
     "host.screenshot": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
     "host.reboot": { countsAsPlay: false, staffOnly: true },
     "host.shutdown": { countsAsPlay: false, staffOnly: true },
+    "host.fs.list": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
+    "host.fs.read": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
+    "host.fs.write": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
+    "host.fs.mkdir": { countsAsPlay: false, staffOnly: true },
+    "host.fs.rename": { countsAsPlay: false, staffOnly: true },
+    "host.fs.delete": { countsAsPlay: false, staffOnly: true },
+    "host.powershell": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
   },
   signals: {},
   state: { link: { authority: "owned" }, program: { authority: "external" } },
@@ -524,6 +539,23 @@ export const announceGroupSchema = z.object({
     (templates) => Object.keys(templates).every((key) => key.startsWith("announce.")),
     "播报组只能保存播报文案",
   ).default({}),
+  /** When true, player privacy mode does not hide names in broadcasts to this group. */
+  ignorePrivacyMode: z.boolean().optional(),
+});
+
+/** Per-group command reply configuration, filtering target groups/chats and privacy overrides. */
+export const replyGroupSchema = z.object({
+  id: z.string().trim().min(1).max(40),
+  name: z.string().trim().min(1).max(40),
+  /** Target groups/chats (`onebot:42`, `onebot:private:10001`). Use `["*"]` to match any chat not matched specifically. */
+  to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
+  /** Per-group command reply templates, overriding bot-level `replyTemplates`. */
+  templates: botReplyTemplatesSchema.refine(
+    (templates) => Object.keys(templates).every((key) => !key.startsWith("announce.")),
+    "播报文案在播报组里设置",
+  ).default({}),
+  /** When true, commands in these chats ignore player privacy mode (e.g. `/list`). */
+  ignorePrivacyMode: z.boolean().optional(),
 });
 
 const botConfig = z.object({
@@ -531,6 +563,8 @@ const botConfig = z.object({
     (templates) => Object.keys(templates).every((key) => !key.startsWith("announce.")),
     "播报文案在播报组里设置",
   ).default({}),
+  /** Optional command reply groups for target chat filtering, custom per-group replies, and privacy overrides. */
+  replyGroups: z.array(replyGroupSchema).max(10).default([]),
   tokenId: z.string().min(1),
   playerCommands: z.enum(["all", "readonly"]).default("all"),
   readOnlyNotice: z.string().max(200).default("请扫描店内二维码或碰 NFC，在网页或 App Clip 里入场、结账和操作设备。"),

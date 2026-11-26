@@ -44,6 +44,7 @@ import {
 import { DeltaBadge } from "./DashboardCharts";
 import {
   deltaIndicator,
+  ioStatusLabel,
   summarizeDashboardDevices,
   type DashboardAnalytics,
   type DashboardDeviceItem,
@@ -624,11 +625,7 @@ function CompactDeviceTile({
     statusPieces.push(climateSummary(state?.climate ?? null, t));
   }
   if (view.io) {
-    if (view.io.tone === "off") statusPieces.push(t("IO 离线"));
-    else if (view.io.tone === "on" && view.io.readers === 0) statusPieces.push(t("无读卡器"));
-    else if (view.io.tone === "on" && view.io.readers !== null)
-      statusPieces.push(t("读卡器 {count}", { count: view.io.readers }));
-    else statusPieces.push(t("IO 连接未知"));
+    statusPieces.push(t(ioStatusLabel(view.io)));
   }
   if (caps.bot) {
     statusPieces.push(t(device.botOnline ? "Bot 在线" : "Bot 离线"));

@@ -69,7 +69,7 @@ function MerchantContent() {
       />
     );
   return (
-    <section className="merchant-workspace mx-auto grid w-full max-w-7xl min-w-0 gap-3">
+    <section className="merchant-workspace mx-auto grid w-full min-w-0 gap-3">
       {shop ? (
         <Workspace
           key={shop.id}
@@ -124,6 +124,7 @@ function Workspace({
   const navRef = useScrollFade<HTMLElement>();
   const [state, setState] = useState<{
     cashierEnabled: boolean;
+    privacyModeEnabled: boolean;
     timeZone: string;
     canWrite: boolean;
     owner: boolean;
@@ -131,7 +132,7 @@ function Workspace({
   const [error, setError] = useState("");
   const load = useCallback(async () => {
     const [info, me] = await Promise.all([
-      api<{ shop: { cashierEnabled: boolean; timeZone: string } }>(
+      api<{ shop: { cashierEnabled: boolean; privacyModeEnabled?: boolean; timeZone: string } }>(
         shopApi(shop.publicId),
       ),
       api<{ staff: StaffMeView }>(
@@ -140,6 +141,7 @@ function Workspace({
     ]);
     setState({
       ...info.shop,
+      privacyModeEnabled: !!info.shop.privacyModeEnabled,
       canWrite: me.staff.canWrite,
       owner: me.staff.role === "owner",
     });
@@ -199,6 +201,7 @@ function Workspace({
         owner: state.owner,
         timeZone: state.timeZone,
         cashierEnabled: state.cashierEnabled,
+        privacyModeEnabled: state.privacyModeEnabled,
       }}
     >
       <SetupContext.Provider value={setup}>

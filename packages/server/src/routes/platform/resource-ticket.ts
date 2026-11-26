@@ -38,6 +38,7 @@ export type ScannedResource = {
   latitude: number;
   longitude: number;
   radius_meters: number;
+  privacy_mode_enabled: number;
 };
 
 const machineSelect = `SELECT machines.*, shops.name AS shop_name,
@@ -51,7 +52,8 @@ const machineSelect = `SELECT machines.*, shops.name AS shop_name,
     EXISTS(SELECT 1 FROM device_capabilities nc WHERE nc.shop_id=machines.shop_id AND nc.device_id=machines.id AND nc.capability IN ('bot','iot'))
     AND NOT EXISTS(SELECT 1 FROM device_capabilities lc WHERE lc.shop_id=machines.shop_id AND lc.device_id=machines.id AND lc.capability NOT IN ('bot','iot'))
   ) AS no_link,
-  (SELECT value_json FROM app_settings WHERE shop_id=shops.id AND key='location.settings') AS location_settings_json
+  (SELECT value_json FROM app_settings WHERE shop_id=shops.id AND key='location.settings') AS location_settings_json,
+  COALESCE((SELECT json_extract(value_json, '$.enabled') FROM app_settings WHERE shop_id=shops.id AND key='player.privacy'), 0) AS privacy_mode_enabled
   FROM machines JOIN shops ON shops.id=machines.shop_id
   LEFT JOIN shop_billing_settings b ON b.shop_id=shops.id`;
 

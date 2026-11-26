@@ -24,6 +24,7 @@ type Settings = {
   store: { name: string; timeZone: string };
   operations: { coinCooldownMs: number };
   registration: { defaultPresentId: string | null };
+  privacyModeEnabled?: boolean;
   homeAssistantConnection: { url: string; token: string };
   homeAssistantDevices: { id: string; name: string; alias?: string[] }[];
   ttLockConnection?: {
@@ -201,56 +202,66 @@ export function SettingsPage({
               {!settings.data ? (
                 <State error={settings.error} />
               ) : (
-                <section className="rounded-xl border border-ink/10 bg-panel p-5">
-                  <h4 className="mb-4 font-semibold">{t("新玩家礼物")}</h4>
-                  {!gifts.data ? (
-                    <State error={gifts.error} />
-                  ) : !gifts.data.presents.some((p) => p.status !== "archived") ? (
-                    <p className="text-sm text-ink/60">
-                      {t("新玩家第一次进店时自动领取一份礼物，比如体验余额。先创建礼物再回来选择。")}{" "}
-                      <Link
-                        className="underline"
-                        to={`/merchant/${segment(shopCode)}/assets?tab=gifts`}
-                      >
-                        {t("去创建礼物")}
-                      </Link>
-                    </p>
-                  ) : (
-                    <ActionForm
-                      label="保存玩家礼物"
-                      done={() => saved("players")}
-                      submit={(f) =>
-                        saveSettings({
-                          registration: {
-                            defaultPresentId:
-                              String(f.get("present") || "") || null,
-                          },
-                        })
-                      }
-                    >
-                      <Field label="新玩家礼物">
-                        <select
-                          className={input}
-                          name="present"
-                          defaultValue={
-                            settings.data.settings.registration
-                              .defaultPresentId ?? ""
-                          }
-                          disabled={!gifts.data}
+                <>
+                  <PrivacyModeSettings
+                    enabled={!!settings.data.settings.privacyModeEnabled}
+                    onSave={async (privacyModeEnabled) => {
+                      await saveSettings({ privacyModeEnabled });
+                      window.dispatchEvent(new Event("prism-shop-settings"));
+                      saved("players");
+                    }}
+                  />
+                  <section className="rounded-xl border border-ink/10 bg-panel p-5">
+                    <h4 className="mb-4 font-semibold">{t("新玩家礼物")}</h4>
+                    {!gifts.data ? (
+                      <State error={gifts.error} />
+                    ) : !gifts.data.presents.some((p) => p.status !== "archived") ? (
+                      <p className="text-sm text-ink/60">
+                        {t("新玩家第一次进店时自动领取一份礼物，比如体验余额。先创建礼物再回来选择。")}{" "}
+                        <Link
+                          className="underline"
+                          to={`/merchant/${segment(shopCode)}/assets?tab=gifts`}
                         >
-                          <option value="">{t("无")}</option>
-                          {gifts.data?.presents
-                            .filter((p) => p.status !== "archived")
-                            .map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}
-                              </option>
-                            ))}
-                        </select>
-                      </Field>
-                    </ActionForm>
-                  )}
-                </section>
+                          {t("去创建礼物")}
+                        </Link>
+                      </p>
+                    ) : (
+                      <ActionForm
+                        label="保存玩家礼物"
+                        done={() => saved("players")}
+                        submit={(f) =>
+                          saveSettings({
+                            registration: {
+                              defaultPresentId:
+                                String(f.get("present") || "") || null,
+                            },
+                          })
+                        }
+                      >
+                        <Field label="新玩家礼物">
+                          <select
+                            className={input}
+                            name="present"
+                            defaultValue={
+                              settings.data.settings.registration
+                                .defaultPresentId ?? ""
+                            }
+                            disabled={!gifts.data}
+                          >
+                            <option value="">{t("无")}</option>
+                            {gifts.data?.presents
+                              .filter((p) => p.status !== "archived")
+                              .map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name}
+                                </option>
+                              ))}
+                          </select>
+                        </Field>
+                      </ActionForm>
+                    )}
+                  </section>
+                </>
               )}
               <details className="rounded-xl border border-ink/10 bg-panel p-5">
                 <summary className="cursor-pointer font-semibold">
@@ -362,6 +373,44 @@ function ReportSettings({ saved }: { saved: () => void }) {
             required
           />
         </Field>
+      </ActionForm>
+    </section>
+  );
+}
+
+/** What a player who must bind an identity is told to send, and where. */
+function PrivacyModeSettings({
+  enabled,
+  onSave,
+}: {
+  enabled: boolean;
+  onSave: (enabled: boolean) => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [checked, setChecked] = useState(enabled);
+  useEffect(() => setChecked(enabled), [enabled]);
+  return (
+    <section className="rounded-xl border border-ink/10 bg-panel p-5">
+      <h4 className="mb-4 font-semibold">{t("隐私模式")}</h4>
+      <ActionForm
+        label="保存隐私设置"
+        done={() => {}}
+        submit={() => onSave(checked)}
+      >
+        <label className="flex items-start gap-3 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4 accent-[var(--color-mint)]"
+            checked={checked}
+            onChange={(event) => setChecked(event.target.checked)}
+          />
+          <span className="grid gap-1">
+            <span className="font-medium">{t("允许玩家开启隐私模式")}</span>
+            <span className="text-xs leading-relaxed text-ink/55">
+              {t("开启后，玩家可在个人「选项」中开启隐私模式，机器人在未开启「忽略玩家隐私模式」的群播报和查人列表中将隐藏其昵称。关闭时，所有玩家的隐私模式均不生效。")}
+            </span>
+          </span>
+        </label>
       </ActionForm>
     </section>
   );

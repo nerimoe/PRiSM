@@ -350,3 +350,14 @@ export function formatDurationSummary(minutes: number): { hours: number; minutes
     minutes: rounded % 60,
   };
 }
+
+/**
+ * Concise dashboard device overview label for a direct HINATA IO link.
+ * Only flags missing readers when IO is online with 0 readers; when readers are
+ * online (`readers > 0`) it omits the reader count.
+ */
+export function ioStatusLabel(io: NonNullable<TileView["io"]>): string {
+  if (io.tone === "off") return "IO 离线";
+  if (io.tone === "on") return io.readers === 0 ? "无读卡器" : "IO 在线";
+  return "IO 连接未知";
+}

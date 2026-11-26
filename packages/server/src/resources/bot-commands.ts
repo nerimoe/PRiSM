@@ -45,6 +45,7 @@ import {
   settledAsPreview,
   walletAdjustedMessage,
   walletMessage,
+  resolveBotReplyTarget,
   type Addressee,
   type Refusal,
 } from "./bot-replies.js";
@@ -73,6 +74,10 @@ export type BotCommandContext = {
   /** Someone else was named: only staff come this far. */
   onBehalf: boolean;
   channel: string;
+  /** Resolved per-group (or bot-level) reply templates for this channel. */
+  replyTemplates?: Record<string, string>;
+  /** Whether the matched reply group ignores player privacy mode in this channel. */
+  ignorePrivacyMode?: boolean;
 };
 
 /** Something to say: where (by default where the command was said) and what. */
@@ -95,7 +100,7 @@ const GENERIC_FAILURE = "操作失败，请稍后再试。";
 const saying = (message: BotMessage): Say[] => [{ message }];
 
 function messageFor(ctx: BotCommandContext, scene: string, message: BotMessage, values: Parameters<typeof renderBotReplyTemplate>[3] = {}): BotMessage {
-  return renderBotReplyTemplate(`${canonicalBotCommand(ctx.name)}.${scene}`, ctx.bot.config.replyTemplates, message, {
+  return renderBotReplyTemplate(`${canonicalBotCommand(ctx.name)}.${scene}`, ctx.replyTemplates ?? ctx.bot.config.replyTemplates, message, {
     result: message, receipt: message, reason: message, ...values,
   });
 }
@@ -154,7 +159,7 @@ async function deviceAction(
   if (view.status === "expired" || view.status === "rejected" || view.status === "pending") {
     log.warn(`bot ${ctx.bot.id} could not ${type} ${target.ref}: ${view.status}`, { event: "bot_device_command_failed", shopId: ctx.shop.id, botId: ctx.bot.id, type, target: target.ref, status: view.status, failure: (view.payload as Record<string, unknown> | null)?.executorFailure ?? null });
   }
-  return deviceActionMessage(view, { type, ref: target.ref, count: options.count, onEntry: options.onEntry }, ctx.bot.config.replyTemplates);
+  return deviceActionMessage(view, { type, ref: target.ref, count: options.count, onEntry: options.onEntry }, ctx.replyTemplates ?? ctx.bot.config.replyTemplates);
 }
 
 async function doorCode(ctx: BotCommandContext, onEntry: boolean): Promise<BotMessage> {
@@ -307,7 +312,7 @@ export const botCommands: Record<string, BotCommand> = {
     async run(ctx) {
       const wallet = await ctx.deps.integrationCommands.getWalletByIdentity(identityInput(ctx));
       const rows = (wallet ?? []).map((entry: any) => ({ ...entry, quantity: yuanOf(entry.quantity) }));
-      return saying(walletMessage(rows, ctx.view.currencyName, ctx.bot.config.replyTemplates));
+      return saying(walletMessage(rows, ctx.view.currencyName, ctx.replyTemplates ?? ctx.bot.config.replyTemplates));
     },
   },
   items: {
@@ -381,10 +386,11 @@ export const botCommands: Record<string, BotCommand> = {
   list: {
     async run(ctx, args) {
       const name = args.join(" ").trim();
-      if (!name) return answer(ctx, "success", rosterMessage(await ctx.deps.roster.list()));
+      const hidePrivate = !!ctx.shop.privacy_mode_enabled && !ctx.ignorePrivacyMode;
+      if (!name) return answer(ctx, "success", rosterMessage(await ctx.deps.roster.list(), false, { hidePrivate }));
       const roster = await ctx.deps.roster.only(name);
       if (!roster) jsonError(404, `找不到「${name}」`, "ROSTER_TARGET_NOT_FOUND");
-      return answer(ctx, "success", rosterMessage(roster, true));
+      return answer(ctx, "success", rosterMessage(roster, true, { hidePrivate }));
     },
   },
   show: {
@@ -499,7 +505,17 @@ export type BotCommandOutcome = { status: "answered" | "refused" | "failed"; cod
 
 /** `runBotCommand`, also saying how the command ended. */
 export async function judgeBotCommand(input: BotCommandInput): Promise<{ says: Say[]; outcome: BotCommandOutcome }> {
-  const ctx: BotCommandContext = { ...input, who: input.from, onBehalf: false };
+  const replyTarget = resolveBotReplyTarget(input.bot.config, input.channel, input.from.provider);
+  if (!replyTarget.allowed) {
+    return { says: [], outcome: { status: "refused", code: "BOT_CHANNEL_FILTERED" } };
+  }
+  const ctx: BotCommandContext = {
+    ...input,
+    who: input.from,
+    onBehalf: false,
+    replyTemplates: replyTarget.templates,
+    ignorePrivacyMode: replyTarget.ignorePrivacyMode,
+  };
   const refused = (says: Say[], code: string) => ({ says, outcome: { status: "refused" as const, code } });
   const command = botCommands[input.name];
   if (!command) return refused(notice(ctx, "不支持这个命令"), "BOT_COMMAND_UNKNOWN");

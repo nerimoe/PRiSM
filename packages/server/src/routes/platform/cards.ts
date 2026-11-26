@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { z } from "zod";
+// import { z } from "zod";
 import type { AppBindings } from "../../bindings.js";
-import { jsonError } from "../../http.js";
+// import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
 import { deleteAccountCard } from "../../resources/cards.js";
 import { syncMunetCards } from "./oauth.js";
@@ -10,10 +10,12 @@ import { logger } from "../../log.js";
 const log = logger("cards");
 
 export const cardsRouter = new Hono<AppBindings>();
+/* Manual card-number input schema disabled.
 const cardInput = z.object({
   label: z.string().trim().min(1).max(40),
   accessCode: z.string().regex(/^\d{20}$/, "卡片号码必须为20位数字"),
 });
+*/
 
 async function listCards(c: import("hono").Context<AppBindings>, userId: string) {
   const rows = await c.env.DB.prepare(
@@ -28,6 +30,17 @@ cardsRouter.get("/", async (c) => {
 });
 
 cardsRouter.post("/", async (c) => {
+  requireUser(c);
+  return c.json(
+    {
+      error: {
+        code: "MANUAL_CARD_ADD_DISABLED",
+        message: "已关闭手动输入卡号添加卡片，请去 MuNET 添加卡片或在店铺内使用读卡器添加卡片",
+      },
+    },
+    410,
+  );
+  /* Manual card-number creation is disabled; use MuNET sync or a store card reader instead.
   const user = requireUser(c);
   const body = cardInput.parse(await c.req.json());
   const id = crypto.randomUUID();
@@ -38,6 +51,7 @@ cardsRouter.post("/", async (c) => {
     "INSERT INTO cards(id,user_id,label,card_type,access_code,source) VALUES (?,?,?,'aime',?,'manual')",
   ).bind(id,user.id,body.label,body.accessCode).run();
   return c.json({ card: { id, label: body.label, cardType: "aime", accessCode: body.accessCode, source: "manual" } }, 201);
+  */
 });
 
 cardsRouter.delete("/:id", async (c) => {

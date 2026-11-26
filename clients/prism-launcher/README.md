@@ -5,7 +5,7 @@ Windows 机台无界面原生主机节点客户端（Rust 单文件 EXE，复用
 ## 部署步骤
 
 1. 在 PRiSM 后台创建一个 `kind = "launcher"` 的店铺节点（`POST /api/v1/merchant/nodes`），获取一次性令牌和 `wss://域名/node/ws` 地址。
-2. 在机台的游戏账号下，将 `launcher.example.json` 复制为与 `prism-launcher.exe` 同目录的 `launcher.json`，填入 `url` 和 `token`。
+2. 在机台的游戏账号下，将 `launcher.example.json` 复制为与 `prism-launcher.exe` 同目录的 `launcher.json`，填入 `url` 和 `token`。如需将远程文件管理与 PowerShell 工作目录限制在本地特定目录树内，可添加可选字段 `"allowed_roots": ["D:\\Games"]`（服务端下发的 `allowedRoots` 只能进一步收窄、无法放宽本地 `allowed_roots`）。
 3. 将 `prism-launcher.exe` 的快捷方式放入该账号的 `shell:startup` 文件夹，配合 Windows 自动登录即可开机无窗口后台运行。游戏与 Launcher 运行在同一权限级别，按键和文本发往当前焦点窗口。
 4. 在对应机台资源上绑定该 Launcher 节点（`host` 能力），即可进行程序配置和远端控制；无需机台事先配置 `hinata_io`。
 
@@ -13,20 +13,29 @@ Windows 机台无界面原生主机节点客户端（Rust 单文件 EXE，复用
 
 管理员或具有设备管理权限的店长、经理使用商户登录态调用（均经 `DeviceBus` 写入审计日志）：
 
-- `GET /api/v1/merchant/machines/{机台ID}/host`：返回绑定状态、Launcher 在线状态、当前运行程序名、版本号和已保存配置。
-- `PUT /api/v1/merchant/machines/{机台ID}/host/config`：保存 `{ nodeId, defaultProgram, programs, keys }`，Launcher 在线时立即推送 `node.setConfig`。
+- `GET /api/v1/merchant/machines/{机台ID}/host`：返回绑定状态、Launcher 在线状态、当前运行程序名、版本号和已保存配置（含可选 `allowedRoots`）。
+- `PUT /api/v1/merchant/machines/{机台ID}/host/config`：保存 `{ nodeId, defaultProgram, programs, allowedRoots }`，Launcher 在线时立即推送 `node.setConfig`。
 - `POST /api/v1/merchant/machines/{机台ID}/host/commands`：同步下发指令并等待结果：
   - 切换游戏：`{"action":"switch","name":"music"}`
   - 模拟按键：`{"action":"key","key":32,"count":1}`
   - 输入中文/文本：`{"action":"text","text":"玩家一号"}`
   - 全屏截图：`{"action":"screenshot"}`（多屏 GDI 截屏 + 自适应 JPEG 压缩，返回 `{ mime: "image/jpeg", data: "<base64>" }`）
   - 正常重启/关机：`{"action":"reboot"}` / `{"action":"shutdown"}`
+  - 文件管理（单文件读写上限 512 KiB，拒绝相对路径、UNC/设备路径、`..` 跳转、符号链接越界与删除根目录）：
+    - 列出目录：`{"action":"fs.list","path":"D:\\Games"}`
+    - 读取文件：`{"action":"fs.read","path":"D:\\Games\\cfg.ini","encoding":"utf8"}`（支持 `"utf8"` / `"base64"`）
+    - 原子写入：`{"action":"fs.write","path":"D:\\Games\\cfg.ini","content":"...","encoding":"utf8","createDirs":false}`
+    - 创建目录：`{"action":"fs.mkdir","path":"D:\\Games\\logs","recursive":true}`
+    - 重命名/移动：`{"action":"fs.rename","from":"D:\\Games\\a.txt","to":"D:\\Games\\b.txt","overwrite":false}`
+    - 删除文件/目录：`{"action":"fs.delete","path":"D:\\Games\\old.txt","recursive":false}`
+  - 执行 PowerShell：`{"action":"powershell","script":"Get-Date","cwd":"D:\\Games","timeoutMs":15000,"shell":"powershell"}`（`timeoutMs` 支持 `1000..120000`，`shell` 支持 `"powershell"` / `"pwsh"`，返回 `{ stdout, stderr, exitCode, timedOut, durationMs }`；省略 `cwd` 时同样经安全路径校验器解析，超时自动终止整个 Windows Job Object 进程树）
 
 ## 运行特性
 
 - **原生单文件 EXE**：`windows_subsystem = "windows"`，无黑框、无运行时依赖。
 - **离线缓存与安全切换**：首次连线拿到 `node.setConfig` 后启动默认程序并缓存至 `%LOCALAPPDATA%\PRiSM Launcher`，后续开机可离线冷启动；切换游戏时先挂起创建新进程并加入新 Windows Job Object，再终止旧 Job 等待进程树退出，最后恢复运行。
-- **非阻塞命令执行**：按键、截屏、切游戏均在后台阻塞线程池执行，不会阻塞 WebSocket 60 秒心跳。
+- **路径隔离与进程树控制**：所有文件操作与 PowerShell `cwd` 均做规范化及符号链接逃逸校验，本地 `allowed_roots` 优先级高于远端下发配置；PowerShell 通过 `-EncodedCommand` 与受限管道在独立 Windows Job Object 中运行，单流输出上限 64 KiB，超时自动清理整棵子进程树。
+- **非阻塞命令执行**：按键、截屏、切游戏、文件操作与 PowerShell 均在后台阻塞线程池执行，不会阻塞 WebSocket 60 秒心跳；入站帧上限提升至 1 MiB 以安全承载 512 KiB 文件上传。
 - **令牌失效保护**：收到 `401/403` 停止重连并保持进程存活，避免关闭 Job Object 误杀正在运行的游戏。
 
 ## 编译与测试

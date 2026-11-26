@@ -38,6 +38,7 @@ export const backupSchema = z.object({
     /** Older files: the default group's plan, from when it was the shop's default plan. */
     entryPricingIds: z.array(z.string().min(1)).max(30).optional(), botContact: z.string().max(500),
     coinCooldownMs: z.number().int().nonnegative(), defaultPresentId: z.string().min(1).nullable(),
+    privacyModeEnabled: z.boolean().optional(),
   }).strict(),
   tables: z.record(z.array(z.record(primitive))),
 }).strict();
@@ -81,7 +82,10 @@ export function validateBackup(backup: ShopBackup): string[] {
     const columns = schema.columns.map(column => column.name).sort().join(",");
     const unique = schema.keys.map(() => new Set<string>());
     for (const [index, row] of rows.entries()) {
-      if (table === "players" && row.report_excluded === undefined) row.report_excluded = 0;
+      if (table === "players") {
+        if (row.report_excluded === undefined) row.report_excluded = 0;
+        if (row.privacy_mode === undefined) row.privacy_mode = 0;
+      }
       const label = `${table} 第 ${index + 1} 行`;
       if (new TextEncoder().encode(JSON.stringify(row)).length + 3 > maxChunkBytes) add(`${label} 超出单条 128 KiB 限制`);
       if (Object.keys(row).sort().join(",") !== columns) { add(`${label} 字段不完整或包含未知字段`); continue; }

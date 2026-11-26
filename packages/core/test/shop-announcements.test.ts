@@ -67,7 +67,7 @@ describe("how a bot says an announcement", () => {
   it("says it in the group's own words, at a group and a person alike", () => {
     const templates = { "announce.card.consumed.message": "{player} 来了" };
     expect(announcementDeliveries([group({ events: on("card.consumed"), to: ["onebot:42", "onebot:private:10001"], templates })], { key: "card.consumed" }))
-      .toEqual([{ to: ["onebot:42", "onebot:private:10001"], templates }]);
+      .toEqual([{ to: ["onebot:42", "onebot:private:10001"], templates, ignorePrivacyMode: false }]);
   });
 
   it("hears an event only from the sources the group names for it, and from anywhere when it names none", () => {
@@ -82,8 +82,8 @@ describe("how a bot says an announcement", () => {
     const first = group({ id: "a", events: on("card.consumed"), to: ["onebot:42", "onebot:private:10001"], templates: { "announce.card.consumed.message": "A" } });
     const second = group({ id: "b", events: on("card.consumed"), to: ["onebot:7", "onebot:42", "kook:private:k9"], templates: { "announce.card.consumed.message": "B" } });
     expect(announcementDeliveries([first, second], { key: "card.consumed" })).toEqual([
-      { to: ["onebot:42", "onebot:private:10001"], templates: first.templates },
-      { to: ["onebot:7", "kook:private:k9"], templates: second.templates },
+      { to: ["onebot:42", "onebot:private:10001"], templates: first.templates, ignorePrivacyMode: false },
+      { to: ["onebot:7", "kook:private:k9"], templates: second.templates, ignorePrivacyMode: false },
     ]);
   });
 });

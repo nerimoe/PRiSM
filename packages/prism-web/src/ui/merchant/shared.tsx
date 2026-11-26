@@ -25,6 +25,7 @@ export const MerchantContext = createContext({
   shopCode: "",
   shopId: "",
   cashierEnabled: false,
+  privacyModeEnabled: false,
   canWrite: false,
   owner: false,
   timeZone: "",

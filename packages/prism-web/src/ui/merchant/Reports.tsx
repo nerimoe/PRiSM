@@ -7,8 +7,10 @@ import type {
 import { addLocalDays, formatLocalDate, parseLocalDateTime } from "@prism/core";
 import { Clock, Coins, Download, RefreshCw, Users, Wallet } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Api, api, type Resource } from "../../api";
 import { useI18n } from "../../i18n";
+import { ShopOperationHistory } from "./OperationHistory";
 import { shopApi } from "../BillingPages";
 import { BillTimeline, BillTotal } from "../BillTimeline";
 import { displayDateTime } from "../bill-time";
@@ -73,6 +75,14 @@ function ReportsContent() {
   const { t, errorText } = useI18n();
   const { shopId, shopCode, timeZone } = useMerchant();
   const request = useStaffApi();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view = searchParams.get("view") === "operations" ? "operations" : "overview";
+  const setView = (next: "overview" | "operations") => {
+    const updated = new URLSearchParams(searchParams);
+    if (next === "operations") updated.set("view", "operations");
+    else updated.delete("view");
+    setSearchParams(updated, { replace: true });
+  };
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState("");
   const playerOptions = useResource<{ excludedPlayerIds: string[] }>("reports/exclusions");
@@ -227,11 +237,13 @@ function ReportsContent() {
           </span>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={button} disabled={exporting || !analytics || !traffic}
-            onClick={() => void exportSelected()}>
-            <Download size={15} aria-hidden="true" />
-            {t(exporting ? "正在导出..." : "导出 Excel")}
-          </button>
+          {view === "overview" && (
+            <button type="button" className={button} disabled={exporting || !analytics || !traffic}
+              onClick={() => void exportSelected()}>
+              <Download size={15} aria-hidden="true" />
+              {t(exporting ? "正在导出..." : "导出 Excel")}
+            </button>
+          )}
           <button
             type="button"
             className={button}
@@ -248,8 +260,49 @@ function ReportsContent() {
           </button>
         </div>
       </header>
+      <div
+        role="group"
+        aria-label={t("历史视图")}
+        className="inline-flex w-fit flex-wrap rounded-xl bg-ink/[0.045] p-0.5 text-xs"
+      >
+        {(
+          [
+            ["overview", "经营与结账"],
+            ["operations", "操作记录"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            aria-pressed={view === key}
+            onClick={() => setView(key)}
+            className={`focus-ring rounded-[10px] px-3 py-1.5 font-medium transition-colors ${
+              view === key
+                ? "bg-primary text-primary-foreground"
+                : "text-ink/65 hover:text-ink"
+            }`}
+          >
+            {t(label)}
+          </button>
+        ))}
+      </div>
       {exportError && <p role="alert" className="text-sm text-coral">{exportError}</p>}
 
+      {view === "operations" ? (
+        <section
+          className="grid gap-4 rounded-2xl border border-ink/10 bg-panel p-5 shadow-soft"
+          aria-label={t("操作记录")}
+        >
+          <h3 className="text-base font-semibold">{t("操作记录")}</h3>
+          <ShopOperationHistory
+            shopId={shopId}
+            shopCode={shopCode}
+            devices={devices ?? []}
+            refreshSignal={refreshSignal}
+          />
+        </section>
+      ) : (
+        <>
       {/* Unified Time Range Selector driving both historical analytics charts and checkout records */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-ink/10 bg-panel p-3 shadow-soft">
         <div
@@ -529,6 +582,8 @@ function ReportsContent() {
               onMutated={analyticsResource.reload}
             />
           </section>
+        </>
+      )}
         </>
       )}
     </div>

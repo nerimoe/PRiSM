@@ -685,6 +685,90 @@ describe("a bot's commands", () => {
     expect(ws.closed?.code).toBe(4003);
     sqlite.close();
   });
+
+  it("masks privacy-enabled players in broadcasts and /list unless shop privacy mode is off or group sets ignorePrivacyMode, and filters replyGroups", async () => {
+    const { sqlite, hub, ws, tasks } = await fixture();
+    sqlite.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','currency','paid','猫粮',1,'active')");
+    sqlite.run(
+      "INSERT INTO players(shop_id,id,display_name,status,privacy_mode,created_at) VALUES ('shop','p1','小明','active',1,'2026-01-01'),('shop','p2','小红','active',0,'2026-01-01')",
+    );
+    sqlite.run(
+      "INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','p1','onebot','10001','2026-01-01'),('shop','p2','onebot','10002','2026-01-01')",
+    );
+    sqlite.run(
+      "INSERT INTO pricing_configs(shop_id,id,kind,name,enabled,status,provider_json,created_at,updated_at) VALUES ('shop','base','time.priority','base',1,'active',?,'2026-01-01','2026-01-01')",
+      [JSON.stringify({ id: "base", timeZone: "UTC", rules: [{ id: "r", label: "全天", priority: 0, timeRange: { start: "00:00", end: "00:00" }, pricing: { unitMinutes: 60, unitPrice: 100, roundGraceMinutes: 0, priceCap: 100000 } }] })],
+    );
+    sqlite.run("INSERT INTO resource_groups(shop_id,id,name,enabled,default_pricing_config_id,created_at,updated_at) VALUES ('shop','default','默认',1,'base','2026-01-01','2026-01-01')");
+    sqlite.run(
+      "INSERT INTO sessions(shop_id,id,player_id,started_at,status,pricing_config_ids_json) VALUES ('shop','s1','p1','2026-01-01T00:00:00.000Z','active','[\"base\"]'),('shop','s2','p2','2026-01-01T00:00:00.000Z','active','[\"base\"]')",
+    );
+    botResource(sqlite, {
+      announceGroups: [
+        { id: "g-public", name: "公开群", to: ["onebot:42"], ignorePrivacyMode: false, events: { "card.consumed": { on: true, sources: [] } }, templates: {} },
+        { id: "g-staff", name: "管理群", to: ["onebot:99"], ignorePrivacyMode: true, events: { "card.consumed": { on: true, sources: [] } }, templates: {} },
+      ],
+      replyGroups: [
+        { id: "r-public", name: "公开群", to: ["onebot:42"], ignorePrivacyMode: false, templates: {} },
+        { id: "r-staff", name: "管理群", to: ["onebot:99", "onebot:private:10001"], ignorePrivacyMode: true, templates: {} },
+      ],
+    });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+
+    const cardEvent = {
+      key: "card.consumed",
+      resourceId: "m1",
+      resourceName: "舞萌",
+      player: { playerId: "p1", displayName: "小明", identities: [] },
+      values: { verb: "刷卡" },
+    };
+
+    // 1) Shop privacy mode OFF: neither broadcast nor /list hides p1, regardless of group settings.
+    await hub.shopEvent(cardEvent);
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "list-off", name: "list", args: [], from: { provider: "onebot", subject: "10002", name: "小红" }, channel: "onebot:42" }));
+    await Promise.all(tasks.splice(0));
+    const offSays = says(ws);
+    expect(offSays.filter((f) => !f.replyTo).map((f) => [f.to, text(f)])).toEqual([
+      ["onebot:42", "💳 <小明> 在 舞萌 刷卡"],
+      ["onebot:99", "💳 <小明> 在 舞萌 刷卡"],
+    ]);
+    const listOffText = text(offSays.find((f) => f.replyTo === "list-off"));
+    expect(listOffText).toContain("小明");
+    expect(listOffText).toContain("小红");
+
+    // 2) Turn shop privacy mode ON and refresh hub.
+    sqlite.run("INSERT OR REPLACE INTO app_settings(shop_id,key,value_json,updated_at) VALUES ('shop','player.privacy',?,?)", [
+      JSON.stringify({ enabled: true }),
+      "2026-01-01T00:00:00.000Z",
+    ]);
+    await hub.botsChanged();
+    ws.sent.length = 0;
+
+    await hub.shopEvent(cardEvent);
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "list-public", name: "list", args: [], from: { provider: "onebot", subject: "10002", name: "小红" }, channel: "onebot:42" }));
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "list-staff", name: "list", args: [], from: { provider: "onebot", subject: "10002", name: "小红" }, channel: "onebot:99" }));
+    // Unlisted channel should be filtered out completely (no say reply).
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "command", id: "wallet-blocked", name: "wallet", args: [], from: { provider: "onebot", subject: "10002", name: "小红" }, channel: "onebot:888" }));
+    await Promise.all(tasks.splice(0));
+
+    const onSays = says(ws);
+    expect(onSays.filter((f) => !f.replyTo).map((f) => [f.to, text(f)])).toEqual([
+      ["onebot:42", "💳 匿名玩家 在 舞萌 刷卡"],
+      ["onebot:99", "💳 <小明> 在 舞萌 刷卡"],
+    ]);
+
+    const listPublic = text(onSays.find((f) => f.replyTo === "list-public"));
+    expect(listPublic).not.toContain("小明");
+    expect(listPublic).toContain("匿名玩家");
+    expect(listPublic).toContain("小红");
+
+    const listStaff = text(onSays.find((f) => f.replyTo === "list-staff"));
+    expect(listStaff).toContain("小明");
+    expect(listStaff).toContain("小红");
+
+    expect(onSays.some((f) => f.replyTo === "wallet-blocked")).toBe(false);
+    sqlite.close();
+  });
 });
 
 describe("what a page drawn from /session/page hears", () => {

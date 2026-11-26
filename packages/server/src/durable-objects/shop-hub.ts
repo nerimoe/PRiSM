@@ -10,7 +10,7 @@ import { loadResource } from "../resources/resource.js";
 import { announcementFrame, announcementMessage, idleReminderMessage, maintenanceMessage, type Announcement } from "../resources/shop-events.js";
 import type { MaintenanceNotice } from "../deployment-gate.js";
 import { findBotByToken } from "../resources/bot.js";
-import { announcementDeliveries, botMessage, type BotMessage } from "@prism/core";
+import { announcementDeliveries, botMessage, maskBotMessagePlayers, type BotMessage } from "@prism/core";
 import {
   applyIdleEvent, climatePower, dueIdle, emptyIdleTimers, idleBusy, idleScheduleOf, idleSettingsChanged, nextIdleWake,
   parseIdleSettings, setIdleEmpty, settleIdleOff,
@@ -707,9 +707,24 @@ export class ShopHub extends BaseDurableObject<Env> {
    * the chat where it already answered (`botChannel`) is skipped while other
    * destinations still receive it; commands without `botChannel` skip the bot.
    */
+  private async isPrivacyActiveForEvent(shopId: string, announcement: Announcement): Promise<boolean> {
+    const playerId = announcement.player?.playerId;
+    if (!shopId || !playerId) return false;
+    const setting = await this.env.DB.prepare(
+      "SELECT json_extract(value_json, '$.enabled') AS enabled FROM app_settings WHERE shop_id = ? AND key = 'player.privacy'",
+    ).bind(shopId).first<{ enabled: number | boolean | null }>();
+    if (!setting || (setting.enabled !== 1 && setting.enabled !== true)) return false;
+    if (announcement.player?.privacyMode !== undefined) return !!announcement.player.privacyMode;
+    const row = await this.env.DB.prepare(
+      "SELECT privacy_mode FROM players WHERE shop_id = ? AND id = ?",
+    ).bind(shopId, playerId).first<{ privacy_mode: number }>();
+    return Boolean(row?.privacy_mode);
+  }
+
   async shopEvent(event: Record<string, unknown>): Promise<void> {
     const announcement = event as unknown as Announcement;
     const shopId = (await this.shopId()) ?? "";
+    const privacyActive = await this.isPrivacyActiveForEvent(shopId, announcement);
     for (const ws of this.bots()) {
       const attachment = ws.deserializeAttachment() as BotAttachment | null;
       if (!attachment?.commands) continue;
@@ -719,9 +734,14 @@ export class ShopHub extends BaseDurableObject<Env> {
         const sameBot = announcement.botId === found.bot.id;
         if (sameBot && !announcement.botChannel) continue;
         const skip = sameBot ? announcement.botChannel : undefined;
-        for (const { to, templates } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null })) {
+        for (const { to, templates, ignorePrivacyMode } of announcementDeliveries(found.bot.config.announceGroups, { key: announcement.key, via: announcement.via ?? null })) {
           const destinations = skip ? to.filter((one) => one !== skip) : to;
-          if (destinations.length) this.sayTo(ws, destinations, announcementMessage(announcement, templates));
+          if (!destinations.length) continue;
+          const rawMessage = announcementMessage(announcement, templates);
+          const message = privacyActive && !ignorePrivacyMode
+            ? maskBotMessagePlayers(rawMessage, (player) => player.playerId === announcement.player!.playerId)
+            : rawMessage;
+          this.sayTo(ws, destinations, message);
         }
       } catch {
         // A bot that left misses it.

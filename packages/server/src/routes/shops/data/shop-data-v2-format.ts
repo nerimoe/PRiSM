@@ -378,7 +378,10 @@ export function validateRows(table: FullTable, rows: DataRow[], version: FormatV
     .sort()
     .join(",");
   for (const [index, row] of rows.entries()) {
-    if (table === "players" && schema.columns.some(c => c.name === "report_excluded") && row.report_excluded === undefined) row.report_excluded = 0;
+    if (table === "players") {
+      if (schema.columns.some(c => c.name === "report_excluded") && row.report_excluded === undefined) row.report_excluded = 0;
+      if (schema.columns.some(c => c.name === "privacy_mode") && row.privacy_mode === undefined) row.privacy_mode = 0;
+    }
     if (Object.keys(row).sort().join(",") !== columns) {
       errors.push(`${table} 第 ${index + 1} 行字段不完整或含未知字段`);
       continue;
