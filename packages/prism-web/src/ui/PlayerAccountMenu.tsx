@@ -1,56 +1,52 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { useMatch, useNavigate } from "react-router-dom";
+import type { Page } from "@prism/page-protocol";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import { shopApi, type ShopInfo, type Summary } from "./BillingPages";
-import {
-  AccountContent,
-  PlayerDialog,
-  playerSections,
-  type Section,
-} from "./PlayerAccount";
+import { shopApi } from "./BillingPages";
+import { AccountSheetPage, PlayerDialog } from "./PlayerAccount";
 
 export { PlayerDialog };
 
 export function PlayerAccountMenu() {
   const shopPage = useMatch("/t/:shopCode");
+  const resourcePage = useMatch("/m/*");
   const navigate = useNavigate();
-  const { user, logout, activeShop, billingActive, setBillingActive } = useAuth();
+  const { user, logout, activeShop, billingActive, accountMenu, setBillingActive, setAccountMenu } = useAuth();
   const { locale, setLocale, t } = useI18n();
-  const [info, setInfo] = useState<ShopInfo | null>(null);
-  const [section, setSection] = useState<Section | null>(null);
+  const [activeTab, setActiveTab] = useState<{ id: string; title: string } | null>(null);
+  const [sheetBack, setSheetBack] = useState<{ label?: string; onBack: () => void } | null>(null);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const menu = useRef<HTMLDetailsElement>(null);
+
   useEffect(() => {
-    let cancelled = false;
-    setInfo(null);
-    setSection(null);
+    setActiveTab(null);
+    setSheetBack(null);
     setCheckoutPending(false);
-    if (user && activeShop)
-      api<ShopInfo>(shopApi(activeShop))
-        .then(async (result) => {
-          if (cancelled) return;
-          setInfo(result);
-          if (result.membership) {
-            const current = await api<Summary>(shopApi(activeShop, "player/me"));
-            if (!cancelled) setBillingActive(activeShop, !!current.activeSession);
-          } else setBillingActive(activeShop, false);
-        })
-        .catch(() => {});
+  }, [activeShop, user]);
+
+  useEffect(() => {
+    if (!user || !activeShop || accountMenu || shopPage || resourcePage) return;
+    let cancelled = false;
+    api<Page>(`${shopApi(activeShop, "player/page")}?view=shop`)
+      .then((page) => {
+        if (cancelled) return;
+        setBillingActive(activeShop, page.billingActive);
+        if (page.accountMenu) setAccountMenu(activeShop, page.accountMenu);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [activeShop, user, setBillingActive]);
+  }, [activeShop, user, accountMenu, shopPage, resourcePage, locale, setBillingActive, setAccountMenu]);
+
   useEffect(() => {
     const close = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !menu.current?.contains(event.target) &&
-        menu.current
-      )
+      if (event.target instanceof Node && !menu.current?.contains(event.target) && menu.current) {
         menu.current.open = false;
+      }
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape" && menu.current) menu.current.open = false;
@@ -62,31 +58,39 @@ export function PlayerAccountMenu() {
       document.removeEventListener("keydown", escape);
     };
   }, []);
+
   if (!user) return null;
+
   return (
     <>
       <details ref={menu} className="player-account-menu">
         <summary className="focus-ring">
-          {billingActive && <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted"><span className="h-1.5 w-1.5 rounded-full bg-green-600" />{t("计费中")}</span>}
+          {billingActive && accountMenu?.billingBadge && (
+            <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted">
+              <span className="h-1.5 w-1.5 rounded-full bg-green-600" />
+              {accountMenu.billingBadge}
+            </span>
+          )}
           <span className="min-w-0 truncate">{user.displayName || user.username || user.id}</span>
           <ChevronDown size={16} className="shrink-0" />
         </summary>
         <div className="player-menu-items">
-          {info &&
-            playerSections.filter(item => !shopPage || item !== "账单").map((item) => (
-              <button
-                key={item}
-                onClick={() => {
-                  menu.current!.open = false;
-                  setSection(item);
-                }}
-              >
-                {t(item)}
-              </button>
-            ))}
+          {(accountMenu?.tabs ?? []).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => {
+                menu.current!.open = false;
+                setSheetBack(null);
+                setActiveTab({ id: tab.id, title: tab.label });
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
           <button
             onClick={() => {
               setLocale(locale === "zh" ? "en" : "zh");
+              if (activeShop && !shopPage && !resourcePage) setAccountMenu(activeShop, null);
               menu.current!.open = false;
             }}
           >
@@ -98,18 +102,38 @@ export function PlayerAccountMenu() {
               await logout();
             }}
           >
-            {t("退出登录")}
+            {accountMenu?.logoutLabel ?? t("退出登录")}
           </button>
         </div>
       </details>
-      {section && info && (
-        <PlayerDialog title={t(section)} onClose={() => setSection(null)} dismissDisabled={checkoutPending}>
-          <AccountContent
-            key={section + activeShop}
-            section={section}
-            info={info}
+      {activeTab && activeShop && (
+        <PlayerDialog
+          title={activeTab.title}
+          onBack={sheetBack?.onBack}
+          backLabel={sheetBack?.label}
+          onClose={() => {
+            setActiveTab(null);
+            setSheetBack(null);
+          }}
+          dismissDisabled={checkoutPending}
+        >
+          <AccountSheetPage
+            key={`${activeTab.id}:${activeShop}`}
+            shopCode={activeShop}
+            initialView={activeTab.id}
+            onTitleChange={(nextTitle) =>
+              setActiveTab((prev) => (prev && nextTitle ? { ...prev, title: nextTitle } : prev))
+            }
+            onBackChange={setSheetBack}
             onCheckoutPending={setCheckoutPending}
-            onCheckout={() => { setSection(null); setCheckoutPending(false); setBillingActive(info.shop.publicId, false); navigate(`/t/${encodeURIComponent(info.shop.publicId)}`); }}
+            onCheckout={() => {
+              const code = activeShop;
+              setActiveTab(null);
+              setSheetBack(null);
+              setCheckoutPending(false);
+              setBillingActive(code, false);
+              if (!shopPage) navigate(`/t/${encodeURIComponent(code)}`);
+            }}
           />
         </PlayerDialog>
       )}

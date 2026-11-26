@@ -85,31 +85,12 @@ export function PlatformBinding({ code, labels }: { code: string; labels: Bindin
     }).catch(e => { if (!cancelled) setError(errorText(e instanceof Error ? e.message : "操作失败")); });
     return () => { cancelled = true; clearTimeout(timer); };
   }, [code, attempt, errorText]);
-  return <div className="grid gap-6"><h2>{labels.title}</h2><div className="binding-code">
+  return <div className="grid gap-6"><h2 className="binding-title">{labels.title}</h2><div className="binding-code">
     {binding ? <>
       <BindingLines lines={binding.lines} labels={labels} />
       <small>{labels.expiresLabel} {billTime(binding.expiresAt).time}</small>
     </> : error ? <><p role="alert">{error}</p><button className="session-action" onClick={() => setAttempt(value => value + 1)}>{labels.retryLabel}</button></> : <Loader2 className="animate-spin" />}
   </div></div>;
-}
-
-/** Sign-in on the shop page, which no server-made page describes. */
-export function ShopSignIn() {
-  const { t } = useI18n();
-  return <SessionSignIn methods={[
-    { id: "munet", provider: "munet", label: t("使用 MuNET 登录"), busyLabel: t("正在连接 MuNET…"), style: "primary" },
-    {
-      id: "passkey", provider: "passkey", label: t("使用 Passkey 登录"), busyLabel: t("正在验证 Passkey…"),
-      unsupportedText: t("当前浏览器不支持 Passkey，请使用 MuNET 登录"),
-    },
-  ]} />;
-}
-
-/** Platform binding on the shop page. */
-export function ShopPlatformBinding({ code }: { code: string }) {
-  const { t } = useI18n();
-  const copy = useCopyLabels();
-  return <PlatformBinding code={code} labels={{ title: t("绑定平台身份"), expiresLabel: t("有效期至"), retryLabel: t("重试"), ...copy }} />;
 }
 
 function useCopyLabels(): CopyLabels {

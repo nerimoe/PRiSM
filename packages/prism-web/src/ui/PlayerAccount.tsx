@@ -1,43 +1,27 @@
-import { useNotice } from "./NoticeProvider";
-import { CheckoutHistory } from "./CheckoutHistory";
-// Account sheets share their bill and checkout components with the standalone shop page.
-import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
-import { BillTotal, BillTimeline } from "./BillTimeline";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Loader2, X } from "lucide-react";
-import { api, playerOperation } from "../api";
-import { browserCheckoutPreview } from "../browser-billing";
+import { createPortal } from "react-dom";
+import { ChevronLeft, Loader2, X } from "lucide-react";
+import type { Page, PageBlock, PageCelebration, PageTarget } from "@prism/page-protocol";
+import { api } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import {
-  shopApi,
-  post,
-  type ShopInfo,
-  type Summary,
-  type Preview,
-  type Assets,
-} from "./BillingPages";
-
-export type Section = "账单" | "兑换" | "记录" | "钱包" | "平台身份";
-export const playerSections: Section[] = ["账单", "兑换", "记录", "钱包", "平台身份"];
-
-type PlatformBindingItem = {
-  playerId: string;
-  provider: string;
-  subject: string;
-  displayName?: string;
-  verifiedAt: string;
-};
+import { shopApi } from "./BillingPages";
+import { PlayerPageBlocks } from "./PlayerPageBlocks";
+import { useShopPageAct } from "./page-blocks/use-page-actions";
 
 export function PlayerDialog({
   title,
   children,
   onClose,
+  onBack,
+  backLabel,
   dismissDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  onBack?: () => void;
+  backLabel?: string;
   dismissDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -49,16 +33,31 @@ export function PlayerDialog({
     <dialog
       ref={ref}
       className="player-dialog"
-      onCancel={event => { if (dismissDisabled) event.preventDefault(); else onClose(); }}
+      onCancel={(event) => {
+        if (dismissDisabled) event.preventDefault();
+        else onClose();
+      }}
       onClick={(e) => {
         if (!dismissDisabled && e.target === ref.current) onClose();
       }}
     >
       <div className="player-dialog-content">
         <header>
+          {onBack && (
+            <button
+              type="button"
+              className="player-dialog-back focus-ring p-2"
+              onClick={onBack}
+              disabled={dismissDisabled}
+              aria-label={backLabel || t("返回")}
+            >
+              <ChevronLeft size={22} />
+              {backLabel && <span>{backLabel}</span>}
+            </button>
+          )}
           <h2 className="text-lg font-semibold">{title}</h2>
           <button
-            className="focus-ring p-2"
+            className="player-dialog-close focus-ring p-2"
             onClick={onClose}
             disabled={dismissDisabled}
             aria-label={t("关闭")}
@@ -72,198 +71,192 @@ export function PlayerDialog({
   );
 }
 
-export function AccountContent({
-  section,
-  info,
+function mergeListBlock(current: PageBlock[], incoming: PageBlock[], blockId: string): PageBlock[] {
+  const replacement = incoming.find((block) => block.kind === "list" && block.id === blockId);
+  if (!replacement || replacement.kind !== "list") return current;
+  return current.map((block) => {
+    if (block.kind !== "list" || block.id !== blockId) return block;
+    const seen = new Set(block.items.map((item) => item.id));
+    return {
+      ...replacement,
+      items: [...block.items, ...replacement.items.filter((item) => !seen.has(item.id))],
+    };
+  });
+}
+
+function targetPath(shopCode: string, target: PageTarget): string {
+  const params = new URLSearchParams({ view: target.view });
+  if (target.item) params.set("item", target.item);
+  if (target.cursor) params.set("cursor", target.cursor);
+  return `${shopApi(shopCode, "player/page")}?${params.toString()}`;
+}
+
+export function AccountSheetPage({
+  shopCode,
+  initialView,
+  onTitleChange,
+  onBackChange,
   onCheckout,
   onCheckoutPending,
 }: {
-  section: Section;
-  info: ShopInfo;
+  shopCode: string;
+  initialView: string;
+  onTitleChange?: (title: string) => void;
+  onBackChange?: (back: { label?: string; onBack: () => void } | null) => void;
   onCheckout: () => void;
   onCheckoutPending: (pending: boolean) => void;
 }) {
-  const { t, errorText } = useI18n();
-  const showNotice = useNotice();
-  const code = info.shop.publicId;
+  const { t, errorText, locale } = useI18n();
   const { setBillingActive } = useAuth();
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [assets, setAssets] = useState<Assets | null>(null);
-  const [bindings, setBindings] = useState<PlatformBindingItem[] | null>(null);
+  const [stack, setStack] = useState<PageTarget[]>([{ view: initialView }]);
+  const [page, setPage] = useState<Page | null>(null);
   const [busy, setBusy] = useState(true);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [loadingMoreId, setLoadingMoreId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  /** Why a code was not accepted, under the code field; the section itself loaded fine. */
-  const [redeemError, setRedeemError] = useState("");
-  const [done, setDone] = useState(false);
-  useEffect(() => {
-    if (!redeemError) return;
-    const timer = setTimeout(() => setRedeemError(""), 5000);
-    return () => clearTimeout(timer);
-  }, [redeemError]);
-  const [redeem, setRedeem] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const [celebration, setCelebration] = useState<PageCelebration | null>(null);
+  const container = useRef<HTMLDivElement>(null);
+  const latestCheckout = useRef(onCheckout);
+  latestCheckout.current = onCheckout;
+  const latestTitleChange = useRef(onTitleChange);
+  latestTitleChange.current = onTitleChange;
+  const latestBackChange = useRef(onBackChange);
+  latestBackChange.current = onBackChange;
+
+  const current = stack[stack.length - 1]!;
+
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
-    async function load() {
-      setBusy(true);
-      setError("");
-      try {
-        if (section === "账单") {
-          const current = await api<Summary>(shopApi(code, "player/me"));
-          const bill = current.activeSession
-            ? await browserCheckoutPreview(
-                shopApi(code, "player/billing-inputs"), shopApi(code, "player/checkout/preview"), controller.signal,
-              )
-            : null;
-          const latest = current.activeSession ? null : await api<{ receipt: Receipt | null }>(shopApi(code, "player/checkout/latest"));
-          if (!cancelled) {
-            setReceipt(latest?.receipt ?? null);
-            setBillingActive(code, !!current.activeSession);
-            setPreview(bill);
-          }
-        } else if (section === "钱包") {
-          const current = await api<Assets>(shopApi(code, "player/assets"));
-          if (!cancelled) setAssets(current);
-        } else if (section === "平台身份") {
-          const current = await api<{ bindings: PlatformBindingItem[] }>(
-            shopApi(code, "platform-binding"),
-            { signal: controller.signal },
-          );
-          if (!cancelled) setBindings(current.bindings);
-        }
-      } catch (e) {
-        if (!cancelled)
-          setError(errorText(e instanceof Error ? e.message : "操作失败"));
-      } finally {
-        if (!cancelled) setBusy(false);
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true; controller.abort();
-    };
-  }, [code, section, attempt, errorText, setBillingActive]);
-  if (section === "记录") return <CheckoutHistory code={code} />;
-  async function submit() {
-    if (busy) return;
     setBusy(true);
-    setRedeemError("");
-    try {
-      await playerOperation(shopApi(code, "player/redeem"), { code: redeem.trim() });
-      setDone(true);
-      setPreview(null);
-    } catch (e) {
-      const notice = showNotice(e);
-      if (notice.display === "inline") setRedeemError(notice.body);
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <div
-      className={`account-content ${section === "账单" ? "account-bill" : ""}`}
-    >
-      <div className="account-scroll">
-        {section === "账单" && preview && !done && (
-          <BillTotal preview={preview} />
-        )}
-        {error && (
-          <div role="alert" className="text-sm text-coral">
-            {error}
-            <button
-              className="ml-3 underline"
-              onClick={() => setAttempt((v) => v + 1)}
-            >
-              {t("重新加载")}
-            </button>
-          </div>
-        )}
-        {busy && !preview && (
-          <Loader2 className="mx-auto animate-spin" size={24} />
-        )}
-        {section === "账单" &&
-          (receipt ? (
-            <SettledBill receipt={receipt} />
-          ) : preview ? (
-            <BillTimeline preview={preview} />
-          ) : (
-            !busy && !error && <p>{t("暂无待结账单")}</p>
-          ))}
-        {section === "兑换" &&
-          (done ? (
-            <p>{t("兑换成功")}</p>
-          ) : (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit();
-              }}
-              className="grid gap-5"
-            >
-              <input
-                className="session-action text-left"
-                aria-label={t("兑换码")}
-                placeholder={t("兑换码")}
-                value={redeem}
-                onChange={(e) => setRedeem(e.target.value)}
-                autoComplete="off"
-              />
-              <button
-                className="session-action primary"
-                disabled={busy || !redeem.trim()}
-              >
-                {busy && <Loader2 className="animate-spin" size={20} />}{" "}
-                {t("兑换")}
-              </button>
-              {redeemError && <p role="alert" className="inline-notice" data-level="warning">{redeemError}</p>}
-            </form>
-          ))}
-        {section === "钱包" &&
-          assets &&
-          (assets.holdings.length ? (
-            assets.holdings.map((row) => (
-              <div className="account-row" key={row.id}>
-                <span>{row.assetName || row.assetCode}</span>
-                <strong>{row.quantity}</strong>
-              </div>
-            ))
-          ) : (
-            <p>{t("暂无资产")}</p>
-          ))}
-        {section === "平台身份" && bindings && (
-          <>
-            {bindings.length ? (
-              bindings.map((row) => (
-                <div className="account-row" key={`${row.provider}:${row.subject}`}>
-                  <span>
-                    {row.provider}
-                    {row.displayName ? ` · ${row.displayName}` : ""}
-                  </span>
-                  <code className="select-all break-all text-xs opacity-70">{row.subject}</code>
-                </div>
-              ))
-            ) : (
-              <p>{t("暂无绑定身份")}</p>
-            )}
-            <button
-              type="button"
-              className="session-action"
-              disabled={busy}
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              {t("刷新")}
-            </button>
-          </>
-        )}
+    setError("");
+    api<Page>(targetPath(shopCode, current), { signal: controller.signal })
+      .then((loaded) => {
+        if (cancelled) return;
+        setPage(loaded);
+        if (current.view === "bill") setBillingActive(shopCode, loaded.billingActive);
+        if (loaded.title) latestTitleChange.current?.(loaded.title);
+      })
+      .catch((e) => {
+        if (!cancelled && !controller.signal.aborted) {
+          setError(errorText(e instanceof Error ? e.message : "操作失败"));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [shopCode, current, attempt, locale, errorText, setBillingActive]);
 
-      </div>
-      {section === "账单" && !done && preview && (
-        <footer className="account-footer">
-          <CheckoutButton info={info} onComplete={onCheckout} onPendingChange={onCheckoutPending} />
-        </footer>
+  useEffect(() => {
+    onCheckoutPending(actionBusy || celebration !== null);
+  }, [actionBusy, celebration, onCheckoutPending]);
+
+  useEffect(() => {
+    if (!celebration) return;
+    const timer = setTimeout(() => latestCheckout.current(), 1500);
+    return () => clearTimeout(timer);
+  }, [celebration]);
+
+  const act = useShopPageAct(shopCode, current.view, (answer) => {
+    setPage(answer.page);
+    if (answer.ok && answer.page.title) latestTitleChange.current?.(answer.page.title);
+    if (current.view === "bill") setBillingActive(shopCode, answer.page.billingActive);
+    if (answer.ok && answer.celebration === undefined && current.view === "redeem") {
+      window.dispatchEvent(new CustomEvent("prism:shop-refresh"));
+    }
+  });
+
+  const openTarget = (target: PageTarget) => {
+    setError("");
+    setPage(null);
+    setStack((prev) => [...prev, target]);
+  };
+
+  const loadMore = async (blockId: string, target: PageTarget) => {
+    if (loadingMoreId) return;
+    setLoadingMoreId(blockId);
+    setError("");
+    try {
+      const next = await api<Page>(targetPath(shopCode, target));
+      setPage((currentPage) =>
+        currentPage ? { ...currentPage, blocks: mergeListBlock(currentPage.blocks, next.blocks, blockId) } : next,
+      );
+    } catch (e) {
+      setError(errorText(e instanceof Error ? e.message : "操作失败"));
+    } finally {
+      setLoadingMoreId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (stack.length > 1) {
+      latestBackChange.current?.({
+        ...(page?.backLabel ? { label: page.backLabel } : {}),
+        onBack: () => {
+          setError("");
+          setPage(null);
+          setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+        },
+      });
+    } else {
+      latestBackChange.current?.(null);
+    }
+  }, [stack.length, page?.backLabel]);
+
+  useEffect(() => () => latestBackChange.current?.(null), []);
+
+  const hasFooter = !!page?.footer?.length && !celebration;
+  const prefix = (
+    <>
+      {error && (
+        <div role="alert" className="text-sm text-coral">
+          {error}
+          <button type="button" className="ml-3 underline" onClick={() => setAttempt((v) => v + 1)}>
+            {t("重试")}
+          </button>
+        </div>
       )}
+      {busy && !page && <Loader2 className="mx-auto animate-spin" size={24} />}
+    </>
+  );
+
+  return (
+    <div ref={container} className={`account-content ${hasFooter ? "account-bill" : ""}`}>
+      {page ? (
+        <PlayerPageBlocks
+          page={page}
+          act={act}
+          read={async () => setAttempt((v) => v + 1)}
+          openTarget={openTarget}
+          loadMore={loadMore}
+          loadingMoreId={loadingMoreId}
+          onCelebrate={(next) => setCelebration(next)}
+          onBusyChange={setActionBusy}
+          bodyClassName="account-scroll"
+          bodyPrefix={prefix}
+          footerClassName="account-footer"
+          wrapPasskey={false}
+        />
+      ) : (
+        <div className="account-scroll">{prefix}</div>
+      )}
+      {celebration &&
+        createPortal(
+          <div className="checkout-success" role="status" aria-live="polite">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <circle cx="50" cy="50" r="43" />
+              <path d="M28 51 L44 67 L73 35" />
+            </svg>
+            <h2>{celebration.title}</h2>
+            <p>{celebration.subtitle}</p>
+          </div>,
+          container.current?.closest("dialog") ?? document.body,
+        )}
     </div>
   );
 }

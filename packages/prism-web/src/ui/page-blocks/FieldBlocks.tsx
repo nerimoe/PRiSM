@@ -1,12 +1,26 @@
 import { useId } from "react";
 import { CheckCircle2, Circle } from "lucide-react";
-import type { PageConsent, PageInputField, PageSelectField, PageToggleField } from "@prism/page-protocol";
+import {
+  allPageBlocks, buildButtonPayload, canSubmitButton, type PageButton, type PageConsent, type PageInputField,
+  type PageSelectField, type PageToggleField,
+} from "@prism/page-protocol";
 import { usePageContext } from "./page-context";
 
 export function InputBlock({ block }: { block: PageInputField }) {
-  const { form, actions } = usePageContext();
+  const { page, form, actions } = usePageContext();
   const fieldId = useId();
   const value = form.values[block.id];
+  const submitOnEnter = () => {
+    const blocks = allPageBlocks(page);
+    const matching = blocks.filter(
+      (candidate): candidate is PageButton => candidate.kind === "button" && !!candidate.collect?.includes(block.id),
+    );
+    if (matching.length !== 1) return false;
+    const target = matching[0]!;
+    if (target.confirm || actions.blocked || !canSubmitButton(target, blocks, form.values)) return false;
+    void actions.run(target.id, target.action, buildButtonPayload(target, blocks, form.values), target.needsLocation, target.wait);
+    return true;
+  };
   return (
     <div className="page-field">
       {block.label && <label htmlFor={fieldId} className="page-field-label">{block.label}</label>}
@@ -22,6 +36,10 @@ export function InputBlock({ block }: { block: PageInputField }) {
         onChange={(event) => {
           const raw = event.target.value;
           form.setValue(block.id, block.maxLength && block.maxLength > 0 ? raw.slice(0, block.maxLength) : raw);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          if (submitOnEnter()) event.preventDefault();
         }}
       />
       {block.helperText && <p className="page-field-help">{block.helperText}</p>}

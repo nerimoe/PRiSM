@@ -23,6 +23,14 @@ export async function browserCheckoutPreview(
       });
     throw error;
   }
+  return previewFromBillingInputs(inputs, signal);
+}
+
+/** Runs the browser billing worker over a server-provided snapshot. */
+export async function previewFromBillingInputs(
+  inputs: { playerId: string; billingSnapshot: unknown },
+  signal?: AbortSignal,
+): Promise<BrowserCheckoutPreview> {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   return new Promise((resolve, reject) => {
     const worker = new Worker(

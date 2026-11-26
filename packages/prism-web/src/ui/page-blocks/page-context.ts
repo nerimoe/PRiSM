@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { Page } from "@prism/page-protocol";
+import type { Page, PageTarget } from "@prism/page-protocol";
 import type { Act, PageActions } from "./use-page-actions";
 import type { PageForm } from "./use-page-form";
 
@@ -24,6 +24,10 @@ export type PageContextValue = {
   /** While set, the page is that block alone and every other one stays off it. */
   soleBlockId: string | null;
   setSoleBlockId: (id: string | null) => void;
+  openTarget?: (target: PageTarget) => void;
+  loadMore?: (blockId: string, target: PageTarget) => void;
+  loadingMoreId?: string | null;
+  noticeAboveButton?: boolean;
 };
 
 export const PageContext = createContext<PageContextValue | null>(null);

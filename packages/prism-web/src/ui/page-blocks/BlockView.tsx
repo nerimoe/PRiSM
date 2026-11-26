@@ -1,11 +1,13 @@
 import { containsBlock, MAX_PAGE_DEPTH, type PageBlock } from "@prism/page-protocol";
 import { ResourcePricing, type ResourceRules } from "../ResourcePricing";
 import { PlatformBinding, SessionSignIn } from "../SessionContent";
+import { BillBlock } from "./BillBlock";
 import { ButtonBlock } from "./ButtonBlock";
 import { CardsBlock } from "./cards/CardsBlock";
 import { ClimateBlock } from "./ClimateBlock";
 import { BannerBlock, ImageBlock, KeyValueBlock, RowBlock, SectionBlock, TableBlock, TextBlock } from "./ContentBlocks";
 import { ConsentBlock, InputBlock, SelectBlock, ToggleBlock } from "./FieldBlocks";
+import { ListBlock } from "./ListBlock";
 import { usePageContext } from "./page-context";
 
 export function BlockList({ blocks, depth }: { blocks: PageBlock[]; depth: number }) {
@@ -35,6 +37,8 @@ function BlockView({ block, depth }: { block: PageBlock; depth: number }) {
       return <ResourcePricing rules={block.rules as ResourceRules} changes={(block.changes ?? undefined) as Parameters<typeof ResourcePricing>[0]["changes"]} labels={block.labels} />;
     case "climate": return <ClimateBlock block={block} />;
     case "table": return <TableBlock block={block} />;
+    case "bill": return <BillBlock block={block} />;
+    case "list": return <ListBlock block={block} />;
     case "cards": return <CardsBlock block={block} />;
     // A kind this version does not know yet.
     default: return null;

@@ -168,7 +168,7 @@ describe("what the page shows", () => {
     expect(signIn.methods.map((m: any) => m.provider)).toEqual(["munet", "passkey"]);
 
     const binding = block({ ...caps("coin"), gate: "binding" }, "binding");
-    expect(binding).toMatchObject({ title: "绑定平台身份", copyLabel: "复制", copiedLabel: "已复制" });
+    expect(binding).toMatchObject({ title: "绑定身份", copyLabel: "复制", copiedLabel: "已复制" });
 
     const pricing = block({ ...caps("coin"), gate: "entry", billing: { rules: { plans: [] } } }, "pricing");
     expect(pricing.labels).toMatchObject({ title: "计费规则", listSeparator: "、" });

@@ -1,5 +1,5 @@
 import { errorResponse } from "./http-errors.js";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { PrismDomainError } from "@prism/core";
@@ -34,6 +34,7 @@ import { versionRouter } from "./routes/system/version.js";
 
 // Multi-tenant shop router
 import { shopRouter } from "./routes/shops/index.js";
+import { createShopPlayerPageRouter } from "./routes/shops/player-page.js";
 import { integrationSocketRouter } from "./routes/shops/integration.js";
 import { shopDataAdminRouter } from "./routes/shops/data/index.js";
 
@@ -116,10 +117,23 @@ export function createApp(): Hono<AppBindings> {
   app.route("/api/v1/cards", cardsRouter);
   app.route("/api/v1/machines", resourceTicketRouter);
   app.route("/api/v1/machines", machineLoginRouter);
+  const dispatch = (c: Context<AppBindings>, request: Request) =>
+    Promise.resolve(
+      app.fetch(
+        request,
+        c.env,
+        (() => {
+          try {
+            return c.executionCtx;
+          } catch {
+            return undefined;
+          }
+        })(),
+      ),
+    );
+
   app.route("/api/v1/devices", resourceSessionRouter);
-  app.route("/api/v1/devices", createResourcePageRouter((c, request) => Promise.resolve(app.fetch(request, c.env, (() => {
-    try { return c.executionCtx; } catch { return undefined; }
-  })()))));
+  app.route("/api/v1/devices", createResourcePageRouter(dispatch));
   app.route("/api/v1/devices", pageReportRouter);
   app.route("/api/v1/merchant", merchantResourceActionRouter);
   app.route("/t", resourceQrRouter);
@@ -128,6 +142,7 @@ export function createApp(): Hono<AppBindings> {
   app.route("/integration", integrationSocketRouter);
 
   // Multi-tenant shop routes (/api/v1/shops/:shopCode)
+  app.route("/api/v1/shops/:shopCode/player", createShopPlayerPageRouter(dispatch));
   app.route("/api/v1/shops/:shopCode", shopRouter);
 
   // Platform shop routes (/api/v1/shops)

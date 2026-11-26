@@ -16,7 +16,7 @@ import {
  * while visible in case a push was lost. An action answers with the page too.
  */
 export function usePlayerPage(ticket: string, onExpired: () => void) {
-  const { user, setActiveShop, setBillingActive } = useAuth();
+  const { user, setActiveShop, setBillingActive, setAccountMenu } = useAuth();
   const { locale } = useI18n();
   const [page, setPage] = useState<Page | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -128,11 +128,13 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
 
   const shopCode = page?.shopCode;
   const billingActive = page?.billingActive;
+  const accountMenu = page?.accountMenu ?? null;
   useEffect(() => {
     if (!shopCode) return;
     setActiveShop(shopCode);
     setBillingActive(shopCode, !!billingActive);
-  }, [shopCode, billingActive, setActiveShop, setBillingActive]);
+    setAccountMenu(shopCode, accountMenu);
+  }, [shopCode, billingActive, accountMenu, setActiveShop, setBillingActive, setAccountMenu]);
 
   // Pushes need an account, so a stranger's page gets none until signed in.
   const connect = !!page && !askedToSignIn && typeof WebSocket !== "undefined";

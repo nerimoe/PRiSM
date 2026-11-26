@@ -1,40 +1,84 @@
-import { useState } from "react";
-import type { Page } from "@prism/page-protocol";
+import { useEffect, useState, type ReactNode } from "react";
+import { allPageBlocks, type Page, type PageCelebration, type PageTarget } from "@prism/page-protocol";
 import { BlockList } from "./page-blocks/BlockView";
 import { PageContext } from "./page-blocks/page-context";
 import { usePageActions, type Act } from "./page-blocks/use-page-actions";
 import { usePageForm } from "./page-blocks/use-page-form";
+import type { ActionAnswer } from "./player-page";
 import { SessionPasskeySetup } from "./SessionPasskeySetup";
 
 /**
  * Draws the page. Only what the player is in the middle of is kept here; each
  * kind of block is its own component in `page-blocks/`.
  */
-export function PlayerPageBlocks({ page, ticket, act, read, cardAsks, onExpired }: {
+export function PlayerPageBlocks({
+  page,
+  ticket = "",
+  act,
+  read,
+  cardAsks = 0,
+  onExpired = () => {},
+  openTarget,
+  loadMore,
+  loadingMoreId,
+  onCelebrate,
+  onBusyChange,
+  bodyClassName = "device-controls",
+  bodyPrefix,
+  footerClassName,
+  wrapPasskey = true,
+}: {
   page: Page;
-  ticket: string;
+  ticket?: string;
   act: Act;
   read: () => Promise<void>;
-  cardAsks: number;
-  onExpired: () => void;
+  cardAsks?: number;
+  onExpired?: () => void;
+  openTarget?: (target: PageTarget) => void;
+  loadMore?: (blockId: string, target: PageTarget) => void;
+  loadingMoreId?: string | null;
+  onCelebrate?: (celebration: PageCelebration, answer: ActionAnswer) => void;
+  onBusyChange?: (busy: boolean) => void;
+  bodyClassName?: string;
+  bodyPrefix?: ReactNode;
+  footerClassName?: string;
+  wrapPasskey?: boolean;
 }) {
   const [cardsBusy, setCardsBusy] = useState(false);
   const [addingCard, setAddingCard] = useState(false);
   const [soleBlockId, setSoleBlockId] = useState<string | null>(null);
   const refresh = () => void read();
-  const form = usePageForm(page.blocks);
-  const actions = usePageActions({ blocks: page.blocks, act, onExpired, onRefresh: refresh, cardsBusy });
+  const blocks = allPageBlocks(page);
+  const form = usePageForm(blocks);
+  const actions = usePageActions({ blocks, act, onExpired, onRefresh: refresh, onCelebrate, cardsBusy });
+
+  useEffect(() => {
+    onBusyChange?.(!!actions.busy);
+  }, [actions.busy, onBusyChange]);
+
+  const contextValue = {
+    page, ticket, form, actions, act, refresh, cardAsks, onExpired,
+    setCardsBusy, addingCard, setAddingCard, soleBlockId, setSoleBlockId,
+    openTarget, loadMore, loadingMoreId,
+  };
+
+  const footerBlocks = page.footer && page.footer.length > 0 && (
+    <PageContext.Provider value={{ ...contextValue, noticeAboveButton: true }}>
+      <BlockList blocks={page.footer} depth={0} />
+    </PageContext.Provider>
+  );
 
   const drawn = (
-    <PageContext.Provider value={{
-      page, ticket, form, actions, act, refresh, cardAsks, onExpired,
-      setCardsBusy, addingCard, setAddingCard, soleBlockId, setSoleBlockId,
-    }}>
-      <div className="device-controls">
+    <PageContext.Provider value={contextValue}>
+      <div className={bodyClassName}>
+        {bodyPrefix}
         <BlockList blocks={page.blocks} depth={0} />
       </div>
+      {footerBlocks && (
+        footerClassName ? <footer className={footerClassName}>{footerBlocks}</footer> : footerBlocks
+      )}
     </PageContext.Provider>
   );
   // Binding a passkey is offered once there is something to protect.
-  return page.offerPasskeySetup ? <SessionPasskeySetup>{drawn}</SessionPasskeySetup> : drawn;
+  return wrapPasskey && page.offerPasskeySetup ? <SessionPasskeySetup>{drawn}</SessionPasskeySetup> : drawn;
 }

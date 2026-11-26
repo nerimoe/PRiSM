@@ -235,14 +235,19 @@ function formatLedgerReason(reason: string, delta: number, t: Translate): string
 }
 
 function checkoutTimeRange(record: StaffReportCheckout, timeZone?: string): string {
+  const settledBt = billTime(record.settledAt, timeZone);
   const endIso = record.endedAt || record.settledAt;
   const endBt = billTime(endIso, timeZone);
   if (!record.startedAt) return endBt.time;
   const startBt = billTime(record.startedAt, timeZone);
-  if (startBt.date === endBt.date) {
-    return `${startBt.time} – ${endBt.time}`;
-  }
-  return `${startBt.date.slice(5)} ${startBt.time} – ${endBt.time}`;
+  const shortDay = (bt: typeof startBt) =>
+    bt.date.slice(0, 4) === settledBt.date.slice(0, 4) ? bt.date.slice(5) : bt.date;
+  const startLabel = startBt.date === settledBt.date ? startBt.time : `${shortDay(startBt)} ${startBt.time}`;
+  const endLabel =
+    endBt.date === settledBt.date || endBt.date === startBt.date
+      ? endBt.time
+      : `${shortDay(endBt)} ${endBt.time}`;
+  return `${startLabel} – ${endLabel}`;
 }
 
 function HistoryPager({
@@ -2300,9 +2305,6 @@ function PlayerCheckouts({
                   const endIso = record.endedAt || record.settledAt;
                   const endClock = billTime(endIso, timeZone || undefined).time;
                   const settledClock = billTime(record.settledAt, timeZone || undefined).time;
-                  const dotColor = record.archived
-                    ? "rgb(var(--color-ink) / 0.35)"
-                    : "var(--color-mint)";
                   const discounted = record.subtotal > record.total + 0.005;
                   return (
                     <button
@@ -2315,11 +2317,6 @@ function PlayerCheckouts({
                     >
                       <div className="flex items-center justify-between gap-3">
                         <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[14px]">
-                          <i
-                            aria-hidden="true"
-                            className="bill-plan-dot !mr-1"
-                            style={{ background: dotColor }}
-                          />
                           <span className="font-semibold tabular-nums text-ink">
                             {checkoutTimeRange(record, timeZone || undefined)}
                           </span>
@@ -2348,7 +2345,7 @@ function PlayerCheckouts({
                           />
                         </span>
                       </div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 pl-3.5 text-xs text-ink/55 tabular-nums">
+                      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-xs text-ink/55 tabular-nums">
                         <span>{payment(record, t)}</span>
                         {record.sessionCount > 0 && (
                           <span>

@@ -162,14 +162,38 @@ function createPlayerQueries(input: CreateSqlReadModelsInput): PlayerQueries {
     getLatestPlayerCheckout: playerId => getPlayerCheckout(input, playerId),
     getPlayerCheckout: (playerId, checkoutId) => getPlayerCheckout(input, playerId, checkoutId),
     async listPlayerCheckouts(playerId, offset) {
-      const rows = await input.executor.all<{ id: string; total: number; settled_at: string; started_at: string | null; ended_at: string | null; session_count: number }>(
-        `SELECT c.id, c.total, c.settled_at, MIN(s.started_at) AS started_at, MAX(s.ended_at) AS ended_at, COUNT(s.id) AS session_count
+      const rows = await input.executor.all<{
+        id: string;
+        subtotal: number;
+        total: number;
+        settled_at: string;
+        started_at: string | null;
+        ended_at: string | null;
+        session_count: number;
+        payment_method: string | null;
+      }>(
+        `SELECT c.id, c.subtotal, c.total, c.settled_at, MIN(s.started_at) AS started_at, MAX(s.ended_at) AS ended_at, COUNT(s.id) AS session_count, MAX(payment.method) AS payment_method
          FROM player_checkouts c
          LEFT JOIN settlements st ON st.shop_id = c.shop_id AND st.checkout_id = c.id
          LEFT JOIN sessions s ON s.shop_id = st.shop_id AND s.id = st.session_id AND s.player_id = c.player_id
+         LEFT JOIN cashier_payments payment ON payment.shop_id = c.shop_id AND payment.checkout_id = c.id
          WHERE c.shop_id = ${sqlShop(input.executor)} AND c.player_id = ?
-         GROUP BY c.id ORDER BY c.settled_at DESC, c.id DESC LIMIT 31 OFFSET ?`, [playerId, offset]);
-      return { records: rows.slice(0, 30).map(row => ({ id: row.id, total: yuanOf(centsOfInteger(row.total)), settledAt: row.settled_at, startedAt: row.started_at, endedAt: row.ended_at, sessionCount: row.session_count })), nextOffset: rows.length > 30 ? offset + 30 : null };
+         GROUP BY c.id ORDER BY c.settled_at DESC, c.id DESC LIMIT 31 OFFSET ?`,
+        [playerId, offset],
+      );
+      return {
+        records: rows.slice(0, 30).map((row) => ({
+          id: row.id,
+          subtotal: yuanOf(centsOfInteger(row.subtotal)),
+          total: yuanOf(centsOfInteger(row.total)),
+          settledAt: row.settled_at,
+          startedAt: row.started_at,
+          endedAt: row.ended_at,
+          sessionCount: row.session_count,
+          paymentMethod: row.payment_method,
+        })),
+        nextOffset: rows.length > 30 ? offset + 30 : null,
+      };
     },
     async getPlayerSummary(playerId) {
       const rows = await input.executor.all<PlayerSummaryRow>(

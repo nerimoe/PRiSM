@@ -23,7 +23,9 @@ export type ClimateState = {
   fanModes: string[];
 };
 
-export type PageTone = "default" | "muted" | "accent" | "success" | "warning" | "error";
+export type PageTone = "default" | "muted" | "accent" | "success" | "warning" | "error" | "purple";
+
+export type PageKeyValueIcon = "wallet" | "gift" | "coins" | "coupon" | "pass" | "ticket" | "asset";
 
 export type PageButtonIcon =
   | "coin"
@@ -111,6 +113,9 @@ export type PageKeyValueItem = {
   label: string;
   value: string;
   tone?: PageTone;
+  icon?: PageKeyValueIcon;
+  badge?: string;
+  badgeTone?: PageTone;
 };
 
 export type PageKeyValue = {
@@ -324,6 +329,86 @@ export type PageTable = {
   seats: Array<{ name: string; mine: boolean }>;
 };
 
+export type PageBillLabels = {
+  totalLabel: string;
+  legendLabel: string;
+  billingLegend: string;
+  cappedLegend: string;
+  settledTitle: string;
+  balanceAfterLabel: string;
+  headings: { current: string; end: string; start: string; switch: string; over: string };
+  capFullSuffix: string;
+  capUntilLabel: string;
+  newDayLabel: string;
+  hourUnit: string;
+  minuteUnit: string;
+  billingUnitLabel: string;
+  estimateError: string;
+  retryLabel: string;
+};
+
+export type PageBill = {
+  kind: "bill";
+  id: string;
+  mode: "live" | "settled";
+  timeZone?: string;
+  /** Live billing snapshot for client-side worker/engine estimation (avoids Worker CPU load). */
+  billingInputs?: { playerId: string; billingSnapshot: unknown };
+  /** Precomputed preview (always set for `settled`; fallback for `live` when client billing is unavailable). */
+  preview?: unknown;
+  settledAt?: string;
+  balanceAfter?: number | null;
+  labels: PageBillLabels;
+};
+
+export type PageTarget = {
+  view: string;
+  item?: string;
+  cursor?: string;
+};
+
+export type PageListItem = {
+  id: string;
+  /** Optional section header label; consecutive items with the same group share a grouped card. */
+  group?: string;
+  title: string;
+  /** Optional muted inline annotation next to title (e.g. stay duration). */
+  titleMeta?: string;
+  subtitle?: string;
+  titleTimestamp?: string;
+  subtitleTimestamp?: string;
+  subtitlePrefix?: string;
+  trailing?: string;
+  /** Optional muted strikethrough value beneath trailing (e.g. pre-discount subtotal). */
+  trailingStrikethrough?: string;
+  open?: PageTarget;
+};
+
+export type PageList = {
+  kind: "list";
+  id: string;
+  items: PageListItem[];
+  timeZone?: string;
+  emptyText?: string;
+  emptyIcon?: "receipt" | "inbox";
+  moreLabel?: string;
+  moreTarget?: PageTarget;
+};
+
+export type PageAccountTab = { id: string; label: string };
+
+export type PageAccountMenu = {
+  billingBadge?: string;
+  tabs: PageAccountTab[];
+  logoutLabel: string;
+};
+
+export type PageCelebration = {
+  title: string;
+  subtitle: string;
+  effect?: "checkout";
+};
+
 export type PageBlock =
   | PageButton
   | PageText
@@ -342,6 +427,8 @@ export type PageBlock =
   | PagePricing
   | PageClimate
   | PageTable
+  | PageBill
+  | PageList
   /** Where the player's cards go. The cards themselves are read when the page opens, not with it. */
   | PageCards;
 export type Page = {
@@ -354,7 +441,11 @@ export type Page = {
   billingActive: boolean;
   /** There is something to use here, so a player who just signed in may be offered a passkey first. */
   offerPasskeySetup: boolean;
+  title?: string;
+  backLabel?: string;
+  accountMenu?: PageAccountMenu;
   blocks: PageBlock[];
+  footer?: PageBlock[];
 };
 
 /** A door code, shown above the button that asked for it until it expires. It exists only in that action's answer. */
