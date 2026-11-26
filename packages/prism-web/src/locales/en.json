@@ -3182,5 +3182,15 @@
   "2. 单个资源按需叠加 10 种硬件/Bot 能力": "2. Stack Any of 10 Hardware / Bot Capabilities on a Resource",
   "1. 默认资源组统一管理设备（Bot 独立无二维码）": "1. Default Group Organizes All Devices (Bot Has No QR)",
   "通常只需给「默认资源组」绑好入场方案即可全店通用（前台模式需确保「前台资源」有方案）；单台特价或桌游对局可单独指定。": "Usually you only bind an entry plan to the Default group for the whole shop (front-desk mode requires a billed cashier resource); single-unit overrides and tabletop game plans can be set per item.",
-  "单台特殊设备直接改「专属/对局方案」即可；只有多台设备组成独立区域（如 VIP 包间、多设施休息区）需要成批换价或整区启停时，再新建资源组。": "Override individual devices directly via their own/table plan; add another resource group only to batch-price or pause a multi-device zone such as a VIP room or lounge."
+  "单台特殊设备直接改「专属/对局方案」即可；只有多台设备组成独立区域（如 VIP 包间、多设施休息区）需要成批换价或整区启停时，再新建资源组。": "Override individual devices directly via their own/table plan; add another resource group only to batch-price or pause a multi-device zone such as a VIP room or lounge.",
+  "定时播报": "Scheduled announcements",
+  "按店铺时区发送到本组收件人。需要新版 Koishi 插件在线，错过的播报跳过。": "Sent to this group's recipients in the shop's time zone. Requires an online Koishi plugin with scheduling support. Missed announcements are skipped.",
+  "重复方式": "Repeat",
+  "每周": "Weekly",
+  "仅一次": "Once",
+  "发送时间": "Send time",
+  "发送日期": "Send date",
+  "播报内容": "Announcement text",
+  "添加定时播报": "Add scheduled announcement",
+  "请填写定时播报的内容、时间和日期或星期": "Complete the announcement text, time and date or weekdays."
 }

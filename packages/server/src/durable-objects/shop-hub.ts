@@ -801,6 +801,15 @@ export class ShopHub extends BaseDurableObject<Env> {
       const id = attachment.id ?? crypto.randomUUID();
       const shopId = (await this.shopId()) ?? "";
       const commands = frame.commands === 1 ? await this.botOf(shopId, attachment.token) : null;
+      if (frame.schedules) {
+        const groups = commands?.bot.enabled ? commands.bot.config.announceGroups : [];
+        const rules = groups.flatMap(group => (group.schedules ?? [])
+          .filter(rule => rule.enabled && group.to.length)
+          .map(rule => ({ ...rule, id: JSON.stringify([group.id, rule.id]), to: [...new Set(group.to)] })));
+        const zone = rules.length ? await this.env.DB.prepare("SELECT json_extract(value_json, '$.timeZone') AS time_zone FROM app_settings WHERE shop_id = ? AND key = 'store.profile'")
+          .bind(shopId).first<{ time_zone: string }>() : null;
+        ws.send(JSON.stringify({ type: "schedules", timeZone: zone?.time_zone || "Asia/Shanghai", rules }));
+      }
       // A reminder is planned only for a bot with somewhere to say it and a lead to say it by.
       const reminded = commands && commands.bot.config.idleReminderMinutes > 0
         && announcementDeliveries(commands.bot.config.announceGroups, { key: "idle.reminder", via: "system" }).length > 0;

@@ -141,6 +141,29 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
                 })}
               </div>
             </div>
+            <div className="grid gap-3 border-t border-ink/10 p-3">
+              <span className="text-sm font-semibold">{t("定时播报")}</span>
+              <p className="text-xs text-ink/60">{t("按店铺时区发送到本组收件人。需要新版 Koishi 插件在线，错过的播报跳过。")}</p>
+              {(group.schedules ?? []).map(rule => {
+                const update = (patch: Partial<typeof rule>) => change({ schedules: group.schedules!.map(one => one.id === rule.id ? { ...one, ...patch } : one) });
+                return <div key={rule.id} className="grid gap-2 rounded-xl border border-ink/10 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label><input type="checkbox" checked={rule.enabled} onChange={e => update({ enabled: e.target.checked })} />{t("启用")}</label>
+                    <select className={input} aria-label={t("重复方式")} value={rule.date !== undefined ? "once" : rule.weekdays ? "weekly" : "daily"}
+                      onChange={e => update({ date: e.target.value === "once" ? "" : undefined, weekdays: e.target.value === "weekly" ? [1] : undefined })}>
+                      <option value="daily">{t("每天")}</option><option value="weekly">{t("每周")}</option><option value="once">{t("仅一次")}</option>
+                    </select>
+                    <input type="time" className={input} aria-label={t("发送时间")} value={rule.time} onChange={e => update({ time: e.target.value })} />
+                    {rule.date !== undefined && <input type="date" className={input} aria-label={t("发送日期")} value={rule.date} onChange={e => update({ date: e.target.value })} />}
+                    <button type="button" className={buttonQuiet} onClick={() => change({ schedules: group.schedules!.filter(one => one.id !== rule.id) })}>{t("删除")}</button>
+                  </div>
+                  {rule.weekdays && <div className="flex flex-wrap gap-3">{["周日", "周一", "周二", "周三", "周四", "周五", "周六"].map((day, index) =>
+                    <label key={day}><input type="checkbox" checked={rule.weekdays!.includes(index)} onChange={e => update({ weekdays: e.target.checked ? [...rule.weekdays!, index] : rule.weekdays!.filter(one => one !== index) })} />{t(day)}</label>)}</div>}
+                  <textarea className={input} rows={3} maxLength={2000} aria-label={t("播报内容")} placeholder={t("播报内容")} value={rule.text} onChange={e => update({ text: e.target.value })} />
+                </div>;
+              })}
+              <button type="button" className={buttonQuiet} disabled={(group.schedules?.length ?? 0) >= 20} onClick={() => change({ schedules: [...(group.schedules ?? []), { id: crypto.randomUUID(), enabled: true, time: "18:00", text: "" }] })}>{t("添加定时播报")}</button>
+            </div>
             <div className="grid min-w-0 divide-y divide-ink/10 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-y-0">
               <nav aria-label={t("事件")} className={`grid content-start gap-3 p-3 ${paneScroll}`}>
                 {announcementTopics.map(({ topic, label }) => (

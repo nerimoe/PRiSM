@@ -568,3 +568,11 @@ Cloudflare Workers 运行时通过保持原生 `fetch` 调用上下文的包装�
 ### 余额不足提示
 
 Web 与 Swift（主 App / App Clip 共用 API 层）按 `INSUFFICIENT_BALANCE` 错误码显示本地化提示：中文“余额不足，请充值后重试”，英文“Insufficient balance. Please top up and try again.”。内部诊断文本变化不影响提示；HTTP 状态与错误码保留，余额不足不视为会话失效。结账被拒绝后保留当前账单和计费状态，不自动重发结账；充值后可手动重试，并使用新的操作 ID。
+
+### Bot 定时播报
+
+播报组支持定时发送固定文字，可选每天、每周指定星期或指定日期单次发送，时间使用店铺时区，收件人沿用播报组。每组最多 20 条，每条最多 2000 字。需使用支持 schedules 的新版 Koishi 插件。
+
+插件 hello 声明 schedules: true，平台返回 schedules 帧（timeZone、rules）。rules 为启用且有目的地的规则，包含 id、time（HH:mm）、text、to，可选 date（YYYY-MM-DD）或 weekdays（0 为周日）。平台在重新 hello 时下发全量配置，配置变化通过 config.changed 让插件重新 hello。旧插件继续工作。定时播报由插件本地按分钟检查，无需增加服务端 alarm 或轮询请求。
+
+断线、停用或配置更新会取消旧计时，重连后恢复。离线错过的分钟跳过，夏令时跳过的时间也跳过，重复的当地时间在同一进程内每天最多发一次。发送失败沿用播报错误日志，不自动补发。单个 Bot 凭据应只运行一个插件实例，多实例各自计时可能重复发送。进程重启后仅安排后续分钟。

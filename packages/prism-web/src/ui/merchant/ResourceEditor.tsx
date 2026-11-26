@@ -374,6 +374,11 @@ export function ResourceEditor({
         if (error) return `${key}：${error}`;
       }
       for (const group of bot.announceGroups ?? []) {
+        for (const rule of group.schedules ?? []) {
+          if (!rule.text.trim() || !/^([01]\d|2[0-3]):[0-5]\d$/.test(rule.time)
+            || (rule.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(rule.date))
+            || (rule.weekdays !== undefined && !rule.weekdays.length)) return t("请填写定时播报的内容、时间和日期或星期");
+        }
         for (const [key, text] of Object.entries(group.templates)) {
           const error = botReplyTemplateError(key, text);
           if (error) return `${group.name} · ${key}：${error}`;
