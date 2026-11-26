@@ -245,7 +245,17 @@ export function isShopAnnouncementSource(value: string): value is ShopAnnounceme
  *   (`announce.<key>.message`, and the notices' own); anything not here is
  *   said in the catalog's words.
  */
+export type AnnouncementSchedule = {
+  id: string;
+  enabled: boolean;
+  time: string;
+  text: string;
+  date?: string;
+  weekdays?: number[];
+};
+
 export type AnnouncementGroup = {
+  schedules?: AnnouncementSchedule[];
   id: string;
   name: string;
   to: readonly string[];

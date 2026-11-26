@@ -43,6 +43,7 @@ import {
 } from "./resource-capabilities";
 import { BotReplyEditor } from "./BotReplyEditor";
 import { BotAnnouncementGroups } from "./BotAnnouncementGroups";
+import { isScheduleRuleInvalid } from "./bot-schedules";
 import { RotateTokenConfirm } from "./RotateTokenConfirm";
 import { HaEntityFields, NEW_CONNECTION, haBody, useHaConnections, type HaDraft } from "./HaEntityFields";
 import { idlePath, useIdleSettings } from "./IdlePowerSettings";
@@ -129,6 +130,7 @@ export function ResourceEditor({
   const [aliases, setAliases] = useState<string[]>(value?.aliases ?? []);
   const [enabled, setEnabled] = useState(value ? !!value.enabled : true);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmRemoveId, setConfirmRemoveId] = useState<CapabilityId | null>(null);
   const [resourceCapacity, setResourceCapacity] = useState(value?.capacity === undefined ? "" : String(value.capacity));
   const [occupancyMinutes, setOccupancyMinutes] = useState(String(value?.occupancyMinutes ?? 15));
 
@@ -380,6 +382,9 @@ export function ResourceEditor({
         }
       }
       for (const group of bot.announceGroups ?? []) {
+        if ((group.schedules ?? []).some(isScheduleRuleInvalid)) {
+          return t("请填写定时播报的内容、时间和日期或星期");
+        }
         for (const [key, text] of Object.entries(group.templates)) {
           const error = botReplyTemplateError(key, text);
           if (error) return `${group.name} · ${key}：${error}`;
@@ -435,11 +440,11 @@ export function ResourceEditor({
     caps[id] ? missingConfig(id) : null;
 
   const seatsFrom = capabilityList.find((id) => caps[id] && capabilityMeta[id].seats) ?? null;
-  const sections: { id: typeof pane; label: string; icon: LucideIcon; problem?: boolean }[] = [
+  const sections: { id: typeof pane; label: string; icon: LucideIcon; problem?: boolean; capability?: CapabilityId }[] = [
     { id: "basic", label: "基本信息", icon: Info },
     { id: "usage", label: "计费与占用", icon: Users },
     ...capabilityList.filter((id) => caps[id]).map((id) => ({
-      id, label: capabilityMeta[id].label, icon: capabilityMeta[id].icon, problem: !!incomplete(id),
+      id, label: capabilityMeta[id].label, icon: capabilityMeta[id].icon, problem: !!incomplete(id), capability: id,
     })),
     ...(capabilityList.some((id) => !caps[id]) ? [{ id: "add" as const, label: "添加能力", icon: Plus }] : []),
   ];
@@ -600,7 +605,13 @@ export function ResourceEditor({
               const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text))
                 ?? (bot.replyGroups ?? []).some((group) => Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text)));
               if (invalid) setBotPane("replies");
-              else if ((bot.announceGroups ?? []).some((group) => Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text))))
+              else if (
+                (bot.announceGroups ?? []).some(
+                  (group) =>
+                    (group.schedules ?? []).some(isScheduleRuleInvalid) ||
+                    Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text)),
+                )
+              )
                 setBotPane("broadcasts");
             }
             throw new Error(reason);
@@ -706,19 +717,67 @@ export function ResourceEditor({
     >
       <div className="grid gap-5 sm:min-h-[28rem] sm:grid-cols-[12rem_minmax(0,1fr)] sm:divide-x sm:divide-ink/10">
         <nav aria-label={t("资源设置")} className="flex gap-1 overflow-x-auto pb-1 sm:flex-col sm:self-start sm:pr-3">
-          {sections.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              aria-current={pane === section.id ? "page" : undefined}
-              className={`focus-ring flex shrink-0 items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition-colors ${pane === section.id ? "bg-mint/10 font-semibold text-ink" : "text-ink/60 hover:bg-ink/5 hover:text-ink"}`}
-              onClick={() => setPane(section.id)}
-            >
-              <section.icon size={16} aria-hidden="true" />
-              <span className="truncate">{t(section.label)}</span>
-              {section.problem && <span className="ml-auto size-2 shrink-0 rounded-full bg-coral" aria-label={t("待配置")} />}
-            </button>
-          ))}
+          {sections.map((section) => {
+            const cap = section.capability;
+            const blockedBy = cap ? dependentCapabilities(cap, caps).map((d) => t(capabilityMeta[d].label)) : [];
+            const confirming = !!cap && confirmRemoveId === cap;
+            const active = pane === section.id;
+            return (
+              <div
+                key={section.id}
+                className={`flex shrink-0 items-center rounded-xl transition-colors ${active ? "bg-mint/10" : "hover:bg-ink/5"}`}
+              >
+                {confirming ? (
+                  <div role="alertdialog" aria-label={t("确认移除")} className="flex items-center gap-1.5 px-2 py-1.5">
+                    <span className="whitespace-nowrap pl-1 text-sm text-coral">{t("移除{name}？", { name: t(section.label) })}</span>
+                    <button
+                      type="button"
+                      autoFocus
+                      className="focus-ring rounded-lg bg-coral px-2 py-1 text-xs font-medium text-white"
+                      onClick={() => {
+                        setConfirmRemoveId(null);
+                        remove(cap);
+                      }}
+                    >
+                      {t("确认")}
+                    </button>
+                    <button
+                      type="button"
+                      className="focus-ring rounded-lg px-2 py-1 text-xs text-ink/60 hover:bg-ink/5"
+                      onClick={() => setConfirmRemoveId(null)}
+                    >
+                      {t("取消")}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      aria-current={active ? "page" : undefined}
+                      className={`focus-ring flex min-w-0 flex-1 items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm ${active ? "font-semibold text-ink" : "text-ink/60 hover:text-ink"}`}
+                      onClick={() => setPane(section.id)}
+                    >
+                      <section.icon size={16} aria-hidden="true" />
+                      <span className="truncate">{t(section.label)}</span>
+                      {section.problem && <span className="ml-auto size-2 shrink-0 rounded-full bg-coral" aria-label={t("待配置")} />}
+                    </button>
+                    {cap && (
+                      <button
+                        type="button"
+                        disabled={blockedBy.length > 0}
+                        aria-label={`${t("移除")} ${t(section.label)}`}
+                        title={blockedBy.length > 0 ? t("需先移除「{names}」", { names: blockedBy.join("、") }) : t("移除")}
+                        className="focus-ring mr-1.5 grid size-7 shrink-0 place-items-center rounded-lg text-ink/40 transition-colors hover:bg-coral/10 hover:text-coral disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-ink/40"
+                        onClick={() => setConfirmRemoveId(cap)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
         </nav>
         <div className="grid min-w-0 content-start gap-4 sm:pl-5">
       {pane === "basic" && (
@@ -937,7 +996,7 @@ export function ResourceEditor({
         </div>
       )}
       {pane === "power" && caps.power && (
-        <CapabilityPane meta={capabilityMeta.power} problem={incomplete("power")} remove={() => remove("power")}>
+        <CapabilityPane meta={capabilityMeta.power} problem={incomplete("power")}>
           <div className="bill-entry !mb-0 grid gap-3">
             <HaEntityFields
               shopId={shopId}
@@ -958,7 +1017,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "climate" && caps.climate && (
-        <CapabilityPane meta={capabilityMeta.climate} problem={incomplete("climate")} remove={() => remove("climate")}>
+        <CapabilityPane meta={capabilityMeta.climate} problem={incomplete("climate")}>
           <div className="bill-entry !mb-0 grid gap-3">
             <HaEntityFields
               shopId={shopId}
@@ -983,7 +1042,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "hinata_io" && caps.hinata_io && (
-        <CapabilityPane meta={capabilityMeta.hinata_io} problem={incomplete("hinata_io")} remove={() => remove("hinata_io")}>
+        <CapabilityPane meta={capabilityMeta.hinata_io} problem={incomplete("hinata_io")}>
           <div className="bill-entry !mb-0 grid gap-4">
             <Segmented
               label={t("连接方式")}
@@ -1027,8 +1086,6 @@ export function ResourceEditor({
         <CapabilityPane
           meta={capabilityMeta.keys}
           problem={incomplete("keys")}
-          remove={() => remove("keys")}
-          removeBlockedBy={dependentCapabilities("keys", caps).map((d) => t(capabilityMeta[d].label))}
         >
           <div className="bill-entry !mb-0 grid gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1244,7 +1301,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "coin" && caps.coin && (
-        <CapabilityPane meta={capabilityMeta.coin} problem={incomplete("coin")} remove={() => remove("coin")}>
+        <CapabilityPane meta={capabilityMeta.coin} problem={incomplete("coin")}>
           <div className="grid gap-4">
             <div className="bill-entry !mb-0 grid gap-3">
               <Field label="投币按键">
@@ -1412,7 +1469,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "host" && caps.host && (
-        <CapabilityPane meta={capabilityMeta.host} problem={incomplete("host")} remove={() => remove("host")}>
+        <CapabilityPane meta={capabilityMeta.host} problem={incomplete("host")}>
           <div className="grid gap-4">
             <EdgeTokenPanel
               live={live}
@@ -1507,7 +1564,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "iot" && caps.iot && (
-        <CapabilityPane meta={capabilityMeta.iot} problem={incomplete("iot")} remove={() => remove("iot")}>
+        <CapabilityPane meta={capabilityMeta.iot} problem={incomplete("iot")}>
           <div className="grid gap-4">
             <EdgeTokenPanel
               live={live}
@@ -1551,7 +1608,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "door" && caps.door && (
-        <CapabilityPane meta={capabilityMeta.door} problem={incomplete("door")} remove={() => remove("door")}>
+        <CapabilityPane meta={capabilityMeta.door} problem={incomplete("door")}>
           <div className="bill-entry !mb-0 grid gap-3">
             <Field label="TTLock 门锁 ID">
               <input
@@ -1578,7 +1635,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "table" && caps.table && (
-        <CapabilityPane meta={capabilityMeta.table} problem={incomplete("table")} remove={() => remove("table")}>
+        <CapabilityPane meta={capabilityMeta.table} problem={incomplete("table")}>
           <div className="grid gap-4">
             <div className="bill-entry !mb-0 grid gap-2.5">
               <div className="grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)] sm:items-end">
@@ -1674,7 +1731,7 @@ export function ResourceEditor({
         </CapabilityPane>
       )}
       {pane === "bot" && caps.bot && (
-        <CapabilityPane meta={capabilityMeta.bot} problem={incomplete("bot")} remove={() => remove("bot")}>
+        <CapabilityPane meta={capabilityMeta.bot} problem={incomplete("bot")}>
           <nav aria-label={t("Bot 设置")} className="flex flex-wrap gap-1 rounded-xl border border-ink/10 bg-ink/[0.03] p-1">
             {([
               ["permissions", "使用权限"], ["broadcasts", "播报"], ["replies", "命令回复"], ["connection", "接入凭据"],
@@ -1934,37 +1991,15 @@ function PaneHeader({
 function CapabilityPane({
   meta,
   problem,
-  remove,
-  removeBlockedBy,
   children,
 }: {
   meta: { icon: LucideIcon; label: string; description: string };
   problem: string | null;
-  remove: () => void;
-  removeBlockedBy?: string[];
   children: ReactNode;
 }) {
   const { t } = useI18n();
-  const blocked = !!removeBlockedBy?.length;
   return (
     <section className="grid gap-4" aria-label={t(meta.label)}>
-      <PaneHeader
-        icon={meta.icon}
-        title={meta.label}
-        description={meta.description}
-        action={
-          <button
-            type="button"
-            className={dangerActionBtn}
-            disabled={blocked}
-            title={blocked ? t("需先移除「{names}」", { names: removeBlockedBy!.join("、") }) : undefined}
-            onClick={remove}
-          >
-            <Trash2 size={14} aria-hidden="true" />
-            {blocked ? t("被「{names}」依赖", { names: removeBlockedBy!.join("、") }) : t("移除")}
-          </button>
-        }
-      />
       {problem && (
         <p role="alert" className="rounded-xl border border-coral/25 bg-coral/[0.06] px-3.5 py-2.5 text-xs font-medium text-coral">
           {problem}

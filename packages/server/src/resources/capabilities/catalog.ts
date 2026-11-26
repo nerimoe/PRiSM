@@ -516,6 +516,15 @@ export const table: CapabilitySpec<TableConfig> = {
 };
 
 export const announceGroupSchema = z.object({
+  schedules: z.array(z.object({
+    id: z.string().min(1).max(40),
+    enabled: z.boolean(),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    text: z.string().trim().min(1).max(2000),
+    date: z.string().date().optional(),
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
+  }).refine(rule => !(rule.date && rule.weekdays), "单次日期和每周重复不能同时设置"))
+    .max(20).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, "定时播报 ID 不能重复").optional(),
   id: z.string().trim().min(1).max(40),
   name: z.string().trim().min(1).max(40),
   to: z.array(z.string().trim().min(1).max(120)).max(20).default([]),
