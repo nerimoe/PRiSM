@@ -9,7 +9,6 @@ describe("CardsPage manual add disabled guidance", () => {
     expect(translate("去 MuNET 添加卡片", "en")).toBe("Add a card in MuNET");
     expect(translate("在店铺内使用读卡器添加卡片", "en")).toBe("Add a card using a store card reader");
     expect(translate("读卡器添加", "en")).toBe("Added via reader");
-    expect(translate("已关闭手动输入卡号添加卡片，请通过以下方式添加卡片：", "en")).toContain("Manual card entry is disabled");
   });
 
   test("renders MuNET and store card reader guidance without manual card inputs when I18nProvider is active", async () => {

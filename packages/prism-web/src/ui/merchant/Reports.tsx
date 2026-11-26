@@ -268,7 +268,7 @@ function ReportsContent() {
         {(
           [
             ["overview", "经营与结账"],
-            ["operations", "全店操作记录"],
+            ["operations", "操作记录"],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -291,9 +291,9 @@ function ReportsContent() {
       {view === "operations" ? (
         <section
           className="grid gap-4 rounded-2xl border border-ink/10 bg-panel p-5 shadow-soft"
-          aria-label={t("全店操作记录")}
+          aria-label={t("操作记录")}
         >
-          <h3 className="text-base font-semibold">{t("全店操作记录")}</h3>
+          <h3 className="text-base font-semibold">{t("操作记录")}</h3>
           <ShopOperationHistory
             shopId={shopId}
             shopCode={shopCode}

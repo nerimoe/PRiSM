@@ -9,7 +9,6 @@ export function CardAddGuidance() {
   const { t } = useI18n();
   return (
     <div className="grid gap-3 rounded border border-ink/10 bg-surface p-4 text-sm text-ink/80" role="note">
-      <p className="font-medium text-ink">{t("已关闭手动输入卡号添加卡片，请通过以下方式添加卡片：")}</p>
       <ul className="grid gap-2.5 text-ink/75">
         <li>
           <p className="font-medium text-ink">{t("去 MuNET 添加卡片")}</p>

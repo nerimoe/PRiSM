@@ -304,11 +304,6 @@ function OperationEventRow({
                 ? t(e.payload.result === "ok" ? "游戏登录成功" : "游戏拒绝了卡片")
                 : t(actionLabels[e.name] ?? e.name)}
       </span>
-      {showGlobalTags && !e.device && (
-        <span className="rounded-full bg-ink/[0.06] px-2 py-0.5 text-[11px] font-medium text-ink/60">
-          {t("非资源操作")}
-        </span>
-      )}
       {playerHref && e.player && !command && (
         <Link
           to={playerHref(e.player.id)}

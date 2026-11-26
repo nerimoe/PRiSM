@@ -287,7 +287,7 @@ export function ResourcesPage() {
             onClick={() => setGlobalHistory(true)}
           >
             <History size={16} aria-hidden="true" />
-            {t("全店操作记录")}
+            {t("操作记录")}
           </button>
           {(hasStateDevices || hasConnections) && (
             <button
@@ -463,7 +463,7 @@ export function ResourcesPage() {
       )}
       {globalHistory && (
         <Modal
-          title="全店操作记录"
+          title="操作记录"
           close={() => setGlobalHistory(false)}
           wide
         >
