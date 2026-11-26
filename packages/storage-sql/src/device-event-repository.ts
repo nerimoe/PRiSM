@@ -5,8 +5,9 @@ import type {
   DeviceOperation,
   DeviceRecord,
   DeviceStateValue,
+  ListShopEventsInput,
 } from "@prism/core";
-import type { SqlExecutor, SqlStatement } from "./repositories";
+import type { SqlExecutor, SqlStatement, SqlValue } from "./repositories";
 import { sqlShop } from "./shop-scope";
 
 type EventRow = {
@@ -276,6 +277,48 @@ export function createDeviceEventRepository(executor: SqlExecutor): DeviceEventR
       const rows = await executor.all<EventRow>(
         `${half("device_id")} UNION ${half("via_resource_id")} ORDER BY occurred_at DESC, id DESC LIMIT ?`,
         [...params, ...params, limit],
+      );
+      return rows.map(toEvent);
+    },
+
+    async listShopEvents(input: ListShopEventsInput) {
+      const scope = input.scope ?? "all";
+      const conditions: string[] = [`shop_id = ${shop}`];
+      const params: SqlValue[] = [];
+      if (scope === "non_resource") {
+        conditions.push("device_id IS NULL");
+      } else if (scope === "resource") {
+        conditions.push("device_id IS NOT NULL");
+      }
+      if (input.deviceId) {
+        conditions.push("(device_id = ? OR via_resource_id = ?)");
+        params.push(input.deviceId, input.deviceId);
+      }
+      if (input.capability) {
+        conditions.push("capability = ?");
+        params.push(input.capability);
+      }
+      if (input.excludeCapabilities?.length) {
+        conditions.push(`capability NOT IN (${input.excludeCapabilities.map(() => "?").join(", ")})`);
+        params.push(...input.excludeCapabilities);
+      }
+      if (input.names?.length) {
+        conditions.push(`name IN (${input.names.map(() => "?").join(", ")})`);
+        params.push(...input.names);
+      }
+      if (input.playerId) {
+        conditions.push("(player_id = ? OR json_extract(payload_json, '$.forPlayerId') = ?)");
+        params.push(input.playerId, input.playerId);
+      }
+      const baseWhere = conditions.join(" AND ");
+      const cursorClause = input.before
+        ? `AND (occurred_at, id) < (SELECT occurred_at, id FROM device_events WHERE ${baseWhere} AND id = ?)`
+        : "";
+      const rows = await executor.all<EventRow>(
+        `SELECT ${eventColumns} FROM device_events
+         WHERE ${baseWhere} ${cursorClause}
+         ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+        [...params, ...(input.before ? [...params, input.before] : []), input.limit],
       );
       return rows.map(toEvent);
     },

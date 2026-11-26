@@ -16,6 +16,7 @@ import { staffMeView } from "./staff-me-view.js";
 import { confirmPlatformBinding } from "./binding.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { runPlayerOperation } from "./player-operation.js";
+import { listShopOperationEvents } from "../../events/operation-history.js";
 import { withPrismAccountIdentities } from "./shop-player-identities.js";
 import {
   toGrantAssetsView,
@@ -308,11 +309,12 @@ staffRouter.post("/players/:playerId/session/start", async (c) => {
 // Stop Session
 staffRouter.post("/players/:playerId/sessions/:sessionId/stop", async (c) => {
   const shop = getShop(c);
-  await staffPrincipal(c, shop);
+  const staff = await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
   const session = await deps.staffCheckoutCommands.stopSession({
     playerId: c.req.param("playerId"),
     sessionId: c.req.param("sessionId"),
+    staffId: staff.staffId,
   });
   return c.json(toStoppedSessionView(session));
 });
@@ -331,12 +333,13 @@ staffRouter.post("/players/:playerId/checkout/preview", async (c) => {
 // Confirm Checkout
 staffRouter.post("/players/:playerId/checkout/confirm", async (c) => {
   const shop = getShop(c);
-  await staffPrincipal(c, shop);
+  const staff = await staffPrincipal(c, shop);
   const deps = getShopDeps(c);
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}));
   return runPlayerOperation(c, shop.id, `staff/players/${c.req.param("playerId")}/checkout/confirm`, body, async () => {
     const result = await deps.staffCheckoutCommands.checkout({
       playerId: c.req.param("playerId"),
+      staffId: staff.staffId,
     });
     return c.json(toPlayerCheckoutResultView(result));
   });
@@ -766,4 +769,19 @@ staffRouter.post("/platform-binding/confirm", async (c) => {
     jsonError(403, "没有玩家管理权限", "FORBIDDEN");
   }
   return confirmPlatformBinding(c, shop, "staff");
+});
+
+// Shop-wide operation & event history (resource and non-resource operations)
+staffRouter.get("/events", async (c) => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  return c.json(await listShopOperationEvents(c.env.DB, shop.id, {
+    scope: c.req.query("scope"),
+    resourceId: c.req.query("resourceId") ?? c.req.query("deviceId"),
+    category: c.req.query("category"),
+    capability: c.req.query("capability"),
+    playerId: c.req.query("playerId"),
+    limit: c.req.query("limit"),
+    before: c.req.query("before"),
+  }));
 });

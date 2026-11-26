@@ -113,8 +113,8 @@ routes/
 - `GET /device-states`（别名 `/devices/states`）: 店内绑定电源的设备的电源状态。设备所在 Home Assistant 连接有监听器（Bot 或 IO）时读存储的事实，否则现场读取 Home Assistant（不记录）。
 - `PUT /api/v1/merchant/ha-watchers?shopId=`（`platform/merchant-ha.ts`）: 这家店同时监听 Home Assistant 的监听器数量（1–4，默认 2）。**只有平台管理员能改**，店主 403；写入后店铺 Hub 重新分配。设备页看板通过 `machines/ws` 的 `watchers` 帧看到谁在监听。
 
-#### 1.5 设备
-店铺级没有单独的资源路由。资源的增删改与日志在 `platform/merchant-resources.ts`（HTTP 路径仍为 `/api/v1/merchant/machines`），资源组在 `platform/merchant-resource-groups.ts`。员工与 Bot 的设备动作分别是 `/staff/device-actions` 与 `/integration/players/by-identity/device-actions`，玩家通过资源二维码页（`platform/resource-session.ts`、`platform/resource-ticket.ts`）操作。资源模型见 `packages/server/src/resources`（`resource.ts`、能力目录在 `capabilities/`）与 `docs/resources.md`。
+#### 1.5 设备与全店操作日志
+店铺级没有单独的资源路由。资源的增删改与单资源日志（`/api/v1/merchant/machines/:id/events`）以及全店操作日志（`GET /api/v1/merchant/events?shopId=`，涵盖设备动作与结账尝试/失败、余额调整、兑换等非资源操作）在 `platform/merchant-resources.ts`（同时在店铺 staff 路由提供 `GET /events`），资源组在 `platform/merchant-resource-groups.ts`。员工与 Bot 的设备动作分别是 `/staff/device-actions` 与 `/integration/players/by-identity/device-actions`，玩家通过资源二维码页（`platform/resource-session.ts`、`platform/resource-ticket.ts`）操作。资源模型见 `packages/server/src/resources`（`resource.ts`、能力目录在 `capabilities/`）与 `docs/resources.md`。
 
 #### 1.6 计费配置与资产规则 (`/pricing`, `/assets`, `/redeem`)
 - `/pricing`: 计费规则 CRUD、状态启停、费率时间线（Timeline）预演及规则版本归档。

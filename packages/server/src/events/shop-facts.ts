@@ -130,6 +130,28 @@ export async function publishShopFacts(runtime: FactRuntime, origin: FactOrigin,
   }
 }
 
+/** Write a refused HTTP-layer attempt fact (e.g. geo or precondition check) without failing the caller. */
+export async function publishShopErrorFact(
+  runtime: FactRuntime,
+  origin: FactOrigin,
+  input: {
+    name: "checkout.refused" | "entry.refused" | "wallet.adjust.refused" | "redeem.refused";
+    playerId?: string | null;
+    staffId?: string | null;
+    resourceId?: string | null;
+    code: string;
+    message: string;
+  },
+): Promise<void> {
+  await publishShopFacts(runtime, origin, [{
+    name: input.name,
+    ...(input.resourceId ? { resourceId: input.resourceId } : {}),
+    ...(input.playerId ? { playerId: input.playerId } : {}),
+    ...(input.staffId ? { staffId: input.staffId } : {}),
+    payload: { code: input.code, message: input.message },
+  }]);
+}
+
 const settled = (result: SettlePlayerCheckoutResult, staffId?: string | null): ShopFact => ({
   name: "checkout.settled",
   playerId: result.playerSettlement.playerId,
@@ -232,8 +254,9 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     preview: (playerId: string) => Promise<Parameters<typeof toPlayerCheckoutPreviewView>[0]>,
   ) => attempting("checkout", call, whose, owed(preview));
   const staffOf = (input: unknown) => {
-    const staffId = (input as { staffId?: unknown } | undefined)?.staffId;
-    return typeof staffId === "string" ? staffId : null;
+    const raw = input as { staffId?: unknown; metadata?: { staffId?: unknown } } | undefined;
+    if (typeof raw?.staffId === "string") return raw.staffId;
+    return typeof raw?.metadata?.staffId === "string" ? raw.metadata.staffId : null;
   };
 
   const checkouts = (service: PrismAppDependencies["playerCheckoutCommands"]): PrismAppDependencies["playerCheckoutCommands"] => {
@@ -245,8 +268,13 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
     checkoutExternal: checkingOut(after(service.checkoutExternal.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
     checkoutWithOverride: checkingOut(after(service.checkoutWithOverride.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
     checkoutWithRecharge: checkingOut(after(service.checkoutWithRecharge.bind(service), (result, input) => [settled(result, staffOf(input))]), whose, preview),
-    stopSession: after(service.stopSession.bind(service), (session) => [
-      { name: "session.stopped", playerId: session.playerId, payload: { sessionId: session.id } },
+    stopSession: after(service.stopSession.bind(service), (session, input) => [
+      {
+        name: "session.stopped",
+        playerId: session.playerId,
+        ...(staffOf(input) ? { staffId: staffOf(input) } : {}),
+        payload: { sessionId: session.id },
+      },
     ]),
     };
   };
@@ -269,6 +297,7 @@ export function withOrigin(deps: PrismAppDependencies, runtime: FactRuntime, ori
           name: "session.started",
           resourceId: input.resourceId ?? null,
           playerId: input.playerId,
+          ...(staffOf(input) ? { staffId: staffOf(input) } : {}),
           payload: { sessionId: result.session.id, pricingConfigId: result.session.pricingConfigId ?? null },
         }]), (input) => input.playerId),
     },

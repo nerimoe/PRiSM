@@ -103,6 +103,8 @@ export type DeviceEvent = {
   device?: { id: string; name: string | null } | null;
   /** Whom it was about: the player who asked, or the one staff acted for. */
   player?: { id: string; name: string | null } | null;
+  /** The staff member who triggered or handled the operation, when applicable. */
+  staff?: { id: string; name: string | null } | null;
   /**
    * Where it came into the platform; `resource` names the shop's own resource
    * it came through (a bot), when that is not the one whose history this is.

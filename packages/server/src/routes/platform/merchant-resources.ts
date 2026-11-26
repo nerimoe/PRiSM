@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { recordBindingEdit } from "../../pricing-changes.js";
 import { createD1Executor, type D1BoundStatementLike } from "@prism/adapter-d1";
 import { createDeviceEventRepository } from "@prism/storage-sql";
+import { clampEventLimit, listShopOperationEvents, presentOperationEvents } from "../../events/operation-history.js";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
@@ -436,6 +437,23 @@ merchantResourceRouter.get("/machines", async (c) => {
   return c.json({ machines: await presentWithStatus(c, ordered, await shopPublicId(c, shopId), canConfigure) });
 });
 
+merchantResourceRouter.get("/events", async (c) => {
+  const user = requireUser(c);
+  const shopId = c.req.query("shopId");
+  if (!shopId) jsonError(400, "请选择店铺", "SHOP_REQUIRED");
+  await assertResourceShop(c, user, shopId);
+  await shopTimes(c, shopId);
+  return c.json(await listShopOperationEvents(c.env.DB, shopId, {
+    scope: c.req.query("scope"),
+    resourceId: c.req.query("resourceId") ?? c.req.query("deviceId"),
+    category: c.req.query("category"),
+    capability: c.req.query("capability"),
+    playerId: c.req.query("playerId"),
+    limit: c.req.query("limit"),
+    before: c.req.query("before"),
+  }));
+});
+
 merchantResourceRouter.get("/machines/:id/events", async (c) => {
   const user = requireUser(c);
   const machine = await c.env.DB.prepare("SELECT shop_id FROM machines WHERE id=?")
@@ -443,44 +461,12 @@ merchantResourceRouter.get("/machines/:id/events", async (c) => {
   if (!machine) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
   await assertResourceShop(c, user, machine.shop_id);
   await shopTimes(c, machine.shop_id);
-  const limit = Math.floor(Math.min(Math.max(Number(c.req.query("limit") ?? 50) || 50, 1), 200));
+  const limit = clampEventLimit(c.req.query("limit"));
   const before = c.req.query("before");
   if (before && before.length > 200) jsonError(400, "无效的记录游标", "INVALID_CURSOR");
   const events = await createDeviceEventRepository(createD1Executor(c.env.DB, machine.shop_id))
     .listEvents({ deviceId: c.req.param("id"), limit: limit + 1, before });
-  const page = events.slice(0, limit);
-  const others = [...new Set(page.flatMap((event) => [event.deviceId, event.via?.resourceId ?? null])
-    .filter((id): id is string => !!id && id !== c.req.param("id")))];
-  const names = new Map(others.length
-    ? (await c.env.DB.prepare("SELECT id, name FROM machines WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-        .bind(machine.shop_id, JSON.stringify(others)).all<{ id: string; name: string }>()).results.map((row) => [row.id, row.name])
-    : []);
-  const named = (id: string | null | undefined) =>
-    id && id !== c.req.param("id") ? { id, name: names.get(id) ?? null } : null;
-  const playerOf = (event: (typeof page)[number]) =>
-    event.playerId ?? (typeof event.payload.forPlayerId === "string" ? event.payload.forPlayerId : null);
-  const playerIds = [...new Set(page.map(playerOf).filter((id): id is string => !!id))];
-  const players = new Map(playerIds.length
-    ? (await c.env.DB.prepare("SELECT id, display_name FROM players WHERE shop_id=? AND id IN (SELECT value FROM json_each(?))")
-        .bind(machine.shop_id, JSON.stringify(playerIds)).all<{ id: string; display_name: string | null }>()).results.map((row) => [row.id, row.display_name])
-    : []);
-  return c.json({
-    nextCursor: events.length > limit ? page.at(-1)!.id : null,
-    events: page.map((event) => ({
-      id: event.id,
-      device: named(event.deviceId),
-      player: playerOf(event) ? { id: playerOf(event)!, name: players.get(playerOf(event)!) ?? null } : null,
-      via: event.via ? { channel: event.via.channel, resource: named(event.via.resourceId) } : null,
-      capability: event.capability,
-      kind: event.kind,
-      name: event.name,
-      origin: event.origin,
-      operationId: event.operationId,
-      parentOperationId: event.parentOperationId,
-      at: event.occurredAt.toISOString(),
-      payload: event.payload,
-    })),
-  });
+  return c.json(await presentOperationEvents(c.env.DB, machine.shop_id, events, limit, c.req.param("id")));
 });
 
 merchantResourceRouter.get("/machines/:id/cabinet", async (c) => {
