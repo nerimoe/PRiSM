@@ -73,6 +73,14 @@ const CATALOG: Record<string, Entry> = {
   OPERATION_PENDING: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
   OPERATION_IN_PROGRESS: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
   CARD_NOT_FOUND: { body: t("卡片不可用", "Card unavailable."), level: "warning", display: "inline" },
+  MANUAL_CARD_ADD_DISABLED: {
+    body: t(
+      "已关闭手动输入卡号添加卡片，请去 MuNET 添加卡片或在店铺内使用读卡器添加卡片",
+      "Manual card entry is disabled. Add a card in MuNET or tap a card on a store card reader.",
+    ),
+    level: "warning",
+    display: "inline",
+  },
   CHECKIN_CONSENT_REQUIRED: { body: t("请确认入场计费规则", "Please accept the billing rules first."), level: "warning", display: "inline" },
   LOCATION_LOW_ACCURACY: { body: t("定位精度不足，请重试", "Location not precise enough. Retry."), level: "warning", display: "inline" },
   LOCATION_OUT_OF_RANGE: { body: t("不在店铺范围内", "Not within the shop area."), level: "warning", display: "inline" },
