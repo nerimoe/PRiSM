@@ -45,7 +45,7 @@ UID 可以被复制，仅用于店员监督下的店内计时档案。卡片档�
 
 所有店铺玩家（含前台档案）的玩家列表和「在店」资料均显示已登记平台身份；「身份与状态」左侧展示平台标识与该身份同步到的名称（无名称时不带多余冒号，支持 `onebot` 等外部身份的平台昵称），右侧直接显示身份值本身（不重复前缀 `provider:`）。PRiSM 账号关联就是档案上的 `web-account` 身份（迁移 0063 已把原 `shop_player_accounts` 并入），显示为「PRiSM 账号：账号显示名 · 账号编号」，不需要重新绑定。未在当前环境验证匹配的导入账号不视为已绑定账号。
 
-商户 `GET /staff/players` 和 `GET /staff/live-players` 的 `identities` 对 `web-account` 与外部平台身份（如 `onebot`）均在存在已同步昵称时附带 `displayName`。账号身份是只读关联，通用身份添加/删除接口拒绝 `web-account`（`ACCOUNT_IDENTITY_READ_ONLY`），须使用已有绑定码验证流程，不能手工指定账号编号。owner 和 manager 可以登记平台身份，viewer 只有查看权限。
+商户 `GET /staff/players` 和 `GET /staff/live-players` 的 `identities` 对 `web-account` 与外部平台身份（如 `onebot`）均在存在已同步昵称时附带 `displayName`。owner 和 manager 可在「身份与状态」中逐条解除本店档案上的 PRiSM 账号、平台身份和旧 Aime 身份。店内加密卡片由平台管理，对店家不可见。解绑只影响选中的关联，余额和消费记录保留在该档案。viewer 只有查看权限。新增 PRiSM 账号关联仍须验证绑定码。
 
 ## API 与数据
 

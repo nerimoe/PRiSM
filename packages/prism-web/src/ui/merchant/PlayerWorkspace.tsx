@@ -1096,7 +1096,7 @@ function PlayerPanel({
   const [busy, setBusy] = useState(false);
   const [reportSaving, setReportSaving] = useState(false);
   const [removingIdentity, setRemovingIdentity] = useState<
-    NonNullable<Player["identities"]>[number] | null
+    { provider: string; subject: string; label: string } | null
   >(null);
   const [error, setError] = useState("");
   async function toggleReportExclusion(excluded: boolean) {
@@ -1965,56 +1965,62 @@ function PlayerPanel({
           <div role="tabpanel" className="grid gap-3">
             <div className="grid gap-1.5">
               {identities.length ? (
-                identities.map((i) => (
-                  <div
-                    key={`${i.provider}:${i.subject}`}
-                    className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-2 text-sm"
-                  >
-                    <span className="inline-flex items-center gap-2 font-medium text-ink">
-                      <span className="text-xs font-medium text-ink/55">
-                        {identityProviderLabel(i.provider, t)}
-                        {i.displayName ? ":" : ""}
+                identities.map((identity) => {
+                  const provider = identityProviderLabel(identity.provider, t);
+                  const { displayName, subject } = identity;
+                  const value = identity.provider === "aime" ? `•••• ${subject.slice(-4)}` : subject;
+                  return (
+                    <div
+                      key={JSON.stringify([identity.provider, subject])}
+                      className="bill-entry !mb-0 flex flex-wrap items-center justify-between gap-2 text-sm"
+                    >
+                      <span className="inline-flex items-center gap-2 font-medium text-ink">
+                        <span className="text-xs font-medium text-ink/55">
+                          {provider}
+                          {displayName ? ":" : ""}
+                        </span>
+                        {displayName && <span>{displayName}</span>}
                       </span>
-                      {i.displayName && <span>{i.displayName}</span>}
-                    </span>
-                    <span className="inline-flex items-center gap-2">
-                      <code className="select-all break-all text-xs text-ink/60">
-                        {i.subject}
-                      </code>
-                      {canWrite && i.provider !== "web-account" && i.provider !== "aime" && (
-                        <button
-                          type="button"
-                          className="focus-ring grid size-7 shrink-0 place-items-center rounded-lg text-ink/45 hover:bg-coral/10 hover:text-coral"
-                          aria-label={t("删除身份 {identity}", { identity: `${identityProviderLabel(i.provider, t)} ${i.subject}` })}
-                          onClick={() => setRemovingIdentity(i)}
-                        >
-                          <X size={15} aria-hidden="true" />
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                ))
+                      <span className="inline-flex items-center gap-2">
+                        <code className="select-all break-all text-xs text-ink/60">
+                          {value}
+                        </code>
+                        {canWrite && (
+                          <button
+                            type="button"
+                            className="focus-ring grid size-7 shrink-0 place-items-center rounded-lg text-ink/45 hover:bg-coral/10 hover:text-coral"
+                            aria-label={t("解绑 {identity}", { identity: `${provider} ${value}` })}
+                            onClick={() => setRemovingIdentity({ ...identity, label: [provider, displayName, value].filter(Boolean).join(" · ") })}
+                          >
+                            <X size={15} aria-hidden="true" />
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })
               ) : (
                 <p className="py-2 text-sm text-ink/50">{t("无绑定身份")}</p>
               )}
               {removingIdentity && (
-                <Modal title="删除身份" close={() => setRemovingIdentity(null)}>
+                <Modal title="解除本店绑定" close={() => setRemovingIdentity(null)}>
                   <ActionForm
-                    label="删除"
+                    label="确认解绑"
                     done={() => {
                       setRemovingIdentity(null);
                       done();
                     }}
                     submit={() =>
                       request(
-                        `${base}/identities/${segment(removingIdentity.provider)}/${segment(removingIdentity.subject)}`,
+                        `${base}/identities`,
                         "DELETE",
+                        { provider: removingIdentity.provider, subject: removingIdentity.subject },
                       )
                     }
                   >
                     <p className="text-sm leading-relaxed">
-                      {t("删除后，{identity} 不再指向这位玩家，Bot 指令不会再找到这个档案，玩家账号上也不再显示这项平台身份。", {
-                        identity: `${identityProviderLabel(removingIdentity.provider, t)} ${removingIdentity.displayName ? `${removingIdentity.displayName} · ` : ""}${removingIdentity.subject}`,
+                      {t("确认将 {identity} 从玩家「{player}」的本店档案解绑？余额和消费记录仍归此档案。", {
+                        identity: removingIdentity.label, player: player.displayName,
                       })}
                     </p>
                   </ActionForm>

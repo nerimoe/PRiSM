@@ -373,8 +373,9 @@ it("allows cashier external identities without changing payment mode and reserve
   expect(await players.findById(player.id)).toEqual(player);
   await expect(service.bindPlayerIdentity({ playerId: player.id, provider: " WEB-ACCOUNT ", subject: "account-id" }))
     .rejects.toMatchObject({ code: "ACCOUNT_IDENTITY_READ_ONLY" });
-  await expect(service.deletePlayerIdentity({ playerId: player.id, provider: "web-account", subject: "account-id" }))
-    .rejects.toMatchObject({ code: "ACCOUNT_IDENTITY_READ_ONLY" });
+  await playerIdentities.save({ playerId: player.id, provider: "web-account", subject: "account-id", createdAt: new Date() });
+  await service.deletePlayerIdentity({ playerId: player.id, provider: "web-account", subject: "account-id" });
+  expect(await service.resolvePlayerIdentity({ provider: "web-account", subject: "account-id" })).toBeNull();
   expect(playerIdentities.saved).toHaveLength(1);
   await service.deletePlayerIdentity({ playerId: player.id, provider: " ONEBOT ", subject: " 114514 " });
   expect(playerIdentities.saved).toHaveLength(0);

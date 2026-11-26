@@ -237,6 +237,14 @@ staffRouter.post("/players/:playerId/identities", async (c) => {
   return c.json({ identity: toPlayerIdentityView(identity) }, 201);
 });
 
+// The UI sends the stored key verbatim, including legacy spelling and URL dot segments.
+staffRouter.delete("/players/:playerId/identities", async (c) => {
+  await staffPrincipal(c, getShop(c));
+  const key = z.object({ provider: z.string(), subject: z.string() }).parse(await c.req.json());
+  await getShopDeps(c).staffPlayerCommands.deletePlayerIdentity({ ...key, playerId: c.req.param("playerId"), exact: true });
+  return c.json({ ok: true });
+});
+
 // Remove Player Identity
 staffRouter.delete("/players/:playerId/identities/:provider/:subject", async (c) => {
   const shop = getShop(c);

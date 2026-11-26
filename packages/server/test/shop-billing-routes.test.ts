@@ -2414,6 +2414,47 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("unlinks profile identities while keeping platform-managed cards hidden from staff", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const base = `https://prism.test/api/v1/shops/${publicId}/staff/players`;
+    const request = (path: string, method: string, body?: unknown) => app.fetch(new Request(`${base}/${path}`, {
+      method, headers: { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }), env);
+    for (const player of ["unlink", "keep"]) {
+      sqlite.run("INSERT INTO players(shop_id, id, display_name, status, created_at) VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP)", [shopId, player, player]);
+    }
+    const keys = [
+      { provider: "web-account", subject: "old-account" },
+      { provider: " QQ ", subject: ".." },
+      { provider: "aime", subject: "12345678901234567890" },
+    ];
+    for (const { provider, subject } of keys) {
+      sqlite.run("INSERT INTO player_identities(shop_id, player_id, provider, subject, created_at) VALUES (?, 'unlink', ?, ?, CURRENT_TIMESTAMP)", [shopId, provider, subject]);
+    }
+    for (const key of keys) {
+      expect((await request("keep/identities", "DELETE", key)).status).toBe(200);
+    }
+    const count = () => sqlite.query("SELECT count(*) AS n FROM player_identities WHERE shop_id=? AND player_id='unlink'").get(shopId);
+    expect(count()).toEqual({ n: 3 });
+    for (const key of keys) expect((await request("unlink/identities", "DELETE", key)).status).toBe(200);
+    expect(count()).toEqual({ n: 0 });
+
+    sqlite.run(`INSERT INTO player_cards(shop_id,id,player_id,card_hash,card_encrypted,card_type,source,created_at)
+      VALUES (?, 'card-id', 'unlink', 'hash', 'ciphertext', 'aime', 'reader', CURRENT_TIMESTAMP)`, [shopId]);
+    const profiles = await app.fetch(new Request(base, { headers: { Authorization: `Bearer ${staffSessionToken}` } }), env);
+    expect(profiles.status).toBe(200);
+    const { players } = await profiles.json() as { players: { id: string; identities: unknown[] }[] };
+    const profile = players.find(player => player.id === "unlink");
+    expect(profile?.identities).toEqual([]);
+    expect(profile).not.toHaveProperty("cards");
+    expect((await request("unlink/cards", "GET")).status).toBe(404);
+    expect((await request("unlink/cards/card-id", "DELETE")).status).toBe(404);
+    sqlite.close();
+  });
+
   it("supports custom redeem codes, prefix-free CDK batch generation, and paginated/filtered redeem-code listing", async () => {
     const { db, sqlite, env } = createTestContext();
     const { publicId, shopId, staffSessionToken } = await setupShopFixture(db, sqlite);
