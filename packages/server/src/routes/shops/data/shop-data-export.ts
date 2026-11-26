@@ -229,7 +229,8 @@ async function metadata(c: C, shop: BillingShop, job: ExportJob) {
       'botContact',COALESCE(b.bot_contact,''),
       'cashierEnabled',json(CASE WHEN COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='cashier.settings'),0) THEN 'true' ELSE 'false' END),
       'coinCooldownMs',COALESCE((SELECT json_extract(value_json,'$.coinCooldownMs') FROM app_settings WHERE shop_id=s.id AND key='venue.operations'),60000),
-      'defaultPresentId',(SELECT json_extract(value_json,'$.defaultPresentId') FROM app_settings WHERE shop_id=s.id AND key='player.registration'))) AS header_json
+      'defaultPresentId',(SELECT json_extract(value_json,'$.defaultPresentId') FROM app_settings WHERE shop_id=s.id AND key='player.registration'),
+      'privacyModeEnabled',json(CASE WHEN COALESCE((SELECT json_extract(value_json,'$.enabled') FROM app_settings WHERE shop_id=s.id AND key='player.privacy'),0) THEN 'true' ELSE 'false' END))) AS header_json
       FROM shops s LEFT JOIN shop_billing_settings b ON b.shop_id=s.id WHERE s.id=?`,
     ).bind(
       job.scope,

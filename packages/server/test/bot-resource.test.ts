@@ -158,6 +158,51 @@ describe("a bot is a resource", () => {
     });
   });
 
+  it("persists replyGroups filtering, per-group ignorePrivacyMode flags, and rejects invalid reply group templates", async () => {
+    const { bot, createBot, call } = await fixture();
+    const created = await createBot();
+    const replyGroups = [
+      {
+        id: "staff-room",
+        name: "店员群",
+        to: ["onebot:100", "onebot:private:10001"],
+        ignorePrivacyMode: true,
+        templates: { "wallet.success": "余额 {balance} {currency}" },
+      },
+    ];
+    const announceGroups = [
+      {
+        id: "broadcast-1",
+        name: "播报组 1",
+        to: ["onebot:42"],
+        ignorePrivacyMode: true,
+        events: { "card.consumed": { on: true, sources: [] } },
+        templates: {},
+      },
+    ];
+    expect(
+      (await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, { bot: { replyGroups, announceGroups } })).status,
+    ).toBe(200);
+    const fetched = await bot(created.token).get("bot");
+    expect(fetched.body.settings.replyGroups).toEqual(replyGroups);
+    expect(fetched.body.settings.announceGroups).toEqual(announceGroups);
+
+    const invalidReplyGroup = await call("PATCH", `/api/v1/merchant/machines/${created.id}`, OWNER, {
+      bot: {
+        replyGroups: [
+          {
+            id: "bad-room",
+            name: "错误组",
+            to: ["onebot:200"],
+            ignorePrivacyMode: false,
+            templates: { "wallet.success": "{unknownVar}" },
+          },
+        ],
+      },
+    });
+    expect(invalidReplyGroup.status).toBe(422);
+  });
+
   it("refreshes connected bots when a bound account becomes a shop owner or leaves", async () => {
     const { sqlite, env, bot, createBot } = await fixture();
     const client = bot((await createBot()).token);

@@ -3,6 +3,12 @@ import { activityBill, refreshActivityBill } from "../../durable-objects/live-ac
 import { enforceRateLimits } from "../../middleware/rate-limit.js";
 import { isKnownLiveActivityBundle, type LiveActivityEnvironment } from "../../durable-objects/live-activity-push.js";
 import { Hono, type Context } from "hono";
+import {
+  isPlayerOptionKey,
+  isPlayerVisibleOption,
+  playerOptionsRegistry,
+  visiblePlayerOptionDefinitions,
+} from "@prism/core";
 import { createD1Repositories } from "@prism/adapter-d1";
 import { withOperationLease } from "@prism/application";
 import type { AppBindings, TenantShop } from "../../bindings.js";
@@ -154,6 +160,98 @@ playerRouter.get("/me", async (c) => {
   const summary = await deps.playerQueries.getPlayerSummary(player.id);
   return c.json(toPlayerSummaryView(summary));
 });
+
+function buildPlayerVisibleOptions(
+  shop: TenantShop,
+  row: { privacy_mode?: number | null } | null,
+): Record<string, boolean> {
+  const visible = visiblePlayerOptionDefinitions({
+    privacyModeEnabled: !!shop.privacy_mode_enabled,
+  });
+  const options: Record<string, boolean> = {};
+  for (const def of visible) {
+    if (def.key === "privacyMode") options.privacyMode = Boolean(row?.privacy_mode);
+  }
+  return options;
+}
+
+function assertPlayerOptionAccess(shop: TenantShop, key: string, action: "read" | "write"): "privacyMode" {
+  if (!isPlayerOptionKey(key)) {
+    jsonError(400, "未知的玩家选项", "INVALID_PLAYER_OPTION");
+  }
+  if (!playerOptionsRegistry[key].playerVisible) {
+    jsonError(
+      403,
+      action === "read" ? "无权读取该玩家选项" : "无权修改该玩家选项",
+      "PLAYER_OPTION_FORBIDDEN",
+    );
+  }
+  if (!isPlayerVisibleOption(key, { privacyModeEnabled: !!shop.privacy_mode_enabled })) {
+    jsonError(403, "店铺未启用隐私模式", "PRIVACY_MODE_DISABLED");
+  }
+  return key as "privacyMode";
+}
+
+// Player Options (only playerVisible options are exposed or editable)
+playerRouter.get("/options", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const requested = c.req.query("key") ?? c.req.query("option");
+  if (requested !== undefined) {
+    assertPlayerOptionAccess(shop, requested, "read");
+  }
+  const row = await c.env.DB.prepare(
+    "SELECT privacy_mode FROM players WHERE shop_id = ? AND id = ?",
+  )
+    .bind(shop.id, player.id)
+    .first<{ privacy_mode: number }>();
+  return c.json({ options: buildPlayerVisibleOptions(shop, row) });
+});
+
+playerRouter.get("/options/:key", async (c) => {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const key = assertPlayerOptionAccess(shop, c.req.param("key"), "read");
+  const row = await c.env.DB.prepare(
+    "SELECT privacy_mode FROM players WHERE shop_id = ? AND id = ?",
+  )
+    .bind(shop.id, player.id)
+    .first<{ privacy_mode: number }>();
+  return c.json({ key, value: Boolean(row?.privacy_mode) });
+});
+
+async function updatePlayerOptionsHandler(c: Context<AppBindings>) {
+  const shop = getShop(c);
+  const player = await requireShopPlayer(c, shop);
+  const raw = await c.req.json<unknown>().catch(() => null);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    jsonError(400, "选项参数无效", "VALIDATION_FAILED");
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  for (const [key, value] of entries) {
+    assertPlayerOptionAccess(shop, key, "write");
+    if (typeof value !== "boolean") {
+      jsonError(400, "选项值必须是布尔值", "VALIDATION_FAILED");
+    }
+  }
+  const body = raw as Record<string, boolean>;
+  if (body.privacyMode !== undefined) {
+    await c.env.DB.prepare(
+      "UPDATE players SET privacy_mode = ? WHERE shop_id = ? AND id = ?",
+    )
+      .bind(body.privacyMode ? 1 : 0, shop.id, player.id)
+      .run();
+  }
+  const row = await c.env.DB.prepare(
+    "SELECT privacy_mode FROM players WHERE shop_id = ? AND id = ?",
+  )
+    .bind(shop.id, player.id)
+    .first<{ privacy_mode: number }>();
+  return c.json({ options: buildPlayerVisibleOptions(shop, row) });
+}
+
+playerRouter.put("/options", updatePlayerOptionsHandler);
+playerRouter.patch("/options", updatePlayerOptionsHandler);
 
 // Client billing inputs are restricted to the authenticated player's holdings.
 playerRouter.get("/billing-inputs", async (c) => {

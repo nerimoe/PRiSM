@@ -165,4 +165,4 @@ routes/
 
 - `GET /reports/player-options`: 返回本店玩家及账号关联的店员标记，供历史页自动/手动排除使用。`reports/analytics?source=1` 与 `reports/checkouts` 支持 `excludePlayers` JSON 数组，在批量查询、分页前过滤；不影响个人账单。
 
-- 玩家经营统计排除持久保存在 `players.report_excluded`；`GET/PUT /players/:playerId/report-settings` 管理开关，`GET /reports/exclusions` 仅返回排除ID。店主/店员始终自动排除，默认结账列表过滤，全部与已归档可查看被排除玩家。
+- 玩家经营统计排除持久保存在 `players.report_excluded`；`GET/PUT /players/:playerId/options` 统一管理玩家选项（`excludeFromReports`、`privacyMode`），兼容保留 `GET/PUT /players/:playerId/report-settings`，`GET /reports/exclusions` 仅返回排除ID。店主/店员始终自动排除，默认结账列表过滤，全部与已归档可查看被排除玩家。玩家端仅通过 `GET/PUT/PATCH /player/options` 访问 `playerVisible: true` 的选项（如店铺启用隐私模式后的 `privacyMode`），`excludeFromReports` 在玩家接口返回 `403 PLAYER_OPTION_FORBIDDEN`。

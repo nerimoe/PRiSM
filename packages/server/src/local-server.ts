@@ -22,7 +22,8 @@ export const SHOP_QUERY = `SELECT s.id, s.public_id, s.name, s.latitude, s.longi
   COALESCE(b.machine_geo, 0) AS machine_geo,
   COALESCE(b.bot_contact, '') AS bot_contact,
   CASE WHEN s.hero_data IS NULL OR s.hero_data = '' THEN NULL ELSE '/api/v1/shops/' || s.public_id || '/hero?v=' || COALESCE(s.hero_hash, 'original') END AS hero_url,
-  COALESCE((SELECT json_extract(value_json, '$.timeZone') FROM app_settings WHERE shop_id = s.id AND key = 'store.profile'), 'Asia/Shanghai') AS time_zone
+  COALESCE((SELECT json_extract(value_json, '$.timeZone') FROM app_settings WHERE shop_id = s.id AND key = 'store.profile'), 'Asia/Shanghai') AS time_zone,
+  COALESCE((SELECT json_extract(value_json, '$.enabled') FROM app_settings WHERE shop_id = s.id AND key = 'player.privacy'), 0) AS privacy_mode_enabled
 FROM shops s
 LEFT JOIN shop_billing_settings b ON b.shop_id = s.id`;
 
@@ -372,6 +373,8 @@ export function initializeLocalDatabase(
   }
   const reportExcluded = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('players') WHERE name='report_excluded'").get();
   if (!reportExcluded) db.run("ALTER TABLE players ADD COLUMN report_excluded INTEGER NOT NULL DEFAULT 0 CHECK (report_excluded IN (0,1))");
+  const privacyMode = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('players') WHERE name='privacy_mode'").get();
+  if (!privacyMode) db.run("ALTER TABLE players ADD COLUMN privacy_mode INTEGER NOT NULL DEFAULT 0 CHECK (privacy_mode IN (0,1))");
   const seatOwned = db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('table_seats') WHERE name = 'entry_owned'").get();
   if (!seatOwned) db.run("ALTER TABLE table_seats ADD COLUMN entry_owned INTEGER NOT NULL DEFAULT 0");
   db.run("UPDATE device_capabilities SET capability = 'table' WHERE capability = 'mahjong'");

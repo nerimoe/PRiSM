@@ -62,6 +62,7 @@ export type TenantShop = {
   bot_contact: string;
   time_zone: string;
   hero_url: string | null;
+  privacy_mode_enabled?: number;
 };
 
 export type PrismAppDependencies = {

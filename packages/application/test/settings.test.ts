@@ -30,6 +30,7 @@ describe("createSettingsService", () => {
       ttLockDevices: [],
       hinataIoDevices: [],
       registration: { defaultPresentId: null },
+      privacyModeEnabled: false,
     });
 
     await expect(
@@ -87,6 +88,7 @@ describe("createSettingsService", () => {
       ttLockDevices: [],
       hinataIoDevices: [hinataIoDevice],
       registration: { defaultPresentId: "present-welcome" },
+      privacyModeEnabled: false,
     });
     await expect(system.getAppSetting("store.profile")).resolves.toEqual({
       name: "音游窝",
@@ -106,6 +108,19 @@ describe("createSettingsService", () => {
     await expect(system.getAppSetting("player.registration")).resolves.toEqual({
       defaultPresentId: "present-welcome",
     });
+
+    await expect(
+      service.updateSettings({
+        store: { name: "音游窝", timeZone: "Asia/Shanghai" },
+        operations: { coinCooldownMs: 30_000 },
+        homeAssistantConnection: { url: "", token: "" },
+        homeAssistantDevices: [],
+        hinataIoDevices: [],
+        registration: { defaultPresentId: null },
+        privacyModeEnabled: true,
+      }),
+    ).resolves.toMatchObject({ privacyModeEnabled: true });
+    await expect(system.getAppSetting("player.privacy")).resolves.toEqual({ enabled: true });
   });
 
   it("rejects invalid operation settings", async () => {

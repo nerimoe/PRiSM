@@ -100,7 +100,7 @@ export function ResourceEditor({
   /** Widens the dialog to `xl` when editing a Bot workbench resource. */
   onWideChange?: (wide: boolean | null) => void;
 }) {
-  const { shopId, shopCode, owner } = useMerchant();
+  const { shopId, shopCode, owner, privacyModeEnabled } = useMerchant();
   const { t } = useI18n();
   const shopSettings = useResource<{
     settings: { ttLockConnection?: Record<string, string | undefined> | null };
@@ -373,6 +373,12 @@ export function ResourceEditor({
         const error = botReplyTemplateError(key, text);
         if (error) return `${key}：${error}`;
       }
+      for (const group of bot.replyGroups ?? []) {
+        for (const [key, text] of Object.entries(group.templates)) {
+          const error = botReplyTemplateError(key, text);
+          if (error) return `${group.name} · ${key}：${error}`;
+        }
+      }
       for (const group of bot.announceGroups ?? []) {
         for (const [key, text] of Object.entries(group.templates)) {
           const error = botReplyTemplateError(key, text);
@@ -591,7 +597,8 @@ export function ResourceEditor({
           if (reason) {
             setPane(id);
             if (id === "bot") {
-              const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text));
+              const invalid = Object.entries(bot.replyTemplates ?? {}).find(([key, text]) => botReplyTemplateError(key, text))
+                ?? (bot.replyGroups ?? []).some((group) => Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text)));
               if (invalid) setBotPane("replies");
               else if ((bot.announceGroups ?? []).some((group) => Object.entries(group.templates).some(([key, text]) => botReplyTemplateError(key, text))))
                 setBotPane("broadcasts");
@@ -1749,7 +1756,11 @@ export function ResourceEditor({
           </div>
           <div hidden={botPane !== "broadcasts"}>
             <div className="grid gap-4">
-              <BotAnnouncementGroups value={bot.announceGroups ?? []} onChange={(announceGroups) => changeBot({ announceGroups })} />
+              <BotAnnouncementGroups
+                value={bot.announceGroups ?? []}
+                onChange={(announceGroups) => changeBot({ announceGroups })}
+                privacyModeEnabled={privacyModeEnabled}
+              />
               <div className="bill-entry !mb-0 grid gap-3">
                 <Field label="闲置关机提醒提前量" unit="分钟">
                   <input
@@ -1771,7 +1782,13 @@ export function ResourceEditor({
             </div>
           </div>
           <div hidden={botPane !== "replies"}>
-            <BotReplyEditor value={bot.replyTemplates ?? {}} onChange={(replyTemplates) => changeBot({ replyTemplates })} />
+            <BotReplyEditor
+              value={bot.replyTemplates ?? {}}
+              onChange={(replyTemplates) => changeBot({ replyTemplates })}
+              groups={bot.replyGroups ?? []}
+              onGroupsChange={(replyGroups) => changeBot({ replyGroups })}
+              privacyModeEnabled={privacyModeEnabled}
+            />
           </div>
           <div hidden={botPane !== "connection"}>
             <BotTokenPanel live={live} hasBotToken={!!live?.hasBotToken} />

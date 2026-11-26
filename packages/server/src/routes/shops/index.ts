@@ -71,6 +71,7 @@ export function publicSettings(shop: TenantShop) {
     checkoutGeo: !!shop.checkout_geo,
     machineGeo: !!shop.machine_geo,
     botContact: shop.bot_contact,
+    privacyModeEnabled: !!shop.privacy_mode_enabled,
   };
 }
 
@@ -94,6 +95,7 @@ const settingsSchema = z.object({
   // The resource a front-desk check-in bills through: its group's plan, or its own.
   cashierResourceId: z.string().min(1).nullable().optional(),
   botContact: bindingPromptSchema,
+  privacyModeEnabled: z.boolean().optional(),
 });
 
 export const shopRouter = new Hono<AppBindings>();
@@ -284,6 +286,8 @@ shopRouter.put("/settings", async (c) => {
       };
       const locationChanged =
         body.locationMode !== undefined || body.locationRssiThreshold !== undefined;
+      const privacyModeEnabled = body.privacyModeEnabled ?? !!initialShop.privacy_mode_enabled;
+      const now = new Date().toISOString();
 
       await c.env.DB.batch([
         c.env.DB.prepare(
@@ -310,10 +314,17 @@ shopRouter.put("/settings", async (c) => {
         ).bind(
           initialShop.id,
           JSON.stringify({ enabled: cashierEnabled, ...(cashierResource ? { resourceId: cashierResource } : {}) }),
-          new Date().toISOString(),
+          now,
         ),
         ...(locationChanged
           ? [writeShopLocationSettingsStatement(c.env.DB, initialShop.id, nextLocationSettings)]
+          : []),
+        ...(body.privacyModeEnabled !== undefined
+          ? [c.env.DB.prepare(
+              `INSERT INTO app_settings(shop_id, key, value_json, updated_at)
+               VALUES (?, 'player.privacy', ?, ?)
+               ON CONFLICT(shop_id, key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at`,
+            ).bind(initialShop.id, JSON.stringify({ enabled: privacyModeEnabled }), now)]
           : []),
       ]);
 
@@ -332,6 +343,7 @@ shopRouter.put("/settings", async (c) => {
         cashierEnabled,
         cashierResourceId: cashierResource,
         identityBindingRequired,
+        privacyModeEnabled,
         billingConfiguration: configuration,
       });
     },

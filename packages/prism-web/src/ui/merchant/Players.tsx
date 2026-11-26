@@ -277,9 +277,14 @@ function PlayerDetail({
   refresh: () => void;
 }) {
   const { t } = useI18n();
-  const { canWrite, shopCode, cashierEnabled, timeZone } = useMerchant();
+  const { canWrite, shopCode, cashierEnabled, timeZone, privacyModeEnabled } = useMerchant();
   const request = useStaffApi();
   const base = `players/${segment(player.id)}`;
+  const playerOptions = useResource<{
+    options: { excludeFromReports: boolean; privacyMode: boolean };
+    meta: { isStaff: boolean; privacyModeEnabled: boolean };
+  }>(`${base}/options`);
+  const [optionSaving, setOptionSaving] = useState(false);
   const assets = useResource<Holdings>(`${base}/assets`);
   const history = useResource<History>(`${base}/sessions/history`);
   const definitions = useResource<{ assetDefinitions: Asset[] }>(
@@ -296,10 +301,23 @@ function PlayerDetail({
   const done = () => {
     setAction(null);
     setPreview(null);
+    playerOptions.reload();
     assets.reload();
     history.reload();
     refresh();
   };
+  async function updatePlayerOption(patch: { excludeFromReports?: boolean; privacyMode?: boolean }) {
+    setOptionSaving(true);
+    setError("");
+    try {
+      await request(`${base}/options`, "PUT", patch);
+      playerOptions.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOptionSaving(false);
+    }
+  }
   async function checkout() {
     if (busy) return;
     setBusy(true);
@@ -554,6 +572,41 @@ function PlayerDetail({
               <small className="text-ink/50">{date(e.createdAt)}</small>
             </div>
           ))}
+        </details>
+        <details open>
+          <summary className="cursor-pointer py-2 font-medium">
+            {t("选项")}
+          </summary>
+          {playerOptions.data && (
+            <div className="my-2 grid gap-2.5">
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span>{t(playerOptions.data.meta.isStaff ? "店员自动排除统计" : "排除经营统计")}</span>
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[var(--color-mint)]"
+                  checked={playerOptions.data.options.excludeFromReports}
+                  disabled={!canWrite || optionSaving || playerOptions.data.meta.isStaff}
+                  onChange={(e) => void updatePlayerOption({ excludeFromReports: e.target.checked })}
+                />
+              </label>
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span>
+                  {t("隐私模式")}
+                  {!(playerOptions.data.meta.privacyModeEnabled ?? privacyModeEnabled) && (
+                    <span className="ml-1.5 text-xs text-ink/50">{t("（店铺未开启隐私模式，暂不生效）")}</span>
+                  )}
+                </span>
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[var(--color-mint)]"
+                  checked={playerOptions.data.options.privacyMode}
+                  disabled={!canWrite || optionSaving}
+                  onChange={(e) => void updatePlayerOption({ privacyMode: e.target.checked })}
+                />
+              </label>
+            </div>
+          )}
+          {playerOptions.error && <button className={button} onClick={playerOptions.reload}>{t("重试")}</button>}
         </details>
         <details>
           <summary className="cursor-pointer py-2 font-medium">

@@ -27,6 +27,7 @@ legacyStaffRouter.route("/", staffRedeemCompatRouter);
 
 
 import { z } from "zod";
+import { publishShopFacts } from "../../events/shop-facts.js";
 import { jsonError } from "../../http.js";
 import { getShop, getShopDeps } from "../../middleware/tenant.js";
 import { staffPrincipal } from "../../middleware/auth.js";
@@ -90,7 +91,16 @@ legacyStaffRouter.get("/settings", async (c) => {
 legacyStaffRouter.put("/settings", async (c) => {
   await requireStandaloneStaff(c, "owner");
   const body = await c.req.json();
-  return c.json({ settings: await getShopDeps(c).staffSettingsCommands.updateSettings(body) });
+  const settings = await getShopDeps(c).staffSettingsCommands.updateSettings(body);
+  const origin = c.get("factOrigin");
+  if (origin) {
+    await publishShopFacts(
+      { db: c.env.DB, env: c.env, shopId: getShop(c).id },
+      origin,
+      [{ name: "shop.changed", payload: { what: "settings" } }],
+    );
+  }
+  return c.json({ settings });
 });
 
 legacyStaffRouter.get("/api-tokens", async (c) => {

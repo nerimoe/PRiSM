@@ -19,6 +19,9 @@ export type BotMessageSegment = { text: string } | { player: BotMessagePlayer };
 
 export type BotMessage = BotMessageSegment[];
 
+/** The label shown when a player's name and identity are hidden by privacy mode. */
+export const ANONYMOUS_PLAYER_LABEL = "匿名玩家";
+
 /** Builds a message, merging neighbouring text: `message("a", player, "b")`. */
 export function botMessage(...parts: Array<string | BotMessagePlayer | BotMessage>): BotMessage {
   const out: BotMessage = [];
@@ -33,6 +36,21 @@ export function botMessage(...parts: Array<string | BotMessagePlayer | BotMessag
     else push({ player: part });
   }
   return out;
+}
+
+/** Replaces matching player segments with an anonymous text label, merging neighbouring text. */
+export function maskBotMessagePlayers(
+  message: BotMessage,
+  shouldMask: (player: BotMessagePlayer) => boolean,
+  replacement = ANONYMOUS_PLAYER_LABEL,
+): BotMessage {
+  return botMessage(
+    ...message.map((segment) =>
+      "player" in segment
+        ? (shouldMask(segment.player) ? replacement : segment.player)
+        : segment.text,
+    ),
+  );
 }
 
 /** The message as plain text, players by their platform names; for logs and tests. */

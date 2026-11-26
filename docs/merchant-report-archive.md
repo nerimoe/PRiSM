@@ -43,9 +43,9 @@
 
 prism-neo 导入的每项最终结算必须同时创建完整结账单，并通过 `settlements.checkout_id` 关联，才能出现在营收、历史列表与 Excel 中。`0058_legacy_settlement_checkouts.sql` 为历史导入遗漏的、已结算且未关联账单的记录回填完整账单（一项旧结算对应一张，沿用原金额、玩家与结算时间），不修改已有关联、归档信息或资产余额。迁移可重复执行，不重复计入收入；后续导入同步建立关联。需要部署并应用该迁移后，已有数据库的缺失账单才会恢复显示。热门资源卡片在两张时段图下整行展示，避免留出半行空白。
 
-## 玩家排除设置
+## 玩家选项与排除设置
 
-在「玩家」页选中玩家，在资料面板的「设置」标签页中使用「排除经营统计」开关。设置写入玩家的 `report_excluded` 字段，跨浏览器及刷新持久生效；只读员工只能查看，管理人员可修改。关联本店账号的店主、店员始终自动排除，开关显示「店员自动排除统计」且不可关闭。未关联账号的旧店员档案可以手动排除。历史页不再提供玩家搜索或名单弹窗，不加载全体玩家候选。
+在「玩家」页选中玩家，在资料面板或详情弹窗的「选项」标签页中可管理「排除经营统计」（`excludeFromReports`，`playerVisible: false`，仅店员端可用）与「隐私模式」（`privacyMode`，`playerVisible: true`，店铺开启隐私模式后也在玩家个人「选项」中可用）。「排除经营统计」写入玩家的 `report_excluded` 字段，跨浏览器及刷新持久生效；只读员工只能查看，管理人员可修改。关联本店账号的店主、店员始终自动排除，开关显示「店员自动排除统计」且不可关闭。未关联账号的旧店员档案可以手动排除。历史页不再提供玩家搜索或名单弹窗，不加载全体玩家候选。
 
 历史页图表、周期及上期指标、投币、资产入账和资源活跃度都排除这些玩家，计算仍在前端；后端只对批量事实增加排除条件，没有按玩家循环查库。个人账单与实际余额不变。
 
@@ -53,4 +53,4 @@ prism-neo 导入的每项最终结算必须同时创建完整结账单，并通�
 
 `0059_player_report_exclusions.sql` 为已有玩家增加默认关闭的持久开关，本地 SQLite 启动时也补齐该字段。需要部署并应用迁移后生效。业务备份沿用 players 表导出；旧备份无该字段时使用数据库默认值。
 
-接口：`GET/PUT staff/players/:playerId/report-settings` 读取或写入 `{ excluded: boolean }`，返回 `{ excluded, isStaff }`，店员自动排除优先于手动值；`GET staff/reports/exclusions` 仅返回当前排除玩家 ID，不返回全玩家候选。事实模式及默认结账查询自动合并持久名单与当前店员账号关联，既有 `excludePlayers` 参数仍可额外排除；全部/已归档列表忽略排除名单。
+接口：`GET/PUT staff/players/:playerId/options` 统一读写 `{ excludeFromReports, privacyMode }`，并返回 `{ options, meta: { isStaff, privacyModeEnabled } }`；原有 `GET/PUT staff/players/:playerId/report-settings` 兼容保留（返回 `{ excluded, isStaff }`），店员自动排除优先于手动值；`GET staff/reports/exclusions` 仅返回当前排除玩家 ID，不返回全玩家候选。事实模式及默认结账查询自动合并持久名单与当前店员账号关联，既有 `excludePlayers` 参数仍可额外排除；全部/已归档列表忽略排除名单。

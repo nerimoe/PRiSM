@@ -53,6 +53,7 @@ function reportExcludedPlayers(raw: string | undefined): string[] {
 
 async function reportPlayerFlags(db: import("@prism/adapter-d1").D1DatabaseLike, shopId: string, playerId?: string) {
   const result = await db.prepare(`SELECT p.id, p.display_name AS displayName, p.report_excluded AS excluded,
+    p.privacy_mode AS privacyMode,
     EXISTS (SELECT 1 FROM ${ACCOUNT_PROFILES_SQL} a
       WHERE a.shop_id=p.shop_id AND a.player_id=p.id AND (
         EXISTS (SELECT 1 FROM shop_members m WHERE m.shop_id=a.shop_id AND m.user_id=a.user_id)
@@ -61,8 +62,8 @@ async function reportPlayerFlags(db: import("@prism/adapter-d1").D1DatabaseLike,
           WHERE sa.shop_id=a.shop_id AND sa.user_id=a.user_id AND su.status='active')
       )) AS isStaff
     FROM players p WHERE p.shop_id=? ${playerId ? "AND p.id=?" : ""} ORDER BY p.id`)
-    .bind(shopId, ...(playerId ? [playerId] : [])).all<{ id: string; displayName: string; isStaff: number; excluded: number }>();
-  return result.results.map(p => ({ ...p, isStaff: Boolean(p.isStaff), excluded: Boolean(p.excluded) }));
+    .bind(shopId, ...(playerId ? [playerId] : [])).all<{ id: string; displayName: string; isStaff: number; excluded: number; privacyMode: number }>();
+  return result.results.map(p => ({ ...p, isStaff: Boolean(p.isStaff), excluded: Boolean(p.excluded), privacyMode: Boolean(p.privacyMode) }));
 }
 async function reportExclusions(db: import("@prism/adapter-d1").D1DatabaseLike, shopId: string) {
   return (await reportPlayerFlags(db, shopId)).filter(p => p.isStaff || p.excluded).map(p => p.id);
@@ -93,6 +94,57 @@ staffRouter.put("/players/:playerId/report-settings", async c => {
   if (!settings.isStaff) await c.env.DB.prepare("UPDATE players SET report_excluded=? WHERE shop_id=? AND id=?")
     .bind(body.excluded ? 1 : 0, shop.id, settings.id).run();
   return c.json({ excluded: settings.isStaff || body.excluded, isStaff: settings.isStaff });
+});
+
+function staffPlayerOptionsView(
+  settings: { excluded: boolean; isStaff: boolean; privacyMode: boolean },
+  privacyModeEnabled: boolean,
+) {
+  return {
+    options: {
+      excludeFromReports: settings.excluded || settings.isStaff,
+      privacyMode: settings.privacyMode,
+    },
+    meta: {
+      isStaff: settings.isStaff,
+      privacyModeEnabled,
+    },
+  };
+}
+
+staffRouter.get("/players/:playerId/options", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop, true);
+  const [settings] = await reportPlayerFlags(c.env.DB, shop.id, c.req.param("playerId"));
+  if (!settings) jsonError(404, "玩家不存在", "PLAYER_NOT_FOUND");
+  return c.json(staffPlayerOptionsView(settings, !!shop.privacy_mode_enabled));
+});
+
+staffRouter.put("/players/:playerId/options", async c => {
+  const shop = getShop(c);
+  await staffPrincipal(c, shop);
+  const body = z.object({
+    excludeFromReports: z.boolean().optional(),
+    privacyMode: z.boolean().optional(),
+  }).strict().parse(await c.req.json());
+  const [settings] = await reportPlayerFlags(c.env.DB, shop.id, c.req.param("playerId"));
+  if (!settings) jsonError(404, "玩家不存在", "PLAYER_NOT_FOUND");
+  const nextExcluded = body.excludeFromReports === undefined
+    ? settings.excluded
+    : settings.isStaff ? true : body.excludeFromReports;
+  const nextPrivacyMode = body.privacyMode === undefined ? settings.privacyMode : body.privacyMode;
+  if (body.excludeFromReports !== undefined && !settings.isStaff) {
+    await c.env.DB.prepare("UPDATE players SET report_excluded=? WHERE shop_id=? AND id=?")
+      .bind(nextExcluded ? 1 : 0, shop.id, settings.id).run();
+  }
+  if (body.privacyMode !== undefined) {
+    await c.env.DB.prepare("UPDATE players SET privacy_mode=? WHERE shop_id=? AND id=?")
+      .bind(nextPrivacyMode ? 1 : 0, shop.id, settings.id).run();
+  }
+  return c.json(staffPlayerOptionsView(
+    { ...settings, excluded: nextExcluded, privacyMode: nextPrivacyMode },
+    !!shop.privacy_mode_enabled,
+  ));
 });
 
 // Only serialize the historic staff API view, not the authentication principal.

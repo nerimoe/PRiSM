@@ -19,7 +19,7 @@ import type {
   SettlementAdjustment,
   TimeCapPricingWindow,
 } from "@prism/core";
-import { assetQuantityToNatural, yuanOf } from "@prism/core";
+import { ANONYMOUS_PLAYER_LABEL, assetQuantityToNatural, yuanOf } from "@prism/core";
 import type {
   PlayerAssets,
   RedeemCodeResult,
@@ -731,7 +731,19 @@ export function toBillingChangeView(result: {
   };
 }
 
-function toRosterMemberView(member: import("../../resources/roster.js").RosterMember): Record<string, unknown> {
+function toRosterMemberView(
+  member: import("../../resources/roster.js").RosterMember,
+  options: { hidePrivate?: boolean } = {},
+): Record<string, unknown> {
+  if (options.hidePrivate && member.privacyMode) {
+    return {
+      playerId: null,
+      displayName: ANONYMOUS_PLAYER_LABEL,
+      identities: [],
+      startedAt: member.since.toISOString(),
+      anonymous: true,
+    };
+  }
   return {
     playerId: member.playerId,
     displayName: member.displayName,
@@ -741,7 +753,10 @@ function toRosterMemberView(member: import("../../resources/roster.js").RosterMe
 }
 
 /** `total` counts everyone listed: each person is in exactly one group. */
-export function toRosterView(roster: import("../../resources/roster.js").Roster): Record<string, unknown> {
+export function toRosterView(
+  roster: import("../../resources/roster.js").Roster,
+  options: { hidePrivate?: boolean } = {},
+): Record<string, unknown> {
   return {
     total: roster.total,
     groups: roster.groups.map((group) => ({
@@ -749,7 +764,7 @@ export function toRosterView(roster: import("../../resources/roster.js").Roster)
       id: group.id,
       name: group.name,
       ...(group.kind === "resource" ? { capacity: group.capacity } : {}),
-      members: group.members.map(toRosterMemberView),
+      members: group.members.map((member) => toRosterMemberView(member, options)),
     })),
   };
 }

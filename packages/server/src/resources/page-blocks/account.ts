@@ -1,3 +1,4 @@
+import { visiblePlayerOptionDefinitions } from "@prism/core";
 import type { PageAccountMenu, PageBinding, PageSignIn } from "@prism/page-protocol";
 import type { Translate } from "../page-text.js";
 
@@ -25,8 +26,16 @@ export const bindingBlock = (t: Translate): PageBinding => ({
 
 export function accountMenuFor(
   t: Translate,
-  opts: { billingActive: boolean; shopBills: boolean; identityBindingRequired?: boolean; includeBillTab: boolean },
+  opts: {
+    billingActive: boolean;
+    shopBills: boolean;
+    identityBindingRequired?: boolean;
+    includeBillTab: boolean;
+    privacyModeEnabled?: boolean;
+  },
 ): PageAccountMenu {
+  const hasVisibleOptions = visiblePlayerOptionDefinitions({ privacyModeEnabled: !!opts.privacyModeEnabled }).length > 0;
+  const optionsTab = hasVisibleOptions ? [{ id: "options", label: t("选项") }] : [];
   return {
     ...(opts.billingActive ? { billingBadge: t("计费中") } : {}),
     tabs: opts.shopBills
@@ -36,10 +45,12 @@ export function accountMenuFor(
           { id: "history", label: t("记录") },
           { id: "wallet", label: t("钱包") },
           { id: "bindings", label: t("身份") },
+          ...optionsTab,
         ]
-      : opts.identityBindingRequired
-        ? [{ id: "bindings", label: t("身份") }]
-        : [],
+      : [
+          ...(opts.identityBindingRequired ? [{ id: "bindings", label: t("身份") }] : []),
+          ...optionsTab,
+        ],
     logoutLabel: t("退出登录"),
   };
 }

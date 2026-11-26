@@ -102,8 +102,8 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `POST` | `/rpc/player/redeem` | 输入 CDK 兑换码兑换礼物。 |
 | `POST` | `/rpc/player/business-items/:businessItemId/purchase` | 购买前台发布的非计时服务商品（如门票、预约费等），要求处于活跃会话内，并即时扣减余额。 |
 | `GET` | `/rpc/player/business-item-orders` | 列出该玩家本人的非计时服务购买履约订单。 |
-| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
-| `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
+| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings\|options[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
+| `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`options.save`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
 
 ### 玩家接口调用示例
 
@@ -523,3 +523,16 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
 历史页玩家筛选：`GET /api/v1/shops/:shopCode/staff/reports/player-options` 返回 `{ players: [{ id, displayName, isStaff }] }`，需员工只读权限。`reports/analytics?source=1`、`reports/checkouts` 接受 `excludePlayers=<JSON string array>`（最多 2000 个非空玩家编号）；过滤在分页前执行，缺省不排除，非法参数为 400 `INVALID_REPORT_FILTER`。事实结果返回 `source.excludedPlayerIds`，前端用来避免切换筛选期间展示旧数据。
 
 持久统计排除：`GET/PUT staff/players/:playerId/report-settings` 读取/修改本店玩家 `{ excluded: boolean }`（PUT 需管理权限）；当前店主和店员自动排除。`GET staff/reports/exclusions` 返回 `{ excludedPlayerIds }`。`reports/analytics?source=1` 自动排除持久名单；`reports/checkouts?archive=active` 为默认（未归档且未被排除），`archive=all` 和 `archive=archived` 包含被排除玩家。
+
+## 玩家选项与隐私模式
+
+- **统一选项注册表（`@prism/core` `playerOptionsRegistry`）**：每个玩家选项声明 `playerVisible: boolean`：
+  - `excludeFromReports`（「排除经营统计」，迁移 `0059`）：`playerVisible: false`，仅限店员端读取与修改；玩家接口读取或修改均返回 `403 PLAYER_OPTION_FORBIDDEN`。
+  - `privacyMode`（「隐私模式」，迁移 `0066_player_privacy_mode.sql`）：`playerVisible: true`，仅在店铺设置开启 `privacyModeEnabled` 时对玩家可见并可编辑。
+- **店铺开关**：`privacyModeEnabled` 默认 `false`（存储在 `app_settings` 键 `player.privacy`），通过 `GET /api/v1/shops/:shopCode` 公开返回 `shop.privacyModeEnabled`，并通过 `GET/PUT settings` 及 `staff/settings` 读写（需管理权限）。
+- **玩家接口与服务端驱动面板**：
+  - `GET /api/v1/shops/:shopCode/player/options`：仅返回当前对玩家可见的选项键值（`{ options }`）；店铺关闭隐私模式时返回 `{ options: {} }`。
+  - `GET /api/v1/shops/:shopCode/player/options/:key`、`PUT/PATCH /api/v1/shops/:shopCode/player/options`：校验选项必须存在且 `playerVisible: true`，否则拒绝（`excludeFromReports` 返回 `403 PLAYER_OPTION_FORBIDDEN`；店铺关闭隐私模式时写 `privacyMode` 返回 `403 PRIVACY_MODE_DISABLED`；无效键名或非布尔值返回 `400`）。
+  - 服务端驱动页 `GET /api/v1/shops/:shopCode/player/page` 在店铺关闭 `privacyModeEnabled`（即 0 个玩家可见选项）时不向 `accountMenu.tabs` 下发 `options` 页签，菜单隐藏「选项」入口；且 `view=options` 也不返回 `privacyMode` 开关块。店铺开启隐私模式时下发 `options` 页签与开关，并通过 `POST /player/action`（`action: "options.save"`）保存。
+- **店员接口**：`GET/PUT /api/v1/shops/:shopCode/staff/players/:playerId/options` 统一返回和更新 `{ options: { excludeFromReports, privacyMode }, meta: { isStaff, privacyModeEnabled } }`（原 `staff/players/:playerId/report-settings` 兼容保留）。
+- **数据备份**：v1/v7 备份导出与导入保留 `players.privacy_mode` 与 `app_settings` 中的 `player.privacy`；导入缺少 `privacy_mode` 的旧备份时默认回退为 `0`。
