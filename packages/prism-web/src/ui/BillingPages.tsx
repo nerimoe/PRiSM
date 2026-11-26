@@ -4,10 +4,11 @@ import { pricingInZone } from "./merchant/pricing-clock";
 import type { Pricing } from "./merchant/Pricing";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Api, api, InlineError, type ShopLocationMode } from "../api";
+import { Api, api, InlineError, type ResourceGroup, type ShopLocationMode } from "../api";
 import { useI18n } from "../i18n";
 import { BillingConversionWizard } from "./merchant/BillingSetup";
 import { IdentityPolicyPicker } from "./merchant/IdentityPolicyPicker";
+import { groupResourcesByGroup } from "./merchant/resource-group-grouping";
 import { identityPolicy, identityPolicySettings } from "./merchant/setup-guide";
 import { primary, useMerchant } from "./merchant/shared";
 
@@ -141,21 +142,24 @@ export function BillingSettings({
   const { shopId } = useMerchant();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rules, setRules] = useState<EntryRule[]>([]);
-  const [resources, setResources] = useState<{ id: string; name: string }[]>([]);
+  const [resources, setResources] = useState<{ id: string; name: string; resourceGroupId?: string }[]>([]);
+  const [groups, setGroups] = useState<ResourceGroup[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [savedSection, setSavedSection] = useState<typeof section>(null);
   const [errorSection, setErrorSection] = useState<typeof section>(null);
   const [converting, setConverting] = useState(false);
   const load = useCallback(async () => {
-    const [s, r, m] = await Promise.all([
+    const [s, r, m, g] = await Promise.all([
       api<Settings>(shopApi(shopCode, "settings")),
       api<{ pricingConfigs: EntryRule[] }>(
         shopApi(shopCode, "staff/pricing-configs"),
       ),
       shopId ? Api.machines(shopId).then((result) => result.machines).catch(() => []) : Promise.resolve([]),
+      shopId ? Api.resourceGroups(shopId).then((result) => result.resourceGroups).catch(() => []) : Promise.resolve([]),
     ]);
-    setResources(m.map((machine) => ({ id: machine.id, name: machine.name })));
+    setResources(m.map((machine) => ({ id: machine.id, name: machine.name, resourceGroupId: machine.resourceGroupId })));
+    setGroups(g);
     setSettings({
       ...s,
       cashierEnabled: s.cashierEnabled ?? false,
@@ -280,8 +284,15 @@ export function BillingSettings({
                       onChange={(e) => setSettings({ ...settings, cashierResourceId: e.target.value || null })}
                     >
                       <option value="">{t("请选择")}</option>
-                      {resources.map((resource) => (
-                        <option key={resource.id} value={resource.id}>{resource.name}</option>
+                      {groupResourcesByGroup(resources, groups).map((groupSection) => (
+                        <optgroup
+                          key={groupSection.group?.id ?? "__ungrouped__"}
+                          label={t(groupSection.group?.name ?? "未分组")}
+                        >
+                          {groupSection.resources.map((resource) => (
+                            <option key={resource.id} value={resource.id}>{resource.name}</option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                     <span className="text-ink/60">
