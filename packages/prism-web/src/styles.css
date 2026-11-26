@@ -167,7 +167,7 @@ input::placeholder {
   gap: 16px;
 }
 .site-header:has(+ .site-main .merchant-workspace) .site-header-inner {
-  max-width: 1280px;
+  max-width: 1520px;
 }
 .site-brand {
   display: flex;
@@ -211,7 +211,7 @@ input::placeholder {
   padding: 48px 24px 64px;
 }
 .site-main:has(.merchant-workspace) {
-  max-width: 1328px;
+  max-width: 1568px;
   padding-top: 8px;
   padding-bottom: 20px;
 }

@@ -69,7 +69,7 @@ function MerchantContent() {
       />
     );
   return (
-    <section className="merchant-workspace mx-auto grid w-full max-w-7xl min-w-0 gap-3">
+    <section className="merchant-workspace mx-auto grid w-full min-w-0 gap-3">
       {shop ? (
         <Workspace
           key={shop.id}

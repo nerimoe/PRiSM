@@ -84,9 +84,9 @@
 - `GET /api/v1/merchant/idle-power?shopId=`：判断「按需进阶功能 → 闲置自动关机」是否已开启。
 - `GET /api/v1/merchant/ha-connections?shopId=`：统计 `readAccess` 为 `needs_admin` 或 `failed` 的 Home Assistant 连接数，在「添加资源并配置能力」步骤内提醒启用只读账号以恢复实时状态。
 
-## 界面主题
+## 界面主题与布局
 
-全站共用的顶部导航栏随系统浅色／深色主题切换背景色，并保留半透明毛玻璃效果；深色模式下与页面背景保持一致。SVG 图形图例（`GuideDiagrams` 与 `BillingExplainer`）随主题自适应，而互动引导层（聚光灯脉冲框 `.tour-spotlight-ring`、浮动指示标签 `.tour-pointer-tag`、引导操作按钮 `.tour-btn` 与弹窗提示条）使用独立于主品牌蓝的琥珀金强调色（`--color-tour`），避免与页面自身的蓝色业务按钮混淆。
+全站共用的顶部导航栏随系统浅色／深色主题切换背景色，并保留半透明毛玻璃效果；深色模式下与页面背景保持一致。SVG 图形图例（`GuideDiagrams` 与 `BillingExplainer`）随主题自适应，而互动引导层（聚光灯脉冲框 `.tour-spotlight-ring`、浮动指示标签 `.tour-pointer-tag`、引导操作按钮 `.tour-btn` 与弹窗提示条）使用独立于主品牌蓝的琥珀金强调色（`--color-tour`），避免与页面自身的蓝色业务按钮混淆。桌面端商户工作台（`.merchant-workspace`）容器加宽至内容区最大 `1520px`（外层容器 `1568px`），并同步对齐顶栏宽度，不影响玩家端与登录页布局；「仪表板」的设备概览中直连 HINATA IO 在线且已有读卡器时显示「IO 在线」（不再重复显示 `读卡器 n`），仅在 IO 在线且读卡器数量为 `0` 时提示「无读卡器」。
 
 ## 玩家身份
 

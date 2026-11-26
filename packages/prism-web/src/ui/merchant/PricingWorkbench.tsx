@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, Calculator, Layers, Network, Pencil, Plus, Save, Unplug } from "lucide-react";
-import type { ResourceGroup } from "../../api";
+import { Api, type Resource, type ResourceGroup } from "../../api";
 import { useI18n } from "../../i18n";
 import { displayDateTime } from "../bill-time";
 import { planColor } from "../plan-colors";
@@ -29,6 +29,11 @@ import {
   type VersionRef,
 } from "./PricingVersions";
 import { useResourceGroups } from "./ResourceGroups";
+import {
+  effectiveResourcePlan,
+  groupResourcesByGroup,
+  resolveResourceGroup,
+} from "./resource-group-grouping";
 import {
   State,
   buttonQuiet,
@@ -137,6 +142,20 @@ export function PricingPage() {
   const { canWrite, shopCode, shopId, owner } = useMerchant();
   const request = useStaffApi();
   const resourceGroups = useResourceGroups(shopId);
+  const [machines, setMachines] = useState<Resource[] | null>(null);
+  const loadMachines = useCallback(() => {
+    if (!shopId) {
+      setMachines([]);
+      return Promise.resolve();
+    }
+    return Api.machines(shopId)
+      .then((result) => setMachines(result.machines ?? []))
+      .catch(() => setMachines([]));
+  }, [shopId]);
+  useEffect(() => {
+    setMachines(null);
+    void loadMachines();
+  }, [loadMachines]);
   const resource = useResource<{ pricingConfigs: Pricing[] }>("pricing-configs");
   const changes = usePricingChanges(resource.reload);
   const [params] = useSearchParams();
@@ -194,16 +213,20 @@ export function PricingPage() {
   // rules are stored as `archived` underneath to preserve bill references).
   const rows = all.filter((row) => row.status !== "archived");
   const timePlans = rows.filter((row) => row.kind === "time.priority");
-  /** Groups as this version (including staged edits) binds them, for the relation graph. */
+  /** Groups as this version (including staged edits) binds them, for the relation graph and resource grouping. */
   const versionGroups: ResourceGroup[] = (resourceGroups.groups ?? []).map((group) => ({
     ...group,
-    defaultPricingConfigId: bindings?.groups[group.id] ?? group.defaultPricingConfigId,
+    defaultPricingConfigId:
+      bindings?.groups && group.id in bindings.groups
+        ? (bindings.groups[group.id] ?? null)
+        : group.defaultPricingConfigId,
   }));
 
   const reloadAll = () => {
     resource.reload();
     changes.reload();
     detail.reload();
+    void loadMachines();
   };
 
   /** Guard leaving an open rule editor (keeps version-level staged draft intact). */
@@ -383,6 +406,16 @@ export function PricingPage() {
     });
   });
 
+  const machineGroupById = useMemo(
+    () => new Map((machines ?? []).map((machine) => [machine.id, machine.resourceGroupId])),
+    [machines],
+  );
+  const groupIdOfResource = (id: string) =>
+    machines === null
+      ? undefined
+      : machineGroupById.has(id)
+        ? machineGroupById.get(id)
+        : "__ungrouped__";
   const bindingName = (key: BindingSection, id: string) =>
     key === "groups" ? names.groups[id] ?? id : names.resources[id] ?? id;
   const bindingRows = BINDING_SECTIONS.map(([key, label]) => ({
@@ -474,7 +507,32 @@ export function PricingPage() {
     const [key, id] = picked.key.split(/:(.*)/s) as [BindingSection, string];
     return { key, id, plan: bindings?.[key]?.[id] ?? null };
   })() : null;
+  const pickedGroup = pickedBinding && pickedBinding.key !== "groups"
+    ? resolveResourceGroup(groupIdOfResource(pickedBinding.id), versionGroups)
+    : null;
+  const pickedEffectivePlan = pickedBinding?.key === "resources"
+    ? effectiveResourcePlan({ pricingConfigOverrideId: pickedBinding.plan }, pickedGroup, all)
+    : null;
   const planName = (id: string | null) => (id ? all.find((plan) => plan.id === id)?.name ?? names.plans[id] ?? id : null);
+  const renderBindingRow = (sectionKey: BindingSection, id: string, plan: string | null) => {
+    const key = `${sectionKey}:${id}` as BindingKey;
+    const selected = picked?.kind === "binding" && picked.key === key;
+    return (
+      <li key={key}>
+        <button type="button" aria-current={selected ? "true" : undefined} className={rowClass(selected)} onClick={() => setPick({ kind: "binding", key })}>
+          <span className="grid min-w-0 flex-1 gap-0.5">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-sm font-medium text-ink">{bindingName(sectionKey, id)}</span>
+              {staged.bindingKeys.has(key) ? unsavedTag : marks.bindings.has(key) && markTag("changed")}
+            </span>
+            <span className={`truncate text-xs ${plan ? "text-ink/55" : "text-ink/40"}`}>
+              {planName(plan) ?? t(sectionKey === "resources" ? "跟随资源组" : "不计费")}
+            </span>
+          </span>
+        </button>
+      </li>
+    );
+  };
 
   return (
     <div className="grid gap-3">
@@ -649,32 +707,47 @@ export function PricingPage() {
                     )}
                   </ul>
                 ) : (
-                  bindingRows.map((section) => section.items.length > 0 && (
-                    <div key={section.key}>
-                      <p className="px-4 pb-1 pt-2.5 text-xs font-semibold text-ink/60">{t(section.label)}</p>
-                      <ul className="grid gap-0.5 px-2">
-                        {section.items.map(([id, plan]) => {
-                          const key = `${section.key}:${id}` as BindingKey;
-                          const selected = picked?.kind === "binding" && picked.key === key;
-                          return (
-                            <li key={key}>
-                              <button type="button" aria-current={selected ? "true" : undefined} className={rowClass(selected)} onClick={() => setPick({ kind: "binding", key })}>
-                                <span className="grid min-w-0 flex-1 gap-0.5">
-                                  <span className="flex min-w-0 items-center gap-1.5">
-                                    <span className="truncate text-sm font-medium text-ink">{bindingName(section.key, id)}</span>
-                                    {staged.bindingKeys.has(key) ? unsavedTag : marks.bindings.has(key) && markTag("changed")}
-                                  </span>
-                                  <span className={`truncate text-xs ${plan ? "text-ink/55" : "text-ink/40"}`}>
-                                    {planName(plan) ?? t(section.key === "resources" ? "跟随资源组" : "不计费")}
-                                  </span>
-                                </span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  ))
+                  bindingRows.map((section) => {
+                    if (!section.items.length) return null;
+                    if (section.key === "groups") {
+                      return (
+                        <div key={section.key}>
+                          <p className="px-4 pb-1 pt-2.5 text-xs font-semibold text-ink/60">{t(section.label)}</p>
+                          <ul className="grid gap-0.5 px-2">
+                            {section.items.map(([id, plan]) => renderBindingRow(section.key, id, plan))}
+                          </ul>
+                        </div>
+                      );
+                    }
+                    const grouped = groupResourcesByGroup(
+                      section.items.map(([id, plan]) => ({
+                        id,
+                        name: bindingName(section.key, id),
+                        plan,
+                        resourceGroupId: groupIdOfResource(id),
+                      })),
+                      versionGroups,
+                    );
+                    return (
+                      <div key={section.key} className="mt-1.5 border-t border-ink/[0.06] pt-1">
+                        <p className="px-4 pb-1 pt-2 text-xs font-semibold text-ink/60">{t(section.label)}</p>
+                        {grouped.map((groupSection) => (
+                          <div key={groupSection.group?.id ?? "__ungrouped__"} className="mt-1 first:mt-0">
+                            <div className="flex items-center justify-between gap-2 px-4 py-1 text-[11px] font-medium text-ink/50">
+                              <span className="inline-flex min-w-0 items-center gap-1.5 truncate">
+                                <Layers size={11} className="shrink-0 opacity-70" aria-hidden="true" />
+                                <span className="truncate">{t(groupSection.group?.name ?? "未分组")}</span>
+                              </span>
+                              <span className="shrink-0 tabular-nums">{groupSection.resources.length}</span>
+                            </div>
+                            <ul className="grid gap-0.5 px-2">
+                              {groupSection.resources.map((item) => renderBindingRow(section.key, item.id, item.plan))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })
                 )}
               </nav>
 
@@ -804,7 +877,10 @@ export function PricingPage() {
                     </span>
                     <div className="grid min-w-0 gap-0.5">
                       <h3 className="truncate text-lg font-semibold tracking-tight">{bindingName(pickedBinding.key, pickedBinding.id)}</h3>
-                      <p className="text-xs text-ink/50">{t(BINDING_SECTIONS.find(([key]) => key === pickedBinding.key)![1])}</p>
+                      <p className="text-xs text-ink/50">
+                        {t(BINDING_SECTIONS.find(([key]) => key === pickedBinding.key)![1])}
+                        {pickedBinding.key !== "groups" && ` · ${t(pickedGroup?.name ?? "未分组")}`}
+                      </p>
                     </div>
                   </div>
                   <section className="grid gap-2 rounded-xl border border-ink/10 p-4">
@@ -824,6 +900,14 @@ export function PricingPage() {
                     ) : (
                       <p className="text-sm text-ink/75">{planName(pickedBinding.plan) ?? t(pickedBinding.key === "resources" ? "跟随资源组" : "不计费")}</p>
                     )}
+                    {pickedEffectivePlan?.kind === "group" ? (
+                      <p className="text-xs text-ink/60">
+                        {t("跟随资源组（{plan}）", { plan: pickedEffectivePlan.plan?.name ?? t("未知方案") })}
+                        {pickedEffectivePlan.groupDisabled ? ` · ${t("资源组已停用")}` : ""}
+                      </p>
+                    ) : pickedEffectivePlan?.kind === "free" && pickedGroup ? (
+                      <p className="text-xs text-ink/60">{t("跟随资源组（资源组未设置方案）")}</p>
+                    ) : null}
                     <p className="text-xs text-ink/50">
                       {mode === "past"
                         ? t("历史计划只读。")

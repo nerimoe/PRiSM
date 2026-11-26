@@ -2144,6 +2144,7 @@
   "当前筛选下没有设备": "No devices match this filter",
   "电源未知": "Power unknown",
   "IO 离线": "IO offline",
+  "IO 在线": "IO online",
   "无读卡器": "No reader",
   "IO 连接未知": "IO unknown",
   "未配置硬件状态": "No hardware telemetry",
@@ -3190,5 +3191,8 @@
   "2. 单个资源按需叠加 10 种硬件/Bot 能力": "2. Stack Any of 10 Hardware / Bot Capabilities on a Resource",
   "1. 默认资源组统一管理设备（Bot 独立无二维码）": "1. Default Group Organizes All Devices (Bot Has No QR)",
   "通常只需给「默认资源组」绑好入场方案即可全店通用（前台模式需确保「前台资源」有方案）；单台特价或桌游对局可单独指定。": "Usually you only bind an entry plan to the Default group for the whole shop (front-desk mode requires a billed cashier resource); single-unit overrides and tabletop game plans can be set per item.",
-  "单台特殊设备直接改「专属/对局方案」即可；只有多台设备组成独立区域（如 VIP 包间、多设施休息区）需要成批换价或整区启停时，再新建资源组。": "Override individual devices directly via their own/table plan; add another resource group only to batch-price or pause a multi-device zone such as a VIP room or lounge."
+  "单台特殊设备直接改「专属/对局方案」即可；只有多台设备组成独立区域（如 VIP 包间、多设施休息区）需要成批换价或整区启停时，再新建资源组。": "Override individual devices directly via their own/table plan; add another resource group only to batch-price or pause a multi-device zone such as a VIP room or lounge.",
+  "未分组": "Ungrouped",
+  "未知方案": "Unknown plan",
+  "资源组已停用": "Group disabled"
 }
