@@ -9,6 +9,10 @@ export function CardAddGuidance() {
   const { t } = useI18n();
   return (
     <div className="grid gap-3">
+      <div className="rounded border border-ink/10 bg-surface p-3.5 text-sm text-ink/75" role="note">
+        <p className="font-medium text-ink">{t("在店铺内使用读卡器添加卡片")}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink/65">{t("扫码打开支持读卡器加卡的机台页面，点击「添加卡片」后将实体卡放在读卡器上即可绑定。")}</p>
+      </div>
       <a
         className="focus-ring flex min-h-11 items-center justify-center gap-2 rounded border border-ink/15 bg-surface px-4 font-medium text-ink transition-colors hover:bg-ink/[0.04]"
         href="https://portal.mumur.net"
@@ -19,10 +23,6 @@ export function CardAddGuidance() {
         {t("去 MuNET 添加卡片")}
         <ExternalLink size={15} className="opacity-55" aria-hidden="true" />
       </a>
-      <div className="rounded border border-ink/10 bg-surface p-3.5 text-sm text-ink/75" role="note">
-        <p className="font-medium text-ink">{t("在店铺内使用读卡器添加卡片")}</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-ink/65">{t("扫码打开支持读卡器加卡的机台页面，点击「添加卡片」后将实体卡放在读卡器上即可绑定。")}</p>
-      </div>
     </div>
   );
 }
