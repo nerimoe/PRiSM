@@ -97,7 +97,14 @@ export type PlayerRedeemRecordListItem = {
 };
 
 export type CheckoutHistoryRecord = {
-  id: string; total: number; settledAt: string; startedAt: string | null; endedAt: string | null; sessionCount: number;
+  id: string;
+  subtotal?: number;
+  total: number;
+  settledAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  sessionCount: number;
+  paymentMethod?: string | null;
 };
 export type PlayerCheckoutReceipt = {
   externalPayment?: { method: string; staffId: string; collectedAt: string };

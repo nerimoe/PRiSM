@@ -1,16 +1,17 @@
-import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
-import { SessionPasskeySetup } from "./SessionPasskeySetup";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import type { Page, PageCelebration } from "@prism/page-protocol";
 import { api } from "../api";
-import { browserCheckoutPreview } from "../browser-billing";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import { shopApi, type ShopInfo, type Summary, type Preview } from "./BillingPages";
-import { ShopHero, ShopSignIn, ShopPlatformBinding } from "./SessionContent";
-import { BillTotal, BillTimeline } from "./BillTimeline";
-import { CheckoutButton, SettledBill, type Receipt } from "./Checkout";
+import { shopApi } from "./BillingPages";
+import { PlayerPageBlocks } from "./PlayerPageBlocks";
+import { useShopPageAct } from "./page-blocks/use-page-actions";
+import type { ActionAnswer } from "./player-page";
+import { ShopHero } from "./SessionContent";
+import { isTransientReadFailure, usePagePolling } from "./use-page-polling";
 
 export default function ShopPage() {
   const { shopCode = "" } = useParams();
@@ -19,46 +20,126 @@ export default function ShopPage() {
 }
 
 function ShopSurface({ shopCode }: { shopCode: string }) {
-  const { t, errorText } = useI18n();
-  const { user, loading, setActiveShop, setBillingActive } = useAuth();
-  const [info, setInfo] = useState<ShopInfo | null>(null);
-  const [bill, setBill] = useState<Preview | null>(null);
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const { t, errorText, locale } = useI18n();
+  const { user, loading, setActiveShop, setBillingActive, setAccountMenu } = useAuth();
+  const [page, setPage] = useState<Page | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
-  const checkoutPending = useRef(false);
-  const checkoutRevision = useRef(0);
-  useEffect(() => { setActiveShop(shopCode); }, [shopCode, setActiveShop]);
-  usePagePolling(async signal => {
-    if (checkoutPending.current) return;
-    const revision = checkoutRevision.current;
-    try {
-      const shop = await api<ShopInfo>(shopApi(shopCode), { signal });
-      const current = user && (shop.membership || !shop.shop.identityBindingRequired)
-        ? await api<Summary>(shopApi(shopCode, "player/me"), { signal }) : null;
-      const preview = current?.activeSession ? await browserCheckoutPreview(shopApi(shopCode, "player/billing-inputs"), shopApi(shopCode, "player/checkout/preview"), signal) : null;
-      const latest = current && !current.activeSession ? await api<{ receipt: Receipt | null }>(shopApi(shopCode, "player/checkout/latest"), { signal }) : null;
-      if (signal.aborted || checkoutPending.current || revision !== checkoutRevision.current) return;
-      setInfo(shop); setBill(preview); setReceipt(latest?.receipt ?? null);
-      setBillingActive(shopCode, !!current?.activeSession);
-      setError("");
-    } catch (e) {
-      if (!signal.aborted && (!info || !isTransientReadFailure(e)))
-        setError(errorText(e instanceof Error ? e.message : "操作失败"));
-      throw e;
-    } finally { if (!signal.aborted) setBusy(false); }
-  }, !loading, `${shopCode}:${attempt}`, !info || !!user
-    && info.shop.identityBindingRequired && !info.membership?.identityBound && !bill);
-  return <section className={`machine-session shop-session ${bill ? "has-checkout" : ""}`}>
-    {info && <ShopHero name={info.shop.name || shopCode} heroUrl={info.shop.heroUrl} subtitle={!user ? "" : bill ? t("计费中") : receipt ? t("结账成功") : busy ? t("正在加载") : t("未入场")} />}
-    {error && <div role="alert" className="text-coral">{error}<button className="ml-3 underline" onClick={() => setAttempt(value => value + 1)}>{t("重试")}</button></div>}
-    {loading || (busy && !info) ? <Loader2 className="mx-auto animate-spin" /> : info && !user ? <ShopSignIn /> : busy && !bill && !receipt ? <Loader2 className="mx-auto animate-spin" /> : info && user && <SessionPasskeySetup>
-      {!bill && info.shop.identityBindingRequired && !info.membership?.identityBound ? <ShopPlatformBinding code={shopCode} />
-        : bill ? <div className="grid gap-5"><BillTotal preview={bill} /><BillTimeline preview={bill} /></div>
-        : receipt ? <SettledBill receipt={receipt} />
-        : !error && <p className="session-subtitle">{t("请碰一下 NFC 或扫描机台上的二维码")}</p>}
-      {bill && <footer className="shop-checkout"><CheckoutButton info={info} onPendingChange={pending => { checkoutPending.current = pending; checkoutRevision.current++; }} onComplete={result => { checkoutPending.current = false; checkoutRevision.current++; setReceipt(result); setBill(null); setBillingActive(shopCode, false); }} /></footer>}
-    </SessionPasskeySetup>}
-  </section>;
+  const [pendingCelebration, setPendingCelebration] = useState<{
+    celebration: PageCelebration;
+    answer: ActionAnswer;
+  } | null>(null);
+  const actionPending = useRef(false);
+  const actionRevision = useRef(0);
+
+  const syncPageState = useCallback(
+    (next: Page) => {
+      setPage(next);
+      setBillingActive(shopCode, next.billingActive);
+      setAccountMenu(shopCode, next.accountMenu ?? null);
+    },
+    [shopCode, setBillingActive, setAccountMenu],
+  );
+
+  useEffect(() => {
+    setActiveShop(shopCode);
+  }, [shopCode, setActiveShop]);
+
+  useEffect(() => {
+    const refreshShop = () => setAttempt((value) => value + 1);
+    window.addEventListener("prism:shop-refresh", refreshShop);
+    return () => window.removeEventListener("prism:shop-refresh", refreshShop);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingCelebration) return;
+    const timer = setTimeout(() => {
+      syncPageState(pendingCelebration.answer.page);
+      setPendingCelebration(null);
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [pendingCelebration, syncPageState]);
+
+  usePagePolling(
+    async (signal) => {
+      if (actionPending.current) return;
+      const revision = actionRevision.current;
+      try {
+        const current = await api<Page>(`${shopApi(shopCode, "player/page")}?view=shop`, { signal });
+        if (signal.aborted || actionPending.current || revision !== actionRevision.current) return;
+        syncPageState(current);
+        setError("");
+      } catch (e) {
+        if (!signal.aborted && (!page || !isTransientReadFailure(e))) {
+          setError(errorText(e instanceof Error ? e.message : "操作失败"));
+        }
+        throw e;
+      } finally {
+        if (!signal.aborted) setBusy(false);
+      }
+    },
+    !loading && !pendingCelebration,
+    `${shopCode}:${locale}:${attempt}`,
+    !page || (!!user && page.blocks.some((block) => block.kind === "binding")),
+  );
+
+  const act = useShopPageAct(
+    shopCode,
+    "shop",
+    (answer) => {
+      actionRevision.current += 1;
+      if (!answer.celebration) syncPageState(answer.page);
+    },
+    {
+      onBeforeAct: () => {
+        actionRevision.current += 1;
+      },
+      onPendingChange: (pending) => {
+        actionPending.current = pending;
+      },
+    },
+  );
+
+  const hasFooter = !!page?.footer?.length;
+
+  return (
+    <section className={`machine-session shop-session ${hasFooter ? "has-checkout" : ""}`}>
+      {page && <ShopHero name={page.shop || shopCode} heroUrl={page.heroUrl} subtitle={page.resource} />}
+      {error && (
+        <div role="alert" className="text-coral">
+          {error}
+          <button type="button" className="ml-3 underline" onClick={() => setAttempt((value) => value + 1)}>
+            {t("重试")}
+          </button>
+        </div>
+      )}
+      {loading || (busy && !page) ? (
+        <Loader2 className="mx-auto animate-spin" />
+      ) : (
+        page && (
+          <PlayerPageBlocks
+            page={page}
+            act={act}
+            read={async () => setAttempt((value) => value + 1)}
+            bodyClassName="shop-controls"
+            footerClassName="shop-checkout"
+            onCelebrate={(celebration, answer) => setPendingCelebration({ celebration, answer })}
+          />
+        )
+      )}
+      {pendingCelebration &&
+        createPortal(
+          <div className="checkout-success" role="status" aria-live="polite">
+            <svg viewBox="0 0 100 100" aria-hidden="true">
+              <circle cx="50" cy="50" r="43" />
+              <path d="M28 51 L44 67 L73 35" />
+            </svg>
+            <h2>{pendingCelebration.celebration.title}</h2>
+            <p>{pendingCelebration.celebration.subtitle}</p>
+          </div>,
+          document.body,
+        )}
+    </section>
+  );
 }

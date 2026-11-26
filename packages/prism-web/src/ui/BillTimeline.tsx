@@ -1,4 +1,5 @@
 import type { BillTimeline as Timeline, BillTimelineEntry } from "@prism/core";
+import type { PageBillLabels } from "@prism/page-protocol";
 import type { CSSProperties } from "react";
 import { useI18n } from "../i18n";
 import { billTime } from "./bill-time";
@@ -17,13 +18,13 @@ const dotted: CSSProperties = { background: "none", width: 0, borderLeft: "3px d
 const cappedAt = (track: Track, at: number) => (track.capped ?? []).some((span) => at >= Date.parse(span.startedAt) && at < Date.parse(span.endedAt));
 
 /** The total, with the key to the bill under it. */
-export function BillTotal({ preview }: { preview: BillPreview }) {
+export function BillTotal({ preview, labels }: { preview: BillPreview; labels?: PageBillLabels }) {
   const { t } = useI18n();
   return (
     <div className="bill-total">
-      <span>{t("合计")}</span>
+      <span>{labels?.totalLabel ?? t("合计")}</span>
       <strong>{preview.settlementPreview.total.toFixed(2)}</strong>
-      <BillLegend timeline={preview.timeline} />
+      <BillLegend timeline={preview.timeline} labels={labels} />
     </div>
   );
 }
@@ -32,14 +33,14 @@ export function BillTotal({ preview }: { preview: BillPreview }) {
  * The key to a bill, shown under its total wherever the bill is: a solid rail
  * charges, a dotted one is capped. Only a bill with a dotted rail needs it.
  */
-export function BillLegend({ timeline }: { timeline?: Timeline }) {
+export function BillLegend({ timeline, labels }: { timeline?: Timeline; labels?: PageBillLabels }) {
   const { t } = useI18n();
   const anyCapped = (timeline?.tracks ?? []).some((track) => (track.capped ?? []).length > 0);
   if (!anyCapped) return null;
   return (
-    <div className="mt-3 flex gap-5 text-xs text-ink/60" aria-label={t("图例")}>
-      <span className="inline-flex items-center gap-2"><i aria-hidden="true" className="h-3 w-[3px] rounded-full bg-ink/60" />{t("计费")}</span>
-      <span className="inline-flex items-center gap-2"><i aria-hidden="true" className="h-3 border-l-[3px] border-dotted border-ink/60" />{t("封顶中")}</span>
+    <div className="mt-3 flex gap-5 text-xs text-ink/60" aria-label={labels?.legendLabel ?? t("图例")}>
+      <span className="inline-flex items-center gap-2"><i aria-hidden="true" className="h-3 w-[3px] rounded-full bg-ink/60" />{labels?.billingLegend ?? t("计费")}</span>
+      <span className="inline-flex items-center gap-2"><i aria-hidden="true" className="h-3 border-l-[3px] border-dotted border-ink/60" />{labels?.cappedLegend ?? t("封顶中")}</span>
     </div>
   );
 }
@@ -55,7 +56,7 @@ const headingOrder: BillTimelineEntry["kind"][] = ["current", "end", "start", "s
  * a full cap kept from charging is dotted. The date is written once a day, on its
  * first event.
  */
-export function BillTimeline({ preview, timeZone }: { preview: BillPreview; timeZone?: string }) {
+export function BillTimeline({ preview, timeZone, labels }: { preview: BillPreview; timeZone?: string; labels?: PageBillLabels }) {
   const { t } = useI18n();
   const timeline = preview.timeline;
   if (!timeline) return <div>{[...preview.chargeItems, ...preview.adjustments].map((row, i) => <div className="account-row" key={i}><span>{row.label}</span><span className={row.amount < 0 ? "bill-negative" : ""}>{row.amount.toFixed(2)}</span></div>)}</div>;
@@ -88,7 +89,7 @@ export function BillTimeline({ preview, timeZone }: { preview: BillPreview; time
         </div>;
       })}</div>
       <div className="bill-event-heading">
-        <strong><time dateTime={event.at}>{billTime(event.at, timeZone).time}</time>{heading && ` · ${t(headings[heading]!)}`}</strong>
+        <strong><time dateTime={event.at}>{billTime(event.at, timeZone).time}</time>{heading && ` · ${(labels?.headings as Record<string, string> | undefined)?.[heading] ?? t(headings[heading]!)}`}</strong>
         {showDate && <span>{dateLabel(event.at)}</span>}
       </div>
       {startsOnly ? (
@@ -101,22 +102,22 @@ export function BillTimeline({ preview, timeZone }: { preview: BillPreview; time
             </span>
           ))}
         </p>
-      ) : event.entries.map((entry, i) => <BillEntry key={i} entry={entry} color={entry.trackId ? colorOfTrack(entry.trackId) : null} timeZone={timeZone} />)}
+      ) : event.entries.map((entry, i) => <BillEntry key={i} entry={entry} color={entry.trackId ? colorOfTrack(entry.trackId) : null} timeZone={timeZone} labels={labels} />)}
     </section>;
   })}</div>;
 }
 
 /** One line of an event: a cap filling, a stretch that charged, a capped stretch's rule change, or an adjustment. */
-function BillEntry({ entry, color, timeZone }: { entry: BillTimelineEntry; color: string | null; timeZone?: string }) {
+function BillEntry({ entry, color, timeZone, labels }: { entry: BillTimelineEntry; color: string | null; timeZone?: string; labels?: PageBillLabels }) {
   const { t } = useI18n();
   if (entry.kind === "start") return null;
   if (entry.kind === "full" && entry.trackId == null) {
     return <p className="mb-2 flex items-baseline justify-between gap-3 text-[13px]">
-      <span className="font-medium text-mint">{entry.name}{t("已满")}</span>
-      {entry.until && <span className="shrink-0 text-xs text-ink/50">{t("封顶到")} {until(entry.until, timeZone)}</span>}
+      <span className="font-medium text-mint">{entry.name}{labels?.capFullSuffix ?? t("已满")}</span>
+      {entry.until && <span className="shrink-0 text-xs text-ink/50">{labels?.capUntilLabel ?? t("封顶到")} {until(entry.until, timeZone)}</span>}
     </p>;
   }
-  const rule = entry.rule && (entry.nextRule ? `${entry.rule} → ${entry.nextRule}` : entry.kind === "split" ? t("新的一天") : entry.rule);
+  const rule = entry.rule && (entry.nextRule ? `${entry.rule} → ${entry.nextRule}` : entry.kind === "split" ? (labels?.newDayLabel ?? t("新的一天")) : entry.rule);
   if (entry.trackId && (entry.capped || entry.amount == null)) {
     // A stretch that charged nothing: only a change of rule, an end or now is worth a line.
     if (!["switch", "split", "current", "end"].includes(entry.kind)) return null;
@@ -138,9 +139,9 @@ function BillEntry({ entry, color, timeZone }: { entry: BillTimelineEntry; color
     {entry.trackId && entry.unitMinutes != null && entry.unitPrice != null && (
       <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[13px] text-ink/55 tabular-nums">
         {entry.unitFills
-          ? <Blocks fills={entry.unitFills} pending={entry.pending ?? null} color={color!} />
+          ? <Blocks fills={entry.unitFills} pending={entry.pending ?? null} color={color!} unitLabel={labels?.billingUnitLabel} />
           : entry.units != null && <span>× {entry.units}</span>}
-        {entry.unitPrice.toFixed(2)} / {entry.unitMinutes === 60 ? t("小时") : `${entry.unitMinutes} ${t("分钟")}`}
+        {entry.unitPrice.toFixed(2)} / {entry.unitMinutes === 60 ? (labels?.hourUnit ?? t("小时")) : `${entry.unitMinutes} ${labels?.minuteUnit ?? t("分钟")}`}
       </div>
     )}
   </div>;
@@ -151,12 +152,12 @@ function BillEntry({ entry, color, timeZone }: { entry: BillTimelineEntry; color
  * its own price (the unit that filled a cap only in part); a unit begun but still
  * inside its grace is outlined.
  */
-function Blocks({ fills, pending, color }: { fills: number[]; pending: number | null; color: string }) {
+function Blocks({ fills, pending, color, unitLabel }: { fills: number[]; pending: number | null; color: string; unitLabel?: string }) {
   const { t } = useI18n();
   const count = fills.length + (pending != null ? 1 : 0);
   if (count > 24) return <span>× {fills.length}</span>;
   return (
-    <span className="inline-flex flex-wrap gap-0.5" role="img" aria-label={`× ${fills.length}`} title={`${fills.length} ${t("个计费单位")}`}>
+    <span className="inline-flex flex-wrap gap-0.5" role="img" aria-label={`× ${fills.length}`} title={`${fills.length} ${unitLabel ?? t("个计费单位")}`}>
       {fills.map((fill, i) => (
         <span key={i} className="relative h-2.5 w-2 overflow-hidden rounded-[2px]" style={{ background: `color-mix(in srgb, ${color} 28%, transparent)` }}>
           <span className="absolute inset-y-0 left-0" style={{ width: `${fill * 100}%`, background: color }} />

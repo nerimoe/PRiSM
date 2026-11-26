@@ -1,11 +1,25 @@
-import { resolvePageImageUrl, type PageBanner, type PageImage, type PageKeyValue, type PageRow, type PageSection, type PageTable, type PageText } from "@prism/page-protocol";
+import { BadgeCheck, Coins, Gift, Sparkles, Tag, TicketPercent, Wallet } from "lucide-react";
+import {
+  resolvePageImageUrl, type PageBanner, type PageImage, type PageKeyValue, type PageKeyValueIcon, type PageRow,
+  type PageSection, type PageTable, type PageText,
+} from "@prism/page-protocol";
 import { BlockList } from "./BlockView";
 import { NoticeIcon } from "./notices";
+
+const KV_ICONS: Record<PageKeyValueIcon, typeof Wallet> = {
+  wallet: Wallet,
+  gift: Gift,
+  coins: Coins,
+  coupon: TicketPercent,
+  pass: BadgeCheck,
+  ticket: Tag,
+  asset: Sparkles,
+};
 
 export function TextBlock({ block }: { block: PageText }) {
   if (block.style === "heading") {
     const tint = block.level === "error" ? "text-coral" : block.level === "muted" ? "opacity-60" : undefined;
-    return <h2 className={tint}>{block.text}</h2>;
+    return <h2 className={tint ? `page-text-heading ${tint}` : "page-text-heading"}>{block.text}</h2>;
   }
   if (block.level === "error") {
     const size = block.style === "caption" ? "text-xs" : block.style === "body" ? "text-base" : "text-sm";
@@ -39,12 +53,32 @@ export function RowBlock({ block, depth }: { block: PageRow; depth: number }) {
 export function KeyValueBlock({ block }: { block: PageKeyValue }) {
   return (
     <dl className="page-kv">
-      {block.items.map((item, index) => (
-        <div key={item.id ?? `${index}-${item.label}`} className="page-kv-row">
-          <dt>{item.label}</dt>
-          <dd data-tone={item.tone ?? "default"}>{item.value}</dd>
-        </div>
-      ))}
+      {block.items.map((item, index) => {
+        const Icon = item.icon ? KV_ICONS[item.icon] : null;
+        const badgeTone = item.badgeTone ?? item.tone ?? "default";
+        if (Icon || item.badge) {
+          return (
+            <div key={item.id ?? `${index}-${item.label}`} className="page-kv-row is-rich">
+              {Icon && (
+                <span className="page-kv-icon" data-tone={badgeTone} aria-hidden="true">
+                  <Icon size={18} />
+                </span>
+              )}
+              <dt className="page-kv-copy">
+                <span className="page-kv-label">{item.label}</span>
+                {item.badge && <span className="page-kv-badge" data-tone={badgeTone}>{item.badge}</span>}
+              </dt>
+              <dd data-tone={item.tone ?? "default"}>{item.value}</dd>
+            </div>
+          );
+        }
+        return (
+          <div key={item.id ?? `${index}-${item.label}`} className="page-kv-row">
+            <dt>{item.label}</dt>
+            <dd data-tone={item.tone ?? "default"}>{item.value}</dd>
+          </div>
+        );
+      })}
     </dl>
   );
 }

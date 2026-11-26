@@ -7,11 +7,11 @@
 | 内容 | 位置 |
 | --- | --- |
 | 区块类型、容器遍历、表单校验与提交内容、图片地址规则 | `packages/page-protocol`（服务端与网页共用同一份） |
-| 决定显示哪些区块 | `packages/server/src/resources/page.ts` |
+| 决定显示哪些区块 | `packages/server/src/resources/page.ts`（扫码页）、`shop-page.ts`（店铺主页与账号面板页） |
 | 各业务区块怎么填 | `packages/server/src/resources/page-blocks/` |
 | 页面文案与英文翻译、绑定提示渲染 | `packages/server/src/resources/page-text.ts` |
 | 区块构造器 `pageUi`（原有页面也用它构造基础区块） | `packages/server/src/resources/page-ui.ts` |
-| 网页渲染：一类区块一个组件，`BlockView.tsx` 分发 | `packages/prism-web/src/ui/page-blocks/` |
+| 网页渲染：一类区块一个组件，`BlockView.tsx` 分发 | `packages/prism-web/src/ui/page-blocks/`（`ShopPage.tsx`、`PlayerAccount.tsx`、`PlayerAccountMenu.tsx` 共用） |
 | App Clip：模型 `PrismPage.swift`、表单规则 `PrismPageForm.swift`、一类区块一个视图 | `hinata_go` 仓库 `ios/PrismClip/`（视图在 `Page/`，`ClipPageView.swift` 分发） |
 
 新增一种区块：在 `page-protocol` 加类型，两端各加一个组件并在分发处加一行，App Clip 的 `PrismPage.swift` 同步模型。只用现有区块拼新页面则只改服务端。
@@ -29,6 +29,9 @@ bun scripts/swift-page-fixtures.ts <hinata_go>/test/native/fixtures/prism-page
 ```
 GET  /api/v1/devices/session/page?ticket=
 POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, location? }
+
+GET  /api/v1/shops/:shopCode/player/page?view=shop|bill|redeem|history|wallet|bindings[&item=][&cursor=]
+POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, payload?, location? }
 ```
 
 读页面得到：
@@ -84,21 +87,27 @@ POST /api/v1/devices/session/action   { ticket, operationId, action, payload?, l
   "ok": true,            // false 表示被拒绝，原因在 notices 里
   "page": { /* 操作之后的整页 */ },
   "notices": [ /* 显示在刚按的那个按钮下面 */ ],
-  "code": { "title": "开门密码", "value": "1234", "expiresAt": "...", "expiresLabel": "有效期至", "hint": "..." } // 只有拿到门锁密码时才有
+  "code": { "title": "开门密码", "value": "1234", "expiresAt": "...", "expiresLabel": "有效期至", "hint": "..." }, // 只有拿到门锁密码时才有
+  "celebration": { "title": "结账成功", "subtitle": "计费已结束，离店前无需再做其他操作。", "effect": "checkout" }, // 结账成功等全屏动效
+  "receipt": { /* 结账回执（如 checkout.confirm） */ }
 }
 ```
 
-被拒绝（投币到上限、位置不对、冷却中）是正常回答，状态码 200，带上最新页面。只有页面答不了的才是错误：登录或票据失效（`notice.flow` 是 `signin` / `expired`），以及 5xx，包括设备连不上时的 502。
+页面模型同时支持可选的 `title`、`backLabel`（列表下钻详情返回文案；省略或为空时客户端仅显示返回图标）、`footer`（吸底动作区，如结账按钮；表单校验与 `blocks` 通过 `allPageBlocks(page)` 一并收集）和 `accountMenu`（顶部账号菜单的「计费中」徽章、可见页签与退出文案，扫码页与店铺主页登录态均由服务端下发，因此后续新增常规菜单项只需服务端下发新 `tabs` 条目与对应 `view` 页面，无需更新客户端）。
+
+被拒绝（投币到上限、位置不对、冷却中、余额不足、无效兑换码）是正常回答，状态码 200，带上最新页面。只有页面答不了的才是错误：登录或票据失效（`notice.flow` 是 `signin` / `expired`），以及 5xx，包括设备连不上时的 502。
 
 ## 声明式 UI 原语（SDUI）
 
-除了既有的业务专有块（`signin`、`binding`、`pricing`、`climate`、`table`/`mahjong`、`cards`、`consent`），协议提供一套通用的声明式布局、展示、表单与按钮组合原语。服务端可通过 `packages/server/src/resources/page-ui.ts` 导出的 `pageUi` 构造器在 `/session/page` 内任意拼装新画面，而无需新建客户端页面或路由。
+除了既有的业务专有块（`signin`、`binding`、`pricing`、`climate`、`table`/`mahjong`、`cards`、`consent`），协议提供一套通用的声明式布局、展示、表单与按钮组合原语。服务端可通过 `packages/server/src/resources/page-ui.ts` 导出的 `pageUi` 构造器在 `/session/page` 与 `/shops/:shopCode/player/page` 内任意拼装新画面，而无需新建客户端页面或路由。其中店铺账号面板的「身份」页只读展示已绑定身份（不附加刷新按钮），「钱包」页自动将充值余额（`paid`）与赠送余额（`free`）置顶并附带类型图标与着色标签胶囊。
 
 ### 布局与展示块
 
-- `section`: `{ kind: "section", id, title?, subtitle?, style?: "card" | "plain", blocks: PageBlock[] }` — 纵向容器；`style: "card"` 渲染圆角面板。
+- `bill`: `{ kind: "bill", id, mode: "live" | "settled", timeZone?, billingInputs?, preview?, settledAt?, balanceAfter?, labels }` — 账单展示块；实时计费默认下发 `billingInputs` 由浏览器 Web Worker / App Clip `PrismCheckoutEngine` 本地算价预览，服务端插件运行时不支持离线算价时退回下发 `preview`，已结账单直接带 `preview`、`settledAt` 与 `balanceAfter`。
+- `list`: `{ kind: "list", id, items, timeZone?, emptyText?, emptyIcon?, moreLabel?, moreTarget? }` — 列表块（如结账记录）；列表项支持 `group`（连续同组名合并为带标题的轻卡片分组）、`titleMeta`（标题右侧浅灰补充，如停留时长）、`trailingStrikethrough`（右侧金额下方删除线原价）、`titleTimestamp` / `subtitleTimestamp`、下钻跳转 `open: { view, item? }` 以及分页加载 `moreTarget: { view, cursor? }`。其中「记录」页按门店时区的结账日（`settledAt`）以轻卡片分组，并在副标题展示结算方式、多段项数与（跨分钟时）实际结账时刻。
+- `section`: `{ kind: "section", id, title?, subtitle?, style?: "card" | "plain", blocks: PageBlock[] }` — 纵向容器；`style: "card"` 渲染圆角面板。嵌套在 `card` 分区或 Sheet 弹窗内的输入框与内层卡片控件（含网页与 App Clip）会自动切换为浅层嵌入式填充色并保持分组标题左对齐，确保与外层卡片形成清晰边界。
 - `row`: `{ kind: "row", id, blocks: PageBlock[] }` — 横向等宽排列容器（窄屏 Web 自动换行，iOS 使用 `HStack`）。
-- `kv`: `{ kind: "kv", id, items: Array<{ id?, label, value, tone?: "default" | "muted" | "accent" | "success" | "warning" | "error" }> }` — 键值对列表（状态、预约信息、摘要）。
+- `kv`: `{ kind: "kv", id, items: Array<{ id?, label, value, tone?: "default" | "muted" | "accent" | "success" | "warning" | "error" | "purple", icon?: "wallet" | "gift" | "coins" | "coupon" | "pass" | "ticket" | "asset", badge?: string, badgeTone?: PageTone }> }` — 键值对列表（身份、钱包资产、状态摘要）；携带 `icon` 或 `badge` 时渲染左图标与标签胶囊。
 - `banner`: `{ kind: "banner", id, title?, body, level?: "info" | "success" | "warning" | "error" }` — 带图标的提示横幅。
 - `divider`: `{ kind: "divider", id }` — 分割线。
 - `image`: `{ kind: "image", id, url, alt?, aspectRatio? }` — 图片展示（客户端仅允许站内 `/...` 相对路径（非 `//`）、`https://` 或同源 `http://`；拒绝 `javascript:`、`data:`、`file:` 与跨源 `http://`）。
@@ -155,8 +164,10 @@ const blocks = [
 - 只用于补充说明的字段读不懂时不能连累整块：`pricing.changes` 读不懂时照常显示计费规则（只是没有新增/保留/结束标记）；`climate.state` 读不懂时按状态未知显示开、关按钮。
 - 用 `id` 对应前后两次读到的块：在场的同意框与表单控件（`input`、`select`、`toggle`、`consent`）保留玩家当前输入，新出现的表单按 `defaultValue` 初始化，已离开页面的字段 `id` 自动清理（再次回到该步骤时重新开始）；转圈与等待状态也按 `id` 保持在客户端。
 - 校验与提交规则：
-  - 按钮有 `requires` 时，对应的块同意之后才能按；`collect` 中的必填项（`consent` 须勾选，`input` `required` 须非空，`select` `required` 须选中可用项，`toggle` `required` 须开启）未满足时按钮保持禁用。
+  - 按钮有 `requires` 时，对应的块同意之后才能按；`collect` 中的必填项（`consent` 须勾选，`input` `required` 须非空，`select` `required` 须选中可用项，`toggle` `required` 须开启）未满足时按钮保持禁用。禁用态主按钮在网页端与 App Clip 端统一采用中性灰底与弱化灰字表现（不保留高饱和强调色）。
+  - 当页面中仅有唯一一个按钮在 `collect` 中收集某个 `input` 块且满足提交条件时，输入框回车 / 键盘提交可直接触发该按钮（带 `confirm` 时不绕过确认框）。
   - 发送 `payload` 的合并优先级为：先按 `field.name ?? field.id` 写入 `collect` 收集的值，再用静态 `button.payload` 覆盖，若存在 `requires` 则再写入 `consent: true`（防止用户输入覆盖服务端签名字段）。
+- `footer` 区的按钮内联提示（`inline` notice）显示在吸底按钮上方并带不透明卡片背景（Web 与 App Clip 一致）。
 - 有 `needsLocation` 时带上 `location`。入场和门禁看 `checkin_geo`，其他看 `machine_geo`。
 - `code` 显示在按钮上方直到过期，它只存在于这次回答里，重读页面不会再给。`againLabel` 在此期间替换按钮文字。
 - 卡片不在页面里：`cards` 块只标明位置并下发卡片区域的全部文案、加载/空态/失败动作（`cards.capture` 与 `cards.reload`）以及读卡窗口文案 `captureUi`；卡片本身在打开页面和添加卡片之后单独读。没有可用卡片时按服务器下发的动作渲染按钮（直连机台下发「添加卡片」与「刷新」，其余只下发「刷新」），绝不跳往 `/cards`。
@@ -198,24 +209,27 @@ WebSocket 不保证送达，所以页面在回到前台时、以及可见期间�
 
 ## 操作怎么执行
 
-`/session/action` 把操作转成一次内部请求，交给原来的路由：
+`/session/action` 把扫码页操作转成一次内部请求，交给原来的路由；`/shops/:shopCode/player/action` 也同样把店铺页与账号面板的操作转给原来的玩家计费与兑换路由：
 
 | action | 路由 |
 | --- | --- |
 | `entry` | `POST /api/v1/shops/:code/player/session/start` |
 | `card.swipe` | `POST /api/v1/machines/login` |
-| 其他 | `POST /api/v1/devices/session/actions` |
+| `checkout.confirm` | `POST /api/v1/shops/:code/player/checkout/confirm` |
+| `redeem.submit` | `POST /api/v1/shops/:code/player/redeem` |
+| `page.refresh` | 重新读取当前 `view` |
+| 其他扫码操作 | `POST /api/v1/devices/session/actions` |
 
-这样挂在旧路由上的东西都不会漏：`operationId` 防重复、限流、实时活动、闲置倒计时。玩家能做什么也和直接调旧路由完全一样。
+这样挂在旧路由上的东西都不会漏：`operationId` 防重复、限流、实时活动、闲置倒计时、位置校验。玩家能做什么也和直接调旧路由完全一样。
 
 所有操作用同一个 `operationId` 重发都是安全的，只会执行一次并拿到第一次的回答。还在执行时重发，`notices` 里是 `OPERATION_PENDING`，隔一会儿再问。旧客户端刷卡不带 `operationId`，行为不变。
 
 ## 开销
 
-测试数据下，确认页 16 次查询（含首次有效访问写入 `resource.visited`），同票据再次读取的可操作页 13 次（`test/resource-page.test.ts` 里有上限）。比 `/session/state` 多的是 IO 是否在线、投币上限和「有没有在计费」，省下的是客户端原本要单独请求的 `/player/me`。
+测试数据下，确认页 16 次查询（含首次有效访问写入 `resource.visited`），同票据再次读取的可操作页 13 次（`test/resource-page.test.ts` 里有上限）。比 `/session/state` 多的是 IO 是否在线、投币上限和「有没有在计费」，省下的是客户端原本要单独请求的 `/player/me`；同时把店铺是否计费并入同一条 SQL 查询以生成 `accountMenu`。
 
 设备没有 Home Assistant 连接在线时，读页面会当场问 Home Assistant，每项最多等 3 秒。问不到就当状态未知，不挡玩家操作。
 
 ## 旧接口
 
-`/session/state`、`/session/bootstrap`、`/session/device`、`/session/actions` 都保留，已发布的 App Clip 继续用它们。
+`/session/state`、`/session/bootstrap`、`/session/device`、`/session/actions` 与旧 `/shops/:shopCode/player/*`（`me`、`billing-inputs`、`assets`、`checkouts/*`、`checkout/*`、`redeem`）全部保留，已发布的 App Clip 继续用它们。

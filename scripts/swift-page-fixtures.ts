@@ -11,7 +11,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pageCode, renderPage, type PageInput } from "../packages/server/src/resources/page";
+import { checkoutCelebration } from "../packages/server/src/resources/page-blocks/bill";
+import { translator } from "../packages/server/src/resources/page-text";
 import { pageUi } from "../packages/server/src/resources/page-ui";
+import { renderAccountSheetPage, renderShopPage, type ShopPageHead } from "../packages/server/src/resources/shop-page";
 
 const outDir = process.argv[2];
 if (!outDir) {
@@ -96,7 +99,88 @@ pages.components = {
   ],
 };
 
+const shopHead: ShopPageHead = {
+  shop: "Store",
+  shopCode: "store",
+  heroUrl: "/api/v1/shops/store/hero?v=abc123",
+  timeZone: "Asia/Tokyo",
+};
+
+const sampleReceipt = {
+  playerSettlement: { total: 24, settledAt: "2026-10-02T03:00:00.000Z" },
+  timeline: {
+    tracks: [{ id: "fee", name: "入场费", lane: 0, color: 0, startedAt: "2026-10-02T02:00:00.000Z", endedAt: "2026-10-02T03:00:00.000Z" }],
+    events: [],
+    totals: [{ name: "入场费", amount: 24 }],
+  },
+  wallet: { balanceAfter: 76 },
+  chargeItems: [{ id: "c1", label: "入场费", amount: 24 }],
+  adjustments: [],
+};
+
+const shopPages = {
+  shopSignIn: renderShopPage({ locale: "zh", head: shopHead, signedIn: false, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: null, settledReceipt: null }),
+  shopBinding: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: true, shopBills: true, identityBindingRequired: true, checkoutGeo: false, liveBill: null, settledReceipt: null }),
+  shopLive: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: true, liveBill: { billingInputs: { playerId: "p1", billingSnapshot: { version: 1, players: [] } } }, settledReceipt: null }),
+  shopLivePreview: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: { preview: { settlementPreview: { total: 12 }, chargeItems: [{ id: "c1", label: "入场费", amount: 12 }], adjustments: [] } }, settledReceipt: null }),
+  shopSettled: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: null, settledReceipt: sampleReceipt }),
+  shopEmpty: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: null, settledReceipt: null }),
+  billSheet: renderAccountSheetPage({ locale: "zh", view: "bill", head: shopHead, needsBinding: false, checkoutGeo: true, liveBill: { preview: { settlementPreview: { total: 12 }, chargeItems: [{ id: "c1", label: "入场费", amount: 12 }], adjustments: [] } } }),
+  redeemForm: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, needsBinding: false, checkoutGeo: false }),
+  redeemDone: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, needsBinding: false, checkoutGeo: false, redeemed: true }),
+  historyList: renderAccountSheetPage({
+    locale: "zh",
+    view: "history",
+    head: shopHead,
+    needsBinding: false,
+    checkoutGeo: false,
+    now: new Date("2026-10-02T12:00:00.000Z"),
+    history: {
+      records: [
+        {
+          id: "co-1",
+          subtotal: 30,
+          total: 24,
+          settledAt: "2026-10-02T03:00:00.000Z",
+          startedAt: "2026-10-02T02:00:00.000Z",
+          endedAt: "2026-10-02T03:00:00.000Z",
+          sessionCount: 1,
+          paymentMethod: null,
+        },
+        {
+          id: "co-2",
+          subtotal: 36,
+          total: 36,
+          settledAt: "2026-10-01T12:00:00.000Z",
+          startedAt: "2026-10-01T10:30:00.000Z",
+          endedAt: "2026-10-01T12:00:00.000Z",
+          sessionCount: 2,
+          paymentMethod: "wechat",
+        },
+      ],
+      nextOffset: 20,
+    },
+  }),
+  historyDetail: renderAccountSheetPage({ locale: "zh", view: "history", head: shopHead, needsBinding: false, checkoutGeo: false, detailReceipt: sampleReceipt }),
+  wallet: renderAccountSheetPage({
+    locale: "zh",
+    view: "wallet",
+    head: shopHead,
+    needsBinding: false,
+    checkoutGeo: false,
+    holdings: [
+      { id: "h-coupon", assetType: "coupon", assetName: "免费畅玩券", assetCode: "free-play", quantity: 2 },
+      { id: "h-free", assetType: "currency", assetName: "赠送余额", assetCode: "free", quantity: 20 },
+      { id: "h-paid", assetType: "currency", assetName: "储值余额", assetCode: "paid", quantity: 76 },
+      { id: "h-pass", assetType: "pass", assetName: "月度通行证", assetCode: "monthly-pass", quantity: 1 },
+      { id: "h-ticket", assetType: "ticket", assetName: "活动票券", assetCode: "event-ticket", quantity: 3 },
+    ],
+  }),
+  bindings: renderAccountSheetPage({ locale: "zh", view: "bindings", head: shopHead, needsBinding: false, checkoutGeo: false, bindings: [{ playerId: "p1", provider: "onebot", subject: "123456", displayName: "Player", verifiedAt: "2026-10-02T01:00:00.000Z" }] }),
+};
+
 mkdirSync(resolve(outDir), { recursive: true });
 const code = pageCode("zh", { temporaryPassword: "12345678", expiresAt: "2999-01-01T00:00:00Z" });
-writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, code }, null, 2)}\n`);
-console.log(`wrote ${Object.keys(pages).length} pages to ${join(outDir, "pages.json")}`);
+const celebration = checkoutCelebration(translator("zh"));
+writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, shopPages, code, celebration }, null, 2)}\n`);
+console.log(`wrote ${Object.keys(pages).length} pages and ${Object.keys(shopPages).length} shop pages to ${join(outDir, "pages.json")}`);

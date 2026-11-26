@@ -38,7 +38,7 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect(await queries("other").getPlayerCheckout!("player", "player-checkout:entry")).toBeNull();
   const history = await queries("shop").listPlayerCheckouts!("player", 0);
   expect(history.records).toHaveLength(1);
-  expect(history.records[0]).toMatchObject({ total: 24, sessionCount: 2, startedAt: "2026-09-20T09:00:00.000Z", endedAt: "2026-09-20T10:00:00.000Z" });
+  expect(history.records[0]).toMatchObject({ subtotal: 24, total: 24, sessionCount: 2, paymentMethod: null, startedAt: "2026-09-20T09:00:00.000Z", endedAt: "2026-09-20T10:00:00.000Z" });
   expect((await queries("other").listPlayerCheckouts!("player", 0)).records).toHaveLength(0);
   expect((await queries("shop").listPlayerCheckouts!("other", 0)).records).toHaveLength(0);
   expect(await queries("other").getLatestPlayerCheckout!("player")).toBeNull();
@@ -83,12 +83,26 @@ test("latest receipt persists a complete checkout, isolates players and shops, a
   expect((await queries("shop").getLatestPlayerCheckout!("player"))?.timeline.totals).toContainEqual({ name: "全天优惠（日间）", amount: -3 });
   await repo.settlements.saveCheckout!({ id: "new-checkout", playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-21T10:00:00Z"), timeline: { tracks: [], events: [], totals: [] } }, []);
   expect((await queries("shop").getLatestPlayerCheckout!("player"))?.playerSettlement.total).toBe(0);
+  await repo.settlements.saveCheckout!(
+    {
+      id: "discounted-cashier",
+      playerId: "player",
+      subtotal: centsOf(30),
+      total: centsOf(24),
+      status: "settled",
+      settledAt: new Date("2026-09-21T12:00:00Z"),
+      externalPayment: { method: "wechat", staffId: "staff-1", collectedAt: new Date("2026-09-21T12:00:00Z") },
+    },
+    [],
+  );
+  const latestWithDiscount = (await queries("shop").listPlayerCheckouts!("player", 0)).records[0];
+  expect(latestWithDiscount).toMatchObject({ id: "discounted-cashier", subtotal: 30, total: 24, paymentMethod: "wechat" });
   for (let index = 0; index < 30; index++) await repo.settlements.saveCheckout!({ id: `page-${index}`, playerId: "player", subtotal: centsOf(0), total: centsOf(0), status: "settled", settledAt: new Date("2026-09-22T10:00:00Z") }, []);
   const first = await queries("shop").listPlayerCheckouts!("player", 0);
   const second = await queries("shop").listPlayerCheckouts!("player", first.nextOffset!);
   expect(first.records).toHaveLength(30);
-  expect(second.records).toHaveLength(2);
+  expect(second.records).toHaveLength(3);
   expect(second.nextOffset).toBeNull();
-  expect(new Set([...first.records, ...second.records].map(record => record.id)).size).toBe(32);
+  expect(new Set([...first.records, ...second.records].map(record => record.id)).size).toBe(33);
   db.close();
 });

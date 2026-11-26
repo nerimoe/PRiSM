@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, Coins, DoorOpen, Info, Loader2, Lock, Plus, Power, RefreshCw, X } from "lucide-react";
-import { buildButtonPayload, canSubmitButton, type PageButton, type PageButtonIcon } from "@prism/page-protocol";
+import { allPageBlocks, buildButtonPayload, canSubmitButton, type PageButton, type PageButtonIcon } from "@prism/page-protocol";
 import { billTime } from "../bill-time";
 import { PlayerDialog } from "../PlayerAccount";
 import { InlineNoticeLine, NoticeIcon } from "./notices";
@@ -22,7 +22,7 @@ const ICONS: Record<PageButtonIcon, typeof Coins> = {
 };
 
 export function ButtonBlock({ block }: { block: PageButton }) {
-  const { page, form, actions, addingCard } = usePageContext();
+  const { page, form, actions, addingCard, noticeAboveButton } = usePageContext();
   // Asked here, so a button that leaves the page takes its question with it.
   const [confirming, setConfirming] = useState(false);
   if (addingCard && block.hideDuringCapture) return null;
@@ -34,9 +34,10 @@ export function ButtonBlock({ block }: { block: PageButton }) {
   const { code } = actions;
   const label = block.enabled && onButton ? onButton.body : code && block.againLabel ? block.againLabel : block.label;
   const style = block.style ? ` ${block.style}` : "";
-  const ready = canSubmitButton(block, page.blocks, form.values);
+  const blocks = allPageBlocks(page);
+  const ready = canSubmitButton(block, blocks, form.values);
   const submit = () =>
-    void actions.run(block.id, block.action, buildButtonPayload(block, page.blocks, form.values), block.needsLocation, block.wait);
+    void actions.run(block.id, block.action, buildButtonPayload(block, blocks, form.values), block.needsLocation, block.wait);
 
   return (
     <div className="grid gap-3">
@@ -48,6 +49,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
           <p>{code.hint}</p>
         </div>
       )}
+      {!block.answerOnButton && noticeAboveButton && note && <InlineNoticeLine note={note} />}
       <button
         className={`session-action${style}`}
         data-level={onButton?.level}
@@ -60,7 +62,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
           : Icon ? <Icon size={22} /> : null}{" "}
         {label}
       </button>
-      {!block.answerOnButton && note && <InlineNoticeLine note={note} />}
+      {!block.answerOnButton && !noticeAboveButton && note && <InlineNoticeLine note={note} />}
       {/* Outside the page's grid, whose heading styles would reach into the dialog. */}
       {confirming && block.confirm && createPortal(
         <PlayerDialog title={block.confirm.title} dismissDisabled={!!actions.busy} onClose={() => setConfirming(false)}>

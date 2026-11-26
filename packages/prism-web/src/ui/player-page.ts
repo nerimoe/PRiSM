@@ -1,9 +1,16 @@
-import type { Page, PageCode } from "@prism/page-protocol";
+import type { Page, PageCelebration, PageCode } from "@prism/page-protocol";
 import type { Notice } from "../api";
 import { pageReport } from "./page-report";
 
 /** How a scanned page travels. What it is made of is in `@prism/page-protocol`. */
-export type ActionAnswer = { ok: boolean; page: Page; notices: Notice[]; code?: PageCode };
+export type ActionAnswer = {
+  ok: boolean;
+  page: Page;
+  notices: Notice[];
+  code?: PageCode;
+  celebration?: PageCelebration;
+  receipt?: unknown;
+};
 
 /**
  * From a shop's China Mobile line a new connection to Cloudflare can stall for

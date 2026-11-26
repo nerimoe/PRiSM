@@ -1,6 +1,6 @@
 import type { ClimateState, Page, PageBlock, PageCode } from "@prism/page-protocol";
 import type { Locale } from "../notices.js";
-import { bindingBlock, signInBlock } from "./page-blocks/account.js";
+import { accountMenuFor, bindingBlock, signInBlock } from "./page-blocks/account.js";
 import { cardsBlock } from "./page-blocks/cards.js";
 import { climateBlock } from "./page-blocks/climate.js";
 import { coinButton, doorButton, nothingHere, powerOffBlocks, tableBlocks } from "./page-blocks/controls.js";
@@ -19,6 +19,8 @@ export type PageInput = {
   locale: Locale;
   head: Omit<Page, "blocks" | "billingActive" | "offerPasskeySetup">;
   billingActive: boolean;
+  shopBills?: boolean;
+  identityBindingRequired?: boolean;
   /** What the resource can do, as players are shown it. */
   capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; table: boolean };
   billed: boolean;
@@ -44,7 +46,15 @@ export function renderPage(input: PageInput): Page {
   const { head, billingActive } = input;
   const blocks = pageBlocks(input);
   const offerPasskeySetup = !blocks.some((block) => block.kind === "signin" || block.id === "empty");
-  return { ...head, billingActive, offerPasskeySetup, blocks };
+  const accountMenu = input.signedIn
+    ? accountMenuFor(translator(input.locale), {
+      billingActive,
+      shopBills: input.shopBills ?? (input.billed || billingActive),
+      identityBindingRequired: input.identityBindingRequired,
+      includeBillTab: true,
+    })
+    : undefined;
+  return { ...head, billingActive, offerPasskeySetup, ...(accountMenu ? { accountMenu } : {}), blocks };
 }
 
 function pageBlocks(input: PageInput): PageBlock[] {

@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  allPageBlocks,
   buildButtonPayload,
   canSubmitButton,
   reconcileFieldValues,
   resolvePageImageUrl,
   walkPageBlocks,
+  type Page,
+  type PageBill,
   type PageBlock,
   type PageButton,
+  type PageList,
 } from "../src";
 
 describe("page protocol rules", () => {
@@ -92,5 +96,72 @@ describe("page protocol rules", () => {
     expect(resolvePageImageUrl("http://evil.com/a.png", "https://prism.test")).toBeNull();
     expect(resolvePageImageUrl("javascript:alert(1)", "https://prism.test")).toBeNull();
     expect(resolvePageImageUrl("data:image/svg+xml,<svg/>", "https://prism.test")).toBeNull();
+  });
+
+  test("walks body and footer blocks together for forms and sticky footer buttons", () => {
+    const footerSubmit: PageButton = {
+      kind: "button",
+      id: "checkout",
+      label: "结账",
+      style: "primary",
+      action: "checkout.confirm",
+      enabled: true,
+      collect: ["note"],
+      needsLocation: false,
+    };
+    const billBlock: PageBill = {
+      kind: "bill",
+      id: "bill",
+      mode: "live",
+      billingInputs: { playerId: "p1", billingSnapshot: {} },
+      labels: {
+        totalLabel: "合计",
+        legendLabel: "图例",
+        billingLegend: "计费",
+        cappedLegend: "封顶中",
+        settledTitle: "结账成功",
+        balanceAfterLabel: "结账后余额",
+        headings: { current: "现在", end: "结束计费", start: "开始计费", switch: "切换计费规则", over: "封顶结束" },
+        capFullSuffix: "已满",
+        capUntilLabel: "封顶到",
+        newDayLabel: "新的一天",
+        hourUnit: "小时",
+        minuteUnit: "分钟",
+        billingUnitLabel: "个计费单位",
+        estimateError: "账单预估失败，请刷新后重试",
+        retryLabel: "重试",
+      },
+    };
+    const listBlock: PageList = {
+      kind: "list",
+      id: "history",
+      items: [{
+        id: "c1",
+        group: "10月21日",
+        title: "09:00 – 10:00",
+        titleMeta: "1小时",
+        subtitle: "资产结算",
+        trailing: "12.00",
+        trailingStrikethrough: "18.00",
+        open: { view: "history", item: "c1" },
+      }],
+      emptyText: "暂无结账记录",
+      emptyIcon: "receipt",
+    };
+    const page: Pick<Page, "blocks" | "footer"> = {
+      blocks: [
+        billBlock,
+        listBlock,
+        { kind: "input", id: "note", name: "note", required: true },
+      ],
+      footer: [footerSubmit],
+    };
+    const combined = allPageBlocks(page);
+    expect(combined.map((entry) => entry.id)).toEqual(["bill", "history", "note", "checkout"]);
+    expect(reconcileFieldValues(combined, {})).toEqual({ note: "" });
+    expect(canSubmitButton(footerSubmit, combined, { note: "" })).toBe(false);
+    expect(canSubmitButton(footerSubmit, combined, { note: "ok" })).toBe(true);
+    expect(buildButtonPayload(footerSubmit, combined, { note: "ok" })).toEqual({ note: "ok" });
+    expect(allPageBlocks({ blocks: [billBlock] }).map((entry) => entry.id)).toEqual(["bill"]);
   });
 });

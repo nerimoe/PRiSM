@@ -1,6 +1,7 @@
 import type {
-  PageBanner, PageBlock, PageButton, PageConsent, PageDivider, PageImage, PageInputField, PageKeyValue,
-  PageKeyValueItem, PageRow, PageSection, PageSelectField, PageSelectOption, PageText, PageToggleField,
+  PageBanner, PageBill, PageBlock, PageButton, PageConsent, PageDivider, PageImage, PageInputField, PageKeyValue,
+  PageKeyValueItem, PageList, PageListItem, PageRow, PageSection, PageSelectField, PageSelectOption, PageText,
+  PageToggleField,
 } from "@prism/page-protocol";
 
 /** Builds page blocks, leaving out what was not given. The platform's own pages are made with these too. */
@@ -110,6 +111,26 @@ export const pageUi = {
       ...opts,
       enabled: opts.enabled ?? true,
       needsLocation: opts.needsLocation ?? false,
+    });
+  },
+
+  bill(
+    id: string,
+    opts: Omit<PageBill, "kind" | "id">,
+  ): PageBill {
+    return compact({ kind: "bill", id, ...opts });
+  },
+
+  list(
+    id: string,
+    items: PageListItem[],
+    opts: Omit<PageList, "kind" | "id" | "items"> = {},
+  ): PageList {
+    return compact({
+      kind: "list",
+      id,
+      items: items.map((item) => compact({ ...item, ...(item.open ? { open: compact(item.open) } : {}) })),
+      ...opts,
     });
   },
 };

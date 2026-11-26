@@ -102,6 +102,8 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `POST` | `/rpc/player/redeem` | 输入 CDK 兑换码兑换礼物。 |
 | `POST` | `/rpc/player/business-items/:businessItemId/purchase` | 购买前台发布的非计时服务商品（如门票、预约费等），要求处于活跃会话内，并即时扣减余额。 |
 | `GET` | `/rpc/player/business-item-orders` | 列出该玩家本人的非计时服务购买履约订单。 |
+| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
+| `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
 
 ### 玩家接口调用示例
 
@@ -457,7 +459,7 @@ HINATA IO 机台可以直接连到本平台：`GET /io/ws`，WebSocket 升级请
 
 ### 店家手动绑定玩家账号
 
-`POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 与 `integration/platform-binding/confirm` 接收 `{ code, provider, subject, displayName? }`，分别由拥有该店玩家管理权限的负责人/管理员或店铺 Bot 调用；Bot 命令 `/bind` 也会将发送者昵称（`displayName`）一并记录到对应身份的 `player_identities.display_name`（并在玩家仍为占位昵称时补全玩家名称）。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, displayName?, verifiedAt }] }`，按 `provider, subject` 排序；玩家端右上角账号菜单「平台身份」只读展示当前全部已绑定身份，玩家不能在此自行追加绑定；新增身份由店员在玩家资料「身份与状态」中处理。
+`POST /api/v1/shops/:shopCode/staff/platform-binding/confirm` 与 `integration/platform-binding/confirm` 接收 `{ code, provider, subject, displayName? }`，分别由拥有该店玩家管理权限的负责人/管理员或店铺 Bot 调用；Bot 命令 `/bind` 也会将发送者昵称（`displayName`）一并记录到对应身份的 `player_identities.display_name`（并在玩家仍为占位昵称时补全玩家名称）。验证码通过 `POST /api/v1/shops/:shopCode/platform-binding` 生成，五分钟有效、按店铺隔离、成功绑定时在事务内单次消费；绑定冲突不会消费验证码。`GET` 同一路径返回 `{ bindings: [{ playerId, provider, subject, displayName?, verifiedAt }] }`，按 `provider, subject` 排序；玩家端右上角账号菜单「身份」只读展示当前全部已绑定身份，玩家不能在此自行追加绑定；新增身份由店员在玩家资料「身份与状态」中处理。
 
 同一网页账号在同店可绑定多个平台，也可在同一平台绑定多个身份（如多个 `onebot` 账号），均指向同一个玩家和钱包；不同平台的同名用户 ID 不合并。玩家档案的全部身份只保存在 `player_identities`：网页账号与档案的关联就是档案上的一条 `web-account` 身份（`subject` 为账号用户 ID；部分唯一索引 `player_identities_one_account` 保证一个档案最多一个账号，主键保证一个账号在同店只属于一个档案），档案上除 `web-account` 与 `aime` 以外的身份即该账号的平台身份（`GET platform-binding` 返回的列表与 `identityBindingRequired` 判断都由此推出）。迁移 `0063_identities_in_player_identities.sql` 把原 `shop_player_accounts`（以其为准）与 `shop_platform_bindings` 并入 `player_identities` 后删除这两张表；迁移期间临时移除并恢复 `player_identities` 的导出锁触发器，避免正在导出的店铺被跳过，并重建不再引用旧表的 `auth_identities` 导出锁触发器。同一 `(provider, subject)` 在同店只能属于一个玩家档案，已归属其他账号的档案不能被认领，已有不同玩家档案不自动合并；店员在玩家资料「身份与状态」中删除某个平台身份后，该身份立即从玩家账号移除，并可被其他账号重新绑定。管理员可创建新档案，Bot 自助绑定遵循 `autoRegister`。后台入口为「玩家 → 绑定账号」。
 
