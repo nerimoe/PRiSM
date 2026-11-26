@@ -576,3 +576,5 @@ Web 与 Swift（主 App / App Clip 共用 API 层）按 `INSUFFICIENT_BALANCE` �
 插件 hello 声明 schedules: true，平台返回 schedules 帧（timeZone、rules）。rules 为启用且有目的地的规则，包含 id、time（HH:mm）、text、to，可选 date（YYYY-MM-DD）或 weekdays（0 为周日）。平台在重新 hello 时下发全量配置，配置变化通过 config.changed 让插件重新 hello。旧插件继续工作。定时播报由插件本地按分钟检查，无需增加服务端 alarm 或轮询请求。
 
 断线、停用或配置更新会取消旧计时，重连后恢复。离线错过的分钟跳过，夏令时跳过的时间也跳过，重复的当地时间在同一进程内每天最多发一次。发送失败沿用播报错误日志，不自动补发。单个 Bot 凭据应只运行一个插件实例，多实例各自计时可能重复发送。进程重启后仅安排后续分钟。
+
+播报组右侧通过「事件」「定时播报」标签切换，左侧统一配置名称和收件人。定时规则的重复方式、时间、日期和删除操作采用紧凑排列，规则列表在弹窗内部滚动。
