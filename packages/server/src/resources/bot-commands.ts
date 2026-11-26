@@ -11,7 +11,7 @@
  */
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import { PrismDomainError, botMessage, canonicalBotCommand, renderBotReplyTemplate, type BotMessage } from "@prism/core";
+import { PrismDomainError, addCents, botMessage, canonicalBotCommand, centsOf, isZeroCents, renderBotReplyTemplate, yuanOf, type BotMessage } from "@prism/core";
 import type { Env, PrismAppDependencies, TenantShop } from "../bindings.js";
 import { jsonError } from "../http.js";
 import { domainErrorStatus } from "../http-errors.js";
@@ -27,7 +27,6 @@ import {
   toPlayerCheckoutResultView,
   toRedeemGiftView,
 } from "../routes/shops/views.js";
-import { yuanOf } from "@prism/core";
 import type { BotResource, botConfigView } from "./bot.js";
 import {
   ENTRY_DOOR_FAILED,
@@ -181,22 +180,29 @@ function power(state: "on" | "off"): BotCommand {
   };
 }
 
-function adjust(direction: 1 | -1): BotCommand {
-  return {
-    target: "required",
-    async run(ctx, [raw]) {
-      const amount = Number(raw);
-      if (!Number.isFinite(amount) || amount <= 0) return notice(ctx, "金额必须大于 0");
-      const result = await ctx.deps.integrationCommands.adjustWalletByIdentity({
-        ...identityInput(ctx),
-        amount: amount * direction,
-        reason: direction === 1 ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
-      });
-      void result;
-      const player = await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx));
-      return answer(ctx, "success", walletAdjustedMessage(await addressee(ctx, player.id), amount * direction, ctx.view.currencyName));
-    },
-  };
+function parseAmount(raw: string | undefined): number | null {
+  const text = raw?.trim();
+  if (!text) return null;
+  const value = Number(text);
+  return Number.isFinite(value) ? value : null;
+}
+
+async function addBalance(ctx: BotCommandContext, freeAmount: number, paidAmount: number, reason: string): Promise<Say[]> {
+  const freeCents = centsOf(freeAmount);
+  const paidCents = centsOf(paidAmount);
+  const totalCents = addCents(freeCents, paidCents);
+  if (isZeroCents(totalCents)) return notice(ctx, "金额必须大于 0");
+  const free = yuanOf(freeCents);
+  const paid = yuanOf(paidCents);
+  await ctx.deps.integrationCommands.adjustWalletByIdentity({
+    ...identityInput(ctx),
+    amount: yuanOf(totalCents),
+    freeAmount: free,
+    paidAmount: paid,
+    reason,
+  });
+  const player = await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx));
+  return answer(ctx, "success", walletAdjustedMessage(await addressee(ctx, player.id), { free, paid }, ctx.view.currencyName));
 }
 
 async function listTables(ctx: BotCommandContext) {
@@ -326,8 +332,39 @@ export const botCommands: Record<string, BotCommand> = {
       return answer(ctx, granted.length ? "success" : "empty", redeemMessage(granted));
     },
   },
-  add: adjust(1),
-  del: adjust(-1),
+  add: {
+    target: "required",
+    async run(ctx, [rawFree, rawPaid]) {
+      const free = parseAmount(rawFree);
+      if (free === null || free < 0) return notice(ctx, free !== null && free < 0 ? "金额不能为负数" : "金额必须大于 0");
+      const hasPaid = rawPaid !== undefined && rawPaid.trim() !== "";
+      const paid = hasPaid ? parseAmount(rawPaid) : 0;
+      if (paid === null || paid < 0) return notice(ctx, paid !== null && paid < 0 ? "金额不能为负数" : "金额格式无效");
+      return addBalance(ctx, free, paid, "Koishi 管理员增加余额");
+    },
+  },
+  addx: {
+    target: "required",
+    async run(ctx, [rawPaid]) {
+      const paid = parseAmount(rawPaid);
+      if (paid === null || paid <= 0) return notice(ctx, "金额必须大于 0");
+      return addBalance(ctx, 0, paid, "Koishi 管理员增加付费余额");
+    },
+  },
+  del: {
+    target: "required",
+    async run(ctx, [raw]) {
+      const amount = parseAmount(raw);
+      if (amount === null || amount <= 0 || isZeroCents(centsOf(amount))) return notice(ctx, "金额必须大于 0");
+      await ctx.deps.integrationCommands.adjustWalletByIdentity({
+        ...identityInput(ctx),
+        amount: -amount,
+        reason: "Koishi 管理员扣除余额",
+      });
+      const player = await ctx.deps.integrationCommands.resolvePlayerByIdentity(identityInput(ctx));
+      return answer(ctx, "success", walletAdjustedMessage(await addressee(ctx, player.id), -amount, ctx.view.currencyName));
+    },
+  },
   overwrite: {
     target: "required",
     async run(ctx, [raw, ...reason]) {
