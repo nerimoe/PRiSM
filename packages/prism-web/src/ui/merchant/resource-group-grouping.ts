@@ -80,3 +80,149 @@ export function effectiveResourcePlan<P extends { id: string; name: string }>(
   }
   return { kind: "free", groupDisabled: group ? !group.enabled : false };
 }
+
+export type PricingBindingResourceItem = {
+  id: string;
+  name: string;
+  kind: "resource" | "table";
+  resourcePlan: string | null;
+  hasTablePlan: boolean;
+  tablePlan: string | null;
+};
+
+export type PricingBindingGroupNode = {
+  id: string | null;
+  name: string;
+  hasGroupBinding: boolean;
+  groupPlan: string | null;
+  resources: PricingBindingResourceItem[];
+};
+
+export type PricingBindingsMap = {
+  groups: Record<string, string | null>;
+  resources: Record<string, string | null>;
+  tables: Record<string, string | null>;
+};
+
+export type BuildPricingBindingTreeInput = {
+  bindings: PricingBindingsMap | null;
+  groups: readonly ResourceGroup[];
+  names: { groups: Record<string, string>; resources: Record<string, string> };
+  groupIdOfResource: (id: string) => string | undefined;
+  shouldExcludeResource?: (
+    id: string,
+    info: { resourcePlan: string | null; hasTablePlan: boolean; tablePlan: string | null },
+  ) => boolean;
+};
+
+/**
+ * Build a unified group-first tree for pricing bindings:
+ * each ResourceGroup appears once with its child resources indented beneath,
+ * tabletop game plans attached directly to their resource, and missing groups
+ * collected in a single trailing ungrouped fallback node.
+ */
+export function buildPricingBindingTree({
+  bindings,
+  groups,
+  names,
+  groupIdOfResource,
+  shouldExcludeResource,
+}: BuildPricingBindingTreeInput): PricingBindingGroupNode[] {
+  if (!bindings) return [];
+
+  const buckets = new Map<string, PricingBindingGroupNode>();
+  const orderedIds: string[] = [];
+
+  for (const group of groups) {
+    if (!Object.prototype.hasOwnProperty.call(bindings.groups, group.id)) continue;
+    buckets.set(group.id, {
+      id: group.id,
+      name: group.name,
+      hasGroupBinding: true,
+      groupPlan: bindings.groups[group.id] ?? null,
+      resources: [],
+    });
+    orderedIds.push(group.id);
+  }
+
+  const extraGroupIds = Object.keys(bindings.groups)
+    .filter((id) => !buckets.has(id))
+    .sort((a, b) => (names.groups[a] ?? a).localeCompare(names.groups[b] ?? b));
+
+  for (const id of extraGroupIds) {
+    buckets.set(id, {
+      id,
+      name: names.groups[id] ?? id,
+      hasGroupBinding: true,
+      groupPlan: bindings.groups[id] ?? null,
+      resources: [],
+    });
+    orderedIds.push(id);
+  }
+
+  const defaultCandidate = groups.find((group) => group.isDefault || group.id === "default")?.id;
+  const defaultGroupId =
+    defaultCandidate && buckets.has(defaultCandidate)
+      ? defaultCandidate
+      : buckets.has("default")
+        ? "default"
+        : undefined;
+
+  const ungrouped: PricingBindingResourceItem[] = [];
+  const pushItem = (item: PricingBindingResourceItem) => {
+    const resolvedGroupId = groupIdOfResource(item.id);
+    const targetId = resolvedGroupId || defaultGroupId || "";
+    const bucket = targetId ? buckets.get(targetId) : undefined;
+    if (bucket) bucket.resources.push(item);
+    else ungrouped.push(item);
+  };
+
+  for (const [id, rawPlan] of Object.entries(bindings.resources)) {
+    const resourcePlan = rawPlan ?? null;
+    const hasTablePlan = Object.prototype.hasOwnProperty.call(bindings.tables, id);
+    const tablePlan = hasTablePlan ? (bindings.tables[id] ?? null) : null;
+    if (shouldExcludeResource?.(id, { resourcePlan, hasTablePlan, tablePlan })) continue;
+    pushItem({
+      id,
+      name: names.resources[id] ?? id,
+      kind: "resource",
+      resourcePlan,
+      hasTablePlan,
+      tablePlan,
+    });
+  }
+
+  for (const [id, rawPlan] of Object.entries(bindings.tables)) {
+    if (Object.prototype.hasOwnProperty.call(bindings.resources, id)) continue;
+    pushItem({
+      id,
+      name: names.resources[id] ?? id,
+      kind: "table",
+      resourcePlan: null,
+      hasTablePlan: true,
+      tablePlan: rawPlan ?? null,
+    });
+  }
+
+  const sortItems = (items: PricingBindingResourceItem[]) =>
+    items.sort((a, b) => Number(a.resourcePlan === null) - Number(b.resourcePlan === null) || a.name.localeCompare(b.name));
+
+  const nodes = orderedIds.map((id) => {
+    const node = buckets.get(id)!;
+    sortItems(node.resources);
+    return node;
+  });
+
+  if (ungrouped.length > 0) {
+    sortItems(ungrouped);
+    nodes.push({
+      id: null,
+      name: "未分组",
+      hasGroupBinding: false,
+      groupPlan: null,
+      resources: ungrouped,
+    });
+  }
+
+  return nodes;
+}

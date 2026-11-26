@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Resource, ResourceGroup } from "../../api";
 import {
+  buildPricingBindingTree,
   effectiveResourcePlan,
   groupResourcesByGroup,
   resolveResourceGroup,
@@ -104,5 +105,82 @@ describe("effectiveResourcePlan", () => {
       kind: "free",
       groupDisabled: false,
     });
+  });
+});
+
+describe("buildPricingBindingTree", () => {
+  it("groups resources once under each group, attaches tabletop bindings, filters excluded items, and keeps ungrouped/orphan entries", () => {
+    const groups: ResourceGroup[] = [
+      makeGroup({ id: "default", name: "默认资源组", isDefault: true }),
+      makeGroup({ id: "vip", name: "麻将包间区" }),
+      makeGroup({ id: "empty", name: "空组" }),
+    ];
+    const bindings = {
+      groups: { vip: "p2", default: "p1", empty: null, deletedGroup: "p1" },
+      resources: { m2: null, m1: "p2", table1: null, bot1: null, botWithOverride: "p1", missingGroupRes: null },
+      tables: { table1: "p2", orphanTable: "p1" },
+    };
+    const names = {
+      groups: { default: "默认资源组", vip: "麻将包间区", empty: "空组", deletedGroup: "旧区" },
+      resources: {
+        m1: "maimai DX #1",
+        m2: "CHUNITHM #2",
+        table1: "麻将桌 1 号",
+        bot1: "月宫 Bot",
+        botWithOverride: "特价 Bot",
+        missingGroupRes: "漂流机台",
+        orphanTable: "独立桌游",
+      },
+    };
+    const groupMap: Record<string, string | undefined> = {
+      m1: undefined,
+      m2: "default",
+      table1: "vip",
+      bot1: undefined,
+      botWithOverride: "default",
+      missingGroupRes: "nonexistent",
+      orphanTable: "vip",
+    };
+
+    const tree = buildPricingBindingTree({
+      bindings,
+      groups,
+      names,
+      groupIdOfResource: (id) => groupMap[id],
+      shouldExcludeResource: (id, info) => id.startsWith("bot") && info.resourcePlan === null && !info.hasTablePlan,
+    });
+
+    expect(tree.map((node) => ({ id: node.id, name: node.name, hasGroupBinding: node.hasGroupBinding, groupPlan: node.groupPlan }))).toEqual([
+      { id: "default", name: "默认资源组", hasGroupBinding: true, groupPlan: "p1" },
+      { id: "vip", name: "麻将包间区", hasGroupBinding: true, groupPlan: "p2" },
+      { id: "empty", name: "空组", hasGroupBinding: true, groupPlan: null },
+      { id: "deletedGroup", name: "旧区", hasGroupBinding: true, groupPlan: "p1" },
+      { id: null, name: "未分组", hasGroupBinding: false, groupPlan: null },
+    ]);
+
+    expect(tree[0]!.resources).toEqual([
+      { id: "m1", name: "maimai DX #1", kind: "resource", resourcePlan: "p2", hasTablePlan: false, tablePlan: null },
+      { id: "botWithOverride", name: "特价 Bot", kind: "resource", resourcePlan: "p1", hasTablePlan: false, tablePlan: null },
+      { id: "m2", name: "CHUNITHM #2", kind: "resource", resourcePlan: null, hasTablePlan: false, tablePlan: null },
+    ]);
+    expect(tree[1]!.resources).toEqual([
+      { id: "orphanTable", name: "独立桌游", kind: "table", resourcePlan: null, hasTablePlan: true, tablePlan: "p1" },
+      { id: "table1", name: "麻将桌 1 号", kind: "resource", resourcePlan: null, hasTablePlan: true, tablePlan: "p2" },
+    ]);
+    expect(tree[2]!.resources).toEqual([]);
+    expect(tree[4]!.resources).toEqual([
+      { id: "missingGroupRes", name: "漂流机台", kind: "resource", resourcePlan: null, hasTablePlan: false, tablePlan: null },
+    ]);
+  });
+
+  it("returns empty array when bindings is null", () => {
+    expect(
+      buildPricingBindingTree({
+        bindings: null,
+        groups: [],
+        names: { groups: {}, resources: {} },
+        groupIdOfResource: () => undefined,
+      }),
+    ).toEqual([]);
   });
 });
