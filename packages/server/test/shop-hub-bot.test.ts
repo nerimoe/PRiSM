@@ -233,6 +233,25 @@ describe("bot connection", () => {
     sqlite.close();
   });
 
+  it("sends local schedules on hello and clears them when the bot is disabled", async () => {
+    const { hub, ws, sqlite } = await fixture();
+    sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','Bot','')");
+    sqlite.run(`INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+      VALUES ('shop','bot-res','bot',?,'{}','2026-01-01','2026-01-01')`, [JSON.stringify({ tokenId: "t1", announceGroups: [{
+      id: "group", name: "Group", to: ["onebot:42"], events: {}, templates: {},
+      schedules: [{ id: "rule", enabled: true, time: "18:00", text: "hello" }],
+    }] })]);
+    const hello = async () => {
+      await hub.botsChanged();
+      await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1, schedules: true }));
+      return ws.sent.map(raw => JSON.parse(raw)).filter(frame => frame.type === "schedules").at(-1);
+    };
+    expect((await hello()).rules).toEqual([{ id: JSON.stringify(["group", "rule"]), enabled: true, time: "18:00", text: "hello", to: ["onebot:42"] }]);
+    sqlite.run("UPDATE machines SET enabled=0 WHERE id='bot-res'");
+    expect((await hello()).rules).toEqual([]);
+    sqlite.close();
+  });
+
   it("plans an idle reminder only for a bot whose rules say it somewhere, by the lead it is set to", async () => {
     const { hub, ws, sqlite, state } = await fixture();
     sqlite.run("INSERT INTO machines(shop_id,id,public_id,name,hinata_url_encrypted) VALUES ('shop','bot-res','pub-bot','前台 Bot','')");

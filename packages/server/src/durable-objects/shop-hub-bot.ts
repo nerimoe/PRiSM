@@ -19,7 +19,7 @@ export type BotFrame =
    * Neither is sent by a bot that predates watching, which is then never asked to.
    */
   /** `commands: 1`: the bot sends its players' commands and says what the platform tells it to. */
-  | { type: "hello"; ha?: true; name?: string; commands?: 1 }
+  | { type: "hello"; ha?: true; name?: string; commands?: 1; schedules?: true }
   | BotCommandFrame
   | { type: "request"; id: string; method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }
   /** What a watching bot reports, in the shape an IO reports it: `ha.status` and `ha.states`. */
@@ -83,6 +83,7 @@ export function parseBotFrame(raw: string): BotFrame | null {
       type: "hello",
       ...(value.ha === true ? { ha: true as const } : {}),
       ...(name ? { name } : {}),
+      ...(value.schedules === true ? { schedules: true as const } : {}),
       ...(value.commands === 1 ? { commands: 1 as const } : {}),
     };
   }

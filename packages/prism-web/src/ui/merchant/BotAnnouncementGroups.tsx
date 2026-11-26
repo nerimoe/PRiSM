@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { X } from "lucide-react";
+import { useId, useState } from "react";
+import { Clock, Plus, Trash2, X } from "lucide-react";
 import {
   announcementCatalog,
   announcementTopics,
@@ -12,9 +12,21 @@ import {
   shopAnnouncementSources,
   type AnnouncementEntry,
   type AnnouncementGroup,
+  type AnnouncementSchedule,
 } from "@prism/core";
 import { useI18n } from "../../i18n";
-import { Field, button, buttonQuiet, input } from "./shared";
+import { billTime } from "../bill-time";
+import {
+  SCHEDULE_DAY_LABELS,
+  SCHEDULE_WEEKDAY_ORDER,
+  formatScheduleRepeat,
+  isScheduleRuleInvalid,
+  scheduleMode,
+  switchScheduleMode,
+  toggleScheduleWeekday,
+  type ScheduleRepeatMode,
+} from "./bot-schedules";
+import { Field, button, buttonQuiet, input, useMerchant } from "./shared";
 
 /**
  * One item a shop picks in the sidebar: an attempt with all its outcomes, or
@@ -57,6 +69,7 @@ const newGroup = (groups: readonly AnnouncementGroup[]): AnnouncementGroup => ({
 export function BotAnnouncementGroups({ value, onChange }: { value: AnnouncementGroup[]; onChange(groups: AnnouncementGroup[]): void }) {
   const { t } = useI18n();
   const [groupId, setGroupId] = useState(value[0]?.id ?? "");
+  const [section, setSection] = useState<"events" | "schedules">("events");
   const [itemId, setItemId] = useState(items[0]!.id);
   const group = value.find((one) => one.id === groupId) ?? value[0];
   const item = items.find((one) => one.id === itemId) ?? items[0]!;
@@ -66,25 +79,32 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
     onChange([...value, next]);
     setGroupId(next.id);
   };
+  const enabledEventCount = group ? items.filter((one) => one.keys.some((key) => group.events[key]?.on)).length : 0;
+  const scheduleCount = group?.schedules?.length ?? 0;
 
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-ink/10 bg-ink/[0.03] p-1" role="tablist" aria-label={t("播报组")}>
-          {value.map((one) => (
-            <button key={one.id} type="button" role="tab" aria-selected={one.id === group?.id}
-              className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors ${one.id === group?.id ? "bg-panel font-medium text-ink shadow-sm" : "text-ink/60 hover:text-ink"}`}
-              onClick={() => setGroupId(one.id)}>{one.name}</button>
-          ))}
-        </div>
-        <button type="button" className={`${button} !min-h-8 !rounded-xl !px-3 !py-1 !text-xs`} onClick={() => add(newGroup(value))}>{t("新建播报组")}</button>
+        {value.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 rounded-xl border border-ink/10 bg-ink/[0.03] p-1" role="tablist" aria-label={t("播报组")}>
+            {value.map((one) => (
+              <button key={one.id} type="button" role="tab" aria-selected={one.id === group?.id}
+                className={`focus-ring rounded-lg px-3 py-1.5 text-xs transition-colors ${one.id === group?.id ? "bg-panel font-medium text-ink shadow-sm" : "text-ink/60 hover:text-ink"}`}
+                onClick={() => setGroupId(one.id)}>{one.name}</button>
+            ))}
+          </div>
+        )}
+        <button type="button" className={`${button} !min-h-8 !rounded-xl !px-3 !py-1 !text-xs border-dashed`} onClick={() => add(newGroup(value))}>
+          <Plus size={14} aria-hidden="true" />
+          {t("新建播报组")}
+        </button>
       </div>
       {!group ? (
         <p className="bill-entry !mb-0 py-6 text-center text-sm text-ink/60">{t("还没有播报组。新建一个，选好要播的事件和发到哪里。")}</p>
       ) : (
         <>
-          {/* Group info + destination rows on the left and event configuration on the right scroll independently,
-              so adding many destinations never pushes event settings out of view. */}
+          {/* Group info + destination rows on the left and event/schedule configuration on the right scroll independently,
+              so adding many destinations never pushes settings out of view. */}
           <div className="grid overflow-hidden rounded-2xl border border-ink/10 bg-panel sm:grid-cols-[17.5rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-ink/10">
             <div className={`grid content-start gap-3 p-3.5 ${paneScroll}`}>
               <Field label="名称">
@@ -141,49 +161,393 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
                 })}
               </div>
             </div>
-            <div className="grid min-w-0 divide-y divide-ink/10 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-y-0">
-              <nav aria-label={t("事件")} className={`grid content-start gap-3 p-3 ${paneScroll}`}>
-                {announcementTopics.map(({ topic, label }) => (
-                  <div key={topic} className="grid gap-0.5">
-                    <span className="px-2 text-xs font-semibold text-ink/70">{t(label)}</span>
-                    {(["attempt", "fact", "notice"] as const).map((kind) => {
-                      const listed = items.filter((one) => one.topic === topic && one.kind === kind);
-                      if (!listed.length) return null;
-                      return (
-                        <div key={kind} className="grid gap-0.5">
-                          <span className="px-2 pt-1 text-[11px] text-ink/45">{t(KIND_WORDS[kind])}</span>
-                          {listed.map((one) => {
-                            const on = one.keys.some((key) => group.events[key]?.on);
-                            const worded = one.keys.some((key) => templatesOf(key).some((template) => group.templates[template.key]));
-                            return (
-                              <div key={one.id} className="grid gap-2">
-                              <button type="button" aria-current={one.id === item.id}
-                                title={t(on ? "播报中" : "未播报")}
-                                className={`focus-ring flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${one.id === item.id ? "bg-mint/10 font-medium text-ink" : "text-ink/75 hover:bg-ink/5"}`}
-                                onClick={() => setItemId(one.id)}>
-                                <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${on ? "bg-mint" : "bg-ink/20"}`} />
-                                <span className="min-w-0 flex-1 truncate">{t(one.label)}</span>
-                                {worded && <span aria-hidden className="text-xs text-ink/45">✎</span>}
-                              </button>
-                              {/* On a phone the chosen event opens where it was tapped, not below the whole list. */}
-                              {one.id === item.id && (
-                                <div className="rounded-xl border border-ink/10 bg-ink/[0.015] p-3 sm:hidden"><ItemEditor group={group} item={item} change={change} /></div>
-                              )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
-              </nav>
-              <div className={`hidden bg-ink/[0.01] p-4 sm:block ${paneScroll}`}><ItemEditor group={group} item={item} change={change} /></div>
+            <div className="flex min-w-0 flex-col sm:max-h-[calc(90dvh-14rem)]">
+              <div className="flex shrink-0 items-center gap-1 border-b border-ink/10 px-3" role="tablist" aria-label={t("播报设置")}>
+                {([
+                  ["events", "事件", enabledEventCount],
+                  ["schedules", "定时播报", scheduleCount],
+                ] as const).map(([key, label, count]) => {
+                  const active = section === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      className={`focus-ring -mb-px inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors ${
+                        active ? "border-mint font-semibold text-ink" : "border-transparent text-ink/55 hover:text-ink"
+                      }`}
+                      onClick={() => setSection(key)}
+                    >
+                      <span>{t(label)}</span>
+                      {count > 0 && (
+                        <span className={`rounded-full px-1.5 py-px text-[11px] font-medium tabular-nums ${
+                          active ? "bg-mint/10 text-mint" : "bg-ink/[0.06] text-ink/55"
+                        }`}>
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {section === "schedules" ? (
+                <ScheduleEditor
+                  key={group.id}
+                  rules={group.schedules ?? []}
+                  onChange={(schedules) => change({ schedules })}
+                />
+              ) : (
+                <div className="grid min-h-0 min-w-0 flex-1 divide-y divide-ink/10 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-y-0">
+                  <nav aria-label={t("事件")} className="grid min-w-0 grid-cols-1 content-start gap-3 p-3 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain">
+                    {announcementTopics.map(({ topic, label }) => (
+                      <div key={topic} className="grid min-w-0 grid-cols-1 gap-0.5">
+                        <span className="px-2 text-xs font-semibold text-ink/70">{t(label)}</span>
+                        {(["attempt", "fact", "notice"] as const).map((kind) => {
+                          const listed = items.filter((one) => one.topic === topic && one.kind === kind);
+                          if (!listed.length) return null;
+                          return (
+                            <div key={kind} className="grid min-w-0 grid-cols-1 gap-0.5">
+                              <span className="px-2 pt-1 text-[11px] text-ink/45">{t(KIND_WORDS[kind])}</span>
+                              {listed.map((one) => {
+                                const on = one.keys.some((key) => group.events[key]?.on);
+                                const worded = one.keys.some((key) => templatesOf(key).some((template) => group.templates[template.key]));
+                                return (
+                                  <div key={one.id} className="grid min-w-0 grid-cols-1 gap-2">
+                                    <button type="button" aria-current={one.id === item.id}
+                                      title={t(on ? "播报中" : "未播报")}
+                                      className={`focus-ring flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors ${one.id === item.id ? "bg-mint/10 font-medium text-ink" : "text-ink/75 hover:bg-ink/5"}`}
+                                      onClick={() => setItemId(one.id)}>
+                                      <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${on ? "bg-mint" : "bg-ink/20"}`} />
+                                      <span className="min-w-0 flex-1 truncate">{t(one.label)}</span>
+                                      {worded && <span aria-hidden className="text-xs text-ink/45">✎</span>}
+                                    </button>
+                                    {/* On a phone the chosen event opens where it was tapped, not below the whole list. */}
+                                    {one.id === item.id && (
+                                      <div className="rounded-xl border border-ink/10 bg-ink/[0.015] p-3 sm:hidden"><ItemEditor group={group} item={item} change={change} /></div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </nav>
+                  <div className="hidden bg-ink/[0.01] p-4 sm:block sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"><ItemEditor group={group} item={item} change={change} /></div>
+                </div>
+              )}
             </div>
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/** Master-detail editor for scheduled group announcements, matching the Event and BotReplyEditor layout. */
+function ScheduleEditor({ rules, onChange }: { rules: AnnouncementSchedule[]; onChange(rules: AnnouncementSchedule[]): void }) {
+  const { t } = useI18n();
+  const { timeZone } = useMerchant();
+  const defaultDate = billTime(new Date().toISOString(), timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone).date;
+  const [selectedId, setSelectedId] = useState(rules[0]?.id ?? "");
+  const activeRule = rules.find((one) => one.id === selectedId) ?? rules[0] ?? null;
+
+  const addRule = () => {
+    if (rules.length >= 20) return;
+    const id = crypto.randomUUID();
+    onChange([...rules, { id, enabled: true, time: "18:00", text: "" }]);
+    setSelectedId(id);
+  };
+
+  const updateRule = (id: string, patch: Partial<AnnouncementSchedule>) =>
+    onChange(rules.map((one) => (one.id === id ? { ...one, ...patch } : one)));
+
+  const removeRule = (id: string) => {
+    const index = rules.findIndex((one) => one.id === id);
+    const rest = rules.filter((one) => one.id !== id);
+    onChange(rest);
+    if (activeRule?.id === id) {
+      const next = rest[Math.min(index, rest.length - 1)];
+      setSelectedId(next?.id ?? "");
+    }
+  };
+
+  if (!activeRule) {
+    return (
+      <div className="grid min-h-0 flex-1 place-items-center bg-ink/[0.01] p-6 sm:overflow-y-auto">
+        <div className="grid max-w-sm justify-items-center gap-3 rounded-2xl border border-dashed border-ink/15 bg-panel px-5 py-8 text-center">
+          <span className="grid size-10 place-items-center rounded-xl bg-mint/10 text-mint" aria-hidden="true">
+            <Clock size={18} />
+          </span>
+          <div className="grid gap-1">
+            <p className="text-sm font-semibold text-ink">{t("还没有定时播报")}</p>
+            <p className="text-xs leading-relaxed text-ink/55">
+              {t("按店铺时区发送到本组收件人。需要新版 Koishi 插件在线，错过的播报跳过。")}
+            </p>
+          </div>
+          <button
+            type="button"
+            className={`${button} !min-h-9 !rounded-xl !px-3.5 !py-1.5 !text-xs border-dashed`}
+            onClick={addRule}
+          >
+            <Plus size={14} aria-hidden="true" />
+            {t("添加定时播报")}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid min-h-0 min-w-0 flex-1 divide-y divide-ink/10 sm:grid-cols-[13.5rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-y-0">
+      <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-ink/[0.06] px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate text-xs font-semibold text-ink/70">{t("定时规则")}</span>
+            <span className="shrink-0 rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium tabular-nums text-ink/55">
+              {`${rules.length} / 20`}
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={rules.length >= 20}
+            className="focus-ring inline-flex min-h-7 items-center gap-1 whitespace-nowrap rounded-lg border border-mint/25 bg-mint/10 px-2 text-xs font-medium text-mint transition-colors hover:bg-mint/15 disabled:opacity-45"
+            onClick={addRule}
+          >
+            <Plus size={13} aria-hidden="true" />
+            {t("添加")}
+          </button>
+        </div>
+        <nav aria-label={t("定时播报")} className="grid min-w-0 grid-cols-1 content-start gap-1 p-2.5 sm:min-h-0 sm:flex-1 sm:overflow-y-auto sm:overscroll-contain">
+          {rules.map((rule) => {
+            const selected = rule.id === activeRule.id;
+            const invalid = isScheduleRuleInvalid(rule);
+            const repeat = formatScheduleRepeat(rule, t);
+            const summary = [repeat, rule.time || "--:--", !rule.enabled && t("已停用")].filter(Boolean).join(" · ");
+            const dotClass = invalid ? "bg-coral" : rule.enabled ? "bg-mint" : "bg-ink/20";
+            return (
+              <div key={rule.id} className="grid min-w-0 grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  aria-current={selected ? "true" : undefined}
+                  title={invalid ? t("待补全") : t(rule.enabled ? "已启用" : "已停用")}
+                  className={`focus-ring flex w-full min-w-0 items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${
+                    selected ? "bg-mint/10 text-ink" : "text-ink/75 hover:bg-ink/[0.04] hover:text-ink"
+                  }`}
+                  onClick={() => setSelectedId(rule.id)}
+                >
+                  <span aria-hidden="true" className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block truncate text-sm ${selected ? "font-medium" : ""}`}>
+                      {rule.text.trim() || t("未填写播报内容")}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs tabular-nums text-ink/50">{summary}</span>
+                  </span>
+                </button>
+                {/* On a phone the chosen schedule opens inline where it was tapped. */}
+                {selected && (
+                  <div className="rounded-xl border border-ink/10 bg-ink/[0.015] p-3 sm:hidden">
+                    <ScheduleRuleEditor
+                      rule={rule}
+                      defaultDate={defaultDate}
+                      onChange={(patch) => updateRule(rule.id, patch)}
+                      onRemove={() => removeRule(rule.id)}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+      </div>
+      <div className="hidden bg-ink/[0.01] p-4 sm:block sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain">
+        <ScheduleRuleEditor
+          key={activeRule.id}
+          rule={activeRule}
+          defaultDate={defaultDate}
+          onChange={(patch) => updateRule(activeRule.id, patch)}
+          onRemove={() => removeRule(activeRule.id)}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Editor and live preview for a single scheduled announcement rule. */
+function ScheduleRuleEditor({
+  rule,
+  defaultDate,
+  onChange,
+  onRemove,
+}: {
+  rule: AnnouncementSchedule;
+  defaultDate: string;
+  onChange(patch: Partial<AnnouncementSchedule>): void;
+  onRemove(): void;
+}) {
+  const { t } = useI18n();
+  const textId = useId();
+  const mode = scheduleMode(rule);
+  const repeat = formatScheduleRepeat(rule, t);
+  const modeOptions: ReadonlyArray<readonly [ScheduleRepeatMode, string]> = [
+    ["daily", "每天"],
+    ["weekly", "每周"],
+    ["once", "仅一次"],
+  ];
+
+  return (
+    <section aria-label={t("定时播报")} className="grid content-start gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h5 className="text-base font-semibold">{t("定时播报")}</h5>
+          <span
+            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              rule.enabled
+                ? "bg-emerald-500/10 text-[#23815d] dark:text-emerald-400"
+                : "bg-ink/[0.06] text-ink/55"
+            }`}
+          >
+            {t(rule.enabled ? "已启用" : "已停用")}
+          </span>
+        </div>
+        <button
+          type="button"
+          className={`${button} !min-h-8 !rounded-xl !px-3 !py-1 !text-xs border-coral/25 text-coral hover:bg-coral/5`}
+          onClick={onRemove}
+        >
+          <Trash2 size={13} aria-hidden="true" />
+          {t("删除")}
+        </button>
+      </div>
+
+      <div className="bill-entry !mb-0 grid gap-3">
+        <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-ink/10 bg-panel px-3.5 py-2.5 text-sm font-medium">
+          <span>{t("启用")}</span>
+          <input type="checkbox" checked={rule.enabled} onChange={(e) => onChange({ enabled: e.target.checked })} />
+        </label>
+
+        <div className="grid gap-2">
+          <span className="text-sm font-medium">{t("重复方式")}</span>
+          <div
+            className="grid grid-cols-3 gap-1 rounded-xl border border-ink/10 bg-panel p-1"
+            role="radiogroup"
+            aria-label={t("重复方式")}
+          >
+            {modeOptions.map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="radio"
+                aria-checked={mode === key}
+                className={`focus-ring rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                  mode === key
+                    ? "bg-mint/[0.12] font-medium text-ink shadow-sm"
+                    : "text-ink/60 hover:text-ink"
+                }`}
+                onClick={() => onChange(switchScheduleMode(rule, key, defaultDate))}
+              >
+                {t(label)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {mode === "once" ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="发送日期">
+              <input
+                type="date"
+                className={input}
+                value={rule.date ?? ""}
+                onChange={(e) => onChange({ date: e.target.value })}
+              />
+            </Field>
+            <Field label="发送时间">
+              <input
+                type="time"
+                className={input}
+                value={rule.time}
+                onChange={(e) => onChange({ time: e.target.value })}
+              />
+            </Field>
+          </div>
+        ) : (
+          <Field label="发送时间">
+            <input
+              type="time"
+              className={input}
+              value={rule.time}
+              onChange={(e) => onChange({ time: e.target.value })}
+            />
+          </Field>
+        )}
+
+        {mode === "weekly" && (
+          <div className="grid gap-2">
+            <span className="text-sm font-medium">{t("重复星期")}</span>
+            <div className="flex flex-wrap gap-1.5" role="group" aria-label={t("重复星期")}>
+              {SCHEDULE_WEEKDAY_ORDER.map((day) => {
+                const active = rule.weekdays!.includes(day);
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    aria-pressed={active}
+                    className={`focus-ring rounded-xl border px-3 py-1.5 text-xs transition-colors ${
+                      active
+                        ? "border-mint bg-mint/[0.10] font-semibold text-ink"
+                        : "border-ink/10 bg-panel text-ink/70 hover:bg-ink/[0.03] hover:text-ink"
+                    }`}
+                    onClick={() => onChange({ weekdays: toggleScheduleWeekday(rule.weekdays, day) })}
+                  >
+                    {t(SCHEDULE_DAY_LABELS[day]!)}
+                  </button>
+                );
+              })}
+            </div>
+            {rule.weekdays!.length === 0 && (
+              <p role="alert" className="text-xs text-coral">{t("请至少选择一天")}</p>
+            )}
+          </div>
+        )}
+
+        <p className="text-xs leading-relaxed text-ink/55">
+          {t("按店铺时区发送到本组收件人。需要新版 Koishi 插件在线，错过的播报跳过。")}
+        </p>
+      </div>
+
+      <div className="bill-entry !mb-0 grid gap-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <label htmlFor={textId} className="text-sm font-medium">{t("播报内容")}</label>
+          <span className="text-xs tabular-nums text-ink/45">{`${rule.text.length} / 2000`}</span>
+        </div>
+        <textarea
+          id={textId}
+          className={`${input} min-h-24`}
+          rows={4}
+          maxLength={2000}
+          placeholder={t("输入到点后要发送的文字内容…")}
+          value={rule.text}
+          onChange={(e) => onChange({ text: e.target.value })}
+        />
+      </div>
+
+      <div className="bill-entry !mb-0 grid gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-medium">{t("发送预览")}</span>
+          <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium tabular-nums text-ink/65">
+            {`${repeat} · ${rule.time || "--:--"}`}
+          </span>
+        </div>
+        <p className={`whitespace-pre-wrap break-words rounded-xl border border-ink/10 bg-panel px-3.5 py-2.5 text-sm leading-relaxed ${
+          rule.text.trim() ? "text-ink/85" : "text-ink/40"
+        }`}>
+          {rule.text.trim() || t("输入播报内容后在此预览")}
+        </p>
+      </div>
+    </section>
   );
 }
 
