@@ -95,7 +95,7 @@ async function exportBackup(c: C, shop: BillingShop, scope: ShopBackup["scope"])
   const result = await (c.env.DB as LegacyD1Database).batch<DataRow>([
     ...tables.map(table => (c.env.DB as LegacyD1Database).prepare(`SELECT ${tableSchemas[table].columns.map(column => column.name).join(",")} FROM ${table}
       WHERE shop_id=? ${table === "player_identities" ? "AND provider NOT IN ('web-account','aime')" : ""} ORDER BY rowid`).bind(shop.id)),
-    (c.env.DB as LegacyD1Database).prepare("SELECT key,value_json FROM app_settings WHERE shop_id=? AND key IN ('venue.operations','player.registration','cashier.settings')").bind(shop.id),
+    (c.env.DB as LegacyD1Database).prepare("SELECT key,value_json FROM app_settings WHERE shop_id=? AND key IN ('venue.operations','player.registration','cashier.settings','player.privacy')").bind(shop.id),
     (c.env.DB as LegacyD1Database).prepare("SELECT * FROM shop_billing_settings WHERE shop_id=?").bind(shop.id),
   ]);
   const settings = new Map(result[tables.length]!.results.map(row => [row.key, JSON.parse(String(row.value_json))]));
@@ -117,6 +117,7 @@ async function exportBackup(c: C, shop: BillingShop, scope: ShopBackup["scope"])
       entryPricingIds: defaultGroupPlan ? [defaultGroupPlan] : [], botContact: String(billing?.bot_contact ?? ""),
       coinCooldownMs: settings.get("venue.operations")?.coinCooldownMs ?? 60_000,
       defaultPresentId: settings.get("player.registration")?.defaultPresentId ?? null,
+      privacyModeEnabled: !!settings.get("player.privacy")?.enabled,
     },
     tables: Object.fromEntries(tables.map((table, index) => [table, result[index]!.results])),
   };
@@ -207,6 +208,7 @@ export function registerShopDataRoutes(app: Hono<AppBindings>) {
       for (const [key, value] of [
         ["venue.operations", { timeZone: "UTC", coinCooldownMs: s.coinCooldownMs }],
         ["player.registration", { defaultPresentId: s.defaultPresentId }], ["cashier.settings", { enabled: s.cashierEnabled }],
+        ["player.privacy", { enabled: !!s.privacyModeEnabled }],
       ] as const) statements.push((c.env.DB as LegacyD1Database).prepare(`INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES (?,?,?,?)
         ON CONFLICT(shop_id,key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at`).bind(shop.id, key, JSON.stringify(value), now));
       statements.push(...missingFrontDeskStatements(c.env.DB as LegacyD1Database, shop.id));

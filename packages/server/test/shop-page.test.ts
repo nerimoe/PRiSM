@@ -66,6 +66,25 @@ describe("shop page renderers", () => {
     expect(
       accountMenuFor(tZh, { billingActive: false, shopBills: false, identityBindingRequired: false, includeBillTab: true }).tabs,
     ).toEqual([]);
+
+    expect(
+      accountMenuFor(tZh, {
+        billingActive: false,
+        shopBills: false,
+        identityBindingRequired: false,
+        includeBillTab: false,
+        privacyModeEnabled: true,
+      }).tabs,
+    ).toEqual([{ id: "options", label: "选项" }]);
+
+    expect(
+      accountMenuFor(tZh, {
+        billingActive: false,
+        shopBills: true,
+        includeBillTab: false,
+        privacyModeEnabled: true,
+      }).tabs.map((tab) => tab.id),
+    ).toEqual(["redeem", "history", "wallet", "bindings", "options"]);
   });
 
   it("renders signed-out, binding, live bill, settled, and empty shop views", () => {

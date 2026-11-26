@@ -63,6 +63,7 @@ import {
   announceGroupSchema,
   botReplyTemplatesSchema,
   capabilities,
+  replyGroupSchema,
   validateCapabilitySet,
   type BotConfig,
   type CoinConfig,
@@ -887,6 +888,7 @@ const machineInput = z.object({
   rotateRelayToken: z.boolean().optional(),
   bot: z.object({
     replyTemplates: botReplyTemplatesSchema.optional(),
+    replyGroups: z.array(replyGroupSchema).max(10).optional(),
     playerCommands: z.enum(["all", "readonly"]).optional(),
     readOnlyNotice: z.string().max(200).optional(),
     staffCommands: z.boolean().optional(),

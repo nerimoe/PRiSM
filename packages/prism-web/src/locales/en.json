@@ -3262,5 +3262,21 @@
   "执行命令": "Run command",
   "已超时并终止进程树": "Timed out and killed process tree",
   "输出已截断": "Output truncated",
-  "（无输出）": "(no output)"
+  "（无输出）": "(no output)",
+  "选项": "Options",
+  "隐私模式": "Privacy mode",
+  "允许玩家开启隐私模式": "Allow players to enable privacy mode",
+  "保存隐私设置": "Save privacy settings",
+  "开启后，玩家可在个人「选项」中开启隐私模式，机器人在未开启「忽略玩家隐私模式」的群播报和查人列表中将隐藏其昵称。关闭时，所有玩家的隐私模式均不生效。": "When enabled, players can turn on privacy mode in their Options to hide their name in bot broadcasts and player lists unless a group ignores privacy mode. When off, privacy mode is inactive for everyone.",
+  "忽略玩家隐私模式": "Ignore player privacy mode",
+  "（店铺未开启隐私模式）": "(Privacy mode disabled for this shop)",
+  "（店铺未开启隐私模式，暂不生效）": "(Shop privacy mode is off; currently inactive)",
+  "暂无可用选项": "No options available",
+  "开启后，机器人在群播报与查人列表中隐藏你的昵称。": "Hide your name in bot broadcasts and player list commands.",
+  "回复组": "Reply groups",
+  "新建回复组": "New reply group",
+  "回复目标": "Target chats",
+  "每行一个目标，写法同播报组：群写 平台:群号，私聊写 平台:private:用户号，或写 * 匹配全部未指定目标。": "One target per line, matching broadcast format: platform:groupId for groups, platform:private:userId for DMs, or * for all other chats.",
+  "未配置回复组时所有群聊与私聊均可触发命令；新建回复组后将只对指定群/私聊回复，并可按群设置隐私模式例外。": "Without reply groups, commands work in any group or DM. Once configured, the bot replies only to targets listed in your reply groups.",
+  "默认模板会作为各回复组未单独覆盖时的兜底文案。": "Default templates apply when a reply group does not override a message."
 }

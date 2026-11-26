@@ -74,6 +74,7 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       billingActive: !!billing?.active,
       shopBills: !!billing?.bills,
       identityBindingRequired: !!gated?.shop.identity_binding_required,
+      privacyModeEnabled: !!machine.privacy_mode_enabled,
       capabilities,
       billed: !!machine.billed,
       cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,

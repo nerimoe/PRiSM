@@ -19,6 +19,7 @@ export type EventPlayer = {
   displayName: string | null;
   /** `name`: what that platform calls them, for a bot there to say. */
   identities: Array<{ provider: string; subject: string; name?: string }>;
+  privacyMode?: boolean;
 };
 
 /**
@@ -44,8 +45,8 @@ export type Announcement = {
 export async function eventPlayer(db: D1DatabaseLike, shopId: string, playerId: string | null): Promise<EventPlayer | null> {
   if (!playerId) return null;
   const [player, identities] = await Promise.all([
-    db.prepare("SELECT display_name FROM players WHERE shop_id = ? AND id = ?").bind(shopId, playerId)
-      .first<{ display_name: string | null }>(),
+    db.prepare("SELECT display_name, privacy_mode FROM players WHERE shop_id = ? AND id = ?").bind(shopId, playerId)
+      .first<{ display_name: string | null; privacy_mode: number }>(),
     db.prepare("SELECT provider, subject, display_name FROM player_identities WHERE shop_id = ? AND player_id = ? AND provider NOT IN ('web-account', 'aime')")
       .bind(shopId, playerId).all<{ provider: string; subject: string; display_name: string | null }>(),
   ]);
@@ -53,6 +54,7 @@ export async function eventPlayer(db: D1DatabaseLike, shopId: string, playerId: 
     playerId,
     displayName: player?.display_name ?? null,
     identities: identities.results.map((row) => ({ provider: row.provider, subject: row.subject, ...(row.display_name ? { name: row.display_name } : {}) })),
+    privacyMode: Boolean(player?.privacy_mode),
   };
 }
 

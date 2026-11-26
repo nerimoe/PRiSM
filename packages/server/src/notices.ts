@@ -119,6 +119,9 @@ const CATALOG: Record<string, Entry> = {
   COIN_FAILED: { body: t("投币失败", "Coin failed"), level: "warning", display: "inline" },
   COIN_UNKNOWN: { body: t("投币未确认", "Coin not confirmed"), level: "warning", display: "inline" },
   DOOR_CODE_FAILED: { body: t("开门密码获取失败，请重试", "Could not get the door code. Retry."), level: "warning", display: "inline" },
+  PLAYER_OPTIONS_SAVED: { body: t("已保存选项", "Options saved"), level: "success", display: "inline" },
+  PLAYER_OPTION_FORBIDDEN: { body: t("无权修改该玩家选项", "You cannot access or change that player option."), level: "warning", display: "inline" },
+  PRIVACY_MODE_DISABLED: { body: t("店铺未启用隐私模式", "Privacy mode is disabled for this shop."), level: "warning", display: "inline" },
 };
 
 const GENERIC: Entry = { body: t("操作失败，请稍后重试", "Something went wrong. Please try again."), retry: true };

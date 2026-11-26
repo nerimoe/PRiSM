@@ -1,4 +1,4 @@
-import { formatOffsetTimestamp, timestampDisplayParts } from "@prism/core";
+import { formatOffsetTimestamp, timestampDisplayParts, visiblePlayerOptionDefinitions, type PlayerOptionKey } from "@prism/core";
 import type { Page, PageBlock, PageKeyValueIcon, PageKeyValueItem, PageListItem, PageTone } from "@prism/page-protocol";
 import type { CheckoutHistoryRecord } from "@prism/application";
 import type { Locale } from "../notices.js";
@@ -8,7 +8,7 @@ import { checkoutButton, liveBillBlock, settledBillBlock, type SettledBillReceip
 import { translator, type Translate } from "./page-text.js";
 import { pageUi } from "./page-ui.js";
 
-export const SHOP_PAGE_VIEWS = ["shop", "bill", "redeem", "history", "wallet", "bindings"] as const;
+export const SHOP_PAGE_VIEWS = ["shop", "bill", "redeem", "history", "wallet", "bindings", "options"] as const;
 export type ShopPageView = (typeof SHOP_PAGE_VIEWS)[number];
 
 export type ShopPageHead = {
@@ -30,6 +30,7 @@ export type ShopPageInput = {
   needsBinding: boolean;
   shopBills: boolean;
   identityBindingRequired?: boolean;
+  privacyModeEnabled?: boolean;
   checkoutGeo: boolean;
   liveBill: LiveBillInput | null;
   settledReceipt: SettledBillReceipt | null;
@@ -49,6 +50,8 @@ export type AccountSheetInput = {
   now?: Date;
   holdings?: Array<{ id: string; assetType?: string; assetName?: string | null; assetCode: string; quantity: number }>;
   bindings?: AccountPlatformIdentity[];
+  privacyModeEnabled?: boolean;
+  playerOptions?: Partial<Record<PlayerOptionKey, boolean>>;
 };
 
 type WalletHolding = NonNullable<AccountSheetInput["holdings"]>[number];
@@ -211,7 +214,7 @@ function historyListItem(
 
 export function renderShopPage(input: ShopPageInput): Page {
   const t = translator(input.locale);
-  const { head, signedIn, needsBinding, shopBills, identityBindingRequired, checkoutGeo, liveBill, settledReceipt } = input;
+  const { head, signedIn, needsBinding, shopBills, identityBindingRequired, privacyModeEnabled, checkoutGeo, liveBill, settledReceipt } = input;
   const billingActive = !!liveBill;
   const timeZone = head.timeZone;
 
@@ -242,6 +245,7 @@ export function renderShopPage(input: ShopPageInput): Page {
         shopBills,
         identityBindingRequired,
         includeBillTab: false,
+        privacyModeEnabled,
       })
     : undefined;
 
@@ -357,6 +361,32 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
             )
           : pageUi.text("bindings-empty", t("暂无绑定身份"), { style: "body", level: "muted" }),
       ];
+      break;
+    }
+    case "options": {
+      title = t("选项");
+      if (needsBinding) {
+        blocks = [bindingBlock(t)];
+      } else {
+        const visible = visiblePlayerOptionDefinitions({
+          privacyModeEnabled: !!input.privacyModeEnabled,
+        });
+        blocks = visible.length
+          ? [
+              ...visible.map((option) =>
+                pageUi.toggle(option.key, t(option.label), {
+                  name: option.key,
+                  description: t(option.description),
+                  defaultValue: Boolean(input.playerOptions?.[option.key] ?? option.defaultValue),
+                }),
+              ),
+              pageUi.button("options-save", t("保存"), "options.save", {
+                style: "primary",
+                collect: visible.map((option) => option.key),
+              }),
+            ]
+          : [pageUi.text("options-empty", t("暂无可用选项"), { style: "body", level: "muted" })];
+      }
       break;
     }
   }

@@ -720,4 +720,36 @@ describe("pre-fork shop data restore on migrated D1 schema",()=>{
     expect(sqlite.query("SELECT value_json,authority FROM device_state WHERE shop_id='destination'").all()).toEqual([{value_json:'"on"',authority:"observed"}]);
     sqlite.close();
   });
+
+  it("preserves player privacy_mode and shop player.privacy setting on backup export/import and defaults missing privacy_mode to 0",async()=>{
+    const {sqlite,env,app,headers}=await transferFixture();
+    const now=new Date().toISOString();
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,privacy_mode,created_at) VALUES ('source','p-priv','Private Player','active',1,?)",[now]);
+    sqlite.run("INSERT INTO app_settings(shop_id,key,value_json,updated_at) VALUES ('source','player.privacy',?,?)",[JSON.stringify({enabled:true}),now]);
+
+    const exported=await app.fetch(new Request("https://prism.test/api/v1/shops/source/data/export?scope=business",{headers}),env);
+    expect(exported.status).toBe(200);
+    const current=await exported.json() as {tables:Tables;[key:string]:unknown};
+    expect((current.tables.players!.find(p=>p.id==="p-priv") as {privacy_mode?:number}).privacy_mode).toBe(1);
+
+    await restore(app,env,headers,"destination",current);
+    expect(sqlite.query("SELECT privacy_mode FROM players WHERE shop_id='destination' AND id='p-priv'").get()).toEqual({privacy_mode:1});
+    const destPrivacy=sqlite.query("SELECT value_json FROM app_settings WHERE shop_id='destination' AND key='player.privacy'").get() as {value_json:string}|null;
+    expect(JSON.parse(destPrivacy?.value_json??"{}")).toEqual({enabled:true});
+
+    // Legacy backup omitting privacy_mode defaults players.privacy_mode to 0 cleanly.
+    const legacyBackup={
+      ...current,
+      tables:{
+        ...current.tables,
+        players:current.tables.players!.map(({privacy_mode:_pm,...rest})=>rest),
+      },
+    };
+    const dest2="destination-legacy";
+    sqlite.run("INSERT INTO shops(id,public_id,name,latitude,longitude,radius_meters,created_by) VALUES (?,?,?,31.23,121.47,80,'transfer-owner')",[dest2,dest2,dest2]);
+    sqlite.run("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('member-dest2',?, 'transfer-owner', 'owner')",[dest2]);
+    await restore(app,env,headers,dest2,legacyBackup);
+    expect(sqlite.query("SELECT privacy_mode FROM players WHERE shop_id=? AND id='p-priv'").get(dest2)).toEqual({privacy_mode:0});
+    sqlite.close();
+  });
 });

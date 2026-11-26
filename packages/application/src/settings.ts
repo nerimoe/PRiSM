@@ -58,6 +58,7 @@ export type StoreSettings = {
   ttLockDevices?: TTLockDeviceConfig[];
   hinataIoDevices: HinataIoDeviceConfig[];
   registration: PlayerRegistrationSettings;
+  privacyModeEnabled?: boolean;
 };
 
 export type SettingsServiceDependencies = {
@@ -78,6 +79,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
       const ttLockDevices = settings.get("devices.ttlock");
       const hinataIoDevices = settings.get("devices.hinata_io");
       const registration = settings.get("player.registration");
+      const privacy = settings.get("player.privacy");
 
       return {
         store: {
@@ -96,6 +98,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         ttLockDevices: normalizeTTLockDeviceConfigs(ttLockDevices),
         hinataIoDevices: normalizeHinataIoDeviceConfigs(hinataIoDevices),
         registration: normalizeRegistrationSettings(registration),
+        privacyModeEnabled: normalizePrivacyModeEnabled(privacy),
       };
     },
 
@@ -137,6 +140,12 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
           ? await dependencies.system.getAppSetting("player.registration")
           : input.registration,
       );
+      if (input.privacyModeEnabled !== undefined && typeof input.privacyModeEnabled !== "boolean") {
+        throw new PrismDomainError("Privacy mode setting must be a boolean.", "INVALID_PRIVACY_MODE_SETTING");
+      }
+      const privacyModeEnabled = input.privacyModeEnabled === undefined
+        ? normalizePrivacyModeEnabled(await dependencies.system.getAppSetting("player.privacy"))
+        : input.privacyModeEnabled;
 
       const settings = [
         { key: "store.profile", value: next.store },
@@ -147,6 +156,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         { key: "devices.ttlock", value: ttLockDevices },
         { key: "devices.hinata_io", value: hinataIoDevices },
         { key: "player.registration", value: registration },
+        { key: "player.privacy", value: { enabled: privacyModeEnabled } },
       ];
       if (dependencies.system.setAppSettings) {
         await dependencies.system.setAppSettings(settings);
@@ -163,6 +173,7 @@ export function createSettingsService(dependencies: SettingsServiceDependencies)
         ttLockDevices,
         hinataIoDevices,
         registration,
+        privacyModeEnabled,
       };
     },
   };
@@ -206,6 +217,11 @@ function normalizeRegistrationSettings(value: unknown): PlayerRegistrationSettin
       ? defaultPresentId.trim()
       : null,
   };
+}
+
+function normalizePrivacyModeEnabled(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return value.enabled === true;
 }
 
 export function normalizeHinataIoDeviceConfigs(value: unknown): HinataIoDeviceConfig[] {

@@ -251,6 +251,8 @@ export type AnnouncementGroup = {
   to: readonly string[];
   events: Readonly<Record<string, { on: boolean; sources: readonly string[] }>>;
   templates: Readonly<Record<string, string>>;
+  /** When true, announcements to this group do not hide players with privacy mode enabled. */
+  ignorePrivacyMode?: boolean;
 };
 
 /** Whether a group says an announcement from where it came. */
@@ -269,14 +271,20 @@ export function groupHears(group: AnnouncementGroup, event: { key: string; via?:
 export function announcementDeliveries(
   groups: readonly AnnouncementGroup[],
   event: { key: string; via?: string | null },
-): Array<{ to: string[]; templates: Readonly<Record<string, string>> }> {
+): Array<{ to: string[]; templates: Readonly<Record<string, string>>; ignorePrivacyMode: boolean }> {
   const said = new Set<string>();
-  const deliveries: Array<{ to: string[]; templates: Readonly<Record<string, string>> }> = [];
+  const deliveries: Array<{ to: string[]; templates: Readonly<Record<string, string>>; ignorePrivacyMode: boolean }> = [];
   for (const group of groups) {
     if (!groupHears(group, event)) continue;
     const to = group.to.filter((one) => !said.has(one));
     for (const one of to) said.add(one);
-    if (to.length) deliveries.push({ to: [...new Set(to)], templates: group.templates });
+    if (to.length) {
+      deliveries.push({
+        to: [...new Set(to)],
+        templates: group.templates,
+        ignorePrivacyMode: !!group.ignorePrivacyMode,
+      });
+    }
   }
   return deliveries;
 }

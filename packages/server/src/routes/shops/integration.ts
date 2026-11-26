@@ -375,12 +375,14 @@ integrationRouter.get("/tables", async (c) => {
 // Who is in the shop, each listed once at the resource they occupy or their
 // most specific plan; with `?name=`, one resource or one plan only.
 integrationRouter.get("/roster", async (c) => {
+  const shop = getShop(c);
   const deps = getShopDeps(c);
   const name = c.req.query("name")?.trim();
-  if (!name) return c.json(toRosterView(await deps.roster.list()));
+  const hidePrivate = !!shop.privacy_mode_enabled;
+  if (!name) return c.json(toRosterView(await deps.roster.list(), { hidePrivate }));
   const roster = await deps.roster.only(name);
   if (!roster) jsonError(404, `找不到「${name}」`, "ROSTER_TARGET_NOT_FOUND");
-  return c.json(toRosterView(roster));
+  return c.json(toRosterView(roster, { hidePrivate }));
 });
 
 // Active sessions, flat, for older bots; each says which plan it bills.

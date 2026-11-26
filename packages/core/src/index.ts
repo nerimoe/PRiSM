@@ -28,4 +28,5 @@ export * from "./live-billing-snapshot";
 export * from "./staff-api";
 export * from "./key-text";
 export * from "./player-names";
+export * from "./player-options";
 export * from "./report-analytics";

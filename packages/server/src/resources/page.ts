@@ -21,6 +21,7 @@ export type PageInput = {
   billingActive: boolean;
   shopBills?: boolean;
   identityBindingRequired?: boolean;
+  privacyModeEnabled?: boolean;
   /** What the resource can do, as players are shown it. */
   capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; table: boolean };
   billed: boolean;
@@ -52,6 +53,7 @@ export function renderPage(input: PageInput): Page {
       shopBills: input.shopBills ?? (input.billed || billingActive),
       identityBindingRequired: input.identityBindingRequired,
       includeBillTab: true,
+      privacyModeEnabled: input.privacyModeEnabled,
     })
     : undefined;
   return { ...head, billingActive, offerPasskeySetup, ...(accountMenu ? { accountMenu } : {}), blocks };

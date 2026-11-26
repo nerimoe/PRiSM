@@ -14,7 +14,7 @@ import {
   type AnnouncementGroup,
 } from "@prism/core";
 import { useI18n } from "../../i18n";
-import { Field, button, buttonQuiet, input } from "./shared";
+import { Field, button, buttonQuiet, input, useMerchant } from "./shared";
 
 /**
  * One item a shop picks in the sidebar: an attempt with all its outcomes, or
@@ -54,8 +54,18 @@ const newGroup = (groups: readonly AnnouncementGroup[]): AnnouncementGroup => ({
  * Everything a bot announces, one group at a time: who hears it, and for every event the group's switch, where it must have come
  * from and the words it is said in, previewed as they would be said.
  */
-export function BotAnnouncementGroups({ value, onChange }: { value: AnnouncementGroup[]; onChange(groups: AnnouncementGroup[]): void }) {
+export function BotAnnouncementGroups({
+  value,
+  onChange,
+  privacyModeEnabled: privacyModeProp,
+}: {
+  value: AnnouncementGroup[];
+  onChange(groups: AnnouncementGroup[]): void;
+  privacyModeEnabled?: boolean;
+}) {
   const { t } = useI18n();
+  const merchant = useMerchant();
+  const privacyModeEnabled = privacyModeProp ?? merchant.privacyModeEnabled;
   const [groupId, setGroupId] = useState(value[0]?.id ?? "");
   const [itemId, setItemId] = useState(items[0]!.id);
   const group = value.find((one) => one.id === groupId) ?? value[0];
@@ -140,6 +150,21 @@ export function BotAnnouncementGroups({ value, onChange }: { value: Announcement
                   );
                 })}
               </div>
+              <label className="flex items-start gap-2 border-t border-ink/[0.06] pt-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 shrink-0"
+                  checked={!!group.ignorePrivacyMode}
+                  disabled={!privacyModeEnabled}
+                  onChange={(e) => change({ ignorePrivacyMode: e.target.checked })}
+                />
+                <span className="grid gap-0.5">
+                  <span>{t("忽略玩家隐私模式")}</span>
+                  {!privacyModeEnabled && (
+                    <span className="text-xs text-ink/50">{t("（店铺未开启隐私模式）")}</span>
+                  )}
+                </span>
+              </label>
             </div>
             <div className="grid min-w-0 divide-y divide-ink/10 sm:grid-cols-[11rem_minmax(0,1fr)] sm:items-stretch sm:divide-x sm:divide-y-0">
               <nav aria-label={t("事件")} className={`grid content-start gap-3 p-3 ${paneScroll}`}>
