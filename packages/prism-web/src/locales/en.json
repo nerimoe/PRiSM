@@ -3280,5 +3280,6 @@
   "对局：{plan}": "Game: {plan}",
   "桌游对局方案": "Tabletop game plan",
   "入场 / 等位方案": "Entry / waiting plan",
-  "满员开桌后按此方案计费；未开桌前的入场或等位按上方方案计费。": "Billed under this plan once the table starts; entry or waiting before the game starts uses the plan above."
+  "满员开桌后按此方案计费；未开桌前的入场或等位按上方方案计费。": "Billed under this plan once the table starts; entry or waiting before the game starts uses the plan above.",
+  "前往 MuNET": "Go to MuNET"
 }

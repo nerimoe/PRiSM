@@ -25,6 +25,10 @@ describe("CardsPage manual add disabled guidance", () => {
       );
       expect(html).toContain("去 MuNET 添加卡片");
       expect(html).toContain("在店铺内使用读卡器添加卡片");
+      expect(html).toContain('href="https://portal.mumur.net"');
+      expect(html).toContain('target="_blank"');
+      expect(html).toContain('src="/munet-logo.png"');
+      expect(html).toContain("前往 MuNET");
       expect(html).not.toContain("<input");
     } finally {
       Object.defineProperty(globalThis, "navigator", { value: prevNavigator, configurable: true });

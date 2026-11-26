@@ -1,6 +1,6 @@
 import { useI18n } from "../i18n";
 import { useEffect, useState /* , type FormEvent */ } from "react";
-import { CreditCard, /* Plus, */ RefreshCw, Trash2 } from "lucide-react";
+import { CreditCard, ExternalLink, /* Plus, */ RefreshCw, Trash2 } from "lucide-react";
 import { Api, type Card } from "../api";
 import { useAuth } from "./AuthContext";
 import { RequireLogin } from "./RequireLogin";
@@ -13,6 +13,16 @@ export function CardAddGuidance() {
         <li>
           <p className="font-medium text-ink">{t("去 MuNET 添加卡片")}</p>
           <p className="mt-0.5 text-xs leading-relaxed text-ink/65">{t("在 MuNET 账号中添加卡片后，点击下方按钮同步到当前账号。")}</p>
+          <a
+            className="focus-ring mt-2.5 inline-flex min-h-9 items-center gap-2 rounded border border-ink/15 bg-panel px-3 text-xs font-medium text-ink transition-colors hover:bg-ink/[0.04]"
+            href="https://portal.mumur.net"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <img src="/munet-logo.png" alt="" width={18} height={18} className="size-[18px] shrink-0 object-contain" />
+            {t("前往 MuNET")}
+            <ExternalLink size={13} className="opacity-55" aria-hidden="true" />
+          </a>
         </li>
         <li>
           <p className="font-medium text-ink">{t("在店铺内使用读卡器添加卡片")}</p>
