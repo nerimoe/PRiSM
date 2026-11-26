@@ -5,7 +5,13 @@ import { createDeviceEventRepository } from "@prism/storage-sql";
 import type { AppBindings, AuthUser } from "../../bindings.js";
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from "../../crypto.js";
 import { normalizeHinataUrl } from "../../hardware/hinata.js";
-import { hostCommandSchema, launcherProgramSchema, programNameSchema } from "../../hardware/node-protocol.js";
+import {
+  MAX_HOST_FILE_BYTES,
+  hostCommandSchema,
+  launcherProgramSchema,
+  launcherRootSchema,
+  programNameSchema,
+} from "../../hardware/node-protocol.js";
 import { vkFromKeyText } from "@prism/core";
 import { machineRelayPath, nodeRelayPath } from "../../gateway/relay-path.js";
 import { machineRelayNamespace } from "../../gateway/machine-relay-gateway.js";
@@ -545,7 +551,11 @@ merchantResourceRouter.get("/machines/:id/host", async (c) => {
     program: live?.program ?? null,
     version: live?.version ?? null,
     nodeId: host.nodeId,
-    config: { default: host.defaultProgram, programs: host.programs },
+    config: {
+      default: host.defaultProgram,
+      programs: host.programs,
+      ...(host.allowedRoots?.length ? { allowedRoots: host.allowedRoots } : {}),
+    },
   });
 });
 
@@ -554,6 +564,7 @@ const hostConfigPutSchema = z.object({
   default: programNameSchema.nullable().optional(),
   defaultProgram: programNameSchema.nullable().optional(),
   programs: z.array(launcherProgramSchema).max(64),
+  allowedRoots: z.array(launcherRootSchema).max(32).optional(),
 });
 
 merchantResourceRouter.put("/machines/:id/host/config", async (c) => {
@@ -570,10 +581,12 @@ merchantResourceRouter.put("/machines/:id/host/config", async (c) => {
     : parsed.data.default !== undefined
       ? parsed.data.default
       : existing?.defaultProgram ?? null;
+  const allowedRoots = parsed.data.allowedRoots !== undefined ? parsed.data.allowedRoots : existing?.allowedRoots;
   const nextHost = capabilities.host.config.safeParse({
     nodeId,
     defaultProgram,
     programs: parsed.data.programs,
+    ...(allowedRoots !== undefined ? { allowedRoots } : {}),
   });
   if (!nextHost.success) jsonError(422, "默认程序必须存在于程序列表中且程序名必须唯一", "INVALID_HOST_CONFIG");
   const stored = await storedCapabilities(c.env.DB, shopId, device.id);
@@ -592,18 +605,85 @@ merchantResourceRouter.post("/machines/:id/host/commands", async (c) => {
   const parsed = hostCommandSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) jsonError(422, "Launcher 指令无效", "INVALID_HOST_COMMAND");
   const cmd = parsed.data;
-  const action = (`host.${cmd.action}` as "host.switch" | "host.key" | "host.text" | "host.screenshot" | "host.reboot" | "host.shutdown");
-  const payload: Record<string, unknown> =
-    cmd.action === "switch" ? { name: cmd.name }
-    : cmd.action === "key" ? { key: cmd.key, count: cmd.count }
-    : cmd.action === "text" ? { text: cmd.text }
-    : {};
+  if (cmd.action === "fs.write") {
+    if (cmd.encoding === "utf8") {
+      if (new TextEncoder().encode(cmd.content).byteLength > MAX_HOST_FILE_BYTES) {
+        jsonError(422, "写入内容超过 512 KiB 上限", "HOST_FILE_TOO_LARGE");
+      }
+    } else {
+      let decodedLen = 0;
+      try {
+        decodedLen = atob(cmd.content.trim()).length;
+      } catch {
+        jsonError(422, "Base64 内容无效", "INVALID_HOST_COMMAND");
+      }
+      if (decodedLen > MAX_HOST_FILE_BYTES) {
+        jsonError(422, "写入内容超过 512 KiB 上限", "HOST_FILE_TOO_LARGE");
+      }
+    }
+  }
+  const action = `host.${cmd.action}` as
+    | "host.switch"
+    | "host.key"
+    | "host.text"
+    | "host.screenshot"
+    | "host.reboot"
+    | "host.shutdown"
+    | "host.fs.list"
+    | "host.fs.read"
+    | "host.fs.write"
+    | "host.fs.mkdir"
+    | "host.fs.rename"
+    | "host.fs.delete"
+    | "host.powershell";
+  let payload: Record<string, unknown> = {};
+  let transient: Record<string, unknown> | undefined;
+  switch (cmd.action) {
+    case "switch":
+      payload = { name: cmd.name };
+      break;
+    case "key":
+      payload = { key: cmd.key, count: cmd.count };
+      break;
+    case "text":
+      payload = { text: cmd.text };
+      break;
+    case "fs.list":
+      payload = { path: cmd.path };
+      break;
+    case "fs.read":
+      payload = { path: cmd.path, encoding: cmd.encoding };
+      break;
+    case "fs.write":
+      payload = { path: cmd.path, encoding: cmd.encoding, createDirs: cmd.createDirs };
+      transient = { content: cmd.content };
+      break;
+    case "fs.mkdir":
+      payload = { path: cmd.path, recursive: cmd.recursive };
+      break;
+    case "fs.rename":
+      payload = { from: cmd.from, to: cmd.to, overwrite: cmd.overwrite };
+      break;
+    case "fs.delete":
+      payload = { path: cmd.path, recursive: cmd.recursive };
+      break;
+    case "powershell":
+      payload = {
+        ...(cmd.cwd ? { cwd: cmd.cwd } : {}),
+        timeoutMs: cmd.timeoutMs,
+        shell: cmd.shell,
+        scriptPreview: cmd.script.slice(0, 256),
+      };
+      transient = { script: cmd.script };
+      break;
+  }
   const bus = createRuntimeBus({ db: c.env.DB, env: c.env, shopId, via: { channel: "merchant", resourceId: null } });
   const outcome = await bus.perform({
     device,
     action,
     actor: { type: "staff", staffId: user.id },
     payload,
+    ...(transient ? { transient } : {}),
   });
   c.header("Cache-Control", "no-store");
   if (outcome.operation.status !== "succeeded") {
@@ -794,6 +874,7 @@ const machineInput = z.object({
     defaultProgram: programNameSchema.nullable().optional(),
     default: programNameSchema.nullable().optional(),
     programs: z.array(launcherProgramSchema).max(64).default([]),
+    allowedRoots: z.array(launcherRootSchema).max(32).optional(),
   }).nullable().optional(),
   rotateHostToken: z.boolean().optional(),
   /** Hardware-agnostic IoT controller capability (`iot`) — auto-owns a 1:1 `iot` node. */
@@ -1097,10 +1178,12 @@ async function nextCapabilities(
       : body.host?.default !== undefined
         ? body.host.default
         : hostBefore?.defaultProgram ?? null;
+    const allowedRoots = body.host?.allowedRoots !== undefined ? body.host.allowedRoots : hostBefore?.allowedRoots;
     const parsedHost = capabilities.host.config.safeParse({
       nodeId,
       defaultProgram,
       programs,
+      ...(allowedRoots !== undefined ? { allowedRoots } : {}),
     });
     if (!parsedHost.success) jsonError(422, "主机启动配置无效", "INVALID_HOST_CONFIG");
     let credentialHash: string | null = null;

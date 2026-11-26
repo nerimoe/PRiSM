@@ -24,6 +24,8 @@ import { deviceRead, type HubCalls } from "../../durable-objects/shop-hub-client
 import { climateSetting, deviceView, haBinding, readAfterAction, readClimate, readPower, type DeviceView } from "./device-state.js";
 
 const KEY_PRESS_TTL_MS = 30_000;
+const FILE_TRANSFER_TTL_MS = 40_000;
+const PS_TIMEOUT_MARGIN_MS = 10_000;
 const HA_TIMEOUT_MS = 10_000;
 
 export type DeviceRuntime = {
@@ -245,11 +247,27 @@ function coinRunner(runtime: DeviceRuntime): ActionRunner {
   };
 }
 
+type HostRpcMethod =
+  | "host.switch"
+  | "key.press"
+  | "host.text"
+  | "host.screenshot"
+  | "host.reboot"
+  | "host.shutdown"
+  | "host.fs.list"
+  | "host.fs.read"
+  | "host.fs.write"
+  | "host.fs.mkdir"
+  | "host.fs.rename"
+  | "host.fs.delete"
+  | "host.powershell";
+
 /** Managed host (PRiSM Launcher) command runner, audited through DeviceBus. */
 function hostRunner(
   runtime: DeviceRuntime,
-  method: "host.switch" | "key.press" | "host.text" | "host.screenshot" | "host.reboot" | "host.shutdown",
+  method: HostRpcMethod,
   paramsOf: (payload: Record<string, unknown>) => Record<string, unknown> | null,
+  ttlMsOf?: (payload: Record<string, unknown>) => number,
 ): ActionRunner {
   return async ({ device, operationId, payload }) => {
     const host = hostConfigOf(device);
@@ -261,9 +279,11 @@ function hostRunner(
     if (!target.enabled) return { outcome: "failed", message: "Launcher 节点已停用" };
     const params = paramsOf(payload);
     if (!params) return { outcome: "failed", message: "主机指令缺少参数" };
+    const ttlMs = ttlMsOf ? ttlMsOf(payload) : KEY_PRESS_TTL_MS;
     const reply = await relay.getByName(target.channel).callNode(method, params, {
       id: operationId,
-      expiresAt: (runtime.now?.() ?? new Date()).getTime() + KEY_PRESS_TTL_MS,
+      expiresAt: (runtime.now?.() ?? new Date()).getTime() + ttlMs,
+      timeoutMs: ttlMs + 5_000,
     });
     if (!reply.ok) return { outcome: "failed", message: reply.error ?? "Launcher 离线" };
     const result = reply.result && typeof reply.result === "object" && !Array.isArray(reply.result)
@@ -341,6 +361,67 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
     "host.screenshot": hostRunner(runtime, "host.screenshot", () => ({})),
     "host.reboot": hostRunner(runtime, "host.reboot", () => ({})),
     "host.shutdown": hostRunner(runtime, "host.shutdown", () => ({})),
+    "host.fs.list": hostRunner(runtime, "host.fs.list", (p) =>
+      typeof p.path === "string" && p.path ? { path: p.path } : null),
+    "host.fs.read": hostRunner(
+      runtime,
+      "host.fs.read",
+      (p) =>
+        typeof p.path === "string" && p.path
+          ? { path: p.path, encoding: p.encoding === "base64" ? "base64" : "utf8" }
+          : null,
+      () => FILE_TRANSFER_TTL_MS,
+    ),
+    "host.fs.write": hostRunner(
+      runtime,
+      "host.fs.write",
+      (p) =>
+        typeof p.path === "string" && p.path && typeof p.content === "string"
+          ? {
+              path: p.path,
+              content: p.content,
+              encoding: p.encoding === "base64" ? "base64" : "utf8",
+              createDirs: p.createDirs === true,
+            }
+          : null,
+      () => FILE_TRANSFER_TTL_MS,
+    ),
+    "host.fs.mkdir": hostRunner(runtime, "host.fs.mkdir", (p) =>
+      typeof p.path === "string" && p.path
+        ? { path: p.path, recursive: p.recursive !== false }
+        : null),
+    "host.fs.rename": hostRunner(runtime, "host.fs.rename", (p) =>
+      typeof p.from === "string" && p.from && typeof p.to === "string" && p.to
+        ? { from: p.from, to: p.to, overwrite: p.overwrite === true }
+        : null),
+    "host.fs.delete": hostRunner(runtime, "host.fs.delete", (p) =>
+      typeof p.path === "string" && p.path
+        ? { path: p.path, recursive: p.recursive === true }
+        : null),
+    "host.powershell": hostRunner(
+      runtime,
+      "host.powershell",
+      (p) => {
+        if (typeof p.script !== "string" || !p.script) return null;
+        const timeoutMs =
+          typeof p.timeoutMs === "number" && Number.isFinite(p.timeoutMs)
+            ? Math.min(Math.max(Math.trunc(p.timeoutMs), 1_000), 120_000)
+            : 15_000;
+        return {
+          script: p.script,
+          ...(typeof p.cwd === "string" && p.cwd ? { cwd: p.cwd } : {}),
+          timeoutMs,
+          shell: p.shell === "pwsh" ? "pwsh" : "powershell",
+        };
+      },
+      (p) => {
+        const timeoutMs =
+          typeof p.timeoutMs === "number" && Number.isFinite(p.timeoutMs)
+            ? Math.min(Math.max(Math.trunc(p.timeoutMs), 1_000), 120_000)
+            : 15_000;
+        return timeoutMs + PS_TIMEOUT_MARGIN_MS;
+      },
+    ),
     "door.open": doorRunner(runtime),
   };
   const bus = createDeviceBus({

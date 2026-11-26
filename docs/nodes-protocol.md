@@ -57,7 +57,7 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
   - 「基本信息」包含「定位设置覆盖」（跟随店铺 / 仅 GPS / 仅蓝牙信标 / 无定位；蓝牙模式提供「跟随店铺 / 近 / 标准 / 远」感应距离档位）。
   - 「添加能力」自动标出冲突项并禁用，添加「投币」时自动一并启用「机台按键」。
   - `HINATA IO`、`启动器` 与 `IoT 控制器` 均在对应能力面板内联签发/轮换令牌，一次性展示配置片段；`IoT 控制器` 面板不暴露 HA 监听/蓝牙信标开关与底层射频参数，仅展示连接状态、自动分配的信标编号与全店 GPIO 引脚占用清单。
-- **操作面板（`Resources.tsx` & `HostControls.tsx`）**：提供独立的「机台按键」分组（同时支持键盘与 GPIO 按键）与「启动器」分组（切游戏、临时按键、中文文字输入、实时截屏、二次确认重启/关机）；`HaWatchers.tsx` 同步显示 IoT 控制器监听器。
+- **操作面板（`Resources.tsx` & `HostControls.tsx`）**：提供独立的「机台按键」分组（同时支持键盘与 GPIO 按键）与「启动器」分组（切游戏、临时按键、中文文字输入、实时截屏、二次确认重启/关机、受控文件管理与 PowerShell 终端）；`HaWatchers.tsx` 同步显示 IoT 控制器监听器。
 - **店铺位置校验（`BillingPages.tsx`）**：在「设置 → 位置与设备」中配置全店默认校验方式（仅 GPS 围栏 / 仅蓝牙信标 / GPS 或蓝牙信标任一通过）与蓝牙感应距离（近 / 标准 / 远）。
 
 ---
@@ -108,9 +108,11 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
   "default": "music",
   "programs": [
     { "name": "music", "path": "D:\\Games\\Music\\start.cmd" }
-  ]
+  ],
+  "allowedRoots": ["D:\\Games"]
 }
 ```
+注：`allowedRoots` 仅在服务端配置了目录白名单时下发；Launcher 本地 `launcher.json` 中的 `allowed_roots` 不可被远端配置放宽（两者同时配置时取交集）。
 
 **IoT 节点收到的 `params`：**
 ```json
@@ -133,7 +135,7 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
 
 ### 3.3 同步命令与回复（平台 ↔ 节点）
 
-平台下发带唯一 `id` 和毫秒时间戳 `expires_at`（默认 30s TTL，平台等待超时 35s）的 JSON-RPC 请求；节点校验防重放与未过期后执行并回复：
+平台下发带唯一 `id` 和毫秒时间戳 `expires_at`（常规命令默认 30s TTL / 35s DO 超时；文件读写 40s TTL / 45s DO 超时；PowerShell 按请求 `timeoutMs + 10s` 动态缩放 TTL 与 DO 超时，上限 150s；单帧严格限制在 1 MB 以内）的 JSON-RPC 请求；节点校验防重放与未过期后执行并回复：
 
 | 节点类型 | `method` | `params` | `result` |
 | --- | --- | --- | --- |
@@ -142,6 +144,13 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
 | Launcher | `host.text` | `{ "text": "玩家一号", "expires_at": ... }` | `{}` |
 | Launcher | `host.screenshot` | `{ "expires_at": ... }` | `{ "mime": "image/jpeg", "data": "<base64>" }` |
 | Launcher | `host.reboot` / `host.shutdown` | `{ "expires_at": ... }` | `{}` |
+| Launcher | `host.fs.list` | `{ "path": "D:\\Games", "expires_at": ... }` | `{ "path": "...", "entries": [...], "truncated": false }` |
+| Launcher | `host.fs.read` | `{ "path": "...", "encoding": "utf8" \| "base64", "expires_at": ... }` | `{ "path": "...", "encoding": "...", "content": "...", "size": 123 }` |
+| Launcher | `host.fs.write` | `{ "path": "...", "content": "...", "encoding": "utf8" \| "base64", "createDirs": false, "expires_at": ... }` | `{ "path": "...", "bytesWritten": 123 }` |
+| Launcher | `host.fs.mkdir` | `{ "path": "...", "recursive": true, "expires_at": ... }` | `{ "path": "...", "created": true }` |
+| Launcher | `host.fs.rename` | `{ "from": "...", "to": "...", "overwrite": false, "expires_at": ... }` | `{ "from": "...", "to": "..." }` |
+| Launcher | `host.fs.delete` | `{ "path": "...", "recursive": false, "expires_at": ... }` | `{ "path": "...", "deleted": true }` |
+| Launcher | `host.powershell` | `{ "script": "...", "cwd"?: "...", "timeoutMs": 15000, "shell": "powershell" \| "pwsh", "expires_at": ... }` | `{ "stdout": "...", "stderr": "...", "exitCode": 0, "timedOut": false, "durationMs": 42 }` |
 | IoT | `gpio.pulse` | `{ "pin": 12, "duration_ms": 80, "count": 1, "active_low": true, "expires_at": ... }` | `{}` |
 
 回复格式：

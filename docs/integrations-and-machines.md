@@ -255,7 +255,7 @@ await client.requestScanByIdentity(
 | `hinata_io` | `transport`（`external`/`embedded`）、`nodeId`（指向 `shop_nodes`）、`channel` | `url`、`password`（仅外部中继） | `aime.scan` | `card.state`、`card.consumed`、`led.set`（不存）；平台从机台账本推出的 `cabinet.coin`、`cabinet.credit`、`cabinet.consumed`、`cabinet.reset` | `link`，平台权威；`cabinet`（最近一次机台账本），外部权威 |
 | `keys` | `buttons`（最多 16 个按钮：键盘 `mode: "keyboard"` 优先 Launcher 回落 HINATA IO，或 `mode: "gpio"` 指向店内任意 IoT 控制器引脚） | — | `key.press` | — | — |
 | `coin` | `keyId`（依赖 `keys` 能力中的按钮）、`cap`、`afterSwipe`、可选硬件回报 `feedbackNodeId` / `feedbackPin` / `feedbackEdge` / `feedbackDebounceMs` / `feedbackSignal` | — | `coin` | `cabinet.coin`、`cabinet.consumed`、`cabinet.activity`（硬件 GPIO 回报） | — |
-| `host` | `nodeId`（指向 `launcher` 节点）、`defaultProgram`、`programs` | — | `host.switch`、`host.key`、`host.text`、`host.screenshot`、`host.reboot`、`host.shutdown` | — | `link`（平台权威）、`program`（外部权威） |
+| `host` | `nodeId`（指向 `launcher` 节点）、`defaultProgram`、`programs`、可选 `allowedRoots` | — | `host.switch`、`host.key`、`host.text`、`host.screenshot`、`host.reboot`、`host.shutdown`、`host.fs.list`、`host.fs.read`、`host.fs.write`、`host.fs.mkdir`、`host.fs.rename`、`host.fs.delete`、`host.powershell` | — | `link`（平台权威）、`program`（外部权威） |
 | `iot` | `nodeId`（指向 `iot` 节点）、`haWatch`、`ble`（`enabled`、`beaconId`、`txPower`、`rssiThreshold`） | — | — | — | `link`（平台权威） |
 | `door` | `lockId` | — | `door.open` | — | — |
 | `table` | `pricingConfigIds`（最多一个方案）、`startWhen`（资源本身另有 `capacity`） | — | —（上下桌走桌游流程） | — | — |
