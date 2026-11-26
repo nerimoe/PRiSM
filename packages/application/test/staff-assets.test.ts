@@ -449,4 +449,59 @@ describe("createStaffAssetService", () => {
       "asset-tx:staff.asset.grant:staff-1:player-1:2026-07-10T00:00:00.000Z:transaction-2",
     ]);
   });
+
+  it("adjusts free and paid currency balances atomically when breakdown is specified", async () => {
+    const assets = new MemoryAssetRepository([]);
+    let seq = 0;
+    const service = createStaffAssetService({
+      assets,
+      availableAssets: testAvailableAssets(assets, () => new Date("2026-07-10T00:00:00.000Z")),
+      assetDefinitions: new MemoryAssetDefinitionRepository([
+        { type: "currency", code: "free", name: "赠送", stackable: true, status: "active", metadata: null },
+        { type: "currency", code: "paid", name: "猫粮", stackable: true, status: "active", metadata: null },
+      ]),
+      id: () => `id-${++seq}`,
+      now: () => new Date("2026-07-10T00:00:00.000Z"),
+    });
+
+    const both = await service.adjustWallet({
+      staffId: "staff-1",
+      playerId: "player-1",
+      amount: 30,
+      freeAmount: 10,
+      paidAmount: 20,
+      reason: "staff.wallet.add",
+    });
+    expect(yuanOf(both.balanceBefore)).toBe(0);
+    expect(yuanOf(both.balanceAfter)).toBe(30);
+    expect(both.assetLedgerEntries).toEqual([
+      { assetType: "currency", assetCode: "free", delta: centsOf(10), reason: "staff.wallet.add", refId: "staff-1" },
+      { assetType: "currency", assetCode: "paid", delta: centsOf(20), reason: "staff.wallet.add", refId: "staff-1" },
+    ]);
+
+    const paidOnly = await service.adjustWallet({
+      staffId: "staff-1",
+      playerId: "player-1",
+      amount: 15,
+      freeAmount: 0,
+      paidAmount: 15,
+      reason: "staff.wallet.addx",
+    });
+    expect(yuanOf(paidOnly.balanceBefore)).toBe(30);
+    expect(yuanOf(paidOnly.balanceAfter)).toBe(45);
+    expect(paidOnly.assetLedgerEntries).toEqual([
+      { assetType: "currency", assetCode: "paid", delta: centsOf(15), reason: "staff.wallet.addx", refId: "staff-1" },
+    ]);
+
+    await expect(
+      service.adjustWallet({
+        staffId: "staff-1",
+        playerId: "player-1",
+        amount: 10,
+        freeAmount: 5,
+        paidAmount: 6,
+        reason: "mismatch",
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_WALLET_ADJUSTMENT_AMOUNT" });
+  });
 });

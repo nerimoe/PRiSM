@@ -6,6 +6,7 @@ import {
   errorReply,
   receiptMessage,
   settledAsPreview,
+  walletAdjustedMessage,
   walletMessage,
 } from "../src/resources/bot-replies.js";
 
@@ -58,6 +59,13 @@ describe("what a bot says for the rest", () => {
   it("sums a wallet", () => {
     expect(text(walletMessage([{ assetCode: "paid", quantity: 3 }, { assetCode: "free", quantity: 2 }], "猫粮")))
       .toBe("💰 --- 钱包余额 ---\n可用: 5 猫粮 (共 5)\n  - 付费: 3\n  - 免费: 2");
+  });
+
+  it("words wallet adjustments for free, paid, both, and deduction", () => {
+    expect(text(walletAdjustedMessage(who, { free: 10 }, "猫粮"))).toBe("✅ 已为用户 Tester（onebot:123456）增加 免费 10 猫粮");
+    expect(text(walletAdjustedMessage(who, { paid: 20 }, "猫粮"))).toBe("✅ 已为用户 Tester（onebot:123456）增加 付费 20 猫粮");
+    expect(text(walletAdjustedMessage(who, { free: 10, paid: 20 }, "猫粮"))).toBe("✅ 已为用户 Tester（onebot:123456）增加 免费 10 猫粮、付费 20 猫粮");
+    expect(text(walletAdjustedMessage(who, -5, "猫粮"))).toBe("✅ 已为用户 Tester（onebot:123456）扣除 5 猫粮");
   });
 
   it("says a device action was done, or why not", () => {

@@ -217,8 +217,17 @@ export function redeemMessage(granted: R[]): BotMessage {
 }
 
 /** Money a staff member added or took through the bot. */
-export function walletAdjustedMessage(who: Addressee, delta: number, currency: string): BotMessage {
-  return botMessage("✅ 已为用户 ", ...reference(who), `${delta >= 0 ? "增加" : "扣除"} ${amount(Math.abs(delta))} ${currency}`);
+export function walletAdjustedMessage(who: Addressee, delta: number | { free?: number; paid?: number }, currency: string): BotMessage {
+  if (typeof delta === "number") {
+    return botMessage("✅ 已为用户 ", ...reference(who), `${delta >= 0 ? "增加" : "扣除"} ${amount(Math.abs(delta))} ${currency}`);
+  }
+  const free = toNumber(delta.free);
+  const paid = toNumber(delta.paid);
+  const parts = [
+    ...(free > 0 ? [`免费 ${amount(free)} ${currency}`] : []),
+    ...(paid > 0 ? [`付费 ${amount(paid)} ${currency}`] : []),
+  ];
+  return botMessage("✅ 已为用户 ", ...reference(who), `增加 ${parts.join("、")}`);
 }
 
 /**

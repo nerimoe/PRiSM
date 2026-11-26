@@ -18,6 +18,7 @@ import {
   isPositiveCents,
   isZeroCents,
   negCents,
+  yuanOf,
   type Cents,
   PrismDomainError,
 } from "@prism/core";
@@ -66,6 +67,9 @@ export type StaffWalletAdjustmentInput = {
   staffId: string;
   playerId: string;
   amount: number;
+  /** Optional currency breakdown when adding; positive `amount` without it defaults to `free`. */
+  freeAmount?: number;
+  paidAmount?: number;
   reason: string;
 };
 
@@ -178,6 +182,7 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
       if (isZeroCents(amount)) {
         throw new PrismDomainError("Wallet adjustment amount must be non-zero.", "INVALID_WALLET_ADJUSTMENT_AMOUNT");
       }
+      const explicitGrants = currencyGrantsForAdjustment(input, amount);
       const now = dependencies.now();
       const existingHoldings = await dependencies.assets.listAssetHoldings(input.playerId);
       const currentHoldings = existingHoldings.map((holding) => ({ ...holding }));
@@ -188,23 +193,21 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
       const balanceBefore = sumAvailableWalletBalance(availableHoldings);
       let result: GrantAssetsResult;
       if (isPositiveCents(amount)) {
-        await assertGrantAssetDefinitionsActive(dependencies, [{
+        const grantsToApply = (explicitGrants ?? [{ assetCode: "free" as const, amount: input.amount }]).map((grant) => ({
           assetType: "currency",
-          assetCode: "free",
-        }], now);
+          assetCode: grant.assetCode,
+          amount: grant.amount,
+          mergeStrategy: "stack" as const,
+          activeAt: null,
+          expiresAt: null,
+          reason: input.reason,
+          refId: input.staffId,
+        }));
+        await assertGrantAssetDefinitionsActive(dependencies, grantsToApply, now);
         result = grantAssets({
           playerId: input.playerId,
           existingHoldings,
-          grants: [{
-            assetType: "currency",
-            assetCode: "free",
-            amount: input.amount,
-            mergeStrategy: "stack",
-            activeAt: null,
-            expiresAt: null,
-            reason: input.reason,
-            refId: input.staffId,
-          }],
+          grants: grantsToApply,
           idFactory: dependencies.id,
           now,
         });
@@ -231,7 +234,12 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
           kind: "staff.wallet.adjust",
           refId: input.staffId,
           createdAt: now,
-          metadata: { staffId: input.staffId, amount, reason: input.reason },
+          metadata: {
+            staffId: input.staffId,
+            amount,
+            ...(explicitGrants ? { breakdown: Object.fromEntries(explicitGrants.map((grant) => [grant.assetCode, centsOf(grant.amount)])) } : {}),
+            reason: input.reason,
+          },
         },
         holdingChanges: diffAssetHoldings(existingHoldings, result.holdings),
         assetLedgerEntries: result.assetLedgerEntries,
@@ -240,6 +248,28 @@ export function createStaffAssetService(dependencies: StaffAssetServiceDependenc
       });
     },
   };
+}
+
+function currencyGrantsForAdjustment(
+  input: StaffWalletAdjustmentInput,
+  amountCents: Cents,
+): Array<{ assetCode: "free" | "paid"; amount: number }> | null {
+  if (input.freeAmount === undefined && input.paidAmount === undefined) return null;
+  const freeRaw = input.freeAmount ?? 0;
+  const paidRaw = input.paidAmount ?? 0;
+  if (!Number.isFinite(freeRaw) || !Number.isFinite(paidRaw) || freeRaw < 0 || paidRaw < 0) {
+    throw new PrismDomainError("Wallet adjustment amount must be non-negative.", "INVALID_WALLET_ADJUSTMENT_AMOUNT");
+  }
+  const freeCents = centsOf(freeRaw);
+  const paidCents = centsOf(paidRaw);
+  const totalCents = addCents(freeCents, paidCents);
+  if (!isPositiveCents(totalCents) || amountCents !== totalCents) {
+    throw new PrismDomainError("Wallet adjustment amount must match free and paid totals.", "INVALID_WALLET_ADJUSTMENT_AMOUNT");
+  }
+  const grants: Array<{ assetCode: "free" | "paid"; amount: number }> = [];
+  if (isPositiveCents(freeCents)) grants.push({ assetCode: "free", amount: yuanOf(freeCents) });
+  if (isPositiveCents(paidCents)) grants.push({ assetCode: "paid", amount: yuanOf(paidCents) });
+  return grants;
 }
 
 function withPlayerAssetLease<T>(dependencies: StaffAssetServiceDependencies, playerId: string, action: () => Promise<T>): Promise<T> {

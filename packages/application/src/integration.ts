@@ -68,6 +68,8 @@ export type IntegrationAssetAdjustmentInput = IntegrationIdentityInput & {
 
 export type IntegrationWalletAdjustmentInput = IntegrationIdentityInput & {
   amount: number;
+  freeAmount?: number;
+  paidAmount?: number;
   reason: string;
 };
 
@@ -330,6 +332,8 @@ export function createIntegrationService(dependencies: IntegrationServiceDepende
         staffId: "integration",
         playerId: player.id,
         amount: input.amount,
+        ...(input.freeAmount !== undefined ? { freeAmount: input.freeAmount } : {}),
+        ...(input.paidAmount !== undefined ? { paidAmount: input.paidAmount } : {}),
         reason: input.reason,
       });
     },

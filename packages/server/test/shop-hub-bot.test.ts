@@ -475,6 +475,42 @@ describe("a bot's commands", () => {
     sqlite.close();
   });
 
+  it("lets staff add free, optional paid, or paid-only balance with add and addx", async () => {
+    const { sqlite, hub, ws } = await fixture();
+    sqlite.run("INSERT INTO asset_definitions(shop_id,type,code,name,stackable,status) VALUES ('shop','currency','paid','猫粮',1,'active'),('shop','currency','free','赠送',1,'active')");
+    sqlite.run("INSERT INTO players(shop_id,id,display_name,status,created_at) VALUES ('shop','p-staff','店员','active','2026-01-01'),('shop','p-target','玩家二','active','2026-01-01')");
+    sqlite.run("INSERT INTO shop_members(id,shop_id,user_id,role) VALUES ('m1','shop','u-staff','owner')");
+    sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','p-staff','web-account','u-staff','2026-01-01'),('shop','p-staff','onebot','10001','2026-01-01'),('shop','p-target','onebot','10002','2026-01-01')");
+    botResource(sqlite, { staffCommands: true });
+    await hub.webSocketMessage(ws as any, JSON.stringify({ type: "hello", commands: 1 }));
+    const target = { provider: "onebot", subject: "10002", name: "玩家二" };
+
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a1", "add", ["10"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a2", "add", ["5", "20"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a3", "add", ["0", "7"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a4", "addx", ["13"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a5", "add", ["0"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a6", "add", ["10", "-2"], { target })));
+    await hub.webSocketMessage(ws as any, JSON.stringify(command("a7", "addx", ["0"], { target })));
+
+    expect(says(ws).map(text)).toEqual([
+      "✅ 已为用户 <玩家二>（onebot:10002）增加 免费 10 猫粮",
+      "✅ 已为用户 <玩家二>（onebot:10002）增加 免费 5 猫粮、付费 20 猫粮",
+      "✅ 已为用户 <玩家二>（onebot:10002）增加 付费 7 猫粮",
+      "✅ 已为用户 <玩家二>（onebot:10002）增加 付费 13 猫粮",
+      "金额必须大于 0",
+      "金额不能为负数",
+      "金额必须大于 0",
+    ]);
+
+    const holdings = sqlite.query("SELECT asset_code, quantity FROM asset_holdings WHERE shop_id='shop' AND player_id='p-target' ORDER BY asset_code").all();
+    expect(holdings).toEqual([
+      { asset_code: "free", quantity: 1500 },
+      { asset_code: "paid", quantity: 4000 },
+    ]);
+    sqlite.close();
+  });
+
   it("uses each group's own words, refreshes them and also customizes idle warnings", async () => {
     const { sqlite, hub, ws, sockets } = await fixture();
     botResource(sqlite, { announceGroups: groupsOf([{ events: ["card.consumed", "idle.reminder"], sources: [], to: ["onebot:42"], templates: {
