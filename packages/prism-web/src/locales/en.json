@@ -89,6 +89,8 @@
   "搜索": "Search",
   "暂停名单": "Restrictions",
   "暂无记录。": "No records yet.",
+  "确认移除": "Confirm removal",
+  "移除{name}？": "Remove {name}?",
   "移除": "Remove",
   "当前身份：": "Current role: ",
   "保存": "Save",
@@ -3192,5 +3194,16 @@
   "发送日期": "Send date",
   "播报内容": "Announcement text",
   "添加定时播报": "Add scheduled announcement",
-  "请填写定时播报的内容、时间和日期或星期": "Complete the announcement text, time and date or weekdays."
+  "请填写定时播报的内容、时间和日期或星期": "Complete the announcement text, time and date or weekdays.",
+  "定时规则": "Schedules",
+  "还没有定时播报": "No scheduled announcements yet",
+  "未填写播报内容": "Untitled announcement",
+  "待补全": "Incomplete",
+  "重复星期": "Repeat days",
+  "请至少选择一天": "Select at least one day",
+  "未选日期": "No date",
+  "未选星期": "No days",
+  "输入到点后要发送的文字内容…": "Enter the message to send at the scheduled time…",
+  "发送预览": "Preview",
+  "输入播报内容后在此预览": "Enter announcement text to preview it here"
 }
