@@ -27,13 +27,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [activeShop, updateShop] = useState(
-    () => sessionStorage.getItem("prism.active-shop") ?? "",
-  );
-  const setActiveShop = useCallback((code: string) => {
-    sessionStorage.setItem("prism.active-shop", code);
-    updateShop(code);
-  }, []);
+  const [activeShop, updateShop] = useState("");
   const [visit, setVisit] = useState({ shop: "", user: "", active: false });
   const setBillingActive = useCallback((code: string, active: boolean) => {
     setVisit({ shop: code, user: user?.id ?? "", active });
@@ -46,6 +40,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setAccountMenu = useCallback((code: string, menu: PageAccountMenu | null) => {
     setMenuState({ shop: code, user: user?.id ?? "", menu });
   }, [user?.id]);
+  const setActiveShop = useCallback((code: string) => {
+    updateShop(code);
+    if (!code) {
+      setVisit({ shop: "", user: "", active: false });
+      setMenuState({ shop: "", user: "", menu: null });
+    }
+  }, []);
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
@@ -63,9 +64,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       loading,
-      billingActive: visit.active && visit.shop === activeShop && visit.user === user?.id,
+      billingActive: Boolean(activeShop) && visit.active && visit.shop === activeShop && visit.user === user?.id,
       setBillingActive,
-      accountMenu: menuState.shop === activeShop && menuState.user === (user?.id ?? "") ? menuState.menu : null,
+      accountMenu: activeShop && menuState.shop === activeShop && menuState.user === (user?.id ?? "") ? menuState.menu : null,
       setAccountMenu,
       activeShop,
       setActiveShop,
@@ -74,11 +75,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await Api.logout();
         setUser(null);
         setActiveShop("");
-        setVisit({ shop: "", user: "", active: false });
-        setMenuState({ shop: "", user: "", menu: null });
       },
     }),
-    [user, loading, activeShop, visit, setBillingActive, menuState, setAccountMenu],
+    [user, loading, activeShop, visit, setBillingActive, menuState, setAccountMenu, setActiveShop],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

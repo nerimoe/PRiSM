@@ -27,6 +27,8 @@ export type PageContextValue = {
   openTarget?: (target: PageTarget) => void;
   loadMore?: (blockId: string, target: PageTarget) => void;
   loadingMoreId?: string | null;
+  /** Loading more of a list failed: shown at that list's button, where the player is looking. */
+  loadMoreError?: { blockId: string; message: string } | null;
   noticeAboveButton?: boolean;
 };
 

@@ -41,7 +41,7 @@ POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, paylo
   "shop": "E2E 店", "shopCode": "e2e-shop", "heroUrl": null,
   "resource": "舞萌", "publicId": "SHHZ...",
   "billingActive": true,
-  "offerPasskeySetup": true, // 有可用的东西时，刚登录的玩家可以先被引导添加 Passkey（仅网页使用）
+  "offerPasskeySetup": true, // 有可用的东西时，刚登录的玩家可以先被引导添加 Passkey（仅网页使用）；待绑定平台身份或资格停用时为 false
   "blocks": [
     {
       "kind": "cards", "id": "cards", "enabled": true, "capture": true,
@@ -93,7 +93,7 @@ POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, paylo
 }
 ```
 
-页面模型同时支持可选的 `title`、`backLabel`（列表下钻详情返回文案；省略或为空时客户端仅显示返回图标）、`footer`（吸底动作区，如结账按钮；表单校验与 `blocks` 通过 `allPageBlocks(page)` 一并收集）和 `accountMenu`（顶部账号菜单的「计费中」徽章、可见页签与退出文案，扫码页与店铺主页登录态均由服务端下发，因此后续新增常规菜单项只需服务端下发新 `tabs` 条目与对应 `view` 页面，无需更新客户端）。
+页面模型同时支持可选的 `title`、`backLabel`（列表下钻详情返回文案；省略或为空时客户端仅显示返回图标）、`footer`（吸底动作区，如结账按钮；表单校验与 `blocks` 通过 `allPageBlocks(page)` 一并收集）和 `accountMenu`（顶部账号菜单的「计费中」徽章、可见页签与退出文案；仅在带有店铺上下文的玩家页面展示：`/m` 扫码页包含「账单」页签，`/t/:shopCode` 店铺主页默认省略「账单」页签；玩家仍有进行中的会话时（即使店铺已无计费方案）照常下发全部页签，保证可以结账；若当前账号在需要绑定的店铺尚未完成平台身份绑定或资格被停用，`accountMenu` 返回空 `tabs: []` 且不返回 `billingBadge`，右上角菜单仅保留语言切换、退出登录等非店铺内容；非店铺页面 `/cards`、`/settings`、`/merchant`、`/admin`、`/m/expired` 同样只保留非店铺内容，不读取也不跨页缓存上次访问店铺；后续新增常规菜单项只需服务端下发新 `tabs` 条目与对应 `view` 页面，无需更新客户端）。
 
 被拒绝（投币到上限、位置不对、冷却中、余额不足、无效兑换码）是正常回答，状态码 200，带上最新页面。只有页面答不了的才是错误：登录或票据失效（`notice.flow` 是 `signin` / `expired`），以及 5xx，包括设备连不上时的 502。
 
@@ -104,7 +104,7 @@ POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, paylo
 ### 布局与展示块
 
 - `bill`: `{ kind: "bill", id, mode: "live" | "settled", timeZone?, billingInputs?, preview?, settledAt?, balanceAfter?, labels }` — 账单展示块；实时计费默认下发 `billingInputs` 由浏览器 Web Worker / App Clip `PrismCheckoutEngine` 本地算价预览，服务端插件运行时不支持离线算价时退回下发 `preview`，已结账单直接带 `preview`、`settledAt` 与 `balanceAfter`。
-- `list`: `{ kind: "list", id, items, timeZone?, emptyText?, emptyIcon?, moreLabel?, moreTarget? }` — 列表块（如结账记录）；列表项支持 `group`（连续同组名合并为带标题的轻卡片分组）、`titleMeta`（标题右侧浅灰补充，如停留时长）、`trailingStrikethrough`（右侧金额下方删除线原价）、`titleTimestamp` / `subtitleTimestamp`、下钻跳转 `open: { view, item? }` 以及分页加载 `moreTarget: { view, cursor? }`。其中「记录」页按门店时区的结账日（`settledAt`）以轻卡片分组，并在副标题展示结算方式、多段项数与（跨分钟时）实际结账时刻。
+- `list`: `{ kind: "list", id, items, timeZone?, emptyText?, emptyIcon?, moreLabel?, moreTarget? }` — 列表块（如结账记录）；列表项支持 `group`（连续同组名合并为带标题的轻卡片分组）、`titleMeta`（标题右侧浅灰补充，如停留时长）、`trailingStrikethrough`（右侧金额下方删除线原价）、`titleTimestamp` / `subtitleTimestamp`、`subtitlePrefix`（副标题前缀，对普通副标题与时间戳副标题都生效）、下钻跳转 `open: { view, item? }` 以及分页加载 `moreTarget: { view, cursor? }`（网页端与 App Clip 均按 `MAX_PAGE_DEPTH` 递归合并 `section`/`row` 内的分页列表）。其中「记录」页按门店时区的结账日（`settledAt`）以轻卡片分组，并在副标题展示结算方式、多段项数与（跨分钟时）实际结账时刻。
 - `section`: `{ kind: "section", id, title?, subtitle?, style?: "card" | "plain", blocks: PageBlock[] }` — 纵向容器；`style: "card"` 渲染圆角面板。嵌套在 `card` 分区或 Sheet 弹窗内的输入框与内层卡片控件（含网页与 App Clip）会自动切换为浅层嵌入式填充色并保持分组标题左对齐，确保与外层卡片形成清晰边界。
 - `row`: `{ kind: "row", id, blocks: PageBlock[] }` — 横向等宽排列容器（窄屏 Web 自动换行，iOS 使用 `HStack`）。
 - `kv`: `{ kind: "kv", id, items: Array<{ id?, label, value, tone?: "default" | "muted" | "accent" | "success" | "warning" | "error" | "purple", icon?: "wallet" | "gift" | "coins" | "coupon" | "pass" | "ticket" | "asset", badge?: string, badgeTone?: PageTone }> }` — 键值对列表（身份、钱包资产、状态摘要）；携带 `icon` 或 `badge` 时渲染左图标与标签胶囊。
@@ -165,9 +165,15 @@ const blocks = [
 - 用 `id` 对应前后两次读到的块：在场的同意框与表单控件（`input`、`select`、`toggle`、`consent`）保留玩家当前输入，新出现的表单按 `defaultValue` 初始化，已离开页面的字段 `id` 自动清理（再次回到该步骤时重新开始）；转圈与等待状态也按 `id` 保持在客户端。
 - 校验与提交规则：
   - 按钮有 `requires` 时，对应的块同意之后才能按；`collect` 中的必填项（`consent` 须勾选，`input` `required` 须非空，`select` `required` 须选中可用项，`toggle` `required` 须开启）未满足时按钮保持禁用。禁用态主按钮在网页端与 App Clip 端统一采用中性灰底与弱化灰字表现（不保留高饱和强调色）。
-  - 当页面中仅有唯一一个按钮在 `collect` 中收集某个 `input` 块且满足提交条件时，输入框回车 / 键盘提交可直接触发该按钮（带 `confirm` 时不绕过确认框）。
+  - 当页面中仅有唯一一个按钮在 `collect` 中收集某个 `input` 块且满足提交条件时，输入框回车 / 键盘提交等同点按该按钮：带 `confirm` 时弹出确认框（网页与 App Clip 一致）。
   - 发送 `payload` 的合并优先级为：先按 `field.name ?? field.id` 写入 `collect` 收集的值，再用静态 `button.payload` 覆盖，若存在 `requires` 则再写入 `consent: true`（防止用户输入覆盖服务端签名字段）。
 - `footer` 区的按钮内联提示（`inline` notice）显示在吸底按钮上方并带不透明卡片背景（Web 与 App Clip 一致）。
+- 动作返回 `celebration`（如 `checkout.confirm`）时，客户端锁定页面控件并保留动画前的当前页面状态直到成功动效覆盖完成（不提前闪现结账后账单，也不会触发多余的重读闪白），并在动画结束后脱离动效生命周期执行店铺页切换与刷新。
+- 店铺主页 `view=shop`：需要绑定但尚未绑定的玩家若仍在计费，页面先下发 `binding` 块、其下为只读账单，不下发结账按钮（绑定完成后才能结账）；资格被停用的玩家收到带店铺卡片的停用说明页（`disabled` 文本块，与 `/m` 一致），而不是 403。
+- 账号面板内的下钻（如「记录」→ 账单详情）返回时恢复离开前的页面（已加载的分页与滚动位置），不重新请求第 1 页；「加载更多」失败时错误显示在该列表的按钮下方。
+- `bill` 块本地估算失败时，「重试」会重新读取页面以获取新的 `billingInputs`，而不是用同一份输入重算。
+- 动作的 `operationId` 在收到回答前跨刷新保留（网页存 `sessionStorage`，App Clip 存 `UserDefaults`），同一动作无论在哪个视图按下都复用同一个 id，刷新或重开后重试不会重复执行。
+- 账号面板（Sheet）不再渲染「绑定身份」引导：直接访问账号面板视图但尚未完成平台身份绑定时返回 `403 PLATFORM_BINDING_REQUIRED`（`flow: "refresh"`），客户端关闭面板并刷新宿主页面（`/t/:shopCode` 与 `/m` 扫码页都会重读）；打开 `bill` 视图时同步将最新 `billingActive` 状态回写给宿主页面。
 - 有 `needsLocation` 时带上 `location`。入场和门禁看 `checkin_geo`，其他看 `machine_geo`。
 - `code` 显示在按钮上方直到过期，它只存在于这次回答里，重读页面不会再给。`againLabel` 在此期间替换按钮文字。
 - 卡片不在页面里：`cards` 块只标明位置并下发卡片区域的全部文案、加载/空态/失败动作（`cards.capture` 与 `cards.reload`）以及读卡窗口文案 `captureUi`；卡片本身在打开页面和添加卡片之后单独读。没有可用卡片时按服务器下发的动作渲染按钮（直连机台下发「添加卡片」与「刷新」，其余只下发「刷新」），绝不跳往 `/cards`。

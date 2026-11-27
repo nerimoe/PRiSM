@@ -125,14 +125,13 @@ const shopPages = {
   shopLivePreview: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: { preview: { settlementPreview: { total: 12 }, chargeItems: [{ id: "c1", label: "入场费", amount: 12 }], adjustments: [] } }, settledReceipt: null }),
   shopSettled: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: null, settledReceipt: sampleReceipt }),
   shopEmpty: renderShopPage({ locale: "zh", head: shopHead, signedIn: true, needsBinding: false, shopBills: true, checkoutGeo: false, liveBill: null, settledReceipt: null }),
-  billSheet: renderAccountSheetPage({ locale: "zh", view: "bill", head: shopHead, needsBinding: false, checkoutGeo: true, liveBill: { preview: { settlementPreview: { total: 12 }, chargeItems: [{ id: "c1", label: "入场费", amount: 12 }], adjustments: [] } } }),
-  redeemForm: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, needsBinding: false, checkoutGeo: false }),
-  redeemDone: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, needsBinding: false, checkoutGeo: false, redeemed: true }),
+  billSheet: renderAccountSheetPage({ locale: "zh", view: "bill", head: shopHead, checkoutGeo: true, liveBill: { preview: { settlementPreview: { total: 12 }, chargeItems: [{ id: "c1", label: "入场费", amount: 12 }], adjustments: [] } } }),
+  redeemForm: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, checkoutGeo: false }),
+  redeemDone: renderAccountSheetPage({ locale: "zh", view: "redeem", head: shopHead, checkoutGeo: false, redeemed: true }),
   historyList: renderAccountSheetPage({
     locale: "zh",
     view: "history",
     head: shopHead,
-    needsBinding: false,
     checkoutGeo: false,
     now: new Date("2026-10-02T12:00:00.000Z"),
     history: {
@@ -161,12 +160,11 @@ const shopPages = {
       nextOffset: 20,
     },
   }),
-  historyDetail: renderAccountSheetPage({ locale: "zh", view: "history", head: shopHead, needsBinding: false, checkoutGeo: false, detailReceipt: sampleReceipt }),
+  historyDetail: renderAccountSheetPage({ locale: "zh", view: "history", head: shopHead, checkoutGeo: false, detailReceipt: sampleReceipt }),
   wallet: renderAccountSheetPage({
     locale: "zh",
     view: "wallet",
     head: shopHead,
-    needsBinding: false,
     checkoutGeo: false,
     holdings: [
       { id: "h-coupon", assetType: "coupon", assetName: "免费畅玩券", assetCode: "free-play", quantity: 2 },
@@ -176,7 +174,7 @@ const shopPages = {
       { id: "h-ticket", assetType: "ticket", assetName: "活动票券", assetCode: "event-ticket", quantity: 3 },
     ],
   }),
-  bindings: renderAccountSheetPage({ locale: "zh", view: "bindings", head: shopHead, needsBinding: false, checkoutGeo: false, bindings: [{ playerId: "p1", provider: "onebot", subject: "123456", displayName: "Player", verifiedAt: "2026-10-02T01:00:00.000Z" }] }),
+  bindings: renderAccountSheetPage({ locale: "zh", view: "bindings", head: shopHead, checkoutGeo: false, bindings: [{ playerId: "p1", provider: "onebot", subject: "123456", displayName: "Player", verifiedAt: "2026-10-02T01:00:00.000Z" }] }),
 };
 
 mkdirSync(resolve(outDir), { recursive: true });

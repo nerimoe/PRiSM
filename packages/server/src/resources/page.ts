@@ -22,6 +22,7 @@ export type PageInput = {
   shopBills?: boolean;
   identityBindingRequired?: boolean;
   privacyModeEnabled?: boolean;
+  needsBinding?: boolean;
   /** What the resource can do, as players are shown it. */
   capabilities: { power: boolean; climate: boolean; card: boolean; coin: boolean; door: boolean; table: boolean };
   billed: boolean;
@@ -46,7 +47,10 @@ export type PageInput = {
 export function renderPage(input: PageInput): Page {
   const { head, billingActive } = input;
   const blocks = pageBlocks(input);
-  const offerPasskeySetup = !blocks.some((block) => block.kind === "signin" || block.id === "empty");
+  // Only offered to a player who can use the shop: not while signing in, binding, or disabled.
+  const offerPasskeySetup =
+    input.gate !== "binding" && input.gate !== "disabled" && !input.needsBinding &&
+    !blocks.some((block) => block.kind === "signin" || block.id === "empty");
   const accountMenu = input.signedIn
     ? accountMenuFor(translator(input.locale), {
       billingActive,
@@ -54,6 +58,7 @@ export function renderPage(input: PageInput): Page {
       identityBindingRequired: input.identityBindingRequired,
       includeBillTab: true,
       privacyModeEnabled: input.privacyModeEnabled,
+      shopMenuAvailable: input.gate !== "binding" && input.gate !== "disabled" && !input.needsBinding,
     })
     : undefined;
   return { ...head, billingActive, offerPasskeySetup, ...(accountMenu ? { accountMenu } : {}), blocks };

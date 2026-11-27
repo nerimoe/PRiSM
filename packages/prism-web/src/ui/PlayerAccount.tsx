@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, Loader2, X } from "lucide-react";
-import type { Page, PageBlock, PageCelebration, PageTarget } from "@prism/page-protocol";
-import { api } from "../api";
+import { allPageBlocks, type Page, type PageCelebration, type PageTarget } from "@prism/page-protocol";
+import { api, ApiError } from "../api";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
 import { shopApi } from "./BillingPages";
-import { PlayerPageBlocks } from "./PlayerPageBlocks";
+import { mergeListBlocks } from "./page-blocks/merge-list";
 import { useShopPageAct } from "./page-blocks/use-page-actions";
+import { PlayerPageBlocks } from "./PlayerPageBlocks";
 
 export function PlayerDialog({
   title,
@@ -71,19 +72,6 @@ export function PlayerDialog({
   );
 }
 
-function mergeListBlock(current: PageBlock[], incoming: PageBlock[], blockId: string): PageBlock[] {
-  const replacement = incoming.find((block) => block.kind === "list" && block.id === blockId);
-  if (!replacement || replacement.kind !== "list") return current;
-  return current.map((block) => {
-    if (block.kind !== "list" || block.id !== blockId) return block;
-    const seen = new Set(block.items.map((item) => item.id));
-    return {
-      ...replacement,
-      items: [...block.items, ...replacement.items.filter((item) => !seen.has(item.id))],
-    };
-  });
-}
-
 function targetPath(shopCode: string, target: PageTarget): string {
   const params = new URLSearchParams({ view: target.view });
   if (target.item) params.set("item", target.item);
@@ -96,6 +84,7 @@ export function AccountSheetPage({
   initialView,
   onTitleChange,
   onBackChange,
+  onRefreshHost,
   onCheckout,
   onCheckoutPending,
 }: {
@@ -103,16 +92,21 @@ export function AccountSheetPage({
   initialView: string;
   onTitleChange?: (title: string) => void;
   onBackChange?: (back: { label?: string; onBack: () => void } | null) => void;
+  onRefreshHost?: () => void;
   onCheckout: () => void;
   onCheckoutPending: (pending: boolean) => void;
 }) {
   const { t, errorText, locale } = useI18n();
   const { setBillingActive } = useAuth();
-  const [stack, setStack] = useState<PageTarget[]>([{ view: initialView }]);
+  /** Each level keeps the page it showed, so going back shows it as it was left (loaded pages, scroll). */
+  const [stack, setStack] = useState<Array<{ target: PageTarget; kept?: { page: Page; scrollTop: number } }>>([
+    { target: { view: initialView } },
+  ]);
   const [page, setPage] = useState<Page | null>(null);
   const [busy, setBusy] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
   const [loadingMoreId, setLoadingMoreId] = useState<string | null>(null);
+  const [loadMoreError, setLoadMoreError] = useState<{ blockId: string; message: string } | null>(null);
   const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
   const [celebration, setCelebration] = useState<PageCelebration | null>(null);
@@ -123,10 +117,28 @@ export function AccountSheetPage({
   latestTitleChange.current = onTitleChange;
   const latestBackChange = useRef(onBackChange);
   latestBackChange.current = onBackChange;
+  const latestRefreshHost = useRef(onRefreshHost);
+  latestRefreshHost.current = onRefreshHost;
 
-  const current = stack[stack.length - 1]!;
+  const level = stack[stack.length - 1]!;
+  const current = level.target;
+
+  /** The level last shown from what it kept; reading again (retry, refresh) then fetches it anew. */
+  const restored = useRef<{ level: typeof level; attempt: number } | null>(null);
 
   useEffect(() => {
+    if (level.kept && restored.current?.level !== level) {
+      restored.current = { level, attempt };
+      const { page: kept, scrollTop } = level.kept;
+      setPage(kept);
+      setBusy(false);
+      if (kept.title) latestTitleChange.current?.(kept.title);
+      requestAnimationFrame(() => {
+        const scroller = container.current?.querySelector(".account-scroll");
+        if (scroller) scroller.scrollTop = scrollTop;
+      });
+      return;
+    }
     let cancelled = false;
     const controller = new AbortController();
     setBusy(true);
@@ -139,9 +151,12 @@ export function AccountSheetPage({
         if (loaded.title) latestTitleChange.current?.(loaded.title);
       })
       .catch((e) => {
-        if (!cancelled && !controller.signal.aborted) {
-          setError(errorText(e instanceof Error ? e.message : "操作失败"));
+        if (cancelled || controller.signal.aborted) return;
+        if (e instanceof ApiError && e.notice?.flow === "refresh") {
+          latestRefreshHost.current?.();
+          return;
         }
+        setError(errorText(e instanceof Error ? e.message : "操作失败"));
       })
       .finally(() => {
         if (!cancelled) setBusy(false);
@@ -150,7 +165,7 @@ export function AccountSheetPage({
       cancelled = true;
       controller.abort();
     };
-  }, [shopCode, current, attempt, locale, errorText, setBillingActive]);
+  }, [shopCode, level, current, attempt, locale, errorText, setBillingActive]);
 
   useEffect(() => {
     onCheckoutPending(actionBusy || celebration !== null);
@@ -163,31 +178,47 @@ export function AccountSheetPage({
   }, [celebration]);
 
   const act = useShopPageAct(shopCode, current.view, (answer) => {
+    if (answer.ok && answer.celebration) return;
     setPage(answer.page);
     if (answer.ok && answer.page.title) latestTitleChange.current?.(answer.page.title);
     if (current.view === "bill") setBillingActive(shopCode, answer.page.billingActive);
-    if (answer.ok && answer.celebration === undefined && current.view === "redeem") {
+    if (answer.ok && current.view === "redeem") {
       window.dispatchEvent(new CustomEvent("prism:shop-refresh"));
     }
   });
 
   const openTarget = (target: PageTarget) => {
+    const scrollTop = container.current?.querySelector(".account-scroll")?.scrollTop ?? 0;
+    const leaving = page;
     setError("");
+    setLoadMoreError(null);
     setPage(null);
-    setStack((prev) => [...prev, target]);
+    setStack((prev) => [
+      ...prev.slice(0, -1),
+      { target: prev[prev.length - 1]!.target, ...(leaving ? { kept: { page: leaving, scrollTop } } : {}) },
+      { target },
+    ]);
   };
 
   const loadMore = async (blockId: string, target: PageTarget) => {
     if (loadingMoreId) return;
     setLoadingMoreId(blockId);
-    setError("");
+    setLoadMoreError(null);
     try {
       const next = await api<Page>(targetPath(shopCode, target));
-      setPage((currentPage) =>
-        currentPage ? { ...currentPage, blocks: mergeListBlock(currentPage.blocks, next.blocks, blockId) } : next,
-      );
+      setPage((currentPage) => {
+        if (!currentPage) return next;
+        const incoming = allPageBlocks(next);
+        return {
+          ...currentPage,
+          blocks: mergeListBlocks(currentPage.blocks, incoming, blockId),
+          ...(currentPage.footer
+            ? { footer: mergeListBlocks(currentPage.footer, incoming, blockId) }
+            : {}),
+        };
+      });
     } catch (e) {
-      setError(errorText(e instanceof Error ? e.message : "操作失败"));
+      setLoadMoreError({ blockId, message: errorText(e instanceof Error ? e.message : "操作失败") });
     } finally {
       setLoadingMoreId(null);
     }
@@ -199,7 +230,7 @@ export function AccountSheetPage({
         ...(page?.backLabel ? { label: page.backLabel } : {}),
         onBack: () => {
           setError("");
-          setPage(null);
+          setLoadMoreError(null);
           setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
         },
       });
@@ -235,6 +266,8 @@ export function AccountSheetPage({
           openTarget={openTarget}
           loadMore={loadMore}
           loadingMoreId={loadingMoreId}
+          loadMoreError={loadMoreError}
+          disabled={celebration !== null}
           onCelebrate={(next) => setCelebration(next)}
           onBusyChange={setActionBusy}
           bodyClassName="account-scroll"

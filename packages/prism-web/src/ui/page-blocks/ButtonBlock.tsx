@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, Coins, DoorOpen, Info, Loader2, Lock, Plus, Power, RefreshCw, X } from "lucide-react";
 import { allPageBlocks, buildButtonPayload, canSubmitButton, type PageButton, type PageButtonIcon } from "@prism/page-protocol";
@@ -25,6 +25,14 @@ export function ButtonBlock({ block }: { block: PageButton }) {
   const { page, form, actions, addingCard, noticeAboveButton } = usePageContext();
   // Asked here, so a button that leaves the page takes its question with it.
   const [confirming, setConfirming] = useState(false);
+  const pressRef = useRef<() => void>(() => {});
+  const handled = useRef(actions.pressRequest?.n ?? 0);
+  useEffect(() => {
+    const request = actions.pressRequest;
+    if (!request || request.id !== block.id || request.n === handled.current) return;
+    handled.current = request.n;
+    pressRef.current();
+  }, [actions.pressRequest, block.id]);
   if (addingCard && block.hideDuringCapture) return null;
 
   const Icon = block.icon ? ICONS[block.icon] : null;
@@ -38,6 +46,8 @@ export function ButtonBlock({ block }: { block: PageButton }) {
   const ready = canSubmitButton(block, blocks, form.values);
   const submit = () =>
     void actions.run(block.id, block.action, buildButtonPayload(block, blocks, form.values), block.needsLocation, block.wait);
+  const pressButton = () => (block.confirm ? setConfirming(true) : submit());
+  pressRef.current = pressButton;
 
   return (
     <div className="grid gap-3">
@@ -55,7 +65,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
         data-level={onButton?.level}
         disabled={actions.blocked || pressing || !ready}
         aria-live={block.answerOnButton ? "polite" : undefined}
-        onClick={() => (block.confirm ? setConfirming(true) : submit())}
+        onClick={pressButton}
       >
         {pressing ? <Loader2 size={22} className="animate-spin" />
           : onButton ? <NoticeIcon level={onButton.level} size={22} />

@@ -1,46 +1,36 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
-import { useMatch, useNavigate } from "react-router-dom";
-import type { Page } from "@prism/page-protocol";
-import { api } from "../api";
+import { useLocation, useMatch, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n";
 import { useAuth } from "./AuthContext";
-import { shopApi } from "./BillingPages";
 import { AccountSheetPage, PlayerDialog } from "./PlayerAccount";
 
 export { PlayerDialog };
 
+/** Shop-scoped menu items only belong on active shop player pages (`/t/:shopCode`, `/m`, `/m/:ticket`). */
+export function isShopAccountMenuPath(pathname: string): boolean {
+  if (pathname === "/m" || pathname === "/m/") return true;
+  if (pathname.startsWith("/m/")) return pathname !== "/m/expired" && pathname !== "/m/expired/";
+  return /^\/t\/[^/]+\/?$/.test(pathname);
+}
+
 export function PlayerAccountMenu() {
+  const { pathname } = useLocation();
   const shopPage = useMatch("/t/:shopCode");
-  const resourcePage = useMatch("/m/*");
   const navigate = useNavigate();
-  const { user, logout, activeShop, billingActive, accountMenu, setBillingActive, setAccountMenu } = useAuth();
+  const { user, logout, activeShop, billingActive, accountMenu, setBillingActive } = useAuth();
   const { locale, setLocale, t } = useI18n();
   const [activeTab, setActiveTab] = useState<{ id: string; title: string } | null>(null);
   const [sheetBack, setSheetBack] = useState<{ label?: string; onBack: () => void } | null>(null);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const menu = useRef<HTMLDetailsElement>(null);
+  const showShopMenu = isShopAccountMenuPath(pathname) && Boolean(activeShop);
 
   useEffect(() => {
     setActiveTab(null);
     setSheetBack(null);
     setCheckoutPending(false);
-  }, [activeShop, user]);
-
-  useEffect(() => {
-    if (!user || !activeShop || accountMenu || shopPage || resourcePage) return;
-    let cancelled = false;
-    api<Page>(`${shopApi(activeShop, "player/page")}?view=shop`)
-      .then((page) => {
-        if (cancelled) return;
-        setBillingActive(activeShop, page.billingActive);
-        if (page.accountMenu) setAccountMenu(activeShop, page.accountMenu);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [activeShop, user, accountMenu, shopPage, resourcePage, locale, setBillingActive, setAccountMenu]);
+  }, [showShopMenu, activeShop, user]);
 
   useEffect(() => {
     const close = (event: PointerEvent) => {
@@ -61,11 +51,15 @@ export function PlayerAccountMenu() {
 
   if (!user) return null;
 
+  const shopTabs = (showShopMenu ? (accountMenu?.tabs ?? []) : []).filter(
+    (tab) => !shopPage || tab.id !== "bill",
+  );
+
   return (
     <>
       <details ref={menu} className="player-account-menu">
         <summary className="focus-ring">
-          {billingActive && accountMenu?.billingBadge && (
+          {showShopMenu && billingActive && accountMenu?.billingBadge && (
             <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted">
               <span className="h-1.5 w-1.5 rounded-full bg-green-600" />
               {accountMenu.billingBadge}
@@ -75,7 +69,7 @@ export function PlayerAccountMenu() {
           <ChevronDown size={16} className="shrink-0" />
         </summary>
         <div className="player-menu-items">
-          {(accountMenu?.tabs ?? []).map((tab) => (
+          {shopTabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => {
@@ -90,7 +84,6 @@ export function PlayerAccountMenu() {
           <button
             onClick={() => {
               setLocale(locale === "zh" ? "en" : "zh");
-              if (activeShop && !shopPage && !resourcePage) setAccountMenu(activeShop, null);
               menu.current!.open = false;
             }}
           >
@@ -102,11 +95,11 @@ export function PlayerAccountMenu() {
               await logout();
             }}
           >
-            {accountMenu?.logoutLabel ?? t("退出登录")}
+            {(showShopMenu ? accountMenu?.logoutLabel : undefined) ?? t("退出登录")}
           </button>
         </div>
       </details>
-      {activeTab && activeShop && (
+      {showShopMenu && activeTab && activeShop && (
         <PlayerDialog
           title={activeTab.title}
           onBack={sheetBack?.onBack}
@@ -125,6 +118,12 @@ export function PlayerAccountMenu() {
               setActiveTab((prev) => (prev && nextTitle ? { ...prev, title: nextTitle } : prev))
             }
             onBackChange={setSheetBack}
+            onRefreshHost={() => {
+              setActiveTab(null);
+              setSheetBack(null);
+              setCheckoutPending(false);
+              window.dispatchEvent(new CustomEvent("prism:shop-refresh"));
+            }}
             onCheckoutPending={setCheckoutPending}
             onCheckout={() => {
               const code = activeShop;
@@ -133,6 +132,7 @@ export function PlayerAccountMenu() {
               setCheckoutPending(false);
               setBillingActive(code, false);
               if (!shopPage) navigate(`/t/${encodeURIComponent(code)}`);
+              else window.dispatchEvent(new CustomEvent("prism:shop-refresh"));
             }}
           />
         </PlayerDialog>

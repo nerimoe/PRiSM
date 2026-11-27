@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { allPageBlocks, walkPageBlocks, type PageBlock, type PageButtonWait, type PageCelebration, type PageCode } from "@prism/page-protocol";
 import { api, ApiError, type Notice } from "../../api";
 import { operationLocation, shopApi } from "../BillingPages";
 import { useInlineNotice, useNotice } from "../NoticeProvider";
-import { ACTION_RETRY, StillRunning, withRetries, type ActionAnswer } from "../player-page";
+import { ACTION_RETRY, pendingOperations, StillRunning, withRetries, type ActionAnswer } from "../player-page";
 import { localNote } from "./notices";
 
 export type Act = (action: string, payload: Record<string, unknown> | undefined, needsLocation: boolean) => Promise<ActionAnswer>;
@@ -12,13 +12,14 @@ const hasButton = (blocks: PageBlock[], id: string) =>
   walkPageBlocks(blocks).some((block) => block.kind === "button" && block.id === id);
 
 /** Doing what the page offers: what is running, what came back and where it shows. */
-export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate, cardsBusy }: {
+export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate, cardsBusy, disabled = false }: {
   blocks: PageBlock[];
   act: Act;
   onExpired: () => void;
   onRefresh: () => void;
   onCelebrate?: (celebration: PageCelebration, answer: ActionAnswer) => void;
   cardsBusy: boolean;
+  disabled?: boolean;
 }) {
   const showNotice = useNotice();
   const [busy, setBusy] = useState<{ id: string; action: string } | null>(null);
@@ -26,8 +27,11 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
   const [waiting, setWaiting] = useState<(PageButtonWait & { id: string }) | null>(null);
   const [note, showNote] = useInlineNotice();
   const [noteAt, setNoteAt] = useState("");
+  /** A field asked this button to be pressed, as if tapped (so its confirm still asks). */
+  const [pressRequest, setPressRequest] = useState<{ id: string; n: number } | null>(null);
+  const press = useCallback((id: string) => setPressRequest((prev) => ({ id, n: (prev?.n ?? 0) + 1 })), []);
   const showAt = useCallback((id: string, next: Notice) => { setNoteAt(id); showNote(next); }, [showNote]);
-  const blocked = !!busy || cardsBusy;
+  const blocked = !!busy || cardsBusy || disabled;
 
   const waitingOnPage = !!waiting && hasButton(blocks, waiting.id);
   useEffect(() => { if (waiting && !waitingOnPage) setWaiting(null); }, [waiting, waitingOnPage]);
@@ -70,6 +74,8 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
 
   return {
     run,
+    press,
+    pressRequest,
     busy,
     blocked,
     waitingId: waiting?.id ?? null,
@@ -90,7 +96,7 @@ export function useShopPageAct(
     onBeforeAct?: () => void;
   },
 ): Act {
-  const unanswered = useRef(new Map<string, string>());
+  const unanswered = useMemo(() => pendingOperations(`shop:${shopCode}`), [shopCode]);
   const latest = useRef({ onAnswer, options });
   latest.current = { onAnswer, options };
 
@@ -98,9 +104,9 @@ export function useShopPageAct(
     async (action: string, payload: Record<string, unknown> | undefined, needsLocation: boolean): Promise<ActionAnswer> => {
       latest.current.options?.onBeforeAct?.();
       latest.current.options?.onPendingChange?.(true);
-      const key = `${view}:${action}:${JSON.stringify(payload ?? null)}`;
-      const operationId = unanswered.current.get(key) ?? crypto.randomUUID();
-      unanswered.current.set(key, operationId);
+      // The same action is one operation whichever view it was pressed on.
+      const key = `${action}:${JSON.stringify(payload ?? null)}`;
+      const operationId = unanswered.take(key);
       try {
         const location = await operationLocation(needsLocation);
         const answer = await withRetries(
@@ -115,16 +121,16 @@ export function useShopPageAct(
           },
           { ...ACTION_RETRY },
         );
-        unanswered.current.delete(key);
+        unanswered.settle(key);
         latest.current.onAnswer(answer);
         return answer;
       } catch (caught) {
-        if (caught instanceof ApiError) unanswered.current.delete(key);
+        unanswered.settleOnError(key, caught);
         throw caught;
       } finally {
         latest.current.options?.onPendingChange?.(false);
       }
     },
-    [shopCode, view],
+    [shopCode, view, unanswered],
   );
 }

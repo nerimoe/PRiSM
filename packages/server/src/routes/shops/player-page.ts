@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Hono, type Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { AppBindings, TenantShop } from "../../bindings.js";
 import { jsonError } from "../../http.js";
 import { requireUser } from "../../middleware/auth.js";
@@ -74,6 +75,12 @@ async function findExistingPlayer(
   return player;
 }
 
+async function isPlayerDisabled(caught: unknown): Promise<boolean> {
+  if (!(caught instanceof HTTPException) || caught.status !== 403) return false;
+  const body = await caught.getResponse().clone().json().catch(() => null) as { error?: { code?: string } } | null;
+  return body?.error?.code === "PLAYER_DISABLED";
+}
+
 async function liveBillFor(c: C, playerId: string): Promise<LiveBillInput> {
   const deps = getShopDeps(c);
   if (deps.staffLiveBillingSnapshot) {
@@ -131,29 +138,27 @@ async function readShopView(
 
   const user = requireUser(c);
 
-  if (view === "bindings") {
-    const bindings = await listAccountPlatformIdentities(c.env.DB, shop.id, user.id);
-    return renderAccountSheetPage({
-      locale,
-      view: "bindings",
-      head,
-      needsBinding: false,
-      checkoutGeo: false,
-      bindings,
-    });
-  }
-
   const needsBindingCheck =
     shop.identity_binding_required && !c.req.header("X-PRiSM-Player-Id")
       ? hasPlatformBinding(c, shop.id, user.id).then((bound) => !bound)
       : Promise.resolve(false);
 
-  if (view === "shop" || view === "bill") {
+  if (view === "bindings") {
+    if (await needsBindingCheck) jsonError(403, "请先绑定平台身份", "PLATFORM_BINDING_REQUIRED");
+    const bindings = await listAccountPlatformIdentities(c.env.DB, shop.id, user.id);
+    return renderAccountSheetPage({
+      locale,
+      view: "bindings",
+      head,
+      checkoutGeo: false,
+      bindings,
+    });
+  }
+
+  if (view === "shop") {
     const [needsBinding, billsRow, locationSettings] = await Promise.all([
       needsBindingCheck,
-      view === "shop"
-        ? c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`).bind(shop.id).first<{ bills: number }>()
-        : Promise.resolve(null),
+      c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`).bind(shop.id).first<{ bills: number }>(),
       readShopLocationSettings(c.env.DB, shop.id),
     ]);
     const checkoutPolicy = resolveEffectiveLocationPolicy({
@@ -167,8 +172,18 @@ async function readShopView(
     let liveBill: LiveBillInput | null = null;
     let settledReceipt: SettledBillReceipt | null = opts.settledReceipt ?? null;
 
+    let disabled = false;
     if (!settledReceipt) {
-      const player = needsBinding ? await findExistingPlayer(c, shop, user.id) : await requireShopPlayer(c, shop);
+      const player = await (needsBinding ? findExistingPlayer(c, shop, user.id) : requireShopPlayer(c, shop)).catch(
+        async (caught: unknown) => {
+          // A disabled player still gets the shop page, saying so, rather than a bare error.
+          if (await isPlayerDisabled(caught)) {
+            disabled = true;
+            return null;
+          }
+          throw caught;
+        },
+      );
       if (player) {
         const summary = await deps.playerQueries.getPlayerSummary(player.id);
         if (summary.activeSession) {
@@ -179,57 +194,67 @@ async function readShopView(
       }
     }
 
-    if (view === "shop") {
-      return renderShopPage({
-        locale,
-        head,
-        signedIn: true,
-        needsBinding,
-        shopBills,
-        identityBindingRequired: !!shop.identity_binding_required,
-        privacyModeEnabled: !!shop.privacy_mode_enabled,
-        checkoutGeo,
-        liveBill,
-        settledReceipt,
-      });
-    }
-    return renderAccountSheetPage({
+    return renderShopPage({
       locale,
-      view: "bill",
       head,
+      signedIn: true,
       needsBinding,
+      disabled,
+      shopBills,
+      identityBindingRequired: !!shop.identity_binding_required,
+      privacyModeEnabled: !!shop.privacy_mode_enabled,
       checkoutGeo,
       liveBill,
       settledReceipt,
     });
   }
 
-  const needsBinding = await needsBindingCheck;
+  if (view === "bill") {
+    const player = await requireShopPlayer(c, shop);
+    const locationSettings = await readShopLocationSettings(c.env.DB, shop.id);
+    const checkoutPolicy = resolveEffectiveLocationPolicy({
+      shop,
+      action: "checkout",
+      settings: locationSettings,
+    });
+    const checkoutGeo = checkoutPolicy.mode === "gps" || checkoutPolicy.mode === "any";
+
+    let liveBill: LiveBillInput | null = null;
+    let settledReceipt: SettledBillReceipt | null = opts.settledReceipt ?? null;
+
+    if (!settledReceipt) {
+      const summary = await deps.playerQueries.getPlayerSummary(player.id);
+      if (summary.activeSession) {
+        liveBill = await liveBillFor(c, player.id);
+      } else if (deps.playerQueries.getLatestPlayerCheckout) {
+        settledReceipt = await deps.playerQueries.getLatestPlayerCheckout(player.id);
+      }
+    }
+
+    return renderAccountSheetPage({
+      locale,
+      view: "bill",
+      head,
+      checkoutGeo,
+      liveBill,
+      settledReceipt,
+    });
+  }
 
   if (view === "redeem") {
-    if (!needsBinding && !opts.redeemed) {
+    if (!opts.redeemed) {
       await requireShopPlayer(c, shop);
     }
     return renderAccountSheetPage({
       locale,
       view: "redeem",
       head,
-      needsBinding,
       checkoutGeo: false,
       redeemed: !!opts.redeemed,
     });
   }
 
   if (view === "history") {
-    if (needsBinding && !opts.item) {
-      return renderAccountSheetPage({
-        locale,
-        view: "history",
-        head,
-        needsBinding: true,
-        checkoutGeo: false,
-      });
-    }
     const player = await requireShopPlayer(c, shop);
     if (opts.item) {
       if (!deps.playerQueries.getPlayerCheckout) {
@@ -243,7 +268,6 @@ async function readShopView(
         locale,
         view: "history",
         head,
-        needsBinding: false,
         checkoutGeo: false,
         detailReceipt: receipt,
       });
@@ -257,7 +281,6 @@ async function readShopView(
       locale,
       view: "history",
       head,
-      needsBinding: false,
       checkoutGeo: false,
       history,
     });
@@ -265,16 +288,7 @@ async function readShopView(
 
   if (view === "options") {
     const privacyModeEnabled = !!shop.privacy_mode_enabled;
-    if (needsBinding) {
-      return renderAccountSheetPage({
-        locale,
-        view: "options",
-        head,
-        needsBinding: true,
-        checkoutGeo: false,
-        privacyModeEnabled,
-      });
-    }
+    // Unbound players are refused here (403, refresh) like every other sheet: binding lives on the page.
     const player = await requireShopPlayer(c, shop);
     let privacyMode = false;
     if (privacyModeEnabled) {
@@ -287,7 +301,6 @@ async function readShopView(
       locale,
       view: "options",
       head,
-      needsBinding: false,
       checkoutGeo: false,
       privacyModeEnabled,
       playerOptions: privacyModeEnabled ? { privacyMode } : {},
@@ -295,15 +308,6 @@ async function readShopView(
   }
 
   // view === "wallet"
-  if (needsBinding) {
-    return renderAccountSheetPage({
-      locale,
-      view: "wallet",
-      head,
-      needsBinding: true,
-      checkoutGeo: false,
-    });
-  }
   const player = await requireShopPlayer(c, shop);
   const assets = deps.playerQueries.listPlayerAssets
     ? await deps.playerQueries.listPlayerAssets(player.id)
@@ -315,7 +319,6 @@ async function readShopView(
     locale,
     view: "wallet",
     head,
-    needsBinding: false,
     checkoutGeo: false,
     holdings: assetsView.holdings,
   });
@@ -382,7 +385,7 @@ export function createShopPlayerPageRouter(dispatch: (c: C, request: Request) =>
     const answer = (await answered.json().catch(() => ({}))) as DispatchAnswer;
     if (!answered.ok) {
       const flow = answer.error?.notice?.flow;
-      if (answered.status >= 500 || flow === "expired" || flow === "signin") {
+      if (answered.status >= 500 || flow === "expired" || flow === "signin" || (body.view !== "shop" && flow === "refresh")) {
         return c.json({ error: answer.error }, answered.status as never);
       }
       return c.json({

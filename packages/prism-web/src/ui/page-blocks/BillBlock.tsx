@@ -4,17 +4,16 @@ import type { PageBill } from "@prism/page-protocol";
 import { previewFromBillingInputs } from "../../browser-billing";
 import { BillTimeline, BillTotal, type BillPreview } from "../BillTimeline";
 import { displayDateTime } from "../bill-time";
+import { usePageContext } from "./page-context";
 
 export function BillBlock({ block }: { block: PageBill }) {
-  const [computed, setComputed] = useState<BillPreview | null>(() =>
-    block.mode === "settled" || !block.billingInputs ? ((block.preview as BillPreview | undefined) ?? null) : null,
-  );
+  const { refresh } = usePageContext();
+  const [computed, setComputed] = useState<BillPreview | null>(null);
   const [error, setError] = useState(false);
-  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (block.mode === "settled" || !block.billingInputs) {
-      setComputed((block.preview as BillPreview | undefined) ?? null);
+      setComputed(null);
       setError(false);
       return;
     }
@@ -32,10 +31,10 @@ export function BillBlock({ block }: { block: PageBill }) {
       cancelled = true;
       controller.abort();
     };
-  }, [block.mode, block.billingInputs, block.preview, attempt]);
+  }, [block.mode, block.billingInputs]);
 
   if (block.mode === "settled") {
-    const settled = computed;
+    const settled = (block.preview as BillPreview | undefined) ?? null;
     return (
       <div className="grid gap-5">
         <div className="receipt-status">
@@ -61,21 +60,23 @@ export function BillBlock({ block }: { block: PageBill }) {
     return (
       <div role="alert" className="text-coral">
         {block.labels.estimateError}
-        <button type="button" className="ml-3 underline" onClick={() => setAttempt((v) => v + 1)}>
+        {/* The inputs may be what is broken: read the page again for fresh ones. */}
+        <button type="button" className="ml-3 underline" onClick={refresh}>
           {block.labels.retryLabel}
         </button>
       </div>
     );
   }
 
-  if (!computed) {
+  const live = block.billingInputs ? computed : ((block.preview as BillPreview | undefined) ?? null);
+  if (!live) {
     return <Loader2 className="mx-auto animate-spin" size={24} />;
   }
 
   return (
     <div className="grid gap-5">
-      <BillTotal preview={computed} labels={block.labels} />
-      <BillTimeline preview={computed} timeZone={block.timeZone} labels={block.labels} />
+      <BillTotal preview={live} labels={block.labels} />
+      <BillTimeline preview={live} timeZone={block.timeZone} labels={block.labels} />
     </div>
   );
 }

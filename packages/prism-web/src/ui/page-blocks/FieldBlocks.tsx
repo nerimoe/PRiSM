@@ -17,8 +17,8 @@ export function InputBlock({ block }: { block: PageInputField }) {
     );
     if (matching.length !== 1) return false;
     const target = matching[0]!;
-    if (target.confirm || actions.blocked || !canSubmitButton(target, blocks, form.values)) return false;
-    void actions.run(target.id, target.action, buildButtonPayload(target, blocks, form.values), target.needsLocation, target.wait);
+    if (target.enabled === false || actions.blocked || !canSubmitButton(target, blocks, form.values)) return false;
+    actions.press(target.id);
     return true;
   };
   return (

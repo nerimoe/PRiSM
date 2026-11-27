@@ -21,8 +21,10 @@ export function PlayerPageBlocks({
   openTarget,
   loadMore,
   loadingMoreId,
+  loadMoreError,
   onCelebrate,
   onBusyChange,
+  disabled = false,
   bodyClassName = "device-controls",
   bodyPrefix,
   footerClassName,
@@ -37,8 +39,10 @@ export function PlayerPageBlocks({
   openTarget?: (target: PageTarget) => void;
   loadMore?: (blockId: string, target: PageTarget) => void;
   loadingMoreId?: string | null;
+  loadMoreError?: { blockId: string; message: string } | null;
   onCelebrate?: (celebration: PageCelebration, answer: ActionAnswer) => void;
   onBusyChange?: (busy: boolean) => void;
+  disabled?: boolean;
   bodyClassName?: string;
   bodyPrefix?: ReactNode;
   footerClassName?: string;
@@ -50,7 +54,7 @@ export function PlayerPageBlocks({
   const refresh = () => void read();
   const blocks = allPageBlocks(page);
   const form = usePageForm(blocks);
-  const actions = usePageActions({ blocks, act, onExpired, onRefresh: refresh, onCelebrate, cardsBusy });
+  const actions = usePageActions({ blocks, act, onExpired, onRefresh: refresh, onCelebrate, cardsBusy, disabled });
 
   useEffect(() => {
     onBusyChange?.(!!actions.busy);
@@ -59,7 +63,7 @@ export function PlayerPageBlocks({
   const contextValue = {
     page, ticket, form, actions, act, refresh, cardAsks, onExpired,
     setCardsBusy, addingCard, setAddingCard, soleBlockId, setSoleBlockId,
-    openTarget, loadMore, loadingMoreId,
+    openTarget, loadMore, loadingMoreId, loadMoreError,
   };
 
   const footerBlocks = page.footer && page.footer.length > 0 && (

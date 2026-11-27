@@ -32,6 +32,8 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   } | null>(null);
   const actionPending = useRef(false);
   const actionRevision = useRef(0);
+  const celebrating = useRef(false);
+  celebrating.current = pendingCelebration !== null;
 
   const syncPageState = useCallback(
     (next: Page) => {
@@ -44,6 +46,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
 
   useEffect(() => {
     setActiveShop(shopCode);
+    return () => setActiveShop("");
   }, [shopCode, setActiveShop]);
 
   useEffect(() => {
@@ -55,6 +58,8 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
   useEffect(() => {
     if (!pendingCelebration) return;
     const timer = setTimeout(() => {
+      celebrating.current = false;
+      actionRevision.current += 1;
       syncPageState(pendingCelebration.answer.page);
       setPendingCelebration(null);
     }, 1500);
@@ -63,11 +68,11 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
 
   usePagePolling(
     async (signal) => {
-      if (actionPending.current) return;
+      if (actionPending.current || celebrating.current) return;
       const revision = actionRevision.current;
       try {
         const current = await api<Page>(`${shopApi(shopCode, "player/page")}?view=shop`, { signal });
-        if (signal.aborted || actionPending.current || revision !== actionRevision.current) return;
+        if (signal.aborted || actionPending.current || celebrating.current || revision !== actionRevision.current) return;
         syncPageState(current);
         setError("");
       } catch (e) {
@@ -79,9 +84,9 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
         if (!signal.aborted) setBusy(false);
       }
     },
-    !loading && !pendingCelebration,
+    !loading,
     `${shopCode}:${locale}:${attempt}`,
-    !page || (!!user && page.blocks.some((block) => block.kind === "binding")),
+    !page || (!pendingCelebration && !!user && page.blocks.some((block) => block.kind === "binding")),
   );
 
   const act = useShopPageAct(
@@ -89,7 +94,7 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
     "shop",
     (answer) => {
       actionRevision.current += 1;
-      if (!answer.celebration) syncPageState(answer.page);
+      if (!(answer.ok && answer.celebration)) syncPageState(answer.page);
     },
     {
       onBeforeAct: () => {
@@ -122,9 +127,14 @@ function ShopSurface({ shopCode }: { shopCode: string }) {
             page={page}
             act={act}
             read={async () => setAttempt((value) => value + 1)}
+            disabled={pendingCelebration !== null}
             bodyClassName="shop-controls"
             footerClassName="shop-checkout"
-            onCelebrate={(celebration, answer) => setPendingCelebration({ celebration, answer })}
+            onCelebrate={(celebration, answer) => {
+              celebrating.current = true;
+              actionRevision.current += 1;
+              setPendingCelebration({ celebration, answer });
+            }}
           />
         )
       )}
