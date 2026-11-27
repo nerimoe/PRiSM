@@ -15,7 +15,7 @@ import {
  * opens, when told it changed, on coming back to the foreground, and every minute
  * while visible in case a push was lost. An action answers with the page too.
  */
-export function usePlayerPage(ticket: string, onExpired: () => void) {
+export function usePlayerPage(ticket: string, onExpired: (notice?: import("../api").Notice) => void) {
   const { user, setActiveShop, setBillingActive, setAccountMenu } = useAuth();
   const { locale } = useI18n();
   const [page, setPage] = useState<Page | null>(null);
@@ -56,10 +56,10 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
     } catch (caught) {
       if (state.stopped) return;
       setSlow(false);
-      if (caught instanceof ApiError && caught.sessionExpired) return onExpired();
+      if (caught instanceof ApiError && caught.sessionExpired) return onExpired(caught.notice ?? undefined);
       if (!state.opened) {
         pageReport.openFailed();
-        setFailure(caught instanceof TypeError ? "网络连接失败，请检查网络后重试" : "这台机台暂时不可用，请稍后重试");
+        setFailure(caught instanceof ApiError && caught.notice ? caught.notice.body : caught instanceof TypeError ? "网络连接失败，请检查网络后重试" : "这台机台暂时不可用，请稍后重试");
       }
       // A page already showing stays as it is; the next read tries again.
     } finally {
@@ -89,7 +89,8 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
           const result = await api<ActionAnswer>("/api/v1/devices/session/action", {
             method: "POST", signal, body: JSON.stringify({ ticket, operationId, action, payload, location }),
           });
-          if (result.notices.some((notice) => notice.code === "OPERATION_PENDING")) throw new StillRunning();
+          const pending = result.notices.find((notice) => notice.code === "OPERATION_PENDING");
+          if (pending) throw new StillRunning(pending);
           return result;
         },
         { ...ACTION_RETRY, onRetry: () => setSlow(true) },
@@ -101,7 +102,8 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
       return answer;
     } catch (caught) {
       unanswered.settleOnError(key, caught);
-      if (caught instanceof ApiError && caught.sessionExpired) onExpired();
+      if (caught instanceof TypeError) throw new ApiError("网络异常，请先确认操作结果", 0, "DEVICE_RESULT_UNKNOWN");
+      if (caught instanceof ApiError && caught.sessionExpired) onExpired(caught.notice ?? undefined);
       throw caught;
     } finally {
       setSlow(false);

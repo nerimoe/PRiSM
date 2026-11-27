@@ -8,12 +8,12 @@
  *
  * All data is synthetic.
  */
-import { notice } from "../packages/server/src/notices";
+import { notice, noticeCodes } from "../packages/server/src/notices";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pageCode, renderPage, type PageInput } from "../packages/server/src/resources/page";
 import { checkoutCelebration } from "../packages/server/src/resources/page-blocks/bill";
-import { translator } from "../packages/server/src/resources/page-text";
+import { renderBindingPromptLines, translator } from "../packages/server/src/resources/page-text";
 import { pageUi } from "../packages/server/src/resources/page-ui";
 import { renderAccountSheetPage, renderShopPage, type ShopPageHead } from "../packages/server/src/resources/shop-page";
 
@@ -179,14 +179,49 @@ const shopPages = {
 };
 
 mkdirSync(resolve(outDir), { recursive: true });
+const binding = { code: "ABC12345", expiresAt: new Date(Date.now() + 3_600_000).toISOString(), lines: renderBindingPromptLines("zh", null, "ABC12345") };
 const code = pageCode("zh", { temporaryPassword: "12345678", expiresAt: "2999-01-01T00:00:00Z" });
 const celebration = checkoutCelebration(translator("zh"));
-const noticeCodes = [
-  "RATE_LIMITED", "INSUFFICIENT_BALANCE", "DEVICE_UNAVAILABLE", "DOOR_CODE_FAILED",
-  "COIN_COOLDOWN", "COIN_SENT", "COIN_FAILED", "CARD_SENT", "LOCATION_STILL_INSIDE",
-  "REDEEM_CODE_NOT_FOUND", "PLAYER_OPTIONS_SAVED", "DEVICE_RESULT_UNKNOWN",
-];
-const notices = Object.fromEntries(noticeCodes.map((code) => [code, notice(code, "zh")]));
-const noticesEn = Object.fromEntries(noticeCodes.map((code) => [code, notice(code, "en")]));
-writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, shopPages, code, celebration, notices, noticesEn }, null, 2)}\n`);
+const notices = Object.fromEntries(noticeCodes().map((code) => [code, notice(code, "zh")]));
+const noticesEn = Object.fromEntries(noticeCodes().map((code) => [code, notice(code, "en")]));
+const screenshots = noticeCodes().map((code) => {
+  const item = notice(code, "zh");
+  const card = code.startsWith("CARD_") || ["COIN_FAILED", "COIN_UNKNOWN", "COIN_SKIPPED"].includes(code);
+  const flowPages: Record<string, string> = {
+    PLATFORM_BINDING_REQUIRED: "binding", CHECKIN_REQUIRED: "entryDoor",
+    AUTHENTICATION_REQUIRED: "signin", UNAUTHORIZED: "signin",
+  };
+  return {
+    code, body: item.body, display: item.display, presentation: item.presentation ?? "flow",
+    page: flowPages[code] ?? (item.presentation === "field" ? "redeemForm" : item.presentation === "control" ? "cardsCapture" : "door"),
+    action: flowPages[code] ? "none" : card ? "card" : item.presentation === "field" ? "redeem" : item.presentation === "control" ? "coin" : "door",
+    notices: card && code.startsWith("COIN_") ? ["CARD_SENT", code] : [code],
+  };
+});
+const captureBlock = pages.cardsCapture.blocks.find((block) => block.kind === "cards")!;
+if (captureBlock.kind !== "cards" || !captureBlock.captureUi) throw new Error("Capture fixture is missing");
+const captureUi = captureBlock.captureUi;
+const captureScreenshots = [
+  ["CAPTURE_STARTING", captureUi.startingText, "starting"],
+  ["CAPTURE_WAITING", captureUi.waitingText, "waiting"],
+  ["CAPTURE_ADDED", captureUi.outcomes.added, "added"],
+  ["CAPTURE_TAKEN", captureUi.outcomes.taken, "taken"],
+  ["CAPTURE_UNSUPPORTED", captureUi.outcomes.unsupported, "unsupported"],
+  ["CAPTURE_EXPIRED", captureUi.outcomes.expired, "expired"],
+  ["CAPTURE_LEFT_PAGE", captureUi.leftPageText, "left"],
+].map(([code, body, captureStatus]) => ({
+  code, body, captureStatus, page: "cardsCapture", action: "capture",
+  display: "inline", presentation: "capture", notices: [],
+}));
+const stateScreenshots = [
+  ["STATE_EMPTY", "empty"], ["STATE_DISABLED", "disabled"], ["STATE_ENTRY", "entryDoor"],
+  ["STATE_ENTRY_ERROR", "entryError"], ["STATE_IO_WAITING", "ioWaiting"], ["STATE_POWER_OFF", "powerOff"],
+  ["STATE_NO_CARDS", "cardsCapture"], ["STATE_CARDS_LOADING", "cardsCapture"], ["STATE_CARDS_ERROR", "cardsCapture"],
+].map(([code, page]) => ({
+  code, page, action: "none", display: "none", presentation: "page", notices: [],
+  body: code === "STATE_NO_CARDS" ? captureBlock.empty.text : code === "STATE_CARDS_LOADING" ? captureBlock.loadingLabel
+    : code === "STATE_CARDS_ERROR" ? captureBlock.loadError.title : "",
+}));
+const allScreenshots = [...screenshots, ...captureScreenshots, ...stateScreenshots];
+writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, shopPages, code, celebration, notices, noticesEn, screenshots: allScreenshots, binding }, null, 2)}\n`);
 console.log(`wrote ${Object.keys(pages).length} pages and ${Object.keys(shopPages).length} shop pages to ${join(outDir, "pages.json")}`);

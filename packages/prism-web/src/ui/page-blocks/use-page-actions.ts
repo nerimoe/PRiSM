@@ -36,7 +36,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
   const latestBlocks = useRef(blocks);
   latestBlocks.current = blocks;
   const showAt = useCallback((id: string, next: Notice) => {
-    const onControl = answersOnButton(latestBlocks.current, id);
+    const onControl = answersOnButton(latestBlocks.current, id) && (!next.presentation || next.presentation === "control");
     if (next.presentation === "toast" && !onControl) {
       showNote(null);
       showNotice(next);
@@ -53,7 +53,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
     if (!waiting) return;
     const timer = setTimeout(() => {
       setWaiting(null);
-      showAt(waiting.id, localNote(waiting.timeoutMessage));
+      showAt(waiting.id, waiting.notice ?? localNote(waiting.timeoutMessage));
     }, waiting.ms);
     return () => clearTimeout(timer);
   }, [waiting, showAt]);
@@ -132,7 +132,8 @@ export function useShopPageAct(
               signal,
               body: JSON.stringify({ view, operationId, action, payload, location }),
             });
-            if (result.notices.some((notice) => notice.code === "OPERATION_PENDING")) throw new StillRunning();
+            const pending = result.notices.find((notice) => notice.code === "OPERATION_PENDING");
+            if (pending) throw new StillRunning(pending);
             return result;
           },
           { ...ACTION_RETRY },
@@ -142,6 +143,7 @@ export function useShopPageAct(
         return answer;
       } catch (caught) {
         unanswered.settleOnError(key, caught);
+        if (caught instanceof TypeError) throw new ApiError("网络异常，请先确认操作结果", 0, "DEVICE_RESULT_UNKNOWN");
         throw caught;
       } finally {
         latest.current.options?.onPendingChange?.(false);

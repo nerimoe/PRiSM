@@ -23,6 +23,14 @@ export function noticeLasts(level: Notice["level"], onControl = false): number |
   return onControl ? 5000 : null;
 }
 
+/** New responses supply timing; legacy responses keep their original lifetime. */
+export function noticeDuration(note: Notice, onControl = false): number | null {
+  if (onControl && note.controlDurationMs !== undefined) return note.controlDurationMs;
+  if (!onControl && note.durationMs !== undefined) return note.durationMs;
+  if (!onControl && (note.presentation === "status" || note.presentation === "field")) return null;
+  return noticeLasts(note.level, onControl || note.presentation === "toast");
+}
+
 /** The one look of a notice shown next to what the player touched: a tinted strip with an icon. */
 export function InlineNoticeLine({ note }: { note: Notice }) {
   return (

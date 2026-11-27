@@ -38,13 +38,17 @@ export function useCardCapture({ block, ticket, cardAsks, onAdded }: {
   useEffect(() => {
     if (!waitingForCard) return;
     const left = () => {
-      if (document.visibilityState !== "hidden") return;
       cancelCapture();
       setCapture({ phase: "done", level: "error", message: leftPageText });
     };
-    left();
-    document.addEventListener("visibilitychange", left);
-    return () => document.removeEventListener("visibilitychange", left);
+    const hidden = () => { if (document.visibilityState === "hidden") left(); };
+    hidden();
+    document.addEventListener("visibilitychange", hidden);
+    window.addEventListener("pagehide", left);
+    return () => {
+      document.removeEventListener("visibilitychange", hidden);
+      window.removeEventListener("pagehide", left);
+    };
   }, [waitingForCard, cancelCapture, leftPageText]);
 
   // Leaving the page gives the window up.

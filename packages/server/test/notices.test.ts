@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { errorNotice, notice, requestLocale } from "../src/notices.js";
+import { clientNotices, errorNotice, notice, noticeCodes, requestLocale } from "../src/notices.js";
 import { wrapApiResponse } from "../src/middleware/response-time.js";
 
 describe("player notices", () => {
@@ -41,6 +41,19 @@ describe("player notices", () => {
       for (const code of codes) expect(notice(code, "zh")).toMatchObject({ display: "inline", presentation });
     }
     expect(errorNotice({ code: "INTERNAL_ERROR", message: "internal", status: 500 }, "zh")).toMatchObject({ display: "inline", presentation: "toast" });
+  });
+
+  it("sends timing and client-failure instructions from the same catalog", () => {
+    for (const code of noticeCodes()) {
+      const item = notice(code, "zh");
+      expect(item.controlDurationMs).toBeGreaterThan(0);
+      expect(item.durationMs === null || typeof item.durationMs === "number").toBe(true);
+      if (item.presentation === "status" || item.presentation === "field" || item.display !== "inline") expect(item.durationMs).toBeNull();
+    }
+    expect(notice("COIN_SENT", "zh")).toMatchObject({ durationMs: 3000, controlDurationMs: 3000 });
+    expect(notice("COIN_FAILED", "zh")).toMatchObject({ durationMs: null, controlDurationMs: 5000 });
+    const cached = clientNotices("en");
+    for (const [code, item] of Object.entries(cached)) expect(item).toEqual(notice(code, "en"));
   });
 
   it("lets the client move on by itself where there is nothing to read", () => {

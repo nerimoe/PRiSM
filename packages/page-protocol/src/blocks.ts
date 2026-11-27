@@ -9,6 +9,22 @@
  * field, a spinner) survives. Text is already in the player's language.
  */
 
+/** A localized interaction instruction from the server, also cached for client-side failures. */
+export type PageNotice = {
+  code: string;
+  level: "success" | "info" | "error";
+  display: "dialog" | "inline" | "none";
+  presentation?: "status" | "field" | "control" | "toast";
+  flow: "none" | "expired" | "refresh" | "signin";
+  title: string | null;
+  body: string;
+  actions: { kind: "dismiss" | "retry"; label: string }[];
+  /** null keeps the message until updated; missing supports older servers. */
+  durationMs?: number | null;
+  /** Hold a button result and disable that button for this long. Card errors can stay longer. */
+  controlDurationMs?: number;
+};
+
 /** What a climate entity is doing and what it offers. */
 export type ClimateState = {
   /** `off`, or the running HVAC mode such as `cool`, `heat`, `dry`, `fan_only`, `auto`. */
@@ -62,7 +78,7 @@ export type PageButtonConfirm = {
   destructive?: boolean;
 };
 
-export type PageButtonWait = { ms: number; timeoutMessage: string };
+export type PageButtonWait = { ms: number; timeoutMessage: string; notice?: PageNotice };
 
 export type PageButton = {
   kind: "button";
@@ -465,6 +481,7 @@ export type Page = {
   title?: string;
   backLabel?: string;
   accountMenu?: PageAccountMenu;
+  clientNotices?: Record<string, PageNotice>;
   blocks: PageBlock[];
   footer?: PageBlock[];
 };

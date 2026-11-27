@@ -1,7 +1,7 @@
 import { formatOffsetTimestamp, timestampDisplayParts, visiblePlayerOptionDefinitions, type PlayerOptionKey } from "@prism/core";
 import type { Page, PageBlock, PageKeyValueIcon, PageKeyValueItem, PageListItem, PageTone } from "@prism/page-protocol";
 import type { CheckoutHistoryRecord } from "@prism/application";
-import type { Locale } from "../notices.js";
+import { clientNotices, type Locale } from "../notices.js";
 import type { AccountPlatformIdentity } from "./platform-identities.js";
 import { accountMenuFor, bindingBlock, disabledBlock, signInBlock } from "./page-blocks/account.js";
 import { checkoutButton, liveBillBlock, settledBillBlock, type SettledBillReceipt } from "./page-blocks/bill.js";
@@ -258,6 +258,7 @@ export function renderShopPage(input: ShopPageInput): Page {
     : undefined;
 
   return {
+    clientNotices: clientNotices(input.locale),
     shop: head.shop,
     shopCode: head.shopCode,
     heroUrl: head.heroUrl,
@@ -386,6 +387,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
   }
 
   return {
+    clientNotices: clientNotices(input.locale),
     shop: head.shop,
     shopCode: head.shopCode,
     heroUrl: head.heroUrl,

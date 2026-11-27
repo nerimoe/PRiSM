@@ -1,12 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ApiError, type Notice } from "../api";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ApiError, InlineError, type Notice } from "../api";
 import { useI18n } from "../i18n";
-import { InlineNoticeLine, noticeLasts } from "./page-blocks/notices";
+import { InlineNoticeLine, noticeDuration } from "./page-blocks/notices";
 import { PlayerDialog } from "./PlayerAccount";
 
 /** What a caller can do for the flows a notice may ask for. */
 export type NoticeHandlers = {
-  onExpired?: () => void;
+  onExpired?: (notice?: Notice) => void;
   onRefresh?: () => void;
   retry?: () => void;
   /** A read the player did not ask for (polling, a reload after an action): run the flow, never open a dialog. */
@@ -16,7 +16,7 @@ export type NoticeHandlers = {
 
 type Show = (error: unknown, handlers?: NoticeHandlers) => Notice;
 
-const NoticeContext = createContext<Show | null>(null);
+const NoticeContext = createContext<{ show: Show; preload: (templates: Record<string, Notice>) => void } | null>(null);
 
 /**
  * The one place player-facing problems are presented. The server decides how
@@ -26,18 +26,24 @@ const NoticeContext = createContext<Show | null>(null);
 export function NoticeProvider({ children }: { children: ReactNode }) {
   const { t, errorText } = useI18n();
   const [open, setOpen] = useState<{ notice: Notice; retry?: () => void } | null>(null);
+  const templates = useRef<Record<string, Notice>>({});
+  const preload = useCallback((next: Record<string, Notice>) => { templates.current = next; }, []);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState<Notice | null>(null);
   useEffect(() => {
     if (!toast) return;
-    const timer = setTimeout(() => setToast(null), noticeLasts(toast.level, true) ?? 5000);
+    const timer = setTimeout(() => setToast(null), noticeDuration(toast) ?? 5000);
     return () => clearTimeout(timer);
   }, [toast]);
   const show = useCallback<Show>((error, handlers = {}) => {
+    const localCode = error instanceof ApiError || error instanceof InlineError ? error.code
+      : error instanceof TypeError ? "CLIENT_NETWORK_ERROR" : "CLIENT_OPERATION_FAILED";
+    const cached = templates.current[localCode ?? "CLIENT_OPERATION_FAILED"];
     const notice: Notice = error instanceof ApiError && error.notice
       ? error.notice
       : isNotice(error)
         ? error
-        : {
+        : cached ?? {
             // Problems found on this device (no location, no network) have no server notice.
             code: "CLIENT",
             level: "error",
@@ -48,7 +54,7 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
             body: errorText(error),
             actions: [{ kind: "dismiss", label: t("知道了") }],
           };
-    if (notice.flow === "expired") handlers.onExpired?.();
+    if (notice.flow === "expired") handlers.onExpired?.(notice);
     else if (notice.flow === "refresh") handlers.onRefresh?.();
     else if (notice.flow === "signin") window.location.reload();
     if (!handlers.quiet) {
@@ -61,9 +67,27 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
   }, [errorText, t]);
   const close = () => setOpen(null);
   return (
-    <NoticeContext.Provider value={show}>
+    <NoticeContext.Provider value={{ show, preload }}>
       {children}
-      {toast && <div className="player-toast"><InlineNoticeLine note={toast} /></div>}
+      {toast && <div className="player-toast"
+        onPointerDown={(event) => {
+          swipeStart.current = { x: event.clientX, y: event.clientY };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const start = swipeStart.current;
+          if (start) event.currentTarget.style.transform = `translateX(-50%) translate(${event.clientX - start.x}px, ${Math.min(0, event.clientY - start.y)}px)`;
+        }}
+        onPointerUp={(event) => {
+          event.currentTarget.style.transform = "";
+          const start = swipeStart.current;
+          swipeStart.current = null;
+          if (start && (Math.abs(event.clientX - start.x) > 60 || event.clientY - start.y < -20)) setToast(null);
+        }}
+        onPointerCancel={(event) => { swipeStart.current = null; event.currentTarget.style.transform = ""; }}
+        onKeyDown={(event) => { if (event.key === "Escape") setToast(null); }}
+        tabIndex={0}
+      ><InlineNoticeLine note={toast} /></div>}
       {open && (
         <PlayerDialog title={open.notice.title ?? t("操作失败")} onClose={close}>
           <p className="text-sm leading-relaxed">{open.notice.body}</p>
@@ -96,7 +120,13 @@ function isNotice(value: unknown): value is Notice {
 export function useNotice(): Show {
   const show = useContext(NoticeContext);
   if (!show) throw new Error("useNotice must be used inside NoticeProvider");
-  return show;
+  return show.show;
+}
+
+/** Cache only server-authored templates, so action failures can still be explained offline. */
+export function useNoticeTemplates(templates: Record<string, Notice> | undefined) {
+  const context = useContext(NoticeContext);
+  useEffect(() => { if (templates) context?.preload(templates); }, [context?.preload, templates]);
 }
 
 /**
@@ -110,8 +140,7 @@ export function useInlineNotice() {
     if (timer.id) clearTimeout(timer.id);
     timer.id = 0;
     setNote(next);
-    const persistent = !onControl && (next?.presentation === "status" || next?.presentation === "field");
-    const lasts = next && !persistent ? noticeLasts(next.level, onControl || next.presentation === "toast") : null;
+    const lasts = next && noticeDuration(next, onControl);
     if (lasts) timer.id = setTimeout(() => setNote(null), lasts);
   }, [timer]);
   return [note, showNote] as const;

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import type { Notice } from "../api";
 import { useI18n } from "../i18n";
 import { PlayerPageBlocks } from "./PlayerPageBlocks";
 import { StatusView } from "./page-blocks/StatusView";
@@ -13,14 +14,18 @@ export function ResourcePage() {
   const { hash } = useLocation();
   const ticket = new URLSearchParams(hash.slice(1)).get("ticket") || searchParams.get("ticket") || paramTicket || publicId;
   const [expiredTicket, setExpiredTicket] = useState<string | null>(null);
-  const onExpired = useCallback(() => setExpiredTicket(ticket), [ticket]);
+  const [expiredNotice, setExpiredNotice] = useState<Notice | undefined>();
+  const onExpired = useCallback((notice?: Notice) => {
+    setExpiredTicket(ticket);
+    setExpiredNotice(notice);
+  }, [ticket]);
   const expired = expiredTicket === ticket ||
     window.location.pathname === "/m/expired" ||
     searchParams.get("expired") === "1";
-  return expired || !ticket ? <ResourceExpiredPage /> : <ResourceSession key={ticket} ticket={ticket} onExpired={onExpired} />;
+  return expired || !ticket ? <ResourceExpiredPage notice={expiredNotice} /> : <ResourceSession key={ticket} ticket={ticket} onExpired={onExpired} />;
 }
 
-function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: () => void }) {
+function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: (notice?: Notice) => void }) {
   const { t, errorText } = useI18n();
   const { page, failure, slow, read, act, cardAsks } = usePlayerPage(ticket, onExpired);
   const slowNote = slow && <p className="session-subtitle text-center" role="status">{t("网络较慢，正在重试")}</p>;
@@ -48,11 +53,11 @@ function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: () 
   );
 }
 
-function ResourceExpiredPage() {
+function ResourceExpiredPage({ notice }: { notice?: Notice }) {
   const { t } = useI18n();
   return (
     <section className="machine-session session-status">
-      <StatusView heading icon="expired" title={t("本次会话已失效")} detail={t("请重新碰一下 NFC 或重新扫描二维码。")} />
+      <StatusView heading icon="expired" title={notice?.title ?? t("本次会话已失效")} detail={notice?.body ?? t("请重新碰一下 NFC 或重新扫描二维码。")} />
     </section>
   );
 }

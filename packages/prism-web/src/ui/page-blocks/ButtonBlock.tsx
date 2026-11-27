@@ -38,7 +38,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
   const Icon = block.icon ? ICONS[block.icon] : null;
   const pressing = actions.busy?.id === block.id || actions.waitingId === block.id;
   const note = actions.noteFor(block.id);
-  const onButton = block.answerOnButton ? note : null;
+  const onButton = block.answerOnButton && (!note?.presentation || note.presentation === "control") ? note : null;
   const { code } = actions;
   const label = block.enabled && onButton ? onButton.body : code && block.againLabel ? block.againLabel : block.label;
   const style = block.style ? ` ${block.style}` : "";
@@ -59,7 +59,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
           <p>{code.hint}</p>
         </div>
       )}
-      {!block.answerOnButton && noticeAboveButton && note && <InlineNoticeLine note={note} />}
+      {!onButton && noticeAboveButton && note && <InlineNoticeLine note={note} />}
       <button
         className={`session-action${style}`}
         data-level={onButton?.level}
@@ -72,7 +72,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
           : Icon ? <Icon size={22} /> : null}{" "}
         {label}
       </button>
-      {!block.answerOnButton && !noticeAboveButton && note && <InlineNoticeLine note={note} />}
+      {!onButton && !noticeAboveButton && note && <InlineNoticeLine note={note} />}
       {/* Outside the page's grid, whose heading styles would reach into the dialog. */}
       {confirming && block.confirm && createPortal(
         <PlayerDialog title={block.confirm.title} dismissDisabled={!!actions.busy} onClose={() => setConfirming(false)}>

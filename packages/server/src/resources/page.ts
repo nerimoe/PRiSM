@@ -1,5 +1,5 @@
 import type { ClimateState, Page, PageBlock, PageCode } from "@prism/page-protocol";
-import type { Locale } from "../notices.js";
+import { clientNotices, type Locale } from "../notices.js";
 import { accountMenuFor, bindingBlock, disabledBlock, signInBlock } from "./page-blocks/account.js";
 import { cardsBlock } from "./page-blocks/cards.js";
 import { climateBlock } from "./page-blocks/climate.js";
@@ -61,7 +61,7 @@ export function renderPage(input: PageInput): Page {
       shopMenuAvailable: input.gate !== "binding" && input.gate !== "disabled" && !input.needsBinding,
     })
     : undefined;
-  return { ...head, billingActive, offerPasskeySetup, ...(accountMenu ? { accountMenu } : {}), blocks };
+  return { ...head, clientNotices: clientNotices(input.locale), billingActive, offerPasskeySetup, ...(accountMenu ? { accountMenu } : {}), blocks };
 }
 
 function pageBlocks(input: PageInput): PageBlock[] {
@@ -77,7 +77,7 @@ function pageBlocks(input: PageInput): PageBlock[] {
   const blocks: PageBlock[] = [];
   if (cap.door) blocks.push(doorButton(t, geo.checkin));
   if (cap.climate) blocks.push(climateBlock(input.climate, geo.machine, input.locale, t));
-  if (cap.power && input.power === "off") return [...blocks, ...powerOffBlocks(t, geo.machine)];
+  if (cap.power && input.power === "off") return [...blocks, ...powerOffBlocks(t, geo.machine, input.locale)];
   if (cap.table && input.table) blocks.push(...tableBlocks(input.table, t, geo.machine));
   if ((cap.card || cap.coin) && input.ioWaiting)
     return [...blocks, pageUi.status("io-waiting", "waiting", t("等待机台连接"))];

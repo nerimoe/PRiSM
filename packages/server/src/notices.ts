@@ -17,6 +17,8 @@
  *
  * `flow` names one of a few behaviours every client has built in.
  */
+import type { PageNotice } from "@prism/page-protocol";
+
 export type NoticeLevel = "success" | "info" | "error";
 export type NoticePresentation = "status" | "field" | "control" | "toast";
 export type NoticeDisplay = "dialog" | "inline" | "none";
@@ -24,16 +26,7 @@ export type NoticeDisplay = "dialog" | "inline" | "none";
 export type NoticeFlow = "none" | "expired" | "refresh" | "signin";
 export type NoticeAction = { kind: "dismiss" | "retry"; label: string };
 
-export type Notice = {
-  code: string;
-  level: NoticeLevel;
-  display: NoticeDisplay;
-  presentation?: NoticePresentation;
-  flow: NoticeFlow;
-  title: string | null;
-  body: string;
-  actions: NoticeAction[];
-};
+export type Notice = PageNotice;
 
 export type Locale = "zh" | "en";
 
@@ -51,9 +44,15 @@ type Entry = {
 
 const t = (zh: string, en: string): Text => ({ zh, en });
 
+export function noticeCodes(): string[] { return Object.keys(CATALOG); }
+
 const CATALOG: Record<string, Entry> = {
+  LOCATION_UNAVAILABLE: { presentation: "toast", body: t("定位获取失败，请重试", "Could not get location. Retry."), level: "error" },
+  CLIENT_NETWORK_ERROR: { presentation: "toast", body: t("网络连接失败，请检查网络后重试", "Network connection failed. Check your connection and try again."), level: "error" },
+  CLIENT_OPERATION_FAILED: { presentation: "toast", body: t("操作失败，请稍后重试", "Something went wrong. Please try again."), level: "error" },
+  POWER_WAIT_TIMEOUT: { presentation: "toast", body: t("未检测到开机，请重试", "Power-on was not detected. Please try again."), level: "error" },
   // The page itself moves on; nothing to read.
-  TICKET_EXPIRED: { body: t("本次会话已失效，请重新扫码", "This session has ended. Please scan again."), display: "none", flow: "expired" },
+  TICKET_EXPIRED: { title: t("本次会话已失效", "This session has expired"), body: t("请重新碰一下 NFC 或重新扫描二维码。", "Tap the NFC tag or scan the QR code again."), display: "none", flow: "expired" },
   PLATFORM_BINDING_REQUIRED: { body: t("请先绑定平台身份", "Please link your platform account first."), display: "none", flow: "refresh" },
   CHECKIN_REQUIRED: { body: t("请先确认入场", "Please check in first."), display: "none", flow: "refresh" },
   AUTHENTICATION_REQUIRED: { body: t("请先登录", "Please sign in."), display: "none", flow: "signin" },
@@ -149,9 +148,15 @@ export function hasNotice(code: string): boolean {
 
 function build(code: string, entry: Entry, locale: Locale, body?: string): Notice {
   const display = entry.display ?? (entry.presentation ? "inline" : "dialog");
+  const level = entry.level ?? "error";
+  const duration = level === "success" ? 3000 : level === "info" ? 4000 : 5000;
+  const persistent = display !== "inline" || entry.presentation === "status" || entry.presentation === "field"
+    || entry.presentation === "control" && level === "error";
   return {
     code,
-    level: entry.level ?? "error",
+    level,
+    durationMs: persistent ? null : duration,
+    controlDurationMs: duration,
     display,
     ...(display === "inline" ? { presentation: entry.presentation ?? "status" as const } : {}),
     flow: entry.flow ?? "none",
@@ -181,4 +186,12 @@ export function errorNotice(input: { code: string; message: string; status: numb
   if (entry) return build(input.code, entry, locale);
   if (input.status < 500 && CJK.test(input.message)) return build(input.code, { body: t(input.message, input.message), level: "error", display: "inline", presentation: "status" }, locale);
   return build(input.code, GENERIC, locale);
+}
+
+/** Preloaded instructions remain available when location or the network fails on the client. */
+export function clientNotices(locale: Locale): Record<string, Notice> {
+  return Object.fromEntries([
+    "TICKET_EXPIRED", "LOCATION_REQUIRED", "LOCATION_UNAVAILABLE", "CLIENT_NETWORK_ERROR", "CLIENT_OPERATION_FAILED",
+    "DEVICE_RESULT_UNKNOWN", "INSUFFICIENT_BALANCE", "RATE_LIMITED", "POWER_WAIT_TIMEOUT",
+  ].map((code) => [code, notice(code, locale)]));
 }

@@ -29,7 +29,9 @@ export const FRESH_READ_MS = 3000;
 const RECONNECT_MS = [1000, 3000, 5000, 10_000, 20_000, 30_000, 60_000];
 
 /** Ask again: the operation is still running on the server. */
-export class StillRunning extends Error {}
+export class StillRunning extends Error {
+  constructor(readonly notice?: Notice) { super(notice?.body); }
+}
 
 /**
  * Runs `attempt`, starting over when it times out or no answer came. An answer,
@@ -50,7 +52,10 @@ export async function withRetries<T>(
       if (options.signal?.aborted) throw error;
       const unanswered = controller.signal.aborted || error instanceof TypeError || error instanceof StillRunning;
       if (!unanswered) throw error;
-      if (tried >= options.attempts) throw new TypeError("网络连接失败，请检查网络后重试");
+      if (tried >= options.attempts) {
+        if (error instanceof StillRunning && error.notice) throw new ApiError(error.message, 409, error.notice.code, undefined, undefined, error.notice);
+        throw new TypeError("网络连接失败，请检查网络后重试");
+      }
     } finally {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", stop);

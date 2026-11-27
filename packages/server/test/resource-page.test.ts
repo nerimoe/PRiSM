@@ -184,7 +184,7 @@ describe("what the page shows", () => {
     expect(enCards.loadError.actions.map((a: any) => a.label)).toEqual(["Refresh"]);
 
     const power = block({ ...caps("power"), power: "off" }, "power");
-    expect(power.wait).toEqual({ ms: 15_000, timeoutMessage: "未检测到开机，请重试" });
+    expect(power.wait).toMatchObject({ ms: 15_000, timeoutMessage: "未检测到开机，请重试", notice: { code: "POWER_WAIT_TIMEOUT", presentation: "toast", durationMs: 5000 } });
 
     const signIn = block({ ...caps("coin"), signedIn: false }, "signin");
     expect(signIn.methods.map((m: any) => m.provider)).toEqual(["munet", "passkey"]);

@@ -469,19 +469,12 @@ export type Passkey = {
  * What the server wants the player told, and how: `dialog` interrupts, `inline`
  * belongs next to what they touched, `none` only runs `flow`.
  */
-export type Notice = {
-  code: string;
-  level: "success" | "info" | "error";
-  display: "dialog" | "inline" | "none";
-  presentation?: "status" | "field" | "control" | "toast";
-  flow: "none" | "expired" | "refresh" | "signin";
-  title: string | null;
-  body: string;
-  actions: { kind: "dismiss" | "retry"; label: string }[];
-};
+export type Notice = import("@prism/page-protocol").PageNotice;
 
 /** A problem found on this device that is part of normal use (no location fix yet): shown inline. */
-export class InlineError extends Error {}
+export class InlineError extends Error {
+  constructor(message: string, readonly code = "LOCATION_UNAVAILABLE") { super(message); }
+}
 
 export class ApiError extends Error {
   constructor(

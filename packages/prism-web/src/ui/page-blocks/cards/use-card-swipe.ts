@@ -6,7 +6,7 @@ import { noticeLasts } from "../notices";
 import { usePageContext } from "../page-context";
 
 /** A swipe's outcome on its row: the card's part, then the coin's, each with its own level. */
-export type SwipeFeedback = { cardId: string; parts: Pick<Notice, "level" | "body">[] };
+export type SwipeFeedback = { cardId: string; parts: Pick<Notice, "level" | "body" | "durationMs">[] };
 
 /** The row as a whole reads as its worst part: an error, else news, else a success. */
 export const worstLevel = (parts: Pick<Notice, "level">[]): Notice["level"] =>
@@ -27,7 +27,9 @@ export function useCardSwipe({ block, onRefused }: {
   const showFeedback = (next: SwipeFeedback | null) => {
     clearTimeout(timer.current);
     setFeedback(next);
-    const lasts = next && noticeLasts(worstLevel(next.parts));
+    const durations = next?.parts.map((part) => part.durationMs !== undefined ? part.durationMs : noticeLasts(part.level));
+    const lasts = durations?.length && durations.every((duration) => duration !== null)
+      ? Math.max(...durations as number[]) : null;
     if (lasts) timer.current = setTimeout(() => setFeedback(null), lasts);
   };
 

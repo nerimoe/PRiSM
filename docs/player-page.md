@@ -239,3 +239,11 @@ WebSocket 不保证送达，所以页面在回到前台时、以及可见期间�
 ## 旧接口
 
 `/session/state`、`/session/bootstrap`、`/session/device`、`/session/actions` 与旧 `/shops/:shopCode/player/*`（`me`、`billing-inputs`、`assets`、`checkouts/*`、`checkout/*`、`redeem`）全部保留，已发布的 App Clip 继续用它们。
+
+## 服务端提示与两端截图检查
+
+页面通过 `clientNotices` 预下发定位、网络和结果不确定等客户端故障的完整提示，按钮 `wait.notice` 下发超时提示。`durationMs` 决定常规展示时长，`controlDurationMs` 决定按钮反馈及禁用时间。明确的 `presentation` 优先于按钮的默认展示位置。首屏尚未取得页面、以及旧服务端缺少新字段时，客户端保留兼容兜底。
+
+Web 与 iOS 共用服务端生成的截图清单，覆盖 65 种目录提示和 16 种读卡、页面状态，共 81 个场景。截图通过实际渲染器展示合成数据。Web Toast 支持向上、向左和向右拖动关闭，向下保留；iOS 使用对应的原生拖动手势。离开页面会取消读卡并使用服务端下发的离开提示。
+
+服务端仍确认操作处理中时，两端保留原提示和操作 ID，等待后续查询结果。写操作断网且结果无法确认时，使用预下发的结果未知 Alert，避免玩家重复执行。

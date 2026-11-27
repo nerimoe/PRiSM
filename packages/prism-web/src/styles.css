@@ -1770,5 +1770,6 @@ button.credential-row:not(:disabled):active {
   width: max-content;
   max-width: calc(100vw - 32px);
   z-index: 100;
-  pointer-events: none;
+  pointer-events: auto;
+  touch-action: none;
 }

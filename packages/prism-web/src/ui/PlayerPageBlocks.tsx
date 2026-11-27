@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { allPageBlocks, type Page, type PageCelebration, type PageTarget } from "@prism/page-protocol";
+import { useNoticeTemplates } from "./NoticeProvider";
 import { BlockList } from "./page-blocks/BlockView";
 import { PageContext } from "./page-blocks/page-context";
 import { usePageActions, type Act } from "./page-blocks/use-page-actions";
@@ -48,6 +49,7 @@ export function PlayerPageBlocks({
   footerClassName?: string;
   wrapPasskey?: boolean;
 }) {
+  useNoticeTemplates(page.clientNotices);
   const [cardsBusy, setCardsBusy] = useState(false);
   const [addingCard, setAddingCard] = useState(false);
   const [soleBlockId, setSoleBlockId] = useState<string | null>(null);

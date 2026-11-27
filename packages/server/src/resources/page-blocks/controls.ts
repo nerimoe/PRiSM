@@ -1,3 +1,4 @@
+import { notice, type Locale } from "../../notices.js";
 import type { PageBlock, PageButton } from "@prism/page-protocol";
 import type { PageInput } from "../page.js";
 import type { Translate } from "../page-text.js";
@@ -10,10 +11,10 @@ export const doorButton = (t: Translate, needsLocation: boolean): PageButton =>
     againLabel: t("重新获取密码"), icon: "door", style: "primary", needsLocation,
   });
 
-export const powerOffBlocks = (t: Translate, needsLocation: boolean): PageBlock[] => [
+export const powerOffBlocks = (t: Translate, needsLocation: boolean, locale: Locale): PageBlock[] => [
   pageUi.text("power-off", t("设备尚未开机"), { style: "heading" }),
   pageUi.button("power", t("开机"), "power.on", {
-    icon: "power", style: "primary", wait: { ms: 15_000, timeoutMessage: t("未检测到开机，请重试") }, needsLocation,
+    icon: "power", style: "primary", wait: { ms: 15_000, timeoutMessage: t("未检测到开机，请重试"), notice: notice("POWER_WAIT_TIMEOUT", locale) }, needsLocation,
   }),
 ];
 

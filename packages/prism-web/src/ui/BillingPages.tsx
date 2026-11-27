@@ -112,12 +112,12 @@ export const post = (body: unknown = {}) => ({
 export async function operationLocation(required: boolean) {
   if (!required) return undefined;
   if (!navigator.geolocation)
-    throw new Error("当前浏览器不支持定位，请联系店员");
+    throw new InlineError("当前浏览器不支持定位，请联系店员", "LOCATION_REQUIRED");
   const position = await new Promise<GeolocationPosition>((resolve, reject) =>
     navigator.geolocation.getCurrentPosition(
       resolve,
       (error) => reject(error.code === error.PERMISSION_DENIED
-        ? new Error("需要定位权限才能确认你在店内")
+        ? new InlineError("需要定位权限才能确认你在店内", "LOCATION_REQUIRED")
         : new InlineError("定位获取失败，请重试")),
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 },
     ),

@@ -1,3 +1,5 @@
+import { noticeDuration } from "../src/ui/page-blocks/notices";
+import { notice } from "../../server/src/notices";
 import { describe, expect, test } from "bun:test";
 import {
   isPageChanged,
@@ -15,6 +17,20 @@ import { isShopAccountMenuPath } from "../src/ui/PlayerAccountMenu";
 const quick = { timeoutMs: 20, attempts: 3, waitMs: 1 };
 
 describe("asking over a line that may stall", () => {
+  test("uses the server lifetime for transient and button feedback", () => {
+    const result = { ...notice("COIN_SENT", "zh"), durationMs: 731, controlDurationMs: 947 };
+    expect(noticeDuration(result)).toBe(731);
+    expect(noticeDuration(result, true)).toBe(947);
+    expect(noticeDuration(notice("INVALID_REDEEM_CODE", "zh"))).toBeNull();
+  });
+
+  test("preserves a server pending notice when retries are exhausted", async () => {
+    const pending = notice("OPERATION_PENDING", "zh");
+    await expect(withRetries(async () => { throw new StillRunning(pending); }, quick)).rejects.toMatchObject({
+      code: "OPERATION_PENDING", notice: pending,
+    });
+  });
+
   test("gives up on an attempt that hangs and tries again", async () => {
     const retries: number[] = [];
     let calls = 0;
