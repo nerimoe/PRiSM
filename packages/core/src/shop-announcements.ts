@@ -249,6 +249,7 @@ export type AnnouncementSchedule = {
   id: string;
   enabled: boolean;
   time: string;
+  additionalTimes?: string[];
   text: string;
   date?: string;
   weekdays?: number[];

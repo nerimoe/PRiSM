@@ -28,6 +28,9 @@ describe("bot schedule helpers", () => {
 
   it("validates text, HH:mm time, YYYY-MM-DD date, and non-empty weekdays", () => {
     expect(isScheduleRuleInvalid(baseRule())).toBe(false);
+    expect(isScheduleRuleInvalid(baseRule({ additionalTimes: ["09:00", "13:00"] }))).toBe(false);
+    expect(isScheduleRuleInvalid(baseRule({ additionalTimes: ["18:00"] }))).toBe(true);
+    expect(isScheduleRuleInvalid(baseRule({ additionalTimes: [""] }))).toBe(true);
     expect(isScheduleRuleInvalid(baseRule({ weekdays: [5, 6] }))).toBe(false);
     expect(isScheduleRuleInvalid(baseRule({ date: "2026-12-01" }))).toBe(false);
 

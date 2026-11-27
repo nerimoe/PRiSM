@@ -17,9 +17,11 @@ export function scheduleMode(rule: AnnouncementSchedule): ScheduleRepeatMode {
 
 /** Returns true when a schedule rule lacks valid text, time, date, or weekdays. */
 export function isScheduleRuleInvalid(rule: AnnouncementSchedule): boolean {
+  const times = [rule.time, ...rule.additionalTimes ?? []];
   return (
     !rule.text.trim() ||
-    !/^([01]\d|2[0-3]):[0-5]\d$/.test(rule.time) ||
+    times.some(time => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) ||
+    new Set(times).size !== times.length ||
     (rule.date !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(rule.date)) ||
     (rule.weekdays !== undefined && rule.weekdays.length === 0)
   );
