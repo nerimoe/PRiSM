@@ -473,6 +473,7 @@ export type Notice = {
   code: string;
   level: "success" | "info" | "error";
   display: "dialog" | "inline" | "none";
+  presentation?: "status" | "field" | "control" | "toast";
   flow: "none" | "expired" | "refresh" | "signin";
   title: string | null;
   body: string;

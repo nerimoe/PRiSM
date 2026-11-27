@@ -8,6 +8,7 @@
  *
  * All data is synthetic.
  */
+import { notice } from "../packages/server/src/notices";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pageCode, renderPage, type PageInput } from "../packages/server/src/resources/page";
@@ -180,5 +181,12 @@ const shopPages = {
 mkdirSync(resolve(outDir), { recursive: true });
 const code = pageCode("zh", { temporaryPassword: "12345678", expiresAt: "2999-01-01T00:00:00Z" });
 const celebration = checkoutCelebration(translator("zh"));
-writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, shopPages, code, celebration }, null, 2)}\n`);
+const noticeCodes = [
+  "RATE_LIMITED", "INSUFFICIENT_BALANCE", "DEVICE_UNAVAILABLE", "DOOR_CODE_FAILED",
+  "COIN_COOLDOWN", "COIN_SENT", "COIN_FAILED", "CARD_SENT", "LOCATION_STILL_INSIDE",
+  "REDEEM_CODE_NOT_FOUND", "PLAYER_OPTIONS_SAVED", "DEVICE_RESULT_UNKNOWN",
+];
+const notices = Object.fromEntries(noticeCodes.map((code) => [code, notice(code, "zh")]));
+const noticesEn = Object.fromEntries(noticeCodes.map((code) => [code, notice(code, "en")]));
+writeFileSync(join(resolve(outDir), "pages.json"), `${JSON.stringify({ pages, shopPages, code, celebration, notices, noticesEn }, null, 2)}\n`);
 console.log(`wrote ${Object.keys(pages).length} pages and ${Object.keys(shopPages).length} shop pages to ${join(outDir, "pages.json")}`);

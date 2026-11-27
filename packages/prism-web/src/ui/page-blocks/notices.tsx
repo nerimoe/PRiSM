@@ -39,4 +39,4 @@ export function FeedbackIcon({ level }: { level: Notice["level"] }) {
 
 /** A problem this device found (no location, no reply in time), shown like one the server sent. */
 export const localNote = (body: string): Notice =>
-  ({ code: "CLIENT", level: "error", display: "inline", flow: "none", title: null, body, actions: [] });
+  ({ code: "CLIENT", level: "error", display: "inline", presentation: "toast", flow: "none", title: null, body, actions: [] });

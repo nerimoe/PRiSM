@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
-import { ApiError, InlineError, type Notice } from "../api";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ApiError, type Notice } from "../api";
 import { useI18n } from "../i18n";
-import { noticeLasts } from "./page-blocks/notices";
+import { InlineNoticeLine, noticeLasts } from "./page-blocks/notices";
 import { PlayerDialog } from "./PlayerAccount";
 
 /** What a caller can do for the flows a notice may ask for. */
@@ -11,6 +11,7 @@ export type NoticeHandlers = {
   retry?: () => void;
   /** A read the player did not ask for (polling, a reload after an action): run the flow, never open a dialog. */
   quiet?: boolean;
+  onControl?: boolean;
 };
 
 type Show = (error: unknown, handlers?: NoticeHandlers) => Notice;
@@ -25,6 +26,12 @@ const NoticeContext = createContext<Show | null>(null);
 export function NoticeProvider({ children }: { children: ReactNode }) {
   const { t, errorText } = useI18n();
   const [open, setOpen] = useState<{ notice: Notice; retry?: () => void } | null>(null);
+  const [toast, setToast] = useState<Notice | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), noticeLasts(toast.level, true) ?? 5000);
+    return () => clearTimeout(timer);
+  }, [toast]);
   const show = useCallback<Show>((error, handlers = {}) => {
     const notice: Notice = error instanceof ApiError && error.notice
       ? error.notice
@@ -34,7 +41,8 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
             // Problems found on this device (no location, no network) have no server notice.
             code: "CLIENT",
             level: "error",
-            display: error instanceof InlineError ? "inline" : "dialog",
+            display: "inline",
+            presentation: "toast",
             flow: error instanceof ApiError && error.sessionExpired ? "expired" : "none",
             title: null,
             body: errorText(error),
@@ -43,13 +51,19 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
     if (notice.flow === "expired") handlers.onExpired?.();
     else if (notice.flow === "refresh") handlers.onRefresh?.();
     else if (notice.flow === "signin") window.location.reload();
-    if (notice.display === "dialog" && !handlers.quiet) setOpen({ notice, retry: handlers.retry });
+    if (!handlers.quiet) {
+      if (notice.display === "dialog") {
+        setToast(null);
+        setOpen({ notice, retry: handlers.retry });
+      } else if (notice.display === "inline" && notice.presentation === "toast" && !handlers.onControl) setToast(notice);
+    }
     return notice;
   }, [errorText, t]);
   const close = () => setOpen(null);
   return (
     <NoticeContext.Provider value={show}>
       {children}
+      {toast && <div className="player-toast"><InlineNoticeLine note={toast} /></div>}
       {open && (
         <PlayerDialog title={open.notice.title ?? t("操作失败")} onClose={close}>
           <p className="text-sm leading-relaxed">{open.notice.body}</p>
@@ -96,7 +110,8 @@ export function useInlineNotice() {
     if (timer.id) clearTimeout(timer.id);
     timer.id = 0;
     setNote(next);
-    const lasts = next && noticeLasts(next.level, onControl);
+    const persistent = !onControl && (next?.presentation === "status" || next?.presentation === "field");
+    const lasts = next && !persistent ? noticeLasts(next.level, onControl || next.presentation === "toast") : null;
     if (lasts) timer.id = setTimeout(() => setNote(null), lasts);
   }, [timer]);
   return [note, showNote] as const;

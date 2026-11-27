@@ -36,9 +36,15 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
   const latestBlocks = useRef(blocks);
   latestBlocks.current = blocks;
   const showAt = useCallback((id: string, next: Notice) => {
+    const onControl = answersOnButton(latestBlocks.current, id);
+    if (next.presentation === "toast" && !onControl) {
+      showNote(null);
+      showNotice(next);
+      return;
+    }
     setNoteAt(id);
-    showNote(next, answersOnButton(latestBlocks.current, id));
-  }, [showNote]);
+    showNote(next, onControl);
+  }, [showNote, showNotice]);
   const blocked = !!busy || cardsBusy || disabled;
 
   const waitingOnPage = !!waiting && hasButton(blocks, waiting.id);
@@ -60,7 +66,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
   /** Runs an action for the block `id`; its outcome shows under that block. */
   async function run(id: string, action: string, payload: Record<string, unknown> | undefined, needsLocation: boolean, wait?: PageButtonWait) {
     if (blocked) return;
-    const handlers = { onExpired, onRefresh };
+    const handlers = { onExpired, onRefresh, onControl: answersOnButton(blocks, id) };
     setBusy({ id, action });
     if (noteAt === id) showNote(null);
     try {
@@ -90,7 +96,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
     code,
     noteFor: (id: string) => (noteAt === id ? note : null),
     /** The player changed an input: an error about the old value no longer applies. */
-    dropError: () => { if (note?.level === "error") showNote(null); },
+    dropError: () => { if (note?.level === "error" || note?.presentation === "field") showNote(null); },
   };
 }
 

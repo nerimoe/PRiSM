@@ -63,7 +63,7 @@ export function ButtonBlock({ block }: { block: PageButton }) {
       <button
         className={`session-action${style}`}
         data-level={onButton?.level}
-        disabled={actions.blocked || pressing || !ready}
+        disabled={actions.blocked || pressing || !ready || !!onButton}
         aria-live={block.answerOnButton ? "polite" : undefined}
         onClick={pressButton}
       >

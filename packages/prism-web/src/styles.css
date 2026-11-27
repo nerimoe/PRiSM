@@ -1761,3 +1761,14 @@ button.credential-row:not(:disabled):active {
   margin-top: 14px;
   min-width: 200px;
 }
+
+.player-toast {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  z-index: 100;
+  pointer-events: none;
+}
