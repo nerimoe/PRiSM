@@ -185,7 +185,7 @@ curl -X POST http://localhost:8787/rpc/player/redeem \
 | `POST` | `/rpc/staff/players` | 创建新玩家，支持在创建时直接给予初始化资产。 |
 | `PATCH` | `/rpc/staff/players/:playerId/status` | 设置玩家状态（`active` / `disabled` / `banned`）。 |
 | `POST` | `/rpc/staff/players/:playerId/identities` | 绑定玩家外部物理卡或 平台身份。 |
-| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 删除玩家的某个外部身份绑定（后台「身份与状态」为平台身份提供删除按钮，PRiSM 账号与 Aime 卡不在此删除）；删除后该 平台身份、卡号或扫码身份不再自动指向此玩家，也不再算作玩家账号的平台身份。 |
+| `DELETE` | `/rpc/staff/players/:playerId/identities/:provider/:subject` | 解除指定的档案身份，包括 PRiSM 账号和 `aime` 身份。店内加密卡片绑定由平台独立管理。 |
 | `POST` | `/rpc/staff/players/:playerId/session/preview` | 预览为玩家开始一个方案会新增、结束、保留哪些方案。请求 `{pricingConfigId}`，必须指定（没有默认方案，不传返回 `PRICING_TARGET_REQUIRED`）；响应 `{pricingConfigId, planName, revision, changed, started, stopped, kept}`（方案名）。 |
 | `POST` | `/rpc/staff/players/:playerId/session/start` | 店员为玩家开始一个方案的计费，请求 `{pricingConfigId?, expectedRevision?}`（旧的 `pricingConfigIds` 最多一个）；必须指定方案，不传返回 `PRICING_TARGET_REQUIRED`。带预览的 `expectedRevision` 时，状态已变化返回 `409 PRICING_STATE_REVISION_MISMATCH`。一条 session 只计一个方案；同一方案最多一条，再次开始已在计费的方案返回原 session（`billing.created: false`）。响应 `{session, billing}`，`billing` 同扫码确认。与扫码、前台收银、机器人走同一个入口，见 [计费状态编排](pricing-sessions.md)。 |
 | `GET` | `/rpc/staff/players/:playerId/assets` | 检查并审计指定玩家的资产持有和变更流水。 |

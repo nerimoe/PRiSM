@@ -70,8 +70,6 @@ export async function deleteAccountCard(db: D1DatabaseLike, userId: string, card
     statements.push(
       db.prepare(`DELETE FROM player_cards WHERE shop_id = ? AND player_id = ? AND card_hash = ? AND ${ownsProfile}`)
         .bind(profile.shop_id, profile.player_id, await hashOf(key!, profile.shop_id, card.access_code), ...scope),
-      db.prepare(`DELETE FROM player_identities WHERE shop_id = ? AND player_id = ? AND provider = 'aime' AND subject = ? AND ${ownsProfile}`)
-        .bind(profile.shop_id, profile.player_id, card.access_code, ...scope),
     );
   }
   statements.push(db.prepare("DELETE FROM cards WHERE id = ? AND user_id = ?").bind(cardId, userId));
@@ -101,36 +99,12 @@ export function createCardStore(db: D1DatabaseLike, shopId: string, key: string 
     return key;
   };
 
-  /**
-   * A card identity from before cards were encrypted (`player_identities`,
-   * provider `aime`) is moved into the encrypted store the first time it is
-   * needed, and the plaintext row removed.
-   */
-  async function adoptLegacy(where: { accessCode: string } | { playerId: string }): Promise<{ playerId: string; accessCode: string } | null> {
-    const row = "accessCode" in where
-      ? await db.prepare("SELECT player_id, subject FROM player_identities WHERE shop_id = ? AND provider = 'aime' AND subject = ?")
-          .bind(shopId, where.accessCode).first<{ player_id: string; subject: string }>()
-      : await db.prepare("SELECT player_id, subject FROM player_identities WHERE shop_id = ? AND provider = 'aime' AND player_id = ? ORDER BY created_at LIMIT 1")
-          .bind(shopId, where.playerId).first<{ player_id: string; subject: string }>();
-    if (!row || !/^\d{20}$/.test(row.subject)) return null;
-    const now = new Date().toISOString();
-    await db.batch([
-      db.prepare(
-        `INSERT INTO player_cards(shop_id, id, player_id, card_hash, card_encrypted, card_type, source, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, 'aime', 'legacy', ?, NULL) ON CONFLICT(shop_id, card_hash) DO NOTHING`,
-      ).bind(shopId, crypto.randomUUID(), row.player_id, await hashOf(requireKey(), shopId, row.subject),
-        await encryptSecret(row.subject, requireKey()), now),
-      db.prepare("DELETE FROM player_identities WHERE shop_id = ? AND provider = 'aime' AND subject = ?").bind(shopId, row.subject),
-    ]);
-    return { playerId: row.player_id, accessCode: row.subject };
-  }
-
   return {
     async playerOf(accessCode) {
       if (!key) return null;
       const row = await db.prepare("SELECT player_id FROM player_cards WHERE shop_id = ? AND card_hash = ?")
         .bind(shopId, await hashOf(key, shopId, accessCode)).first<{ player_id: string }>();
-      return row?.player_id ?? (await adoptLegacy({ accessCode }))?.playerId ?? null;
+      return row?.player_id ?? null;
     },
 
     hashOf: (accessCode) => hashOf(requireKey(), shopId, accessCode),
@@ -139,9 +113,8 @@ export function createCardStore(db: D1DatabaseLike, shopId: string, key: string 
       const secret = requireKey();
       const hash = await hashOf(secret, shopId, input.card.accessCode);
       const now = new Date().toISOString();
-      const owner = (await db.prepare("SELECT id, player_id FROM player_cards WHERE shop_id = ? AND card_hash = ?")
-        .bind(shopId, hash).first<{ id: string; player_id: string }>())
-        ?? await adoptLegacy({ accessCode: input.card.accessCode }).then((adopted) => adopted ? { id: "", player_id: adopted.playerId } : null);
+      const owner = await db.prepare("SELECT player_id FROM player_cards WHERE shop_id = ? AND card_hash = ?")
+        .bind(shopId, hash).first<{ player_id: string }>();
       if (owner && owner.player_id !== input.playerId) return "taken";
       if (owner) {
         await db.prepare("UPDATE player_cards SET last_used_at = ? WHERE shop_id = ? AND card_hash = ?").bind(now, shopId, hash).run();
@@ -161,8 +134,7 @@ export function createCardStore(db: D1DatabaseLike, shopId: string, key: string 
         `SELECT card_encrypted FROM player_cards WHERE shop_id = ? AND player_id = ?
          ORDER BY COALESCE(last_used_at, created_at) DESC LIMIT 1`,
       ).bind(shopId, playerId).first<{ card_encrypted: string }>();
-      if (row) return decryptSecret(row.card_encrypted, key);
-      return (await adoptLegacy({ playerId }))?.accessCode ?? null;
+      return row ? decryptSecret(row.card_encrypted, key) : null;
     },
 
     async listOf(playerId) {

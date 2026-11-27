@@ -1976,7 +1976,6 @@ function PlayerPanel({
                 identities.map((identity) => {
                   const provider = identityProviderLabel(identity.provider, t);
                   const { displayName, subject } = identity;
-                  const value = identity.provider === "aime" ? `•••• ${subject.slice(-4)}` : subject;
                   return (
                     <div
                       key={JSON.stringify([identity.provider, subject])}
@@ -1991,14 +1990,14 @@ function PlayerPanel({
                       </span>
                       <span className="inline-flex items-center gap-2">
                         <code className="select-all break-all text-xs text-ink/60">
-                          {value}
+                          {subject}
                         </code>
                         {canWrite && (
                           <button
                             type="button"
                             className="focus-ring grid size-7 shrink-0 place-items-center rounded-lg text-ink/45 hover:bg-coral/10 hover:text-coral"
-                            aria-label={t("解绑 {identity}", { identity: `${provider} ${value}` })}
-                            onClick={() => setRemovingIdentity({ ...identity, label: [provider, displayName, value].filter(Boolean).join(" · ") })}
+                            aria-label={t("解绑 {identity}", { identity: `${provider} ${subject}` })}
+                            onClick={() => setRemovingIdentity({ ...identity, label: [provider, displayName, subject].filter(Boolean).join(" · ") })}
                           >
                             <X size={15} aria-hidden="true" />
                           </button>

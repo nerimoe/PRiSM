@@ -77,13 +77,15 @@ describe("cards at a shop", () => {
     expect(await createCardStore(db, "other-shop", KEY).hashOf(CARD_A)).not.toBe(await cards.hashOf(CARD_A));
   });
 
-  it("moves a card kept in the clear as an identity into the encrypted store when it is first needed", async () => {
+  it("keeps an aime identity independent of card lookups and explicit bindings", async () => {
     const { sqlite, db } = database();
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop','p2','aime',?,?)", [CARD_C, new Date().toISOString()]);
     const cards = createCardStore(db, "shop", KEY);
-    expect(await cards.latestOf("p2")).toBe(CARD_C);
-    expect(sqlite.query("SELECT COUNT(*) AS n FROM player_identities WHERE provider='aime'").get()).toEqual({ n: 0 });
-    expect(await cards.playerOf(CARD_C)).toBe("p2");
+    expect(await cards.latestOf("p2")).toBeNull();
+    expect(await cards.playerOf(CARD_C)).toBeNull();
+    expect(await cards.bind({ playerId: "p1", card: { type: "aime", accessCode: CARD_C }, source: "reader" })).toBe("bound");
+    expect(await cards.playerOf(CARD_C)).toBe("p1");
+    expect(sqlite.query("SELECT player_id FROM player_identities WHERE shop_id='shop' AND provider='aime' AND subject=?").get(CARD_C)).toEqual({ player_id: "p2" });
   });
 });
 

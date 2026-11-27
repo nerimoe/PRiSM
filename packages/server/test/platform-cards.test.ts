@@ -42,7 +42,7 @@ async function fixture() {
   for (const shop of ["shop1", "shop2", "shop3"])
     await store(shop).bind({ playerId: "p1", card: { type: "aime", accessCode: CARD }, source: "scan" });
   await store("shop1").bind({ playerId: "p1", card: { type: "aime", accessCode: OTHER_CARD }, source: "reader" });
-  // Stale plaintext bindings must not resurrect the deleted credential.
+  // An identity may have the same value as an independently bound card.
   for (const shop of ["shop1", "shop2", "shop3"])
     sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES (?,'p1','aime',?,?)", [shop, CARD, new Date().toISOString()]);
   sqlite.run("INSERT INTO player_identities(shop_id,player_id,provider,subject,created_at) VALUES ('shop1','p1','onebot','12345',?)", [new Date().toISOString()]);
@@ -74,8 +74,10 @@ describe("deleting an account card", () => {
     expect(await store("shop2").latestOf("p1")).toBeNull();
     expect(await store("shop1").latestOf("p1")).toBe(OTHER_CARD);
     expect(await store("shop3").playerOf(CARD)).toBe("p1");
-    expect(sqlite.query("SELECT shop_id,provider,subject FROM player_identities WHERE provider <> 'web-account' ORDER BY shop_id").all()).toEqual([
+    expect(sqlite.query("SELECT shop_id,provider,subject FROM player_identities WHERE provider <> 'web-account' ORDER BY shop_id, provider").all()).toEqual([
+      { shop_id: "shop1", provider: "aime", subject: CARD },
       { shop_id: "shop1", provider: "onebot", subject: "12345" },
+      { shop_id: "shop2", provider: "aime", subject: CARD },
       { shop_id: "shop3", provider: "aime", subject: CARD },
     ]);
     // Deleting again is harmless. Explicitly adding the card later remains possible.
