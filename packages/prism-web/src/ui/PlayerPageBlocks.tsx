@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { allPageBlocks, type Page, type PageCelebration, type PageTarget } from "@prism/page-protocol";
 import { BlockList } from "./page-blocks/BlockView";
 import { PageContext } from "./page-blocks/page-context";
@@ -59,6 +59,16 @@ export function PlayerPageBlocks({
   useEffect(() => {
     onBusyChange?.(!!actions.busy);
   }, [actions.busy, onBusyChange]);
+  // An error stays until the player acts again, and editing a field is acting.
+  const { dropError } = actions;
+  // By content: a page that comes back after an action rebuilds the values object.
+  const typedNow = JSON.stringify(form.values);
+  const typed = useRef(typedNow);
+  useEffect(() => {
+    if (typed.current === typedNow) return;
+    typed.current = typedNow;
+    dropError();
+  }, [typedNow, dropError]);
 
   const contextValue = {
     page, ticket, form, actions, act, refresh, cardAsks, onExpired,

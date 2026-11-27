@@ -33,7 +33,7 @@ describe("localization", () => {
 
   it("shows the server's notice for a player, never the internal diagnostic", () => {
     const notice = {
-      code: "INSUFFICIENT_BALANCE", level: "warning" as const, display: "dialog" as const, flow: "none" as const,
+      code: "INSUFFICIENT_BALANCE", level: "error" as const, display: "dialog" as const, flow: "none" as const,
       title: "余额不足", body: "余额不足，请充值后再结账，计费会继续", actions: [],
     };
     const error = new ApiError("余额不足，请充值后再结账，计费会继续", 409, "INSUFFICIENT_BALANCE", undefined, undefined, notice,

@@ -27,6 +27,18 @@ export type PageTone = "default" | "muted" | "accent" | "success" | "warning" | 
 
 export type PageKeyValueIcon = "wallet" | "gift" | "coins" | "coupon" | "pass" | "ticket" | "asset";
 
+/** The picture over a `status` text: what state the page is in, drawn by each client its own way. */
+export type PageStatusIcon =
+  | "blocked"
+  | "waiting"
+  | "scan"
+  | "empty"
+  | "unavailable"
+  | "receipt"
+  | "wallet"
+  | "identity"
+  | "options";
+
 export type PageButtonIcon =
   | "coin"
   | "power"
@@ -83,8 +95,17 @@ export type PageText = {
   kind: "text";
   id: string;
   text: string;
-  style?: "heading" | "body" | "caption";
+  /**
+   * `status` is a page-level state with nothing else to do (disabled, waiting for the machine,
+   * scan to start, nothing here yet): a centred icon, `text` as its title and an optional `detail`.
+   * Clients that predate it draw `text` alone as a centred subtitle.
+   */
+  style?: "heading" | "body" | "caption" | "status";
   level?: "error" | "muted";
+  /** With `style: "status"`. */
+  icon?: PageStatusIcon;
+  /** With `style: "status"`: a second, quieter line. */
+  detail?: string;
 };
 
 export type PageConsent = {

@@ -77,7 +77,18 @@ describe("what the page shows", () => {
 
   it("offers no confirmation when the resource cannot bill", () => {
     const over = { ...caps("door"), gate: "entry" as const, billing: { error: { message: "没有配置计费" } } };
-    expect(ids(over)).toEqual(["entry-title", "entry-error"]);
+    expect(ids(over)).toEqual(["entry-error"]);
+    expect(block(over, "entry-error")).toEqual({
+      kind: "text", id: "entry-error", text: "暂时无法使用", style: "status", icon: "unavailable", detail: "没有配置计费", level: "error",
+    });
+  });
+
+  it("draws page-level states as status text, so old clients still show the line", () => {
+    expect(block({ ...caps("coin", "card"), gate: "disabled" }, "disabled")).toMatchObject({
+      kind: "text", style: "status", icon: "blocked", level: "error", text: "玩家资格已停用", detail: "请联系店员恢复后再使用",
+    });
+    expect(block({ ...caps("coin"), ioWaiting: true }, "io-waiting")).toMatchObject({ style: "status", icon: "waiting" });
+    expect(block({}, "empty")).toMatchObject({ style: "status", icon: "empty", level: "muted" });
   });
 
   it("enters and opens the door with one button, and checks the door's location rule", () => {

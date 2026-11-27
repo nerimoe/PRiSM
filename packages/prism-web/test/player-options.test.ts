@@ -33,7 +33,7 @@ describe("server-driven player options visibility", () => {
       privacyModeEnabled: false,
     });
     expect(sheetOff.blocks).toEqual([
-      { kind: "text", id: "options-empty", text: "暂无可用选项", style: "body", level: "muted" },
+      { kind: "text", id: "options-empty", text: "暂无可用选项", style: "status", icon: "options", level: "muted" },
     ]);
 
     const shopOn = renderShopPage({

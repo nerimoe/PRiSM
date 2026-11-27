@@ -214,7 +214,7 @@ describe("shop page renderers", () => {
       settledReceipt: null,
     });
     expect(empty.resource).toBe("未入场");
-    expect(empty.blocks[0]).toMatchObject({ kind: "text", text: "请碰一下 NFC 或扫描机台上的二维码" });
+    expect(empty.blocks[0]).toMatchObject({ kind: "text", style: "status", icon: "scan", text: "请碰一下 NFC 或扫描机台上的二维码" });
   });
 
   it("renders account sheets and honors English translations", () => {

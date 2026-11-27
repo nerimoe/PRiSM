@@ -86,7 +86,7 @@ test("insufficient balance is actionable and clears the rejected checkout withou
     // As the server sends it: the player text in message and notice, the diagnostic in reason.
     return Response.json({ error: {
       code: "INSUFFICIENT_BALANCE", message: "余额不足，请充值后再结账，计费会继续", reason: "Insufficient currency holdings for this operation.",
-      notice: { code: "INSUFFICIENT_BALANCE", level: "warning", display: "dialog", flow: "none", title: "余额不足", body: "余额不足，请充值后再结账，计费会继续", actions: [] },
+      notice: { code: "INSUFFICIENT_BALANCE", level: "error", display: "dialog", flow: "none", title: "余额不足", body: "余额不足，请充值后再结账，计费会继续", actions: [] },
       details: { required: 12 },
     } }, { status: 409 });
   }, { preconnect: originalFetch.preconnect });

@@ -1,6 +1,6 @@
 import type { ClimateState, Page, PageBlock, PageCode } from "@prism/page-protocol";
 import type { Locale } from "../notices.js";
-import { accountMenuFor, bindingBlock, signInBlock } from "./page-blocks/account.js";
+import { accountMenuFor, bindingBlock, disabledBlock, signInBlock } from "./page-blocks/account.js";
 import { cardsBlock } from "./page-blocks/cards.js";
 import { climateBlock } from "./page-blocks/climate.js";
 import { coinButton, doorButton, nothingHere, powerOffBlocks, tableBlocks } from "./page-blocks/controls.js";
@@ -70,7 +70,7 @@ function pageBlocks(input: PageInput): PageBlock[] {
   // A resource with no hardware and no plan has nothing to sign in for.
   if (!Object.values(cap).some(Boolean) && !input.billed) return [nothingHere(t)];
   if (!input.signedIn) return [signInBlock(t)];
-  if (input.gate === "disabled") return [pageUi.text("disabled", t("你在本店的玩家资格已停用，请联系店员"), { level: "error" })];
+  if (input.gate === "disabled") return [disabledBlock(t)];
   if (input.gate === "binding") return [bindingBlock(t)];
   if (input.gate === "entry") return entryBlocks(input, t);
 
@@ -80,7 +80,7 @@ function pageBlocks(input: PageInput): PageBlock[] {
   if (cap.power && input.power === "off") return [...blocks, ...powerOffBlocks(t, geo.machine)];
   if (cap.table && input.table) blocks.push(...tableBlocks(input.table, t, geo.machine));
   if ((cap.card || cap.coin) && input.ioWaiting)
-    return [...blocks, pageUi.text("io-waiting", t("等待机台连接"), { style: "heading" })];
+    return [...blocks, pageUi.status("io-waiting", "waiting", t("等待机台连接"))];
   if (cap.card) blocks.push(cardsBlock(input, t));
   // Auto coin adds a coin after a card; a player can still coin by hand.
   if (cap.coin) blocks.push(coinButton(t, input.coinFull, geo.machine));

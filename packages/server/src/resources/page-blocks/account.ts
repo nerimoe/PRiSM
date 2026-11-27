@@ -1,6 +1,7 @@
 import { visiblePlayerOptionDefinitions } from "@prism/core";
-import type { PageAccountMenu, PageBinding, PageSignIn } from "@prism/page-protocol";
+import type { PageAccountMenu, PageBinding, PageBlock, PageSignIn } from "@prism/page-protocol";
 import type { Translate } from "../page-text.js";
+import { pageUi } from "../page-ui.js";
 
 export const signInBlock = (t: Translate): PageSignIn => ({
   kind: "signin",
@@ -23,6 +24,10 @@ export const bindingBlock = (t: Translate): PageBinding => ({
   copiedLabel: t("已复制"),
   retryLabel: t("重试"),
 });
+
+/** A player whose standing in the shop staff revoked: said so, and nothing else offered. */
+export const disabledBlock = (t: Translate): PageBlock =>
+  pageUi.status("disabled", "blocked", t("玩家资格已停用"), { detail: t("请联系店员恢复后再使用"), level: "error" });
 
 export function accountMenuFor(
   t: Translate,

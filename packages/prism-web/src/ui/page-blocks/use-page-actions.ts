@@ -10,6 +10,9 @@ export type Act = (action: string, payload: Record<string, unknown> | undefined,
 
 const hasButton = (blocks: PageBlock[], id: string) =>
   walkPageBlocks(blocks).some((block) => block.kind === "button" && block.id === id);
+/** A button that answers on its own label, which has to come back. */
+const answersOnButton = (blocks: PageBlock[], id: string) =>
+  walkPageBlocks(blocks).some((block) => block.kind === "button" && block.id === id && !!block.answerOnButton);
 
 /** Doing what the page offers: what is running, what came back and where it shows. */
 export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate, cardsBusy, disabled = false }: {
@@ -30,7 +33,12 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
   /** A field asked this button to be pressed, as if tapped (so its confirm still asks). */
   const [pressRequest, setPressRequest] = useState<{ id: string; n: number } | null>(null);
   const press = useCallback((id: string) => setPressRequest((prev) => ({ id, n: (prev?.n ?? 0) + 1 })), []);
-  const showAt = useCallback((id: string, next: Notice) => { setNoteAt(id); showNote(next); }, [showNote]);
+  const latestBlocks = useRef(blocks);
+  latestBlocks.current = blocks;
+  const showAt = useCallback((id: string, next: Notice) => {
+    setNoteAt(id);
+    showNote(next, answersOnButton(latestBlocks.current, id));
+  }, [showNote]);
   const blocked = !!busy || cardsBusy || disabled;
 
   const waitingOnPage = !!waiting && hasButton(blocks, waiting.id);
@@ -81,6 +89,8 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
     waitingId: waiting?.id ?? null,
     code,
     noteFor: (id: string) => (noteAt === id ? note : null),
+    /** The player changed an input: an error about the old value no longer applies. */
+    dropError: () => { if (note?.level === "error") showNote(null); },
   };
 }
 

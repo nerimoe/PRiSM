@@ -111,7 +111,7 @@ POST /api/v1/shops/:shopCode/player/action   { view?, operationId, action, paylo
 - `banner`: `{ kind: "banner", id, title?, body, level?: "info" | "success" | "warning" | "error" }` — 带图标的提示横幅。
 - `divider`: `{ kind: "divider", id }` — 分割线。
 - `image`: `{ kind: "image", id, url, alt?, aspectRatio? }` — 图片展示（客户端仅允许站内 `/...` 相对路径（非 `//`）、`https://` 或同源 `http://`；拒绝 `javascript:`、`data:`、`file:` 与跨源 `http://`）。
-- `text`: `{ kind: "text", id, text, style?: "heading" | "body" | "caption", level?: "error" | "muted" }` — 文本块；省略 `style` 时保持居中副标题外观，`body`/`caption` 为左对齐正文与小字说明。
+- `text`: `{ kind: "text", id, text, style?: "heading" | "body" | "caption" | "status", level?: "error" | "muted", icon?, detail? }` — 文本块；省略 `style` 时保持居中副标题外观，`body`/`caption` 为左对齐正文与小字说明。`style: "status"` 表示整页只剩一个状态、没有其他可做的事（服务端用 `pageUi.status(id, icon, text, { detail?, level? })` 构造）：居中画图标、以 `text` 为标题、`detail` 为下方浅色说明，`level: "error"` 时图标为红色，`muted` 时标题缩小变浅（用于账号面板的空状态）。`icon` 取值 `blocked`（资格停用）、`waiting`（等待机台连接）、`scan`（请碰 NFC / 扫码）、`empty`（没有可操作的设备）、`unavailable`（暂时无法使用）、`receipt` / `wallet` / `identity` / `options`（账单、钱包、身份、选项的空状态）；网页用 lucide 图标、App Clip 用 `ContentUnavailableView` 与 SF Symbols，样式与客户端本地的「本次会话已失效」「无法进入机台会话」页一致。旧版客户端不认识 `status` 时按默认样式只显示 `text` 一行，不会空白。
 
 ### 表单输入块
 
@@ -167,7 +167,7 @@ const blocks = [
   - 按钮有 `requires` 时，对应的块同意之后才能按；`collect` 中的必填项（`consent` 须勾选，`input` `required` 须非空，`select` `required` 须选中可用项，`toggle` `required` 须开启）未满足时按钮保持禁用。禁用态主按钮在网页端与 App Clip 端统一采用中性灰底与弱化灰字表现（不保留高饱和强调色）。
   - 当页面中仅有唯一一个按钮在 `collect` 中收集某个 `input` 块且满足提交条件时，输入框回车 / 键盘提交等同点按该按钮：带 `confirm` 时弹出确认框（网页与 App Clip 一致）。
   - 发送 `payload` 的合并优先级为：先按 `field.name ?? field.id` 写入 `collect` 收集的值，再用静态 `button.payload` 覆盖，若存在 `requires` 则再写入 `consent: true`（防止用户输入覆盖服务端签名字段）。
-- `footer` 区的按钮内联提示（`inline` notice）显示在吸底按钮上方并带不透明卡片背景（Web 与 App Clip 一致）。
+- 按钮的内联提示（`inline` notice）在所有位置都是同一个带底色、带图标的小条，颜色按提示性质（普通 / 成功 / 错误，见 `docs/api.md` 的 `level`）。普通的几秒后消失，错误保留到再次点按或修改输入框。`footer` 区的提示显示在吸底按钮上方，并多一层阴影以浮在滚动内容之上（Web 与 App Clip 一致）。
 - 动作返回 `celebration`（如 `checkout.confirm`）时，客户端锁定页面控件并保留动画前的当前页面状态直到成功动效覆盖完成（不提前闪现结账后账单，也不会触发多余的重读闪白），并在动画结束后脱离动效生命周期执行店铺页切换与刷新。
 - 店铺主页 `view=shop`：需要绑定但尚未绑定的玩家若仍在计费，页面先下发 `binding` 块、其下为只读账单，不下发结账按钮（绑定完成后才能结账）；资格被停用的玩家收到带店铺卡片的停用说明页（`disabled` 文本块，与 `/m` 一致），而不是 403。
 - 账号面板内的下钻（如「记录」→ 账单详情）返回时恢复离开前的页面（已加载的分页与滚动位置），不重新请求第 1 页；「加载更多」失败时错误显示在该列表的按钮下方。

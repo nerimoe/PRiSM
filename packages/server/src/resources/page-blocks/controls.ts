@@ -3,7 +3,7 @@ import type { PageInput } from "../page.js";
 import type { Translate } from "../page-text.js";
 import { pageUi } from "../page-ui.js";
 
-export const nothingHere = (t: Translate): PageBlock => pageUi.text("empty", t("这里没有可操作的设备"));
+export const nothingHere = (t: Translate): PageBlock => pageUi.status("empty", "empty", t("这里没有可操作的设备"), { level: "muted" });
 
 export const doorButton = (t: Translate, needsLocation: boolean): PageButton =>
   pageUi.button("door", t("获取开门密码"), "door.open", {

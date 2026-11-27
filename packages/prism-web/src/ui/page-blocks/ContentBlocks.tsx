@@ -5,6 +5,7 @@ import {
 } from "@prism/page-protocol";
 import { BlockList } from "./BlockView";
 import { NoticeIcon } from "./notices";
+import { StatusView } from "./StatusView";
 
 const KV_ICONS: Record<PageKeyValueIcon, typeof Wallet> = {
   wallet: Wallet,
@@ -17,6 +18,9 @@ const KV_ICONS: Record<PageKeyValueIcon, typeof Wallet> = {
 };
 
 export function TextBlock({ block }: { block: PageText }) {
+  if (block.style === "status") {
+    return <StatusView icon={block.icon} title={block.text} detail={block.detail} tone={block.level} />;
+  }
   if (block.style === "heading") {
     const tint = block.level === "error" ? "text-coral" : block.level === "muted" ? "opacity-60" : undefined;
     return <h2 className={tint ? `page-text-heading ${tint}` : "page-text-heading"}>{block.text}</h2>;
@@ -87,7 +91,7 @@ export function BannerBlock({ block }: { block: PageBanner }) {
   const level = block.level ?? "info";
   return (
     <div className="page-banner" data-level={level} role={level === "error" || level === "warning" ? "alert" : "status"}>
-      <NoticeIcon level={level} size={20} />
+      <NoticeIcon level={level === "warning" ? "error" : level} size={20} />
       <div className="page-banner-copy">
         {block.title && <strong>{block.title}</strong>}
         <p>{block.body}</p>

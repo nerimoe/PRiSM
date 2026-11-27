@@ -25,10 +25,7 @@ const pricingLabels = (locale: Locale, t: Translate): PagePricingLabels => ({
 export function entryBlocks(input: PageInput, t: Translate): PageBlock[] {
   const { billing, capabilities: cap, geo } = input;
   if (billing?.error)
-    return [
-      pageUi.text("entry-title", t("暂时无法使用"), { style: "heading" }),
-      pageUi.text("entry-error", billing.error.message, { level: "error" }),
-    ];
+    return [pageUi.status("entry-error", "unavailable", t("暂时无法使用"), { detail: billing.error.message, level: "error" })];
   // Confirming a state that has changed since this page was read is refused, not applied.
   const revision = billing?.preview?.revision;
   const payload = { ...(revision !== undefined ? { expectedRevision: revision } : {}), ...(cap.door ? { openDoor: true } : {}) };

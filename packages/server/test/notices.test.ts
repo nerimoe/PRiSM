@@ -10,12 +10,23 @@ describe("player notices", () => {
   });
 
   it("interrupts only for what went wrong, and keeps normal outcomes inline", () => {
-    expect(notice("CARD_NOT_READ", "zh")).toMatchObject({ display: "inline", level: "warning", body: "登录失败", actions: [] });
+    expect(notice("CARD_NOT_READ", "zh")).toMatchObject({ display: "inline", level: "error", body: "登录失败", actions: [] });
     for (const code of ["COIN_FAILED", "COIN_UNKNOWN", "COIN_SKIPPED"]) expect(notice(code, "zh").display).toBe("inline");
     expect(errorNotice({ code: "COIN_COOLDOWN", message: "请稍后再投币", status: 429 }, "zh").display).toBe("inline");
     const banned = errorNotice({ code: "ACCOUNT_BANNED", message: "这个账号暂时无法使用", status: 403 }, "zh");
     expect(banned).toMatchObject({ display: "dialog", level: "error", title: "账号已停用" });
     expect(banned.actions).toEqual([{ kind: "dismiss", label: "知道了" }]);
+  });
+
+  it("tells news from errors, and every dialog is an error", () => {
+    const news = ["DEVICE_POWER_OFF", "COIN_COOLDOWN", "COIN_SKIPPED", "RATE_LIMITED", "CHECKIN_CONSENT_REQUIRED", "LOCATION_STILL_INSIDE", "REDEEM_CODE_NOT_ACTIVE", "PRESENT_ONCE_PER_PLAYER_REDEEMED", "SESSION_NOT_ACTIVE"];
+    for (const code of news) expect(notice(code, "zh")).toMatchObject({ level: "info", display: "inline" });
+    for (const code of ["CARD_SENT", "COIN_SENT", "PLAYER_OPTIONS_SAVED"]) expect(notice(code, "zh").level).toBe("success");
+    const failed = ["DOOR_CODE_FAILED", "REDEEM_CODE_NOT_FOUND", "PRESENT_EXPIRED", "PLAYER_OPTION_FORBIDDEN", "CARD_NOT_FOUND", "COIN_FAILED", "LOCATION_OUT_OF_RANGE"];
+    for (const code of failed) expect(notice(code, "zh")).toMatchObject({ level: "error", display: "inline" });
+    for (const code of ["INSUFFICIENT_BALANCE", "LOCATION_REQUIRED", "DEVICE_UNAVAILABLE"]) expect(notice(code, "zh")).toMatchObject({ level: "error", display: "dialog" });
+    // A route's own wording for a refusal is an error the player sees in place.
+    expect(errorNotice({ code: "SOMETHING", message: "这里不能这样做", status: 400 }, "zh")).toMatchObject({ level: "error", display: "inline" });
   });
 
   it("lets the client move on by itself where there is nothing to read", () => {

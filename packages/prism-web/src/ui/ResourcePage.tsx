@@ -3,6 +3,7 @@ import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { useI18n } from "../i18n";
 import { PlayerPageBlocks } from "./PlayerPageBlocks";
+import { StatusView } from "./page-blocks/StatusView";
 import { ShopHero } from "./SessionContent";
 import { usePlayerPage } from "./use-player-page";
 
@@ -26,9 +27,9 @@ function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: () 
   if (!page && failure)
     return (
       <section className="machine-session session-status">
-        <h1>{t("无法进入机台会话")}</h1>
-        <p>{errorText(failure)}</p>
-        <button className="session-action" onClick={() => void read()}>{t("重试")}</button>
+        <StatusView heading icon="failed" tone="error" title={t("无法进入机台会话")} detail={errorText(failure)}>
+          <button className="session-action" onClick={() => void read()}>{t("重试")}</button>
+        </StatusView>
       </section>
     );
   if (!page)
@@ -51,8 +52,7 @@ function ResourceExpiredPage() {
   const { t } = useI18n();
   return (
     <section className="machine-session session-status">
-      <h1>{t("本次会话已失效")}</h1>
-      <p>{t("请重新碰一下 NFC 或重新扫描二维码。")}</p>
+      <StatusView heading icon="expired" title={t("本次会话已失效")} detail={t("请重新碰一下 NFC 或重新扫描二维码。")} />
     </section>
   );
 }

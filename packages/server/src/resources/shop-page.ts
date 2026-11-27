@@ -3,7 +3,7 @@ import type { Page, PageBlock, PageKeyValueIcon, PageKeyValueItem, PageListItem,
 import type { CheckoutHistoryRecord } from "@prism/application";
 import type { Locale } from "../notices.js";
 import type { AccountPlatformIdentity } from "./platform-identities.js";
-import { accountMenuFor, bindingBlock, signInBlock } from "./page-blocks/account.js";
+import { accountMenuFor, bindingBlock, disabledBlock, signInBlock } from "./page-blocks/account.js";
 import { checkoutButton, liveBillBlock, settledBillBlock, type SettledBillReceipt } from "./page-blocks/bill.js";
 import { translator, type Translate } from "./page-text.js";
 import { pageUi } from "./page-ui.js";
@@ -227,7 +227,7 @@ export function renderShopPage(input: ShopPageInput): Page {
   if (!signedIn) {
     blocks = [signInBlock(t)];
   } else if (disabled) {
-    blocks = [pageUi.text("disabled", t("你在本店的玩家资格已停用，请联系店员"), { level: "error" })];
+    blocks = [disabledBlock(t)];
   } else if (needsBinding) {
     // Checking out needs a bound identity: binding comes first, a running bill is shown under it, read-only.
     subtitle = liveBill ? t("计费中") : t("未入场");
@@ -243,7 +243,7 @@ export function renderShopPage(input: ShopPageInput): Page {
     blocks = [settledBillBlock("bill", settledReceipt, t, timeZone)];
   } else {
     subtitle = t("未入场");
-    blocks = [pageUi.text("shop-empty", t("请碰一下 NFC 或扫描机台上的二维码"), { style: "body", level: "muted" })];
+    blocks = [pageUi.status("shop-empty", "scan", t("请碰一下 NFC 或扫描机台上的二维码"))];
   }
 
   const accountMenu = signedIn
@@ -294,7 +294,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
       } else if (settledReceipt) {
         blocks = [settledBillBlock("bill", settledReceipt, t, timeZone)];
       } else {
-        blocks = [pageUi.text("bill-empty", t("暂无待结账单"), { style: "body", level: "muted" })];
+        blocks = [pageUi.status("bill-empty", "receipt", t("暂无待结账单"), { level: "muted" })];
       }
       break;
     }
@@ -339,7 +339,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
       const holdings = input.holdings ?? [];
       blocks = holdings.length
         ? [pageUi.kv("wallet-holdings", walletKeyValueItems(holdings, t))]
-        : [pageUi.text("wallet-empty", t("暂无资产"), { style: "body", level: "muted" })];
+        : [pageUi.status("wallet-empty", "wallet", t("暂无资产"), { level: "muted" })];
       break;
     }
     case "bindings": {
@@ -355,7 +355,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
                 value: binding.subject,
               })),
             )
-          : pageUi.text("bindings-empty", t("暂无绑定身份"), { style: "body", level: "muted" }),
+          : pageUi.status("bindings-empty", "identity", t("暂无绑定身份"), { level: "muted" }),
       ];
       break;
     }
@@ -379,7 +379,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
                 collect: visible.map((option) => option.key),
               }),
             ]
-          : [pageUi.text("options-empty", t("暂无可用选项"), { style: "body", level: "muted" })];
+          : [pageUi.status("options-empty", "options", t("暂无可用选项"), { level: "muted" })];
       }
       break;
     }

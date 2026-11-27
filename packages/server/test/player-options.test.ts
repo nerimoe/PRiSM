@@ -100,7 +100,7 @@ describe("player options, shop privacy setting, and server-driven options sheet"
     const optionsSheetOff = await call("GET", "/api/v1/shops/arcade/player/page?view=options", PLAYER_TOKEN);
     expect(optionsSheetOff.status).toBe(200);
     expect((optionsSheetOff.body as Page).blocks).toEqual([
-      { kind: "text", id: "options-empty", text: "暂无可用选项", style: "body", level: "muted" },
+      { kind: "text", id: "options-empty", text: "暂无可用选项", style: "status", icon: "options", level: "muted" },
     ]);
 
     const readForbidden = await call("GET", "/api/v1/shops/arcade/player/options/excludeFromReports", PLAYER_TOKEN);

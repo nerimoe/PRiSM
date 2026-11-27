@@ -1,6 +1,6 @@
 import type {
   PageBanner, PageBill, PageBlock, PageButton, PageConsent, PageDivider, PageImage, PageInputField, PageKeyValue,
-  PageKeyValueItem, PageList, PageListItem, PageRow, PageSection, PageSelectField, PageSelectOption, PageText,
+  PageKeyValueItem, PageList, PageListItem, PageRow, PageSection, PageSelectField, PageSelectOption, PageStatusIcon, PageText,
   PageToggleField,
 } from "@prism/page-protocol";
 
@@ -32,6 +32,16 @@ export const pageUi = {
     opts: Omit<PageText, "kind" | "id" | "text"> = {},
   ): PageText {
     return compact({ kind: "text", id, text, ...opts });
+  },
+
+  /** A page-level state with nothing else to do on it: icon, title and an optional second line. */
+  status(
+    id: string,
+    icon: PageStatusIcon,
+    text: string,
+    opts: { detail?: string; level?: PageText["level"] } = {},
+  ): PageText {
+    return compact({ kind: "text", id, text, style: "status", icon, ...opts });
   },
 
   kv(id: string, items: PageKeyValueItem[]): PageKeyValue {

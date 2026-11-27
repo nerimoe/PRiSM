@@ -11,9 +11,15 @@
  *   tapped. Normal outcomes of a normal flow belong here.
  * - `none` shows nothing; the client only runs `flow`.
  *
+ * `level` is what kind of news it is, and there are only two kinds:
+ * - `info` (and `success`, the same kind with a tick): the state of things or
+ *   what to do next. Nothing went wrong. Inline, it fades after a few seconds.
+ * - `error`: what the player asked for did not happen. Inline, it stays until
+ *   the player acts again. Every dialog is an error.
+ *
  * `flow` names one of a few behaviours every client has built in.
  */
-export type NoticeLevel = "success" | "info" | "warning" | "error";
+export type NoticeLevel = "success" | "info" | "error";
 export type NoticeDisplay = "dialog" | "inline" | "none";
 /** expired: the QR session is gone, scan again. refresh: reload the page state. signin: sign in again. */
 export type NoticeFlow = "none" | "expired" | "refresh" | "signin";
@@ -57,71 +63,71 @@ const CATALOG: Record<string, Entry> = {
   ACCESS_RESTRICTED: { body: t("当前无法进行此操作，如有疑问请联系店员", "This cannot be done right now. Please ask the staff.") },
   PLAYER_DISABLED: { title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
   PLAYER_NOT_ACTIVE: { title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
-  INSUFFICIENT_BALANCE: { title: t("余额不足", "Insufficient balance"), body: t("余额不足，请充值后再结账，计费会继续", "Not enough balance. Top up and check out again; billing continues."), level: "warning" },
+  INSUFFICIENT_BALANCE: { title: t("余额不足", "Insufficient balance"), body: t("余额不足，请充值后再结账，计费会继续", "Not enough balance. Top up and check out again; billing continues."), level: "error" },
   DEVICE_UNAVAILABLE: { body: t("设备连接失败，请联系店员", "Could not reach the device. Please ask the staff."), retry: true },
   DEVICE_DISABLED: { body: t("这个资源已停用", "This is disabled.") },
   DEVICE_NOT_FOUND: { body: t("没有找到这个资源", "Not found.") },
   DEVICE_ACTION_UNSUPPORTED: { body: t("这里不支持此操作", "This cannot be done here.") },
   RESOURCE_NOT_BILLED: { body: t("这里不计费，无需确认", "This is free to use; there is nothing to confirm.") },
-  LOCATION_REQUIRED: { title: t("需要定位", "Location needed"), body: t("此操作需要获取当前位置，请允许定位", "This needs your location. Please allow location access."), level: "warning", retry: true },
+  LOCATION_REQUIRED: { title: t("需要定位", "Location needed"), body: t("此操作需要获取当前位置，请允许定位", "This needs your location. Please allow location access."), level: "error", retry: true },
 
   // Expected in normal use: shown by the control the player touched.
-  DEVICE_POWER_OFF: { body: t("请先开机", "Turn the machine on first."), level: "warning", display: "inline" },
+  DEVICE_POWER_OFF: { body: t("请先开机", "Turn the machine on first."), level: "info", display: "inline" },
   COIN_COOLDOWN: { body: t("请稍后再投币", "Please wait before adding another coin."), level: "info", display: "inline" },
   COIN_CABINET_FULL: { body: t("达到机台投币上限", "Coin limit reached"), level: "info", display: "inline" },
   RATE_LIMITED: { body: t("操作过于频繁，请稍后再试", "Too many attempts. Please wait a moment."), level: "info", display: "inline" },
   OPERATION_PENDING: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
   OPERATION_IN_PROGRESS: { body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
-  CARD_NOT_FOUND: { body: t("卡片不可用", "Card unavailable."), level: "warning", display: "inline" },
+  CARD_NOT_FOUND: { body: t("卡片不可用", "Card unavailable."), level: "error", display: "inline" },
   MANUAL_CARD_ADD_DISABLED: {
     body: t(
       "已关闭手动输入卡号添加卡片，请去 MuNET 添加卡片或在店铺内使用读卡器添加卡片",
       "Manual card entry is disabled. Add a card in MuNET or tap a card on a store card reader.",
     ),
-    level: "warning",
+    level: "info",
     display: "inline",
   },
-  CHECKIN_CONSENT_REQUIRED: { body: t("请确认入场计费规则", "Please accept the billing rules first."), level: "warning", display: "inline" },
-  LOCATION_LOW_ACCURACY: { body: t("定位精度不足，请重试", "Location not precise enough. Retry."), level: "warning", display: "inline" },
-  LOCATION_OUT_OF_RANGE: { body: t("不在店铺范围内", "Not within the shop area."), level: "warning", display: "inline" },
-  LOCATION_STILL_INSIDE: { body: t("请离开店铺定位范围后再结账", "Please leave the shop before checking out."), level: "warning", display: "inline" },
-  REDEEM_CODE_NOT_FOUND: { body: t("兑换码无效", "This code is not valid."), level: "warning", display: "inline" },
-  REDEEM_CODE_EXPIRED: { body: t("兑换码已过期", "This code has expired."), level: "warning", display: "inline" },
+  CHECKIN_CONSENT_REQUIRED: { body: t("请确认入场计费规则", "Please accept the billing rules first."), level: "info", display: "inline" },
+  LOCATION_LOW_ACCURACY: { body: t("定位精度不足，请重试", "Location not precise enough. Retry."), level: "error", display: "inline" },
+  LOCATION_OUT_OF_RANGE: { body: t("不在店铺范围内", "Not within the shop area."), level: "error", display: "inline" },
+  LOCATION_STILL_INSIDE: { body: t("请离开店铺定位范围后再结账", "Please leave the shop before checking out."), level: "info", display: "inline" },
+  REDEEM_CODE_NOT_FOUND: { body: t("兑换码无效", "This code is not valid."), level: "error", display: "inline" },
+  REDEEM_CODE_EXPIRED: { body: t("兑换码已过期", "This code has expired."), level: "error", display: "inline" },
   REDEEM_CODE_NOT_ACTIVE: { body: t("兑换码尚未生效", "This code is not active yet."), level: "info", display: "inline" },
   REDEEM_CODE_MAX_USE_REACHED: { body: t("兑换码已被领完", "This code has reached its redemption limit."), level: "info", display: "inline" },
-  REDEEM_CODE_ALREADY_EXISTS: { body: t("该兑换码已存在，请换一个", "This redeem code already exists."), level: "warning", display: "inline" },
-  INVALID_REDEEM_CODE: { body: t("兑换码需为 1–64 个字符且不能包含空格", "Redeem code must be 1–64 characters with no spaces."), level: "warning", display: "inline" },
-  INVALID_REDEEM_CODE_PREFIX: { body: t("前缀最多 24 个字符且不能包含空格", "Prefix must be up to 24 characters with no spaces."), level: "warning", display: "inline" },
-  INVALID_REDEEM_CODE_WINDOW: { body: t("到期时间必须晚于生效时间", "Expiry time must be after activation time."), level: "warning", display: "inline" },
-  INVALID_REDEEM_CODE_MAX_USE_COUNT: { body: t("可用次数必须是大于 0 的整数", "Max uses must be a positive integer."), level: "warning", display: "inline" },
+  REDEEM_CODE_ALREADY_EXISTS: { body: t("该兑换码已存在，请换一个", "This redeem code already exists."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE: { body: t("兑换码需为 1–64 个字符且不能包含空格", "Redeem code must be 1–64 characters with no spaces."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE_PREFIX: { body: t("前缀最多 24 个字符且不能包含空格", "Prefix must be up to 24 characters with no spaces."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE_WINDOW: { body: t("到期时间必须晚于生效时间", "Expiry time must be after activation time."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE_MAX_USE_COUNT: { body: t("可用次数必须是大于 0 的整数", "Max uses must be a positive integer."), level: "error", display: "inline" },
   PRESENT_ONCE_PER_PLAYER_REDEEMED: { body: t("您已经领取过这份礼物", "You have already claimed this gift."), level: "info", display: "inline" },
   PRESENT_GRANT_LIMIT_REACHED: { body: t("您已达到这份礼物的领取上限", "You have reached this gift's per-player limit."), level: "info", display: "inline" },
-  PRESENT_NOT_ACTIVE: { body: t("兑换码已失效", "This code is no longer valid."), level: "warning", display: "inline" },
-  PRESENT_EXPIRED: { body: t("兑换码已过期", "This code has expired."), level: "warning", display: "inline" },
+  PRESENT_NOT_ACTIVE: { body: t("兑换码已失效", "This code is no longer valid."), level: "error", display: "inline" },
+  PRESENT_EXPIRED: { body: t("兑换码已过期", "This code has expired."), level: "error", display: "inline" },
   PLAYER_HAS_NO_UNSETTLED_SESSIONS: { body: t("没有需要结账的场次", "Nothing to check out."), level: "info", display: "inline" },
   ACTIVE_SESSION_NOT_FOUND: { body: t("没有进行中的场次", "No visit in progress."), level: "info", display: "inline" },
   SESSION_NOT_ACTIVE: { body: t("这个场次已经结束", "This visit has ended."), level: "info", display: "inline" },
   // Why a scanned resource cannot bill now: shown in place of its pricing rules. Each is the shop's to fix.
-  PRICING_PLAN_NOT_FOUND: { body: t("这里的计费方案已不存在，请联系店员", "This place's pricing plan no longer exists. Please ask the staff."), level: "warning", display: "inline" },
-  PRICING_PLAN_NOT_STARTABLE: { body: t("这里的计费方案不能用来计时，请联系店员", "This place's pricing plan cannot time a visit. Please ask the staff."), level: "warning", display: "inline" },
-  PRICING_REQUIREMENT_UNAVAILABLE: { body: t("这里依赖的计费方案已停用，请联系店员", "A pricing plan this place depends on is disabled. Please ask the staff."), level: "warning", display: "inline" },
-  PRICING_RELATION_UNKNOWN_TARGET: { body: t("这里依赖的计费方案已不存在，请联系店员", "A pricing plan this place depends on no longer exists. Please ask the staff."), level: "warning", display: "inline" },
-  PRICING_RELATION_CONTRADICTION: { body: t("这里的计费方案设置互相冲突，请联系店员", "This place's pricing plans conflict with each other. Please ask the staff."), level: "warning", display: "inline" },
-  PRICING_RELATION_CYCLE: { body: t("这里的计费方案设置互相依赖成环，请联系店员", "This place's pricing plans depend on each other in a loop. Please ask the staff."), level: "warning", display: "inline" },
+  PRICING_PLAN_NOT_FOUND: { body: t("这里的计费方案已不存在，请联系店员", "This place's pricing plan no longer exists. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_PLAN_NOT_STARTABLE: { body: t("这里的计费方案不能用来计时，请联系店员", "This place's pricing plan cannot time a visit. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_REQUIREMENT_UNAVAILABLE: { body: t("这里依赖的计费方案已停用，请联系店员", "A pricing plan this place depends on is disabled. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_UNKNOWN_TARGET: { body: t("这里依赖的计费方案已不存在，请联系店员", "A pricing plan this place depends on no longer exists. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_CONTRADICTION: { body: t("这里的计费方案设置互相冲突，请联系店员", "This place's pricing plans conflict with each other. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_CYCLE: { body: t("这里的计费方案设置互相依赖成环，请联系店员", "This place's pricing plans depend on each other in a loop. Please ask the staff."), level: "error", display: "inline" },
 
   // Outcomes of a swipe, sent with a successful response and shown on the card
   // row, one short part each. The coin after a swipe is a side effect: whatever
   // happens to it, it never interrupts the swipe.
-  CARD_NOT_READ: { body: t("登录失败", "Sign-in failed"), level: "warning", display: "inline" },
+  CARD_NOT_READ: { body: t("登录失败", "Sign-in failed"), level: "error", display: "inline" },
   CARD_SENT: { body: t("已刷卡", "Card sent"), level: "success", display: "inline" },
   COIN_SENT: { body: t("已投币", "Coin added"), level: "success", display: "inline" },
   COIN_SKIPPED: { body: t("投币冷却中", "Coin cooling down"), level: "info", display: "inline" },
-  COIN_FAILED: { body: t("投币失败", "Coin failed"), level: "warning", display: "inline" },
-  COIN_UNKNOWN: { body: t("投币未确认", "Coin not confirmed"), level: "warning", display: "inline" },
-  DOOR_CODE_FAILED: { body: t("开门密码获取失败，请重试", "Could not get the door code. Retry."), level: "warning", display: "inline" },
+  COIN_FAILED: { body: t("投币失败", "Coin failed"), level: "error", display: "inline" },
+  COIN_UNKNOWN: { body: t("投币未确认", "Coin not confirmed"), level: "error", display: "inline" },
+  DOOR_CODE_FAILED: { body: t("开门密码获取失败，请重试", "Could not get the door code. Retry."), level: "error", display: "inline" },
   PLAYER_OPTIONS_SAVED: { body: t("已保存选项", "Options saved"), level: "success", display: "inline" },
-  PLAYER_OPTION_FORBIDDEN: { body: t("无权修改该玩家选项", "You cannot access or change that player option."), level: "warning", display: "inline" },
-  PRIVACY_MODE_DISABLED: { body: t("店铺未启用隐私模式", "Privacy mode is disabled for this shop."), level: "warning", display: "inline" },
+  PLAYER_OPTION_FORBIDDEN: { body: t("无权修改该玩家选项", "You cannot access or change that player option."), level: "error", display: "inline" },
+  PRIVACY_MODE_DISABLED: { body: t("店铺未启用隐私模式", "Privacy mode is disabled for this shop."), level: "error", display: "inline" },
 };
 
 const GENERIC: Entry = { body: t("操作失败，请稍后重试", "Something went wrong. Please try again."), retry: true };
@@ -170,6 +176,6 @@ export function notice(code: string, locale: Locale): Notice {
 export function errorNotice(input: { code: string; message: string; status: number }, locale: Locale): Notice {
   const entry = CATALOG[input.code];
   if (entry) return build(input.code, entry, locale);
-  if (input.status < 500 && CJK.test(input.message)) return build(input.code, { body: t(input.message, input.message), level: "warning", display: "inline" }, locale);
+  if (input.status < 500 && CJK.test(input.message)) return build(input.code, { body: t(input.message, input.message), level: "error", display: "inline" }, locale);
   return build(input.code, GENERIC, locale);
 }

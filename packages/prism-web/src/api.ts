@@ -471,7 +471,7 @@ export type Passkey = {
  */
 export type Notice = {
   code: string;
-  level: "success" | "info" | "warning" | "error";
+  level: "success" | "info" | "error";
   display: "dialog" | "inline" | "none";
   flow: "none" | "expired" | "refresh" | "signin";
   title: string | null;

@@ -551,8 +551,8 @@ button.credential-row:not(:disabled):active {
 .credential-row:disabled:not([data-active="true"]) {
   opacity: 0.45;
 }
-/* A swipe's outcome replaces the row's detail line: coloured text and an icon, no tint.
-   Success takes the accent blue; info is quiet grey. */
+/* A swipe's outcome replaces the row's detail line: each part coloured by its
+   nature, the row's icon by its worst part. No tint, so the list stays calm. */
 .credential-row[data-feedback] .credential-detail {
   font-weight: 600;
 }
@@ -560,25 +560,44 @@ button.credential-row:not(:disabled):active {
   content: " · ";
   color: rgb(var(--color-ink) / 0.45);
 }
+/* A notice has two natures, drawn the same everywhere: news (info; success is
+   news with a tick, in the accent) and error. */
 :is(.credential-feedback-part, .inline-notice, .credential-row, .session-action)[data-level],
-.credential-row[data-feedback] { --feedback: var(--color-mint); }
-:is(.credential-feedback-part, .inline-notice, .session-action)[data-level="info"] { --feedback: rgb(var(--color-ink) / 0.6); }
-:is(.credential-feedback-part, .inline-notice, .session-action)[data-level="warning"],
-.credential-row[data-feedback="warning"] { --feedback: var(--color-warning); }
+.credential-row[data-feedback] { --feedback: var(--color-mint); --feedback-icon: var(--color-mint); }
+:is(.credential-feedback-part, .inline-notice, .session-action)[data-level="info"],
+.credential-row[data-feedback="info"] { --feedback: rgb(var(--color-ink) / 0.8); --feedback-icon: var(--color-mint); }
 :is(.credential-feedback-part, .inline-notice, .session-action)[data-level="error"],
-.credential-row[data-feedback="error"] { --feedback: var(--color-coral); }
-.credential-feedback-part, .credential-feedback-icon { color: var(--feedback); }
-.credential-feedback-icon { flex: none; }
-/* A coin press answers on the button itself for a moment. */
-.session-action[data-level] { color: var(--feedback); }
-/* An action's outcome, under the control that was used instead of a dialog: a coloured line, no box. */
+.credential-row[data-feedback="error"] { --feedback: var(--color-coral); --feedback-icon: var(--color-coral); }
+.credential-feedback-part { color: var(--feedback); }
+.credential-feedback-icon { flex: none; color: var(--color-mint); }
+.credential-feedback-icon.is-error { color: var(--color-coral); }
+/* A coin press answers on the button itself for a moment, tinted by its nature
+   so it never reads as a disabled button. */
+.session-action[data-level] {
+  color: var(--feedback);
+  background: color-mix(in srgb, var(--feedback-icon) 10%, var(--color-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--feedback-icon) 22%, transparent);
+}
+.session-action[data-level] > svg { color: var(--feedback-icon); }
+/* An action's outcome, next to the control that was used instead of a dialog:
+   one tinted strip with the nature's icon, wherever it sits. */
 .inline-notice {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  padding: 11px 14px;
+  border-radius: 14px;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--feedback, var(--color-mint));
+  background: color-mix(in srgb, var(--feedback-icon, var(--color-mint)) 9%, var(--color-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--feedback-icon, var(--color-mint)) 20%, transparent);
+  animation: inline-notice-in 180ms ease-out;
+}
+.inline-notice-icon { flex: none; margin-top: 1px; color: var(--feedback-icon, var(--color-mint)); }
+@keyframes inline-notice-in {
+  from { opacity: 0; transform: translateY(-4px); }
 }
 .credential-name {
   display: block;
@@ -959,12 +978,10 @@ button.credential-row:not(:disabled):active {
     border-color: rgb(255 255 255 / 0.12);
   }
 }
+/* Over scrolling content the strip also needs a shadow to lift it off the page. */
 .account-bill .account-footer .inline-notice,
 .shop-checkout .inline-notice {
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: var(--color-panel);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.08), inset 0 0 0 1px rgb(var(--color-ink) / 0.08);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.08), inset 0 0 0 1px color-mix(in srgb, var(--feedback-icon, var(--color-mint)) 20%, transparent);
 }
 .checkout-error { pointer-events: auto; padding: 12px; margin-bottom: 12px; border-radius: 12px; background: var(--color-panel); color: var(--color-coral); }
 .checkout-success { position: fixed; inset: 0; z-index: 100; pointer-events: auto; background: var(--color-canvas); display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px; padding: 32px; text-align: center; }
@@ -1704,4 +1721,43 @@ button.credential-row:not(:disabled):active {
   min-height: 50px;
   padding: 12px 16px;
   font-size: 16px;
+}
+
+/* A page-level state (disabled, waiting, scan to start, nothing yet): the App Clip's ContentUnavailableView. */
+.page-status {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 36px 8px;
+  text-align: center;
+  --status-accent: rgb(var(--color-ink) / 0.42);
+}
+.page-status[data-tone="error"] {
+  --status-accent: var(--color-coral);
+}
+.page-status-icon {
+  color: var(--status-accent);
+  margin-bottom: 6px;
+}
+.page-status .page-status-title {
+  font-size: 1.375rem;
+  line-height: 1.28;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-align: center;
+}
+.page-status[data-tone="muted"] .page-status-title {
+  font-size: 1.0625rem;
+  font-weight: 500;
+  color: rgb(var(--color-ink) / 0.6);
+}
+.page-status .page-status-detail {
+  max-width: 30ch;
+  font-size: 15px;
+  line-height: 1.45;
+  color: rgb(var(--color-ink) / 0.6);
+}
+.page-status .session-action {
+  margin-top: 14px;
+  min-width: 200px;
 }

@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import type { PageCards } from "@prism/page-protocol";
 import type { Notice } from "../../../api";
 import { useNotice } from "../../NoticeProvider";
+import { noticeLasts } from "../notices";
 import { usePageContext } from "../page-context";
 
 /** A swipe's outcome on its row: the card's part, then the coin's, each with its own level. */
 export type SwipeFeedback = { cardId: string; parts: Pick<Notice, "level" | "body">[] };
+
+/** The row as a whole reads as its worst part: an error, else news, else a success. */
+export const worstLevel = (parts: Pick<Notice, "level">[]): Notice["level"] =>
+  parts.some((part) => part.level === "error") ? "error" : parts.some((part) => part.level === "info") ? "info" : "success";
 
 export function useCardSwipe({ block, onRefused }: {
   block: PageCards;
@@ -18,11 +23,12 @@ export function useCardSwipe({ block, onRefused }: {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  /** Shown for a few seconds; the page stays usable meanwhile. */
+  /** News fades; a row with an error keeps it until the next swipe. The page stays usable meanwhile. */
   const showFeedback = (next: SwipeFeedback | null) => {
     clearTimeout(timer.current);
     setFeedback(next);
-    if (next) timer.current = setTimeout(() => setFeedback(null), next.parts[0]?.level === "success" ? 3000 : 5000);
+    const lasts = next && noticeLasts(worstLevel(next.parts));
+    if (lasts) timer.current = setTimeout(() => setFeedback(null), lasts);
   };
 
   const swipe = async (cardId: string) => {

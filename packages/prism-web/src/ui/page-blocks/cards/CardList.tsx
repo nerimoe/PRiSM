@@ -2,7 +2,7 @@ import { ChevronRight, Loader2 } from "lucide-react";
 import type { PageCards } from "@prism/page-protocol";
 import type { Card } from "../../../api";
 import { FeedbackIcon } from "../notices";
-import type { SwipeFeedback } from "./use-card-swipe";
+import { worstLevel, type SwipeFeedback } from "./use-card-swipe";
 
 export function CardList({ block, cards, swiping, feedback, disabled, onSwipe }: {
   block: PageCards;
@@ -23,7 +23,7 @@ export function CardList({ block, cards, swiping, feedback, disabled, onSwipe }:
             className="credential-row"
             disabled={disabled}
             data-active={active}
-            data-feedback={done ? done.parts[0]?.level : undefined}
+            data-feedback={done ? worstLevel(done.parts) : undefined}
             onClick={() => onSwipe(card.id)}
           >
             <span className="min-w-0">
@@ -34,7 +34,7 @@ export function CardList({ block, cards, swiping, feedback, disabled, onSwipe }:
                   : active ? block.swipingLabel : block.endingTemplate.replace("{digits}", card.accessCode.slice(-4))}
               </span>
             </span>
-            {done ? <FeedbackIcon level={done.parts[0]?.level ?? "success"} />
+            {done ? <FeedbackIcon level={worstLevel(done.parts)} />
               : active ? <Loader2 size={20} className="animate-spin text-mint" />
               : <ChevronRight size={20} className="text-ink/30" />}
           </button>

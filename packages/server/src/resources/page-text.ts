@@ -3,6 +3,8 @@ import type { Locale } from "../notices.js";
 const EN: Record<string, string> = {
   "这里没有可操作的设备": "Nothing to operate here",
   "你在本店的玩家资格已停用，请联系店员": "Your membership at this shop is suspended. Please ask the staff.",
+  "玩家资格已停用": "Membership suspended",
+  "请联系店员恢复后再使用": "Please ask the staff to restore it.",
   "暂时无法使用": "Not available right now",
   "计费规则": "Pricing",
   "跨方案封顶": "Combined cap",
