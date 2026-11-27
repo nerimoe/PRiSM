@@ -1,4 +1,7 @@
 {
+  "添加时间": "Add time",
+  "删除时间": "Remove time",
+  "发送时间不能重复": "Choose distinct send times",
   "余额不足，请充值后重试": "Insufficient balance. Please top up and try again.",
   "主导航": "Main navigation",
   "卡片": "Cards",
