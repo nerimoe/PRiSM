@@ -102,7 +102,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 | `POST` | `/rpc/player/redeem` | 输入 CDK 兑换码兑换礼物。 |
 | `POST` | `/rpc/player/business-items/:businessItemId/purchase` | 购买前台发布的非计时服务商品（如门票、预约费等），要求处于活跃会话内，并即时扣减余额。 |
 | `GET` | `/rpc/player/business-item-orders` | 列出该玩家本人的非计时服务购买履约订单。 |
-| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings\|options[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价，同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
+| `GET` | `/api/v1/shops/:shopCode/player/page` | 统一服务端驱动的店铺主页与玩家账号面板页（`?view=shop\|bill\|redeem\|history\|wallet\|bindings\|options[&item=][&cursor=]`），返回 `@prism/page-protocol` `Page`；实时账单通过 `billingInputs` 交由客户端算价；同时保留所有原有 `/api/v1/shops/:shopCode/player/*` 接口兼容已发布客户端。详见 [玩家扫码页](player-page.md)。 |
 | `POST` | `/api/v1/shops/:shopCode/player/action` | 执行店铺主页或账号面板动作（`checkout.confirm`、`redeem.submit`、`options.save`、`page.refresh`），携带 `operationId` 与可选 `view`/`payload`/`location`，返回最新 `Page` 及 `celebration`/`receipt`。 |
 
 ### 玩家接口调用示例

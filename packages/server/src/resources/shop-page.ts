@@ -28,6 +28,8 @@ export type ShopPageInput = {
   head: ShopPageHead;
   signedIn: boolean;
   needsBinding: boolean;
+  /** The player's standing in this shop has been revoked by staff. */
+  disabled?: boolean;
   shopBills: boolean;
   identityBindingRequired?: boolean;
   privacyModeEnabled?: boolean;
@@ -40,7 +42,6 @@ export type AccountSheetInput = {
   locale: Locale;
   view: Exclude<ShopPageView, "shop">;
   head: ShopPageHead;
-  needsBinding: boolean;
   checkoutGeo: boolean;
   liveBill?: LiveBillInput | null;
   settledReceipt?: SettledBillReceipt | null;
@@ -215,6 +216,7 @@ function historyListItem(
 export function renderShopPage(input: ShopPageInput): Page {
   const t = translator(input.locale);
   const { head, signedIn, needsBinding, shopBills, identityBindingRequired, privacyModeEnabled, checkoutGeo, liveBill, settledReceipt } = input;
+  const disabled = signedIn && !!input.disabled;
   const billingActive = !!liveBill;
   const timeZone = head.timeZone;
 
@@ -224,9 +226,14 @@ export function renderShopPage(input: ShopPageInput): Page {
 
   if (!signedIn) {
     blocks = [signInBlock(t)];
-  } else if (needsBinding && !liveBill) {
-    subtitle = t("未入场");
-    blocks = [bindingBlock(t)];
+  } else if (disabled) {
+    blocks = [pageUi.text("disabled", t("你在本店的玩家资格已停用，请联系店员"), { level: "error" })];
+  } else if (needsBinding) {
+    // Checking out needs a bound identity: binding comes first, a running bill is shown under it, read-only.
+    subtitle = liveBill ? t("计费中") : t("未入场");
+    blocks = liveBill
+      ? [bindingBlock(t), liveBillBlock("bill", { ...(timeZone ? { timeZone } : {}), ...liveBill }, t)]
+      : [bindingBlock(t)];
   } else if (liveBill) {
     subtitle = t("计费中");
     blocks = [liveBillBlock("bill", { ...(timeZone ? { timeZone } : {}), ...liveBill }, t)];
@@ -246,6 +253,7 @@ export function renderShopPage(input: ShopPageInput): Page {
         identityBindingRequired,
         includeBillTab: false,
         privacyModeEnabled,
+        shopMenuAvailable: !needsBinding && !disabled,
       })
     : undefined;
 
@@ -256,7 +264,7 @@ export function renderShopPage(input: ShopPageInput): Page {
     resource: subtitle,
     publicId: "",
     billingActive,
-    offerPasskeySetup: signedIn && !needsBinding,
+    offerPasskeySetup: signedIn && !needsBinding && !disabled,
     ...(accountMenu ? { accountMenu } : {}),
     blocks,
     ...(footer ? { footer } : {}),
@@ -265,7 +273,7 @@ export function renderShopPage(input: ShopPageInput): Page {
 
 export function renderAccountSheetPage(input: AccountSheetInput): Page {
   const t = translator(input.locale);
-  const { view, head, needsBinding, checkoutGeo } = input;
+  const { view, head, checkoutGeo } = input;
   const timeZone = head.timeZone;
 
   let title = "";
@@ -280,9 +288,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
       const liveBill = input.liveBill ?? null;
       const settledReceipt = input.settledReceipt ?? null;
       billingActive = !!liveBill;
-      if (needsBinding && !liveBill) {
-        blocks = [bindingBlock(t)];
-      } else if (liveBill) {
+      if (liveBill) {
         blocks = [liveBillBlock("bill", { ...(timeZone ? { timeZone } : {}), ...liveBill }, t)];
         footer = [checkoutButton(t, checkoutGeo)];
       } else if (settledReceipt) {
@@ -294,9 +300,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
     }
     case "redeem": {
       title = t("兑换");
-      if (needsBinding) {
-        blocks = [bindingBlock(t)];
-      } else if (input.redeemed) {
+      if (input.redeemed) {
         blocks = [pageUi.banner("redeem-done", t("兑换成功"), { level: "success" })];
       } else {
         blocks = [
@@ -312,38 +316,30 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
         blocks = [settledBillBlock("history-detail", input.detailReceipt, t, timeZone)];
       } else {
         title = t("记录");
-        if (needsBinding) {
-          blocks = [bindingBlock(t)];
-        } else {
-          const history = input.history ?? { records: [], nextOffset: null };
-          const todayYear = localDateTimeParts((input.now ?? new Date()).toISOString(), timeZone)?.date.slice(0, 4);
-          const items: PageListItem[] = history.records.map((record) =>
-            historyListItem(record, input.locale, t, timeZone, todayYear),
-          );
-          blocks = [
-            pageUi.list("history-list", items, {
-              ...(timeZone ? { timeZone } : {}),
-              emptyText: t("暂无结账记录"),
-              emptyIcon: "receipt",
-              ...(history.nextOffset != null
-                ? { moreLabel: t("加载更多"), moreTarget: { view: "history", cursor: String(history.nextOffset) } }
-                : {}),
-            }),
-          ];
-        }
+        const history = input.history ?? { records: [], nextOffset: null };
+        const todayYear = localDateTimeParts((input.now ?? new Date()).toISOString(), timeZone)?.date.slice(0, 4);
+        const items: PageListItem[] = history.records.map((record) =>
+          historyListItem(record, input.locale, t, timeZone, todayYear),
+        );
+        blocks = [
+          pageUi.list("history-list", items, {
+            ...(timeZone ? { timeZone } : {}),
+            emptyText: t("暂无结账记录"),
+            emptyIcon: "receipt",
+            ...(history.nextOffset != null
+              ? { moreLabel: t("加载更多"), moreTarget: { view: "history", cursor: String(history.nextOffset) } }
+              : {}),
+          }),
+        ];
       }
       break;
     }
     case "wallet": {
       title = t("钱包");
-      if (needsBinding) {
-        blocks = [bindingBlock(t)];
-      } else {
-        const holdings = input.holdings ?? [];
-        blocks = holdings.length
-          ? [pageUi.kv("wallet-holdings", walletKeyValueItems(holdings, t))]
-          : [pageUi.text("wallet-empty", t("暂无资产"), { style: "body", level: "muted" })];
-      }
+      const holdings = input.holdings ?? [];
+      blocks = holdings.length
+        ? [pageUi.kv("wallet-holdings", walletKeyValueItems(holdings, t))]
+        : [pageUi.text("wallet-empty", t("暂无资产"), { style: "body", level: "muted" })];
       break;
     }
     case "bindings": {
@@ -365,9 +361,7 @@ export function renderAccountSheetPage(input: AccountSheetInput): Page {
     }
     case "options": {
       title = t("选项");
-      if (needsBinding) {
-        blocks = [bindingBlock(t)];
-      } else {
+      {
         const visible = visiblePlayerOptionDefinitions({
           privacyModeEnabled: !!input.privacyModeEnabled,
         });

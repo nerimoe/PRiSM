@@ -32,13 +32,22 @@ export function accountMenuFor(
     identityBindingRequired?: boolean;
     includeBillTab: boolean;
     privacyModeEnabled?: boolean;
+    shopMenuAvailable?: boolean;
   },
 ): PageAccountMenu {
+  // Unbound or disabled: nothing of this shop's is offered, only what is not about the shop.
+  if (opts.shopMenuAvailable === false) {
+    return {
+      tabs: [],
+      logoutLabel: t("退出登录"),
+    };
+  }
   const hasVisibleOptions = visiblePlayerOptionDefinitions({ privacyModeEnabled: !!opts.privacyModeEnabled }).length > 0;
   const optionsTab = hasVisibleOptions ? [{ id: "options", label: t("选项") }] : [];
   return {
     ...(opts.billingActive ? { billingBadge: t("计费中") } : {}),
-    tabs: opts.shopBills
+    // A running session always gets its tabs, even where the shop has since stopped billing.
+    tabs: opts.shopBills || opts.billingActive
       ? [
           ...(opts.includeBillTab ? [{ id: "bill", label: t("账单") }] : []),
           { id: "redeem", label: t("兑换") },

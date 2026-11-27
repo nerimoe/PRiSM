@@ -45,7 +45,9 @@ describe("what the page shows", () => {
     expect(renderPage(input()).offerPasskeySetup).toBe(false);
     expect(renderPage(input({ ...caps("coin"), signedIn: false })).offerPasskeySetup).toBe(false);
     expect(renderPage(input(caps("coin"))).offerPasskeySetup).toBe(true);
-    expect(renderPage(input({ ...caps("coin"), gate: "binding" })).offerPasskeySetup).toBe(true);
+    expect(renderPage(input({ ...caps("coin"), gate: "binding" })).offerPasskeySetup).toBe(false);
+    expect(renderPage(input({ ...caps("coin"), gate: "disabled" })).offerPasskeySetup).toBe(false);
+    expect(renderPage(input({ ...caps("coin"), needsBinding: true })).offerPasskeySetup).toBe(false);
   });
 
   it("asks a stranger to sign in before anything else", () => {
@@ -56,6 +58,15 @@ describe("what the page shows", () => {
   it("shows only the gate while one stands", () => {
     expect(ids({ ...caps("coin", "card"), gate: "binding" })).toEqual(["binding"]);
     expect(ids({ ...caps("coin", "card"), gate: "disabled" })).toEqual(["disabled"]);
+    expect(
+      renderPage(input({ ...caps("coin", "card"), gate: "binding", shopBills: true, billingActive: true })).accountMenu,
+    ).toEqual({ tabs: [], logoutLabel: "退出登录" });
+    expect(
+      renderPage(input({ ...caps("coin", "card"), gate: "disabled", shopBills: true, billingActive: true })).accountMenu,
+    ).toEqual({ tabs: [], logoutLabel: "退出登录" });
+    expect(
+      renderPage(input({ ...caps("card"), needsBinding: true, shopBills: true, billingActive: true })).accountMenu,
+    ).toEqual({ tabs: [], logoutLabel: "退出登录" });
   });
 
   it("asks for confirmation with the rules and their revision", () => {

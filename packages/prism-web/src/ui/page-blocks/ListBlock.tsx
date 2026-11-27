@@ -20,7 +20,8 @@ function groupListItems(items: readonly PageListItem[]): ListGroup[] {
 }
 
 export function ListBlock({ block }: { block: PageList }) {
-  const { openTarget, loadMore, loadingMoreId } = usePageContext();
+  const { openTarget, loadMore, loadingMoreId, loadMoreError } = usePageContext();
+  const moreError = loadMoreError?.blockId === block.id ? loadMoreError.message : "";
   const loadingMore = loadingMoreId === block.id;
   const hasGroups = block.items.some((item) => Boolean(item.group));
 
@@ -28,7 +29,7 @@ export function ListBlock({ block }: { block: PageList }) {
     const title = item.titleTimestamp ? displayDateTime(item.titleTimestamp, block.timeZone) : item.title;
     const subtitle = item.subtitleTimestamp
       ? `${item.subtitlePrefix ?? ""}${displayDateTime(item.subtitleTimestamp, block.timeZone)}`
-      : item.subtitle;
+      : item.subtitle && `${item.subtitlePrefix ?? ""}${item.subtitle}`;
     const content = (
       <>
         <span className="history-label">
@@ -93,6 +94,9 @@ export function ListBlock({ block }: { block: PageList }) {
           {loadingMore && <Loader2 className="animate-spin" size={16} />}
           {block.moreLabel}
         </button>
+      )}
+      {moreError && (
+        <p role="alert" className="text-sm text-coral">{moreError}</p>
       )}
     </div>
   );

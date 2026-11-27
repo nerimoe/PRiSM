@@ -16,6 +16,7 @@ import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
 import { recordResourceVisit } from "./resource-visit.js";
 import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
+import { ACCOUNT_HAS_PLATFORM_IDENTITY_SQL } from "../../resources/platform-identities.js";
 import { shopBillsSql } from "../../resources/billed-sql.js";
 
 type C = Context<AppBindings, any, any>;
@@ -54,8 +55,12 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
                  JOIN sessions s ON s.shop_id=a.shop_id AND s.player_id=a.player_id AND s.status='active'
                  WHERE a.shop_id=? AND a.user_id=?
                ) AS active,
-               ${shopBillsSql("?")} AS bills`,
-          ).bind(shopId, user.id, shopId).first<{ active: number; bills: number }>()
+               ${shopBillsSql("?")} AS bills,
+               COALESCE((SELECT identity_binding_required FROM shop_billing_settings WHERE shop_id=?), 0) AS bindingRequired,
+               ${ACCOUNT_HAS_PLATFORM_IDENTITY_SQL} AS identityBound`,
+          )
+            .bind(shopId, user.id, shopId, shopId, shopId, user.id)
+            .first<{ active: number; bills: number; bindingRequired: number; identityBound: number }>()
         : null,
     ]);
     const locationSettings = parseShopLocationSettings(machine.location_settings_json);
@@ -73,7 +78,8 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       },
       billingActive: !!billing?.active,
       shopBills: !!billing?.bills,
-      identityBindingRequired: !!gated?.shop.identity_binding_required,
+      identityBindingRequired: !!(gated?.shop.identity_binding_required || billing?.bindingRequired),
+      needsBinding: !!billing?.bindingRequired && !billing?.identityBound,
       privacyModeEnabled: !!machine.privacy_mode_enabled,
       capabilities,
       billed: !!machine.billed,

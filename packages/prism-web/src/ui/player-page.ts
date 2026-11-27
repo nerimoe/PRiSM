@@ -1,5 +1,5 @@
 import type { Page, PageCelebration, PageCode } from "@prism/page-protocol";
-import type { Notice } from "../api";
+import { ApiError, type Notice } from "../api";
 import { pageReport } from "./page-report";
 
 /** How a scanned page travels. What it is made of is in `@prism/page-protocol`. */
@@ -165,6 +165,39 @@ export function openPageChannel(
         closing.onopen = closing.onmessage = closing.onclose = null;
         try { closing.close(); } catch { /* Already gone. */ }
       }
+    },
+  };
+}
+
+/**
+ * Operation ids of actions that got no answer, kept for the tab's life so a
+ * retry after a reload is the same operation and cannot be done twice.
+ */
+export function pendingOperations(scope: string) {
+  const memory = new Map<string, string>();
+  const storageKey = (key: string) => {
+    let user = "";
+    try { user = sessionStorage.getItem("prism.user") ?? ""; } catch {}
+    return `prism.page-op:${user}:${scope}:${key}`;
+  };
+  return {
+    /** The id still waiting for an answer for this action, or a new one. */
+    take(key: string): string {
+      let id = memory.get(key);
+      try { id ??= sessionStorage.getItem(storageKey(key)) ?? undefined; } catch {}
+      id ??= crypto.randomUUID();
+      memory.set(key, id);
+      try { sessionStorage.setItem(storageKey(key), id); } catch {}
+      return id;
+    },
+    /** A failure answers the action only when the server says it was not done (a 4xx other than "still running"). */
+    settleOnError(key: string, caught: unknown) {
+      if (caught instanceof ApiError && caught.status < 500 && caught.code !== "OPERATION_PENDING") this.settle(key);
+    },
+    /** The action got its answer. */
+    settle(key: string) {
+      memory.delete(key);
+      try { sessionStorage.removeItem(storageKey(key)); } catch {}
     },
   };
 }

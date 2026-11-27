@@ -3,10 +3,14 @@ import {
   isPageChanged,
   openPageChannel,
   pageChannelUrl,
+  pendingOperations,
   StillRunning,
   withRetries,
 } from "../src/ui/player-page";
+import type { PageBlock } from "@prism/page-protocol";
+import { mergeListBlocks } from "../src/ui/page-blocks/merge-list";
 import { TEMPERATURE_SETTLE_MS } from "../src/ui/ClimateControls";
+import { isShopAccountMenuPath } from "../src/ui/PlayerAccountMenu";
 
 const quick = { timeoutMs: 20, attempts: 3, waitMs: 1 };
 
@@ -154,5 +158,91 @@ describe("the page's channel", () => {
 describe("air conditioner controls", () => {
   test("gather taps on the temperature buttons for a second", () => {
     expect(TEMPERATURE_SETTLE_MS).toBe(1000);
+  });
+});
+
+describe("mergeListBlocks", () => {
+  const listBlock = (id: string, itemIds: string[]): PageBlock => ({
+    kind: "list",
+    id,
+    items: itemIds.map((itemId) => ({ id: itemId, title: itemId })),
+    moreLabel: "更多",
+    moreTarget: { view: "history", cursor: "next" },
+  });
+
+  test("appends deduplicated items for top-level and nested lists and stops at MAX_PAGE_DEPTH", () => {
+    const current: PageBlock[] = [
+      listBlock("top", ["a", "b"]),
+      {
+        kind: "section",
+        id: "sec",
+        blocks: [
+          { kind: "row", id: "row", blocks: [listBlock("nested", ["n1", "n2"])] },
+        ],
+      },
+    ];
+    const incomingTop = mergeListBlocks(current, [listBlock("top", ["b", "c"])], "top");
+    expect((incomingTop[0] as Extract<PageBlock, { kind: "list" }>).items.map((item) => item.id)).toEqual(["a", "b", "c"]);
+
+    const incomingNested = mergeListBlocks(
+      current,
+      [{ kind: "section", id: "sec", blocks: [listBlock("nested", ["n2", "n3"])] }],
+      "nested",
+    );
+    const section = incomingNested[1] as Extract<PageBlock, { kind: "section" }>;
+    const row = section.blocks[0] as Extract<PageBlock, { kind: "row" }>;
+    const mergedNested = row.blocks[0] as Extract<PageBlock, { kind: "list" }>;
+    expect(mergedNested.items.map((item) => item.id)).toEqual(["n1", "n2", "n3"]);
+
+    let deep: PageBlock = listBlock("too-deep", ["d1"]);
+    for (let i = 0; i < 8; i += 1) deep = { kind: "section", id: `s${i}`, blocks: [deep] };
+    const unchanged = mergeListBlocks([deep], [listBlock("too-deep", ["d2"])], "too-deep");
+    let cursor = unchanged[0] as Extract<PageBlock, { kind: "section" }>;
+    for (let i = 0; i < 7; i += 1) cursor = cursor.blocks[0] as Extract<PageBlock, { kind: "section" }>;
+    expect((cursor.blocks[0] as Extract<PageBlock, { kind: "list" }>).items.map((item) => item.id)).toEqual(["d1"]);
+  });
+});
+
+describe("isShopAccountMenuPath", () => {
+  test("enables shop account menu only on shop-context player routes", () => {
+    for (const path of ["/t/demo", "/t/demo/", "/m", "/m/", "/m/ticket-123"]) {
+      expect(isShopAccountMenuPath(path)).toBe(true);
+    }
+    for (const path of [
+      "/cards",
+      "/settings",
+      "/merchant",
+      "/merchant/demo",
+      "/merchant/demo/billing",
+      "/admin",
+      "/login",
+      "/m/expired",
+      "/m/expired/",
+      "/t/demo/extra",
+    ]) {
+      expect(isShopAccountMenuPath(path)).toBe(false);
+    }
+  });
+});
+
+describe("pendingOperations", () => {
+  test("keeps one id per unanswered action until it is answered, across instances", () => {
+    const store = new Map<string, string>();
+    const previous = (globalThis as { sessionStorage?: unknown }).sessionStorage;
+    (globalThis as { sessionStorage?: unknown }).sessionStorage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
+      removeItem: (key: string) => void store.delete(key),
+    };
+    try {
+      const first = pendingOperations("shop:demo").take("checkout.confirm:null");
+      expect(pendingOperations("shop:demo").take("checkout.confirm:null")).toBe(first);
+      expect(pendingOperations("shop:other").take("checkout.confirm:null")).not.toBe(first);
+      const ops = pendingOperations("shop:demo");
+      ops.settle("checkout.confirm:null");
+      expect(ops.take("checkout.confirm:null")).not.toBe(first);
+    } finally {
+      (globalThis as { sessionStorage?: unknown }).sessionStorage = previous;
+    }
   });
 });

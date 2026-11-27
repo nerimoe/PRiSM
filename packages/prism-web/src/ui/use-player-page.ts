@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Page } from "@prism/page-protocol";
 import { api, ApiError } from "../api";
 import { useI18n } from "../i18n";
@@ -6,7 +6,7 @@ import { useAuth } from "./AuthContext";
 import { operationLocation } from "./BillingPages";
 import { pageReport } from "./page-report";
 import {
-  ACTION_RETRY, FRESH_READ_MS, openPageChannel, pageChannelUrl, READ_RETRY, RECHECK_MS, StillRunning, withRetries,
+  ACTION_RETRY, FRESH_READ_MS, openPageChannel, pageChannelUrl, pendingOperations, READ_RETRY, RECHECK_MS, StillRunning, withRetries,
   type ActionAnswer,
 } from "./player-page";
 
@@ -26,7 +26,7 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
   const [cardAsks, setCardAsks] = useState(0);
   const live = useRef({ reading: false, again: false, stopped: false, answers: 0, readAt: 0, opened: false, timer: undefined as ReturnType<typeof setTimeout> | undefined });
   /** Operation ids of what got no answer, so pressing again cannot do it twice. */
-  const unanswered = useRef(new Map<string, string>());
+  const unanswered = useMemo(() => pendingOperations(`ticket:${ticket}`), [ticket]);
 
   const read = useCallback(async (): Promise<void> => {
     const state = live.current;
@@ -82,8 +82,7 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
   const act = useCallback(async (action: string, payload: Record<string, unknown> | undefined, needsLocation: boolean): Promise<ActionAnswer> => {
     const location = await operationLocation(needsLocation);
     const key = `${action}:${JSON.stringify(payload ?? null)}`;
-    const operationId = unanswered.current.get(key) ?? crypto.randomUUID();
-    unanswered.current.set(key, operationId);
+    const operationId = unanswered.take(key);
     try {
       const answer = await withRetries(
         async (signal) => {
@@ -95,19 +94,19 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
         },
         { ...ACTION_RETRY, onRetry: () => setSlow(true) },
       );
-      unanswered.current.delete(key);
+      unanswered.settle(key);
       live.current.answers += 1;
       live.current.readAt = Date.now();
       setPage(answer.page);
       return answer;
     } catch (caught) {
-      if (caught instanceof ApiError) unanswered.current.delete(key);
+      unanswered.settleOnError(key, caught);
       if (caught instanceof ApiError && caught.sessionExpired) onExpired();
       throw caught;
     } finally {
       setSlow(false);
     }
-  }, [ticket, onExpired]);
+  }, [ticket, onExpired, unanswered]);
 
   useEffect(() => {
     const state = live.current;
@@ -120,11 +119,20 @@ export function usePlayerPage(ticket: string, onExpired: () => void) {
     };
   }, [read, locale]);
 
+  // The account sheet asks the page under it to read again (e.g. after a redeem or a lost binding).
+  useEffect(() => {
+    const again = () => void read();
+    window.addEventListener("prism:shop-refresh", again);
+    return () => window.removeEventListener("prism:shop-refresh", again);
+  }, [read]);
+
   // Signing in happens on this page, and changes everything on it.
   const askedToSignIn = !!page?.blocks.some((block) => block.kind === "signin");
   useEffect(() => {
     if (user && askedToSignIn) void read();
   }, [user, askedToSignIn, read]);
+
+  useEffect(() => () => setActiveShop(""), [setActiveShop]);
 
   const shopCode = page?.shopCode;
   const billingActive = page?.billingActive;

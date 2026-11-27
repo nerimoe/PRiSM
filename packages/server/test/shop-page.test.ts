@@ -85,6 +85,18 @@ describe("shop page renderers", () => {
         privacyModeEnabled: true,
       }).tabs.map((tab) => tab.id),
     ).toEqual(["redeem", "history", "wallet", "bindings", "options"]);
+
+    // A session still running where the shop no longer bills keeps its tabs, so it can be checked out.
+    expect(
+      accountMenuFor(tZh, { billingActive: true, shopBills: false, includeBillTab: true }).tabs.map((tab) => tab.id),
+    ).toEqual(["bill", "redeem", "history", "wallet", "bindings"]);
+
+    expect(
+      accountMenuFor(tZh, { billingActive: true, shopBills: true, includeBillTab: true, shopMenuAvailable: false }),
+    ).toEqual({
+      tabs: [],
+      logoutLabel: "退出登录",
+    });
   });
 
   it("renders signed-out, binding, live bill, settled, and empty shop views", () => {
@@ -116,7 +128,39 @@ describe("shop page renderers", () => {
     expect(binding.resource).toBe("未入场");
     expect(binding.blocks.map((b) => b.kind)).toEqual(["binding"]);
     expect(binding.offerPasskeySetup).toBe(false);
-    expect(binding.accountMenu?.tabs.map((tab) => tab.id)).toEqual(["redeem", "history", "wallet", "bindings"]);
+    expect(binding.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
+
+    // Billing while unbound: the bill shows, but only binding is offered, never a checkout that would be refused.
+    const liveUnbound = renderShopPage({
+      locale: "zh",
+      head: HEAD,
+      signedIn: true,
+      needsBinding: true,
+      shopBills: true,
+      identityBindingRequired: true,
+      checkoutGeo: false,
+      liveBill: { billingInputs: { playerId: "p1", billingSnapshot: { version: 1 } } },
+      settledReceipt: null,
+    });
+    expect(liveUnbound.resource).toBe("计费中");
+    expect(liveUnbound.blocks.map((b) => b.kind)).toEqual(["binding", "bill"]);
+    expect(liveUnbound.footer).toBeUndefined();
+    expect(liveUnbound.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
+
+    const disabled = renderShopPage({
+      locale: "zh",
+      head: HEAD,
+      signedIn: true,
+      needsBinding: false,
+      disabled: true,
+      shopBills: true,
+      checkoutGeo: false,
+      liveBill: null,
+      settledReceipt: null,
+    });
+    expect(disabled.blocks.map((b) => b.id)).toEqual(["disabled"]);
+    expect(disabled.offerPasskeySetup).toBe(false);
+    expect(disabled.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
 
     const live = renderShopPage({
       locale: "zh",
@@ -178,7 +222,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "redeem",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
     });
     expect(redeemForm.title).toBe("Redeem");
@@ -190,7 +233,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "redeem",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       redeemed: true,
     });
@@ -200,7 +242,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "history",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       now: new Date("2026-10-02T12:00:00.000Z"),
       history: {
@@ -301,7 +342,6 @@ describe("shop page renderers", () => {
       locale: "zh",
       view: "history",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       now: new Date("2026-10-02T12:00:00.000Z"),
       history: {
@@ -355,7 +395,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "history",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       detailReceipt: SAMPLE_RECEIPT,
     });
@@ -367,7 +406,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "wallet",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       holdings: [
         { id: "h-coupon", assetType: "coupon", assetName: "Free Play", assetCode: "free-play", quantity: 2 },
@@ -392,7 +430,6 @@ describe("shop page renderers", () => {
       locale: "en",
       view: "bindings",
       head: HEAD,
-      needsBinding: false,
       checkoutGeo: false,
       bindings: [],
     });
@@ -643,6 +680,79 @@ describe("shop player page routes", () => {
         env,
       );
       expect(legacyMe.status).toBe(200);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("hides shop accountMenu tabs and refuses sheet views when platform binding is required but missing", async () => {
+    const { sqlite, env, app } = await createShopPageFixture();
+    try {
+      const authHeaders = { authorization: `Bearer ${TOKEN}` };
+      sqlite.run("UPDATE shop_billing_settings SET identity_binding_required = 1 WHERE shop_id = 'shop'");
+      const { ticket } = await mintResourceTicket(SECRET, "shop-code", "cab-pub");
+
+      const shopRes = await app.fetch(
+        new Request("https://prism.test/api/v1/shops/shop-code/player/page?view=shop", { headers: authHeaders }),
+        env,
+      );
+      expect(shopRes.status).toBe(200);
+      const shopPage = ((await shopRes.json()) as { data: Page }).data;
+      expect(shopPage.blocks.map((b) => b.kind)).toEqual(["binding"]);
+      expect(shopPage.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
+
+      const scanRes = await app.fetch(
+        new Request(`https://prism.test/api/v1/devices/session/page?ticket=${encodeURIComponent(ticket)}`, { headers: authHeaders }),
+        env,
+      );
+      expect(scanRes.status).toBe(200);
+      const scanPage = ((await scanRes.json()) as { data: Page }).data;
+      expect(scanPage.blocks.map((b) => b.kind)).toEqual(["binding"]);
+      expect(scanPage.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
+
+      for (const view of ["bill", "redeem", "history", "wallet", "bindings", "options"] as const) {
+        const sheetRes = await app.fetch(
+          new Request(`https://prism.test/api/v1/shops/shop-code/player/page?view=${view}`, { headers: authHeaders }),
+          env,
+        );
+        expect(sheetRes.status).toBe(403);
+        const body = (await sheetRes.json()) as { error: { code: string; notice?: { flow?: string } } };
+        expect(body.error.code).toBe("PLATFORM_BINDING_REQUIRED");
+        expect(body.error.notice?.flow).toBe("refresh");
+      }
+    } finally {
+      sqlite.close();
+    }
+  });
+  it("shows a disabled player the shop page saying so, and a billing unbound player only binding", async () => {
+    const { sqlite, env, app } = await createShopPageFixture();
+    try {
+      const authHeaders = { authorization: `Bearer ${TOKEN}` };
+      const read = async () => {
+        const res = await app.fetch(
+          new Request("https://prism.test/api/v1/shops/shop-code/player/page?view=shop", { headers: authHeaders }),
+          env,
+        );
+        expect(res.status).toBe(200);
+        return ((await res.json()) as { data: Page }).data;
+      };
+
+      sqlite.run("UPDATE players SET status = 'disabled' WHERE id = 'p1'");
+      const disabled = await read();
+      expect(disabled.blocks.map((b) => b.id)).toEqual(["disabled"]);
+      expect(disabled.offerPasskeySetup).toBe(false);
+      expect(disabled.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
+
+      sqlite.run("UPDATE players SET status = 'active' WHERE id = 'p1'");
+      sqlite.run("UPDATE shop_billing_settings SET identity_binding_required = 1 WHERE shop_id = 'shop'");
+      sqlite.run(
+        "INSERT INTO sessions(shop_id,id,player_id,started_at,status,payment_status,pricing_config_ids_json) VALUES ('shop','s1','p1',?,'active','unpaid',?)",
+        [new Date(Date.now() - 30 * 60_000).toISOString(), JSON.stringify(["plan"])],
+      );
+      const unbound = await read();
+      expect(unbound.blocks.map((b) => b.kind)).toEqual(["binding", "bill"]);
+      expect(unbound.footer).toBeUndefined();
+      expect(unbound.accountMenu).toEqual({ tabs: [], logoutLabel: "退出登录" });
     } finally {
       sqlite.close();
     }
