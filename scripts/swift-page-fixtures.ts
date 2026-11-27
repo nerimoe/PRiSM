@@ -184,17 +184,21 @@ const code = pageCode("zh", { temporaryPassword: "12345678", expiresAt: "2999-01
 const celebration = checkoutCelebration(translator("zh"));
 const notices = Object.fromEntries(noticeCodes().map((code) => [code, notice(code, "zh")]));
 const noticesEn = Object.fromEntries(noticeCodes().map((code) => [code, notice(code, "en")]));
-const screenshots = noticeCodes().map((code) => {
+const staffOnly = new Set(["REDEEM_CODE_ALREADY_EXISTS", "INVALID_REDEEM_CODE_PREFIX", "INVALID_REDEEM_CODE_WINDOW", "INVALID_REDEEM_CODE_MAX_USE_COUNT", "PLAYER_OPTION_FORBIDDEN"]);
+const screenshots = noticeCodes().filter(code => !staffOnly.has(code)).map((code) => {
   const item = notice(code, "zh");
   const card = code.startsWith("CARD_") || ["COIN_FAILED", "COIN_UNKNOWN", "COIN_SKIPPED"].includes(code);
   const flowPages: Record<string, string> = {
     PLATFORM_BINDING_REQUIRED: "binding", CHECKIN_REQUIRED: "entryDoor",
     AUTHENTICATION_REQUIRED: "signin", UNAUTHORIZED: "signin",
   };
+  const redeem = /^(REDEEM_CODE_|PRESENT_|INVALID_REDEEM_CODE$)/.test(code);
+  const pricing = code.startsWith("PRICING_");
+  if (pricing) pages[code] = renderPage({ ...base, capabilities: on("door"), gate: "entry", billing: { error: { message: item.body } } });
   return {
     code, body: item.body, display: item.display, presentation: item.presentation ?? "flow",
-    page: flowPages[code] ?? (item.presentation === "field" ? "redeemForm" : item.presentation === "control" ? "cardsCapture" : "door"),
-    action: flowPages[code] ? "none" : card ? "card" : item.presentation === "field" ? "redeem" : item.presentation === "control" ? "coin" : "door",
+    page: pricing ? code : code === "CHECKIN_CONSENT_REQUIRED" ? "entryDoor" : redeem ? "redeemForm" : flowPages[code] ?? (item.presentation === "field" ? "redeemForm" : item.presentation === "control" ? "cardsCapture" : "door"),
+    action: pricing || flowPages[code] ? "none" : code === "CHECKIN_CONSENT_REQUIRED" ? "consent" : redeem ? "redeem" : card ? "card" : item.presentation === "field" ? "redeem" : item.presentation === "control" ? "coin" : "door",
     notices: card && code.startsWith("COIN_") ? ["CARD_SENT", code] : [code],
   };
 });

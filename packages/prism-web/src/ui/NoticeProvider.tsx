@@ -25,7 +25,7 @@ const NoticeContext = createContext<{ show: Show; preload: (templates: Record<st
  */
 export function NoticeProvider({ children }: { children: ReactNode }) {
   const { t, errorText } = useI18n();
-  const [open, setOpen] = useState<{ notice: Notice; retry?: () => void } | null>(null);
+  const [open, setOpen] = useState<{ notice: Notice; retry?: () => void; refresh?: () => void } | null>(null);
   const templates = useRef<Record<string, Notice>>({});
   const preload = useCallback((next: Record<string, Notice>) => { templates.current = next; }, []);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
@@ -60,7 +60,7 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
     if (!handlers.quiet) {
       if (notice.display === "dialog") {
         setToast(null);
-        setOpen({ notice, retry: handlers.retry });
+        setOpen({ notice, retry: handlers.retry, refresh: handlers.onRefresh });
       } else if (notice.display === "inline" && notice.presentation === "toast" && !handlers.onControl) setToast(notice);
     }
     return notice;
@@ -93,7 +93,7 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
           <p className="text-sm leading-relaxed">{open.notice.body}</p>
           <div className="mt-5 flex justify-end gap-2">
             {open.notice.actions
-              .filter((action) => action.kind !== "retry" || open.retry)
+              .filter((action) => action.kind !== "settings" && (action.kind !== "retry" || open.retry) && (action.kind !== "refresh" || open.refresh))
               .map((action) => (
                 <button
                   key={action.kind}
@@ -101,6 +101,7 @@ export function NoticeProvider({ children }: { children: ReactNode }) {
                   onClick={() => {
                     close();
                     if (action.kind === "retry") open.retry?.();
+                    if (action.kind === "refresh") open.refresh?.();
                   }}
                 >
                   {action.label}

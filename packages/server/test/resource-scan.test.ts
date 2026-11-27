@@ -296,7 +296,7 @@ describe("scanning a resource", () => {
     const { scan, sqlite } = await fixture();
     sqlite.run("UPDATE pricing_configs SET enabled=0 WHERE id='base'");
     const { state } = await scan("special-cabinet");
-    expect(state.billing.error).toEqual({ code: "PRICING_REQUIREMENT_UNAVAILABLE", message: "这里依赖的计费方案已停用，请联系店员" });
+    expect(state.billing.error).toEqual({ code: "PRICING_REQUIREMENT_UNAVAILABLE", message: "暂时无法开始计费，请联系店员" });
   });
 });
 

@@ -14,11 +14,13 @@ export type PageNotice = {
   code: string;
   level: "success" | "info" | "error";
   display: "dialog" | "inline" | "none";
-  presentation?: "status" | "field" | "control" | "toast";
+  presentation?: "page" | "status" | "field" | "control" | "toast";
   flow: "none" | "expired" | "refresh" | "signin";
   title: string | null;
   body: string;
-  actions: { kind: "dismiss" | "retry"; label: string }[];
+  actions: { kind: "dismiss" | "retry" | "refresh" | "settings"; label: string }[];
+  /** Field block that owns validation feedback. */
+  fieldId?: string;
   /** null keeps the message until updated; missing supports older servers. */
   durationMs?: number | null;
   /** Hold a button result and disable that button for this long. Card errors can stay longer. */

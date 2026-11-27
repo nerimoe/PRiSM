@@ -79,7 +79,7 @@ describe("what the page shows", () => {
     const over = { ...caps("door"), gate: "entry" as const, billing: { error: { message: "没有配置计费" } } };
     expect(ids(over)).toEqual(["entry-error"]);
     expect(block(over, "entry-error")).toEqual({
-      kind: "text", id: "entry-error", text: "暂时无法使用", style: "status", icon: "unavailable", detail: "没有配置计费", level: "error",
+      kind: "text", id: "entry-error", text: "暂时无法使用", style: "status", icon: "unavailable", detail: "暂时无法开始计费，请联系店员", level: "error",
     });
   });
 

@@ -29,7 +29,7 @@ API 由 `packages/server-hono` 提供实现，本文档和服务端路由是客�
 
 - **语言**：按请求头 `Accept-Language` 选中文或英文（第一语言是英文才用英文）。网页按自己的语言设置发送，App Clip 用系统语言。
 - **`message`** 与 `notice.body` 相同，旧客户端原样显示它也能看到正确的提示。服务端原来的措辞（例如核心层的英文诊断）放在 **`reason`**，只给后台员工界面和排查用，玩家端不显示。
-- `display` 选择是否中断。操作频繁、余额不足且计费继续、定位权限缺失、结果不确定、兑换码无效时使用 `dialog`。状态和结果使用 `inline`，再由 `presentation` 指定位置。流程切换使用 `none`。
+- `display` 选择是否中断。操作频繁、余额不足且计费继续、定位权限缺失、结果不确定、兑换业务无法完成（无效、过期、失效、未生效、领完或已领取）时使用 `dialog`。状态和结果使用 `inline`，再由 `presentation` 指定位置。流程切换使用 `none`。
 - 可选的 `presentation` 区分 `status`（持续条件）、`field`（输入校验）、`control`（按钮或卡片自身结果）、`toast`（顶部短暂结果）。旧客户端可以继续把这些消息显示在原操作位置。等级与展示方式独立，`RATE_LIMITED` 是需要确认的普通提醒。
 - `durationMs` 是服务端决定的普通展示时长，`null` 表示保留到被更新。`controlDurationMs` 是按钮反馈和短暂禁用的时长。卡片行分别保留各段的时长，包含常驻错误时整行结果保留。
 - 页面可选的 `clientNotices` 预下发定位、网络、操作结果未知、余额不足、限流与会话失效等模板。客户端本地发现故障时按错误码使用这些模板，离线也能沿用同一套文案和分类。首次获取页面前或旧服务端没有这些字段时保留本地兜底。
@@ -541,3 +541,5 @@ React `/admin` 账号管理页提供删除入口。`DELETE /api/v1/admin/users/:
   - 服务端驱动页 `GET /api/v1/shops/:shopCode/player/page` 在店铺关闭 `privacyModeEnabled`（即 0 个玩家可见选项）时不向 `accountMenu.tabs` 下发 `options` 页签，菜单隐藏「选项」入口；且 `view=options` 也不返回 `privacyMode` 开关块。店铺开启隐私模式时下发 `options` 页签与开关，并通过 `POST /player/action`（`action: "options.save"`）保存。
 - **店员接口**：`GET/PUT /api/v1/shops/:shopCode/staff/players/:playerId/options` 统一返回和更新 `{ options: { excludeFromReports, privacyMode }, meta: { isStaff, privacyModeEnabled } }`（原 `staff/players/:playerId/report-settings` 兼容保留）。
 - **数据备份**：v1/v7 备份导出与导入保留 `players.privacy_mode` 与 `app_settings` 中的 `player.privacy`；导入缺少 `privacy_mode` 的旧备份时默认回退为 `0`。
+
+玩家提示扩展支持 `presentation=page` 替换操作区，`fieldId` 标识校验对应字段，Alert 的 `actions.kind` 支持 `refresh`（只读刷新）及 `settings`（平台支持时打开应用权限设置）。详见玩家扫码页文档。

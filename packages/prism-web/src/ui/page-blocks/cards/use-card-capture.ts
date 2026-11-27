@@ -6,7 +6,7 @@ import { operationLocation } from "../../BillingPages";
 
 export type CardCapture =
   | { phase: "starting" | "waiting" }
-  | { phase: "done"; level: "success" | "error"; message: string }
+  | { phase: "done"; level: "success" | "info" | "error"; message: string }
   | null;
 
 /** Adding a card at the cabinet's reader: opening a window, waiting for the card and giving up. */
@@ -39,7 +39,7 @@ export function useCardCapture({ block, ticket, cardAsks, onAdded }: {
     if (!waitingForCard) return;
     const left = () => {
       cancelCapture();
-      setCapture({ phase: "done", level: "error", message: leftPageText });
+      setCapture({ phase: "done", level: "info", message: leftPageText });
     };
     const hidden = () => { if (document.visibilityState === "hidden") left(); };
     hidden();
@@ -128,7 +128,7 @@ export function useCardCapture({ block, ticket, cardAsks, onAdded }: {
       const outcomes = captureUi.outcomes;
       setCapture({
         phase: "done",
-        level: added ? "success" : "error",
+        level: added ? "success" : ["taken", "unsupported"].includes(status) ? "error" : "info",
         message: added ? outcomes.added
           : status === "taken" ? outcomes.taken
           : status === "unsupported" ? outcomes.unsupported

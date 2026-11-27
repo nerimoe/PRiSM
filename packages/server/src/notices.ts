@@ -20,7 +20,7 @@
 import type { PageNotice } from "@prism/page-protocol";
 
 export type NoticeLevel = "success" | "info" | "error";
-export type NoticePresentation = "status" | "field" | "control" | "toast";
+export type NoticePresentation = "page" | "status" | "field" | "control" | "toast";
 export type NoticeDisplay = "dialog" | "inline" | "none";
 /** expired: the QR session is gone, scan again. refresh: reload the page state. signin: sign in again. */
 export type NoticeFlow = "none" | "expired" | "refresh" | "signin";
@@ -40,6 +40,8 @@ type Entry = {
   flow?: NoticeFlow;
   /** Offer a retry; a client without a way to retry shows only the dismiss button. */
   retry?: boolean;
+  fieldId?: string;
+  action?: "refresh" | "settings";
 };
 
 const t = (zh: string, en: string): Text => ({ zh, en });
@@ -59,18 +61,18 @@ const CATALOG: Record<string, Entry> = {
   UNAUTHORIZED: { body: t("请先登录", "Please sign in."), display: "none", flow: "signin" },
 
   // Persistent conditions, plus permission and billing alerts.
-  ACCOUNT_BANNED: { presentation: "status", title: t("账号已停用", "Account suspended"), body: t("这个账号暂时无法使用，如有疑问请联系店员", "This account cannot be used for now. Please ask the staff.") },
+  ACCOUNT_BANNED: { presentation: "page", title: t("账号已停用", "Account suspended"), body: t("这个账号暂时无法使用，如有疑问请联系店员", "This account cannot be used for now. Please ask the staff.") },
   ACCESS_RESTRICTED: { presentation: "status", body: t("当前无法进行此操作，如有疑问请联系店员", "This cannot be done right now. Please ask the staff.") },
-  PLAYER_DISABLED: { presentation: "status", title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
-  PLAYER_NOT_ACTIVE: { presentation: "status", title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
+  PLAYER_DISABLED: { presentation: "page", title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
+  PLAYER_NOT_ACTIVE: { presentation: "page", title: t("无法使用", "Not available"), body: t("你在本店的玩家资格已停用，请联系店员", "Your membership at this shop is suspended. Please ask the staff.") },
   INSUFFICIENT_BALANCE: { display: "dialog", title: t("余额不足", "Insufficient balance"), body: t("余额不足，请充值后再结账，计费会继续", "Not enough balance. Top up and check out again; billing continues."), level: "error" },
-  DEVICE_UNAVAILABLE: { presentation: "status", body: t("设备连接失败，请联系店员", "Could not reach the device. Please ask the staff."), retry: true },
-  DEVICE_DISABLED: { presentation: "status", body: t("这个资源已停用", "This is disabled.") },
-  DEVICE_NOT_FOUND: { presentation: "status", body: t("没有找到这个资源", "Not found.") },
+  DEVICE_UNAVAILABLE: { presentation: "page", body: t("设备连接失败，请联系店员", "Could not reach the device. Please ask the staff."), retry: true },
+  DEVICE_DISABLED: { presentation: "page", body: t("这个资源已停用", "This is disabled.") },
+  DEVICE_NOT_FOUND: { presentation: "page", body: t("没有找到这个资源", "Not found.") },
   DEVICE_ACTION_UNSUPPORTED: { presentation: "status", body: t("这里不支持此操作", "This cannot be done here.") },
-  RESOURCE_NOT_BILLED: { presentation: "status", body: t("这里不计费，无需确认", "This is free to use; there is nothing to confirm.") },
-  DEVICE_RESULT_UNKNOWN: { display: "dialog", title: t("操作结果尚未确认", "Result not confirmed"), body: t("请求结果尚未确认，请先刷新状态，避免重复操作", "The result is not confirmed. Refresh the status before repeating the action.") },
-  LOCATION_REQUIRED: { display: "dialog", title: t("需要定位", "Location needed"), body: t("此操作需要获取当前位置，请允许定位", "This needs your location. Please allow location access."), level: "error", retry: true },
+  RESOURCE_NOT_BILLED: { display: "none", flow: "refresh", level: "info", body: t("这里不计费，无需确认", "This is free to use; there is nothing to confirm.") },
+  DEVICE_RESULT_UNKNOWN: { display: "dialog", action: "refresh", title: t("操作结果尚未确认", "Result not confirmed"), body: t("请求结果尚未确认，请先刷新状态，避免重复操作", "The result is not confirmed. Refresh the status before repeating the action.") },
+  LOCATION_REQUIRED: { display: "dialog", action: "settings", title: t("需要定位", "Location needed"), body: t("此操作需要获取当前位置，请允许定位", "This needs your location. Please allow location access."), level: "error", retry: true },
 
   // Local feedback, input validation, temporary results and rate-limit alerts.
   DEVICE_POWER_OFF: { presentation: "control", body: t("请先开机", "Turn the machine on first."), level: "info", display: "inline" },
@@ -88,33 +90,33 @@ const CATALOG: Record<string, Entry> = {
     level: "info",
     display: "inline",
   },
-  CHECKIN_CONSENT_REQUIRED: { presentation: "field", body: t("请确认入场计费规则", "Please accept the billing rules first."), level: "info", display: "inline" },
+  CHECKIN_CONSENT_REQUIRED: { presentation: "field", fieldId: "consent", body: t("请确认入场计费规则", "Please accept the billing rules first."), level: "info", display: "inline" },
   LOCATION_LOW_ACCURACY: { presentation: "toast", body: t("定位精度不足，请重试", "Location not precise enough. Retry."), level: "error", display: "inline" },
   LOCATION_OUT_OF_RANGE: { presentation: "status", body: t("不在店铺范围内", "Not within the shop area."), level: "error", display: "inline" },
   LOCATION_STILL_INSIDE: { presentation: "status", body: t("请离开店铺定位范围后再结账", "Please leave the shop before checking out."), level: "info", display: "inline" },
   REDEEM_CODE_NOT_FOUND: { body: t("兑换码无效", "This code is not valid."), level: "error", display: "dialog" },
-  REDEEM_CODE_EXPIRED: { presentation: "field", body: t("兑换码已过期", "This code has expired."), level: "error", display: "inline" },
-  REDEEM_CODE_NOT_ACTIVE: { presentation: "field", body: t("兑换码尚未生效", "This code is not active yet."), level: "info", display: "inline" },
-  REDEEM_CODE_MAX_USE_REACHED: { presentation: "field", body: t("兑换码已被领完", "This code has reached its redemption limit."), level: "info", display: "inline" },
+  REDEEM_CODE_EXPIRED: { display: "dialog", body: t("兑换码已过期", "This code has expired."), level: "error" },
+  REDEEM_CODE_NOT_ACTIVE: { display: "dialog", body: t("兑换码尚未生效", "This code is not active yet."), level: "info" },
+  REDEEM_CODE_MAX_USE_REACHED: { display: "dialog", body: t("兑换码已被领完", "This code has reached its redemption limit."), level: "info" },
   REDEEM_CODE_ALREADY_EXISTS: { presentation: "field", body: t("该兑换码已存在，请换一个", "This redeem code already exists."), level: "error", display: "inline" },
-  INVALID_REDEEM_CODE: { presentation: "field", body: t("兑换码需为 1–64 个字符且不能包含空格", "Redeem code must be 1–64 characters with no spaces."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE: { presentation: "field", fieldId: "code", body: t("兑换码需为 1–64 个字符且不能包含空格", "Redeem code must be 1–64 characters with no spaces."), level: "error", display: "inline" },
   INVALID_REDEEM_CODE_PREFIX: { presentation: "field", body: t("前缀最多 24 个字符且不能包含空格", "Prefix must be up to 24 characters with no spaces."), level: "error", display: "inline" },
   INVALID_REDEEM_CODE_WINDOW: { presentation: "field", body: t("到期时间必须晚于生效时间", "Expiry time must be after activation time."), level: "error", display: "inline" },
   INVALID_REDEEM_CODE_MAX_USE_COUNT: { presentation: "field", body: t("可用次数必须是大于 0 的整数", "Max uses must be a positive integer."), level: "error", display: "inline" },
-  PRESENT_ONCE_PER_PLAYER_REDEEMED: { presentation: "toast", body: t("您已经领取过这份礼物", "You have already claimed this gift."), level: "info", display: "inline" },
-  PRESENT_GRANT_LIMIT_REACHED: { presentation: "toast", body: t("您已达到这份礼物的领取上限", "You have reached this gift's per-player limit."), level: "info", display: "inline" },
-  PRESENT_NOT_ACTIVE: { presentation: "field", body: t("兑换码已失效", "This code is no longer valid."), level: "error", display: "inline" },
-  PRESENT_EXPIRED: { presentation: "field", body: t("兑换码已过期", "This code has expired."), level: "error", display: "inline" },
-  PLAYER_HAS_NO_UNSETTLED_SESSIONS: { presentation: "toast", body: t("没有需要结账的场次", "Nothing to check out."), level: "info", display: "inline" },
-  ACTIVE_SESSION_NOT_FOUND: { presentation: "toast", body: t("没有进行中的场次", "No visit in progress."), level: "info", display: "inline" },
-  SESSION_NOT_ACTIVE: { presentation: "toast", body: t("这个场次已经结束", "This visit has ended."), level: "info", display: "inline" },
+  PRESENT_ONCE_PER_PLAYER_REDEEMED: { display: "dialog", body: t("您已经领取过这份礼物", "You have already claimed this gift."), level: "info" },
+  PRESENT_GRANT_LIMIT_REACHED: { display: "dialog", body: t("您已达到这份礼物的领取上限", "You have reached this gift's per-player limit."), level: "info" },
+  PRESENT_NOT_ACTIVE: { display: "dialog", body: t("兑换码已失效", "This code is no longer valid."), level: "error" },
+  PRESENT_EXPIRED: { display: "dialog", body: t("兑换码已过期", "This code has expired."), level: "error" },
+  PLAYER_HAS_NO_UNSETTLED_SESSIONS: { presentation: "toast", flow: "refresh", body: t("没有需要结账的场次", "Nothing to check out."), level: "info", display: "inline" },
+  ACTIVE_SESSION_NOT_FOUND: { presentation: "toast", flow: "refresh", body: t("没有进行中的场次", "No visit in progress."), level: "info", display: "inline" },
+  SESSION_NOT_ACTIVE: { presentation: "toast", flow: "refresh", body: t("这个场次已经结束", "This visit has ended."), level: "info", display: "inline" },
   // Why a scanned resource cannot bill now: shown in place of its pricing rules. Each is the shop's to fix.
-  PRICING_PLAN_NOT_FOUND: { presentation: "status", body: t("这里的计费方案已不存在，请联系店员", "This place's pricing plan no longer exists. Please ask the staff."), level: "error", display: "inline" },
-  PRICING_PLAN_NOT_STARTABLE: { presentation: "status", body: t("这里的计费方案不能用来计时，请联系店员", "This place's pricing plan cannot time a visit. Please ask the staff."), level: "error", display: "inline" },
-  PRICING_REQUIREMENT_UNAVAILABLE: { presentation: "status", body: t("这里依赖的计费方案已停用，请联系店员", "A pricing plan this place depends on is disabled. Please ask the staff."), level: "error", display: "inline" },
-  PRICING_RELATION_UNKNOWN_TARGET: { presentation: "status", body: t("这里依赖的计费方案已不存在，请联系店员", "A pricing plan this place depends on no longer exists. Please ask the staff."), level: "error", display: "inline" },
-  PRICING_RELATION_CONTRADICTION: { presentation: "status", body: t("这里的计费方案设置互相冲突，请联系店员", "This place's pricing plans conflict with each other. Please ask the staff."), level: "error", display: "inline" },
-  PRICING_RELATION_CYCLE: { presentation: "status", body: t("这里的计费方案设置互相依赖成环，请联系店员", "This place's pricing plans depend on each other in a loop. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_PLAN_NOT_FOUND: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_PLAN_NOT_STARTABLE: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_REQUIREMENT_UNAVAILABLE: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_UNKNOWN_TARGET: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_CONTRADICTION: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
+  PRICING_RELATION_CYCLE: { presentation: "status", body: t("暂时无法开始计费，请联系店员", "Billing cannot start right now. Please ask the staff."), level: "error", display: "inline" },
 
   // Outcomes of a swipe, sent with a successful response and shown on the card
   // row, one short part each. The coin after a swipe is a side effect: whatever
@@ -150,7 +152,7 @@ function build(code: string, entry: Entry, locale: Locale, body?: string): Notic
   const display = entry.display ?? (entry.presentation ? "inline" : "dialog");
   const level = entry.level ?? "error";
   const duration = level === "success" ? 3000 : level === "info" ? 4000 : 5000;
-  const persistent = display !== "inline" || entry.presentation === "status" || entry.presentation === "field"
+  const persistent = display !== "inline" || entry.presentation === "page" || entry.presentation === "status" || entry.presentation === "field"
     || entry.presentation === "control" && level === "error";
   return {
     code,
@@ -162,9 +164,10 @@ function build(code: string, entry: Entry, locale: Locale, body?: string): Notic
     flow: entry.flow ?? "none",
     title: entry.title?.[locale] ?? null,
     body: body ?? entry.body[locale],
+    ...(entry.fieldId ? { fieldId: entry.fieldId } : {}),
     actions: display === "dialog"
-      ? [{ kind: "dismiss", label: DISMISS[locale] }, ...(entry.retry ? [{ kind: "retry" as const, label: RETRY[locale] }] : [])]
-      : [],
+      ? [{ kind: "dismiss", label: DISMISS[locale] }, ...(entry.action ? [{ kind: entry.action, label: entry.action === "refresh" ? t("刷新状态", "Refresh status")[locale] : t("前往设置", "Open settings")[locale] }] : entry.retry ? [{ kind: "retry" as const, label: RETRY[locale] }] : [])]
+      : entry.presentation === "page" ? [{ kind: "refresh", label: t("刷新", "Refresh")[locale] }] : [],
   };
 }
 

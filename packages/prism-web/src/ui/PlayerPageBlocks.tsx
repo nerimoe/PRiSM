@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { allPageBlocks, type Page, type PageCelebration, type PageTarget } from "@prism/page-protocol";
 import { useNoticeTemplates } from "./NoticeProvider";
+import { StatusView } from "./page-blocks/StatusView";
 import { BlockList } from "./page-blocks/BlockView";
 import { PageContext } from "./page-blocks/page-context";
 import { usePageActions, type Act } from "./page-blocks/use-page-actions";
@@ -83,6 +84,8 @@ export function PlayerPageBlocks({
       <BlockList blocks={page.footer} depth={0} />
     </PageContext.Provider>
   );
+
+  if (actions.pageNotice) return <StatusView icon="unavailable" title={actions.pageNotice.title ?? actions.pageNotice.body} detail={actions.pageNotice.title ? actions.pageNotice.body : undefined}><button className="session-action" onClick={() => { actions.dropError(); refresh(); }}>{actions.pageNotice.actions[0]?.label}</button></StatusView>;
 
   const drawn = (
     <PageContext.Provider value={contextValue}>

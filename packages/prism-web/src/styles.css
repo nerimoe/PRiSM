@@ -1767,7 +1767,7 @@ button.credential-row:not(:disabled):active {
   top: max(16px, env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
-  width: max-content;
+  width: min(440px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   z-index: 100;
   pointer-events: auto;

@@ -37,7 +37,8 @@ export function ButtonBlock({ block }: { block: PageButton }) {
 
   const Icon = block.icon ? ICONS[block.icon] : null;
   const pressing = actions.busy?.id === block.id || actions.waitingId === block.id;
-  const note = actions.noteFor(block.id);
+  const anchored = actions.noteFor(block.id);
+  const note = anchored?.presentation === "field" && anchored.fieldId ? null : anchored;
   const onButton = block.answerOnButton && (!note?.presentation || note.presentation === "control") ? note : null;
   const { code } = actions;
   const label = block.enabled && onButton ? onButton.body : code && block.againLabel ? block.againLabel : block.label;

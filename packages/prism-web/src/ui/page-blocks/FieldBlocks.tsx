@@ -4,6 +4,7 @@ import {
   allPageBlocks, buildButtonPayload, canSubmitButton, type PageButton, type PageConsent, type PageInputField,
   type PageSelectField, type PageToggleField,
 } from "@prism/page-protocol";
+import { InlineNoticeLine } from "./notices";
 import { usePageContext } from "./page-context";
 
 export function InputBlock({ block }: { block: PageInputField }) {
@@ -42,6 +43,7 @@ export function InputBlock({ block }: { block: PageInputField }) {
           if (submitOnEnter()) event.preventDefault();
         }}
       />
+      {actions.noteFor(block.id) && <InlineNoticeLine note={actions.noteFor(block.id)!} />}
       {block.helperText && <p className="page-field-help">{block.helperText}</p>}
     </div>
   );
@@ -112,9 +114,9 @@ export function ToggleBlock({ block }: { block: PageToggleField }) {
 }
 
 export function ConsentBlock({ block }: { block: PageConsent }) {
-  const { form } = usePageContext();
+  const { form, actions } = usePageContext();
   return (
-    <label className="flex items-start gap-3 text-sm leading-relaxed">
+    <div><label className="flex items-start gap-3 text-sm leading-relaxed">
       <input
         className="mt-1 shrink-0"
         type="checkbox"
@@ -122,6 +124,6 @@ export function ConsentBlock({ block }: { block: PageConsent }) {
         onChange={(event) => form.setValue(block.id, event.target.checked)}
       />
       <span>{block.text}</span>
-    </label>
+    </label>{actions.noteFor(block.id) && <InlineNoticeLine note={actions.noteFor(block.id)!} />}</div>
   );
 }

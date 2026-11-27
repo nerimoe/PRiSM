@@ -42,7 +42,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
       showNotice(next);
       return;
     }
-    setNoteAt(id);
+    setNoteAt(next.presentation === "field" ? next.fieldId ?? id : id);
     showNote(next, onControl);
   }, [showNote, showNotice]);
   const blocked = !!busy || cardsBusy || disabled;
@@ -72,8 +72,8 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
     try {
       const answer = await act(action, payload, needsLocation);
       for (const notice of answer.notices) {
+        showNotice(notice, handlers);
         if (notice.display === "inline") showAt(id, notice);
-        else showNotice(notice, handlers);
       }
       if (answer.code) setCode(answer.code);
       if (answer.ok && answer.celebration) onCelebrate?.(answer.celebration, answer);
@@ -92,6 +92,7 @@ export function usePageActions({ blocks, act, onExpired, onRefresh, onCelebrate,
     pressRequest,
     busy,
     blocked,
+    pageNotice: note?.presentation === "page" ? note : null,
     waitingId: waiting?.id ?? null,
     code,
     noteFor: (id: string) => (noteAt === id ? note : null),
