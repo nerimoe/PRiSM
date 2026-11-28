@@ -350,7 +350,7 @@ function ScheduleEditor({ rules, onChange }: { rules: AnnouncementSchedule[]; on
             const selected = rule.id === activeRule.id;
             const invalid = isScheduleRuleInvalid(rule);
             const repeat = formatScheduleRepeat(rule, t);
-            const summary = [repeat, rule.time || "--:--", !rule.enabled && t("已停用")].filter(Boolean).join(" · ");
+            const summary = [repeat, ([rule.time, ...rule.additionalTimes ?? []].filter(Boolean).sort().join("、") || "--:--"), !rule.enabled && t("已停用")].filter(Boolean).join(" · ");
             const dotClass = invalid ? "bg-coral" : rule.enabled ? "bg-mint" : "bg-ink/20";
             return (
               <div key={rule.id} className="grid min-w-0 grid-cols-1 gap-2">
@@ -414,6 +414,10 @@ function ScheduleRuleEditor({
 }) {
   const { t } = useI18n();
   const textId = useId();
+  const timeLabelId = useId();
+  const timeControl = "inline-flex h-10 w-40 max-w-full items-center rounded-full border border-ink/20 bg-panel";
+  const times = [rule.time, ...rule.additionalTimes ?? []];
+  const setTimes = ([time, ...additionalTimes]: string[]) => onChange({ time, additionalTimes });
   const mode = scheduleMode(rule);
   const repeat = formatScheduleRepeat(rule, t);
   const modeOptions: ReadonlyArray<readonly [ScheduleRepeatMode, string]> = [
@@ -479,33 +483,10 @@ function ScheduleRuleEditor({
           </div>
         </div>
 
-        {mode === "once" ? (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="发送日期">
-              <input
-                type="date"
-                className={input}
-                value={rule.date ?? ""}
-                onChange={(e) => onChange({ date: e.target.value })}
-              />
-            </Field>
-            <Field label="发送时间">
-              <input
-                type="time"
-                className={input}
-                value={rule.time}
-                onChange={(e) => onChange({ time: e.target.value })}
-              />
-            </Field>
-          </div>
-        ) : (
-          <Field label="发送时间">
-            <input
-              type="time"
-              className={input}
-              value={rule.time}
-              onChange={(e) => onChange({ time: e.target.value })}
-            />
+        {mode === "once" && (
+          <Field label="发送日期">
+            <input type="date" className={input} value={rule.date ?? ""}
+              onChange={(e) => onChange({ date: e.target.value })} />
           </Field>
         )}
 
@@ -538,6 +519,26 @@ function ScheduleRuleEditor({
           </div>
         )}
 
+        <div className="grid min-w-0 gap-2">
+          <span id={timeLabelId} className="text-sm font-medium">{t("发送时间")}</span>
+          <div role="group" aria-labelledby={timeLabelId} className="flex flex-wrap gap-2">
+            {times.map((time, index) => (
+              <div key={index} className={timeControl}>
+                <input type="time" aria-label={`${t("发送时间")} ${index + 1}`} value={time}
+                  className="focus-ring h-full min-w-0 flex-1 rounded-full bg-transparent pl-3 pr-1 text-sm tabular-nums"
+                  onChange={e => setTimes(times.map((value, i) => i === index ? e.target.value : value))} />
+                {times.length > 1 && (
+                  <button type="button" aria-label={`${t("删除时间")} ${time}`} className="focus-ring grid h-full w-8 shrink-0 place-items-center rounded-full text-ink/50 hover:text-coral"
+                    onClick={() => setTimes(times.filter((_, i) => i !== index))}><X size={14} /></button>
+                )}
+              </div>
+            ))}
+            <button type="button" className={`${timeControl} focus-ring justify-center gap-2 border-dashed text-sm font-medium hover:bg-ink/5 disabled:opacity-50`} disabled={times.includes("") || times.length >= 1440}
+              onClick={() => setTimes([...times, ""])}><Plus size={14} />{t("添加时间")}</button>
+          </div>
+          {new Set(times).size !== times.length && <p role="alert" className="text-xs text-coral">{t("发送时间不能重复")}</p>}
+        </div>
+
         <p className="text-xs leading-relaxed text-ink/55">
           {t("按店铺时区发送到本组收件人。需要新版 Koishi 插件在线，错过的播报跳过。")}
         </p>
@@ -563,7 +564,7 @@ function ScheduleRuleEditor({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-medium">{t("发送预览")}</span>
           <span className="rounded-full bg-ink/[0.05] px-2 py-0.5 text-[11px] font-medium tabular-nums text-ink/65">
-            {`${repeat} · ${rule.time || "--:--"}`}
+            {`${repeat} · ${times.filter(Boolean).sort().join("、") || "--:--"}`}
           </span>
         </div>
         <p className={`whitespace-pre-wrap break-words rounded-xl border border-ink/10 bg-panel px-3.5 py-2.5 text-sm leading-relaxed ${
