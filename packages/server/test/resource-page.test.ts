@@ -560,6 +560,80 @@ describe("reading and acting on the page", () => {
 
     sqlite.close();
   });
+
+  it("emits independent per-action needsLocation across entry, resource, checkout and beacon online fallback", async () => {
+    const { sqlite, page, books, env, app, headers } = await fixture();
+    books(0);
+    sqlite.run("UPDATE shop_billing_settings SET checkin_geo=1, checkout_geo=0, machine_geo=0 WHERE shop_id='shop'");
+
+    const started = await app.fetch(new Request("https://prism.test/api/v1/machines/session/start", {
+      method: "POST", headers: headers(), body: JSON.stringify({ shopCode: "shop-code", publicId: "cab-pub" }),
+    }), env);
+    expect(started.status).toBe(200);
+    expect((await started.json() as any).data.machine).toMatchObject({
+      locationMode: "none",
+      shop: { locationEnabled: false, locationMode: "none", machineGeo: false },
+    });
+
+    const entryPage = (await page()).page;
+    const entryButton = entryPage.blocks.find((entry: any) => entry.id === "entry");
+    expect(entryButton).toMatchObject({ action: "entry", needsLocation: true });
+
+    const entered = await app.fetch(new Request("https://prism.test/api/v1/devices/session/action", {
+      method: "POST", headers: headers(),
+      body: JSON.stringify({
+        ticket: (await mintResourceTicket(SECRET, "shop-code", "cab-pub")).ticket,
+        operationId: op(),
+        action: "entry",
+        payload: { ...entryButton.payload, consent: true },
+        location: { lat: 0, lng: 0, accuracy: 10 },
+      }),
+    }), env);
+    expect(entered.status).toBe(200);
+    const readyPage = (await entered.json() as any).data.page;
+    expect(readyPage.blocks.find((entry: any) => entry.id === "cards")?.needsLocation).toBe(false);
+    expect(readyPage.blocks.find((entry: any) => entry.id === "coin")?.needsLocation).toBe(false);
+
+    const readShopView = async (view: "shop" | "bill") => {
+      const response = await app.fetch(new Request(`https://prism.test/api/v1/shops/shop-code/player/page?view=${view}`, { headers: headers() }), env);
+      expect(response.status).toBe(200);
+      return (await response.json() as any).data;
+    };
+    expect((await readShopView("shop")).footer?.[0]).toMatchObject({ action: "checkout.confirm", needsLocation: false });
+    expect((await readShopView("bill")).footer?.[0]).toMatchObject({ action: "checkout.confirm", needsLocation: false });
+
+    // Enabling checkout & machine without online beacons uses GPS fallback for both.
+    sqlite.run("UPDATE shop_billing_settings SET checkin_geo=0, checkout_geo=1, machine_geo=1 WHERE shop_id='shop'");
+    clearShopDependenciesCache();
+    expect((await readShopView("shop")).footer?.[0]).toMatchObject({ action: "checkout.confirm", needsLocation: true });
+    expect((await readShopView("bill")).footer?.[0]).toMatchObject({ action: "checkout.confirm", needsLocation: true });
+    const gpsMachinePage = (await page()).page;
+    expect(gpsMachinePage.blocks.find((entry: any) => entry.id === "cards")?.needsLocation).toBe(true);
+    expect(gpsMachinePage.blocks.find((entry: any) => entry.id === "coin")?.needsLocation).toBe(true);
+
+    // Bringing an IoT BLE beacon online switches shop checks strictly to BLE (needsLocation GPS becomes false).
+    sqlite.run("INSERT INTO machines(id,public_id,shop_id,name,hinata_url_encrypted,enabled) VALUES ('iot-dev','iot-pub','shop','门口信标','',1)");
+    sqlite.run(
+      `INSERT INTO shop_nodes(shop_id,id,kind,name,enabled,channel,credential_hash,config_json,created_at,updated_at)
+       VALUES ('shop','iot-1','iot','门口信标',1,'iot_c1','h1',?,?,?)`,
+      [JSON.stringify({ haWatch: true, ble: { enabled: true, beaconId: 1, txPower: -59 } }), NOW, NOW],
+    );
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop','iot-dev','iot',?,'{}',?,?)`,
+      [JSON.stringify({ nodeId: "iot-1", haWatch: true, ble: { enabled: true, beaconId: 1, txPower: -59, rssiThreshold: -75 } }), NOW, NOW],
+    );
+    sqlite.run(
+      `INSERT INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at)
+       VALUES ('shop','iot-dev','iot','link','"online"','owned',?)`,
+      [NOW],
+    );
+    expect((await readShopView("shop")).footer?.[0]).toMatchObject({ action: "checkout.confirm", needsLocation: false });
+    const bleMachinePage = (await page()).page;
+    expect(bleMachinePage.blocks.find((entry: any) => entry.id === "cards")?.needsLocation).toBe(false);
+    expect(bleMachinePage.blocks.find((entry: any) => entry.id === "coin")?.needsLocation).toBe(false);
+    sqlite.close();
+  });
 });
 
 describe("declarative SDUI primitives", () => {

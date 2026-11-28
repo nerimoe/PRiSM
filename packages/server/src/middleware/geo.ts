@@ -3,6 +3,7 @@ import type { D1DatabaseLike } from "@prism/adapter-d1";
 import type { TenantShop } from "../bindings.js";
 import { jsonError } from "../http.js";
 import {
+  isLocationCheckRequired,
   readShopLocationSettings,
   resolveEffectiveLocationPolicy,
   type EffectiveLocationPolicy,
@@ -97,9 +98,10 @@ export function checkBleBeacons(input: {
   beaconNodeId: string | null;
   rssiThreshold: number | null;
 }): { matched: boolean; configured: boolean } {
+  const online = input.beacons.filter((b) => b.online);
   const eligible = input.beaconNodeId
-    ? input.beacons.filter((b) => b.nodeId === input.beaconNodeId)
-    : input.beacons;
+    ? online.filter((b) => b.nodeId === input.beaconNodeId)
+    : online;
   if (!eligible.length) return { matched: false, configured: false };
   const matched = eligible.some((beacon) => {
     const threshold = input.rssiThreshold ?? beacon.rssiThreshold;
@@ -110,7 +112,7 @@ export function checkBleBeacons(input: {
 
 /**
  * Verify a player's location against an already-resolved effective policy
- * (`none`, `gps`, `ble`, or `any`).
+ * (`none`, `gps`, or `ble`).
  */
 export function enforceLocationPolicy(input: {
   shop: TenantShop;
@@ -151,73 +153,23 @@ export function enforceLocationPolicy(input: {
     return;
   }
 
-  if (policy.mode === "ble") {
-    if (!bleParsed.success) {
-      jsonError(403, "此操作需要扫描店内蓝牙信标", "LOCATION_REQUIRED");
-    }
-    const ble = checkBleBeacons({
-      sightings: bleParsed.data.beacons,
-      beacons: input.beacons ?? [],
-      beaconNodeId: policy.beaconNodeId,
-      rssiThreshold: policy.rssiThreshold,
-    });
-    if (action === "checkout") {
-      if (ble.matched) {
-        jsonError(403, "请离开店铺范围后再结账", "LOCATION_STILL_INSIDE");
-      }
-    } else if (!ble.matched) {
-      jsonError(403, "未检测到附近的店铺蓝牙信标，请到店后再操作", "LOCATION_OUT_OF_RANGE");
-    }
-    return;
+  // `ble`: strictly verify against eligible online shop beacons.
+  if (!bleParsed.success) {
+    jsonError(403, "此操作需要扫描店内蓝牙信标", "LOCATION_REQUIRED");
   }
-
-  // `any`: GPS OR BLE beacon may satisfy the location check.
-  if (!gpsParsed.success && !bleParsed.success) {
-    jsonError(403, "此操作需要获取当前位置或扫描店内蓝牙信标", "LOCATION_REQUIRED");
-  }
-
-  const bleMatched = bleParsed.success
-    ? checkBleBeacons({
-        sightings: bleParsed.data.beacons,
-        beacons: input.beacons ?? [],
-        beaconNodeId: policy.beaconNodeId,
-        rssiThreshold: policy.rssiThreshold,
-      }).matched
-    : null;
-
-  const gpsCheck = gpsParsed.success
-    ? checkLocation({
-        userLat: gpsParsed.data.lat,
-        userLng: gpsParsed.data.lng,
-        accuracy: gpsParsed.data.accuracy,
-        shopLat: shop.latitude,
-        shopLng: shop.longitude,
-        radiusMeters: shop.radius_meters,
-      })
-    : null;
-
+  const ble = checkBleBeacons({
+    sightings: bleParsed.data.beacons,
+    beacons: input.beacons ?? [],
+    beaconNodeId: policy.beaconNodeId,
+    rssiThreshold: policy.rssiThreshold,
+  });
   if (action === "checkout") {
-    // Inside if either GPS says inside or BLE still sees a shop beacon.
-    if (bleMatched === true) {
+    if (ble.matched) {
       jsonError(403, "请离开店铺范围后再结账", "LOCATION_STILL_INSIDE");
     }
-    if (gpsCheck) {
-      if (gpsCheck.reason === "low_accuracy" && bleMatched !== false) {
-        jsonError(403, "定位精度不足，请重试", "LOCATION_LOW_ACCURACY");
-      }
-      if (gpsCheck.allowed) {
-        jsonError(403, "请离开店铺定位范围后再结账", "LOCATION_STILL_INSIDE");
-      }
-    }
-    return;
+  } else if (!ble.matched) {
+    jsonError(403, "未检测到附近的店铺蓝牙信标，请到店后再操作", "LOCATION_OUT_OF_RANGE");
   }
-
-  // checkin / machine: inside if EITHER BLE matches OR GPS is inside.
-  if (bleMatched === true || gpsCheck?.allowed) return;
-  if (gpsCheck?.reason === "low_accuracy" && !bleParsed.success) {
-    jsonError(403, "定位精度不足，请重试", "LOCATION_LOW_ACCURACY");
-  }
-  jsonError(403, "请到店后再操作", "LOCATION_OUT_OF_RANGE");
 }
 
 /**
@@ -243,8 +195,9 @@ export function checkShopLocation(
 }
 
 /**
- * Full async location check that honors both shop-level GPS/BLE mode and
- * per-resource location overrides (`inherit` / `gps` / `ble` / `none`).
+ * Full async location check: resolves whether location is required (honoring
+ * shop action flags and per-resource overrides), then prefers online BLE
+ * beacons strictly and falls back to GPS only when no online beacon is present.
  */
 export async function checkResourceLocation(input: {
   db: D1DatabaseLike;
@@ -254,17 +207,18 @@ export async function checkResourceLocation(input: {
   location: unknown;
 }): Promise<void> {
   const settings = await readShopLocationSettings(input.db, input.shop.id);
+  if (!isLocationCheckRequired({ shop: input.shop, action: input.action, settings, deviceId: input.deviceId })) {
+    return;
+  }
+  const beacons = await listShopBeacons(input.db, input.shop.id);
   const policy = resolveEffectiveLocationPolicy({
     shop: input.shop,
     action: input.action,
     settings,
+    beacons,
     deviceId: input.deviceId,
   });
   if (policy.mode === "none") return;
-  const beacons =
-    policy.mode === "ble" || policy.mode === "any"
-      ? await listShopBeacons(input.db, input.shop.id)
-      : undefined;
   enforceLocationPolicy({
     shop: input.shop,
     action: input.action,

@@ -345,7 +345,7 @@ mod win {
         Ok(())
     }
 
-    /// Press a Windows Virtual-Key code `count` times (1s hold + 100ms gap, matching `hinata-aimeio-rs`).
+    /// Press a Windows Virtual-Key code `count` times (1s hold + 100ms gap, matching `hinata-io`).
     pub fn press_key(vk: u16, count: u32) -> Result<(), String> {
         if vk == 0 || !(1..=20).contains(&count) {
             return Err("无效按键或次数".to_string());

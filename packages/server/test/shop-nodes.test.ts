@@ -208,6 +208,7 @@ describe("IoT & Launcher server-driven node architecture", () => {
         beaconId: 7,
         txPower: -60,
         rssiThreshold: -68,
+        online: false,
       },
     ]);
   });
@@ -534,21 +535,28 @@ describe("IoT & Launcher server-driven node architecture", () => {
     expect(JSON.parse(ioWs.sent.at(-1)!)).toMatchObject({ action: "KEY_PRESS", body: { key: 112, count: 1 } });
   });
 
-  it("enforces shop-level BLE/GPS location mode and per-resource location overrides (inherit/gps/ble/none)", async () => {
+  it("strictly prefers online BLE beacons and automatically falls back to GPS when no beacon is online", async () => {
     const { sqlite, db } = createDb();
     sqlite.run(
       `INSERT INTO shop_nodes(shop_id,id,kind,name,enabled,channel,credential_hash,config_json,created_at,updated_at)
        VALUES ('shop-1','iot-1','iot','入口信标',1,'iot_c1','h1',?,'2026-01-01','2026-01-01')`,
       [JSON.stringify({ haWatch: true, ble: { enabled: true, beaconId: 42, txPower: -59 } })],
     );
-    sqlite.run("INSERT INTO machines(id,shop_id,name,enabled) VALUES ('m-ble','shop-1','蓝牙机台',1),('m-none','shop-1','免定位机台',1),('m-gps','shop-1','GPS机台',1)");
+    sqlite.run("INSERT INTO machines(id,shop_id,name,enabled) VALUES ('iot-dev','shop-1','入口信标',1),('m-pin','shop-1','限定信标机台',1),('m-none','shop-1','免定位机台',1),('m-plain','shop-1','普通机台',1)");
+    sqlite.run(
+      `INSERT INTO device_capabilities(shop_id,device_id,capability,config_json,secret_json,created_at,updated_at)
+       VALUES ('shop-1','iot-dev','iot',?,'{}','2026-01-01','2026-01-01')`,
+      [JSON.stringify({ nodeId: "iot-1", haWatch: true, ble: { enabled: true, beaconId: 42, txPower: -59, rssiThreshold: -75 } })],
+    );
+    sqlite.run(
+      `INSERT INTO device_state(shop_id,device_id,capability,key,value_json,authority,changed_at)
+       VALUES ('shop-1','iot-dev','iot','link','"online"','owned','2026-01-01')`,
+    );
     await writeShopLocationSettingsStatement(db, "shop-1", {
-      mode: "ble",
       rssiThreshold: -75,
       resources: {
-        "m-ble": { mode: "ble", beaconNodeId: "iot-1", rssiThreshold: -70 },
+        "m-pin": { mode: "require", beaconNodeId: "iot-1", rssiThreshold: -70 },
         "m-none": { mode: "none", beaconNodeId: null, rssiThreshold: null },
-        "m-gps": { mode: "gps", beaconNodeId: null, rssiThreshold: null },
       },
     }).run();
 
@@ -573,12 +581,12 @@ describe("IoT & Launcher server-driven node architecture", () => {
     // `none` override skips verification completely even without location payload.
     await checkResourceLocation({ db, shop, action: "machine", deviceId: "m-none", location: undefined });
 
-    // `ble` override accepts matching beacon with RSSI >= -70 and rejects weak signal.
+    // With an online BLE beacon, pinned resource strictly enforces BLE (RSSI >= -70) and refuses GPS-only payload.
     await checkResourceLocation({
       db,
       shop,
       action: "machine",
-      deviceId: "m-ble",
+      deviceId: "m-pin",
       location: { beacons: [{ beaconId: 42, rssi: -65 }] },
     });
     await expect(
@@ -586,17 +594,27 @@ describe("IoT & Launcher server-driven node architecture", () => {
         db,
         shop,
         action: "machine",
-        deviceId: "m-ble",
+        deviceId: "m-pin",
         location: { beacons: [{ beaconId: 42, rssi: -85 }] },
       }),
     ).rejects.toThrow();
+    await expect(
+      checkResourceLocation({
+        db,
+        shop,
+        action: "machine",
+        deviceId: "m-plain",
+        location: { lat: 31.2304, lng: 121.4737, accuracy: 20 },
+      }),
+    ).rejects.toThrow();
 
-    // `gps` override requires GPS coordinates even though shop default is `ble`.
+    // Once all beacons go offline, verification automatically falls back to GPS geofence.
+    sqlite.run("UPDATE device_state SET value_json='\"offline\"' WHERE shop_id='shop-1' AND device_id='iot-dev' AND capability='iot' AND key='link'");
     await checkResourceLocation({
       db,
       shop,
       action: "machine",
-      deviceId: "m-gps",
+      deviceId: "m-plain",
       location: { lat: 31.2304, lng: 121.4737, accuracy: 20 },
     });
     await expect(
@@ -604,7 +622,7 @@ describe("IoT & Launcher server-driven node architecture", () => {
         db,
         shop,
         action: "machine",
-        deviceId: "m-gps",
+        deviceId: "m-plain",
         location: { beacons: [{ beaconId: 42, rssi: -55 }] },
       }),
     ).rejects.toThrow();

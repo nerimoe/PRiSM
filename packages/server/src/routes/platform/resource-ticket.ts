@@ -5,7 +5,8 @@ import { decryptSecret, encryptSecret, sha256 } from "../../crypto.js";
 import { jsonError } from "../../http.js";
 import { resourceBilledSql } from "../../resources/billed-sql.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
-import { parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { isLocationCheckRequired, parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { listShopBeacons } from "../../resources/nodes.js";
 import { recordResourceVisit } from "./resource-visit.js";
 
 export const resourceTicketRouter = new Hono<AppBindings>();
@@ -34,6 +35,8 @@ export type ScannedResource = {
   no_link: number;
   /** Raw `app_settings` JSON for `location.settings`, avoiding extra per-scan queries. */
   location_settings_json: string | null;
+  checkin_geo: number;
+  checkout_geo: number;
   machine_geo: number;
   latitude: number;
   longitude: number;
@@ -45,7 +48,9 @@ const machineSelect = `SELECT machines.*, shops.name AS shop_name,
   CASE WHEN shops.hero_data IS NULL OR shops.hero_data='' THEN NULL
     ELSE '/api/v1/shops/' || shops.public_id || '/hero?v=' || COALESCE(shops.hero_hash,'original') END AS shop_hero_url,
   shops.latitude, shops.longitude, shops.radius_meters, shops.public_id AS shop_public_id,
-  (COALESCE(b.machine_geo,0) OR COALESCE(b.checkin_geo,0) OR COALESCE(b.checkout_geo,0)) AS machine_geo,
+  COALESCE(b.checkin_geo,0) AS checkin_geo,
+  COALESCE(b.checkout_geo,0) AS checkout_geo,
+  COALESCE(b.machine_geo,0) AS machine_geo,
   ${resourceBilledSql("machines")} AS billed,
   EXISTS(SELECT 1 FROM device_capabilities bot WHERE bot.shop_id=machines.shop_id AND bot.device_id=machines.id AND bot.capability='bot') AS is_bot,
   (
@@ -121,13 +126,18 @@ export async function publicResource(c: Context<AppBindings>, m: ScannedResource
     ? publicCapabilities(device)
     : { power: false, climate: false, card: false, coin: false, door: false, table: false };
   const io = device ? hinataConfigOf(device) : null;
+  const shopFlags = { checkin_geo: m.checkin_geo, checkout_geo: m.checkout_geo, machine_geo: m.machine_geo };
+  const beacons = isLocationCheckRequired({ shop: shopFlags, action: "machine", settings: locationSettings, deviceId: m.id })
+    ? await listShopBeacons(c.env.DB, m.shop_id)
+    : [];
   const effectivePolicy = resolveEffectiveLocationPolicy({
-    shop: { checkin_geo: m.machine_geo, checkout_geo: m.machine_geo, machine_geo: m.machine_geo },
+    shop: shopFlags,
     action: "machine",
     settings: locationSettings,
+    beacons,
     deviceId: m.id,
   });
-  const requiresGps = effectivePolicy.mode === "gps" || effectivePolicy.mode === "any";
+  const requiresGps = effectivePolicy.mode === "gps";
   const requiresLocation = effectivePolicy.mode !== "none";
   return {
     publicId: m.public_id, name: m.name, kind: m.kind,

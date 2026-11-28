@@ -8,7 +8,8 @@ import { getShop, getShopDeps, tenantMiddleware } from "../../middleware/tenant.
 import { notice, requestLocale, type Notice } from "../../notices.js";
 import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 import { shopBillsSql } from "../../resources/billed-sql.js";
-import { readShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { isLocationCheckRequired, readShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { listShopBeacons } from "../../resources/nodes.js";
 import { checkoutCelebration, type SettledBillReceipt } from "../../resources/page-blocks/bill.js";
 import { translator } from "../../resources/page-text.js";
 import { listAccountPlatformIdentities } from "../../resources/platform-identities.js";
@@ -161,12 +162,16 @@ async function readShopView(
       c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`).bind(shop.id).first<{ bills: number }>(),
       readShopLocationSettings(c.env.DB, shop.id),
     ]);
+    const checkoutBeacons = isLocationCheckRequired({ shop, action: "checkout", settings: locationSettings })
+      ? await listShopBeacons(c.env.DB, shop.id)
+      : [];
     const checkoutPolicy = resolveEffectiveLocationPolicy({
       shop,
       action: "checkout",
       settings: locationSettings,
+      beacons: checkoutBeacons,
     });
-    const checkoutGeo = checkoutPolicy.mode === "gps" || checkoutPolicy.mode === "any";
+    const checkoutGeo = checkoutPolicy.mode === "gps";
     const shopBills = !!billsRow?.bills;
 
     let liveBill: LiveBillInput | null = null;
@@ -212,12 +217,16 @@ async function readShopView(
   if (view === "bill") {
     const player = await requireShopPlayer(c, shop);
     const locationSettings = await readShopLocationSettings(c.env.DB, shop.id);
+    const checkoutBeacons = isLocationCheckRequired({ shop, action: "checkout", settings: locationSettings })
+      ? await listShopBeacons(c.env.DB, shop.id)
+      : [];
     const checkoutPolicy = resolveEffectiveLocationPolicy({
       shop,
       action: "checkout",
       settings: locationSettings,
+      beacons: checkoutBeacons,
     });
-    const checkoutGeo = checkoutPolicy.mode === "gps" || checkoutPolicy.mode === "any";
+    const checkoutGeo = checkoutPolicy.mode === "gps";
 
     let liveBill: LiveBillInput | null = null;
     let settledReceipt: SettledBillReceipt | null = opts.settledReceipt ?? null;

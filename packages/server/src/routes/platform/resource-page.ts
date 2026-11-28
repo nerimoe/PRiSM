@@ -10,7 +10,8 @@ import { readDeviceState } from "../../resources/capabilities/device-state.js";
 import type { Page } from "@prism/page-protocol";
 import { pageCode, renderPage } from "../../resources/page.js";
 import { hinataConfigOf, loadResource, publicCapabilities } from "../../resources/resource.js";
-import { parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { isLocationCheckRequired, parseShopLocationSettings, resolveEffectiveLocationPolicy } from "../../resources/location.js";
+import { listShopBeacons } from "../../resources/nodes.js";
 import { tableState } from "./table.js";
 import { readGate } from "./resource-session.js";
 import { resolveResourceTicket, type ScannedResource } from "./resource-ticket.js";
@@ -64,11 +65,18 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
         : null,
     ]);
     const locationSettings = parseShopLocationSettings(machine.location_settings_json);
+    const checkinRequired = !!gated?.shop && isLocationCheckRequired({
+      shop: gated.shop, action: "checkin", settings: locationSettings, deviceId: machine.id,
+    });
+    const machineRequired = !!gated?.shop && isLocationCheckRequired({
+      shop: gated.shop, action: "machine", settings: locationSettings, deviceId: machine.id,
+    });
+    const beacons = (checkinRequired || machineRequired) ? await listShopBeacons(c.env.DB, shopId) : [];
     const checkinPolicy = gated?.shop
-      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "checkin", settings: locationSettings, deviceId: machine.id })
+      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "checkin", settings: locationSettings, beacons, deviceId: machine.id })
       : null;
     const machinePolicy = gated?.shop
-      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "machine", settings: locationSettings, deviceId: machine.id })
+      ? resolveEffectiveLocationPolicy({ shop: gated.shop, action: "machine", settings: locationSettings, beacons, deviceId: machine.id })
       : null;
     return renderPage({
       locale: requestLocale(c.req.header("accept-language")),
@@ -85,8 +93,8 @@ export function readPage(c: C, machine: ScannedResource): Promise<Page> {
       billed: !!machine.billed,
       cardCapture: capabilities.card && io?.transport === "embedded" && !!io.channel,
       geo: {
-        checkin: !!checkinPolicy && (checkinPolicy.mode === "gps" || checkinPolicy.mode === "any"),
-        machine: !!machinePolicy && (machinePolicy.mode === "gps" || machinePolicy.mode === "any"),
+        checkin: checkinPolicy?.mode === "gps",
+        machine: machinePolicy?.mode === "gps",
       },
       signedIn: !!user,
       gate: gated?.gate ?? "ready",

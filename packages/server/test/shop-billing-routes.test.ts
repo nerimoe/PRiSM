@@ -1701,6 +1701,23 @@ describe("Direct Multi-Tenant Shop Billing Routes Suite", () => {
     sqlite.close();
   });
 
+  it("persists independent location flags and RSSI threshold across settings reloads", async () => {
+    const { db, sqlite, env } = createTestContext();
+    const { publicId, staffSessionToken } = await setupShopFixture(db, sqlite);
+    const app = createTestApp();
+    const url = `https://prism.test/api/v1/shops/${publicId}/settings`;
+    const headers = { Authorization: `Bearer ${staffSessionToken}`, "Content-Type": "application/json" };
+    const current = await (await app.fetch(new Request(url, { headers }), env)).json() as Record<string, unknown>;
+    const expected = { checkinGeo: true, checkoutGeo: false, machineGeo: true, locationRssiThreshold: -65 };
+    const response = await app.fetch(new Request(url, { method: "PUT", headers,
+      body: JSON.stringify({ ...current, ...expected, locationEnabled: undefined }),
+    }), env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ...expected, locationEnabled: true, locationMode: "gps" });
+    expect(await (await app.fetch(new Request(url, { headers }), env)).json()).toMatchObject({ ...expected, locationMode: "gps" });
+    sqlite.close();
+  });
+
   for (const invalid of ["pricing", "balance"] as const) {
     it(`allows settings edits with invalid existing ${invalid}, and requires a front-desk resource`, async () => {
       const { db, sqlite, env } = createTestContext();

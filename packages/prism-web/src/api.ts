@@ -274,10 +274,17 @@ export type ShopBeacon = {
   beaconId: number;
   txPower: number;
   rssiThreshold: number;
+  online: boolean;
 };
 
-export type ShopLocationMode = "gps" | "ble" | "any";
-export type ResourceLocationMode = "inherit" | "gps" | "ble" | "none";
+export type ShopLocationMode = "gps" | "ble";
+export type ResourceLocationMode = "inherit" | "require" | "none";
+
+export function normalizeResourceLocationMode(mode: string | undefined | null): ResourceLocationMode {
+  if (mode === "none") return "none";
+  if (mode === "require" || mode === "ble" || mode === "gps") return "require";
+  return "inherit";
+}
 
 export type ResourceLocationOverride = {
   mode: ResourceLocationMode;

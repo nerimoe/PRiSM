@@ -1,6 +1,6 @@
 /**
  * End-to-end scenarios against the real thing: Home Assistant in docker, the platform under `wrangler dev`,
- * and the real firmware watcher (hinata-aimeio-rs `remote.rs` / `ha.rs`) compiled for macOS as `io_sim`.
+ * and the real firmware watcher (hinata-io `remote.rs` / `ha.rs`) compiled for macOS as `io_sim`.
  *
  *   bun run scripts/e2e-ha/scenarios.ts [scenario ...]
  *
@@ -25,7 +25,7 @@ const { origin, shop, owner, admin, ha, devices } = cfg as {
   ha: { url: string; adminToken: string };
   devices: Record<"a" | "b" | "lounge", { id: string; relayToken?: string }>;
 };
-const IO_BIN = process.env.IO_SIM ?? "/Users/neri/Projects/hinata-aimeio-rs/tools/mac-test/target/debug/io_sim";
+const IO_BIN = process.env.IO_SIM ?? `${import.meta.dir}/../../clients/hinata-io/tools/mac-test/target/debug/io_sim`;
 const LEASE_MS = 150_000;
 
 // ---------------------------------------------------------------- reporting

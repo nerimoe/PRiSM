@@ -43,6 +43,7 @@ import {
   shopLocationModeSchema,
   writeShopLocationSettingsStatement,
 } from "../../resources/location.js";
+import { listShopBeacons } from "../../resources/nodes.js";
 import { ACCOUNT_HAS_PLATFORM_IDENTITY_SQL, listAccountPlatformIdentities } from "../../resources/platform-identities.js";
 import { ACCOUNT_PROFILES_SQL } from "../../resources/account-profiles.js";
 export * from "./redeem.js";
@@ -66,7 +67,7 @@ export function publicSettings(shop: TenantShop) {
     cashierEnabled: !!shop.cashier_enabled,
     autoRegister: !!shop.auto_register,
     identityBindingRequired: !!shop.identity_binding_required,
-    locationEnabled: !!shop.machine_geo,
+    locationEnabled: !!(shop.checkin_geo || shop.checkout_geo || shop.machine_geo),
     checkinGeo: !!shop.checkin_geo,
     checkoutGeo: !!shop.checkout_geo,
     machineGeo: !!shop.machine_geo,
@@ -88,6 +89,11 @@ const settingsSchema = z.object({
   identityBindingRequired: z.boolean().optional(),
   locationEnabled: z.boolean().optional(),
   locationMode: shopLocationModeSchema.optional(),
+  locationActionModes: z.object({
+    checkin: shopLocationModeSchema.optional(),
+    checkout: shopLocationModeSchema.optional(),
+    machine: shopLocationModeSchema.optional(),
+  }).optional(),
   locationRssiThreshold: z.number().int().min(-100).max(-20).optional(),
   checkinGeo: z.boolean().optional(),
   checkoutGeo: z.boolean().optional(),
@@ -147,11 +153,13 @@ shopRouter.get("/", async (c) => {
   // Released App Clips decode `shop.billingEnabled` as a required field and use
   // it to offer the bill and wallet. There is no switch behind it any more: it
   // says whether any resource bills.
-  const [billingEnabledRow, locationSettings] = await Promise.all([
+  const [billingEnabledRow, locationSettings, beacons] = await Promise.all([
     c.env.DB.prepare(`SELECT ${shopBillsSql("?")} AS bills`).bind(shop.id).first<{ bills: number }>(),
     readShopLocationSettings(c.env.DB, shop.id),
+    listShopBeacons(c.env.DB, shop.id),
   ]);
   const billingEnabled = !!billingEnabledRow?.bills;
+  const activeLocationMode = beacons.some((b) => b.online) ? "ble" : "gps";
 
   const localDate =
     c.req.query("date") ?? formatLocalDate(new Date(), shop.time_zone);
@@ -180,7 +188,7 @@ shopRouter.get("/", async (c) => {
       timeZone: shop.time_zone,
       heroUrl: shop.hero_url,
       ...publicSettings(shop),
-      locationMode: locationSettings.mode,
+      locationMode: activeLocationMode,
       locationRssiThreshold: locationSettings.rssiThreshold,
       billingEnabled,
     },
@@ -217,14 +225,16 @@ shopRouter.get("/hero", async (c) => {
 shopRouter.get("/settings", async (c) => {
   const shop = getShop(c);
   await staffPrincipal(c, shop, true);
-  const [cashierResource, configuration, locationSettings] = await Promise.all([
+  const [cashierResource, configuration, locationSettings, beacons] = await Promise.all([
     cashierResourceId(c.env.DB, shop.id),
     billingConfiguration(c.env.DB, shop.id),
     readShopLocationSettings(c.env.DB, shop.id),
+    listShopBeacons(c.env.DB, shop.id),
   ]);
+  const activeLocationMode = beacons.some((b) => b.online) ? "ble" : "gps";
   return c.json({
     ...publicSettings(shop),
-    locationMode: locationSettings.mode,
+    locationMode: activeLocationMode,
     locationRssiThreshold: locationSettings.rssiThreshold,
     cashierResourceId: cashierResource,
     billingConfiguration: configuration,
@@ -275,17 +285,17 @@ shopRouter.put("/settings", async (c) => {
       if (cashierEnabled && !cashierResource) jsonError(409, "请先选择前台资源", "CASHIER_RESOURCE_REQUIRED");
       if (cashierResource && !await c.env.DB.prepare("SELECT 1 FROM machines WHERE shop_id = ? AND id = ?")
         .bind(initialShop.id, cashierResource).first()) jsonError(404, "没有找到这个资源", "DEVICE_NOT_FOUND");
-      const [configuration, existingLocation] = await Promise.all([
+      const [configuration, existingLocation, beacons] = await Promise.all([
         billingConfiguration(c.env.DB, initialShop.id),
         readShopLocationSettings(c.env.DB, initialShop.id),
+        listShopBeacons(c.env.DB, initialShop.id),
       ]);
       const nextLocationSettings = {
         ...existingLocation,
-        mode: body.locationMode ?? existingLocation.mode,
         rssiThreshold: body.locationRssiThreshold ?? existingLocation.rssiThreshold,
       };
-      const locationChanged =
-        body.locationMode !== undefined || body.locationRssiThreshold !== undefined;
+      const locationChanged = body.locationRssiThreshold !== undefined;
+      const activeLocationMode = beacons.some((b) => b.online) ? "ble" : "gps";
       const privacyModeEnabled = body.privacyModeEnabled ?? !!initialShop.privacy_mode_enabled;
       const now = new Date().toISOString();
 
@@ -335,7 +345,7 @@ shopRouter.put("/settings", async (c) => {
       return c.json({
         ...body,
         locationEnabled: checkinGeo || checkoutGeo || machineGeo,
-        locationMode: nextLocationSettings.mode,
+        locationMode: activeLocationMode,
         locationRssiThreshold: nextLocationSettings.rssiThreshold,
         checkinGeo,
         checkoutGeo,

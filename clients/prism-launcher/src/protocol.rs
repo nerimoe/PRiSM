@@ -1,5 +1,5 @@
 //! Unified PRiSM Node JSON-RPC 2.0 protocol types and replay protection,
-//! reusing `hinata-aimeio-rs`'s bounded replay cache and expiry semantics.
+//! reusing `hinata-io`'s bounded replay cache and expiry semantics.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};

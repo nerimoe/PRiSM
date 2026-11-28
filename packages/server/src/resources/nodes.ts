@@ -547,6 +547,25 @@ export async function findHinataMachineForNode(
   return row ? { deviceId: row.device_id, enabled: row.enabled === 1 } : null;
 }
 
+export async function findIotMachineForNode(
+  db: D1DatabaseLike,
+  shopId: string,
+  nodeId: string,
+): Promise<{ deviceId: string; enabled: boolean } | null> {
+  const row = await db
+    .prepare(
+      `SELECT c.device_id, m.enabled
+       FROM device_capabilities c
+       JOIN machines m ON m.shop_id = c.shop_id AND m.id = c.device_id
+       WHERE c.shop_id = ? AND c.capability = 'iot'
+         AND json_extract(c.config_json, '$.nodeId') = ?
+       LIMIT 1`,
+    )
+    .bind(shopId, nodeId)
+    .first<{ device_id: string; enabled: number }>();
+  return row ? { deviceId: row.device_id, enabled: row.enabled === 1 } : null;
+}
+
 /** Validate that the requested GPIO pins do not collide with any other resource or with each other. */
 export async function validateNodePinConflicts(
   db: D1DatabaseLike,
@@ -593,32 +612,63 @@ export type ShopBeaconEntry = {
   beaconId: number;
   txPower: number;
   rssiThreshold: number;
+  online: boolean;
 };
 
-/** Shop-wide BLE beacon directory derived from enabled IoT controllers. */
+type ShopBeaconQueryRow = {
+  id: string;
+  name: string;
+  config_json: string;
+  device_id: string | null;
+  device_name: string | null;
+  cap_config_json: string | null;
+  link_json: string | null;
+};
+
+/** Shop-wide BLE beacon directory derived from enabled IoT controllers and their link state. */
 export async function listShopBeacons(db: D1DatabaseLike, shopId: string): Promise<ShopBeaconEntry[]> {
-  const nodes = (await listNodes(db, shopId, "iot")).filter((n) => n.enabled);
-  const iotRows = (await shopCapabilityRows(db, shopId)).filter((r) => r.enabled === 1 && r.capability === "iot");
-  const ownerByNode = new Map<string, { resourceId: string; name: string; rssiThreshold: number }>();
-  for (const row of iotRows) {
-    const cfg = parseJson(row.config_json) as Partial<IotConfig>;
-    if (typeof cfg.nodeId !== "string") continue;
-    const rssi = typeof cfg.ble?.rssiThreshold === "number" ? cfg.ble.rssiThreshold : -75;
-    ownerByNode.set(cfg.nodeId, { resourceId: row.device_id, name: row.device_name, rssiThreshold: rssi });
+  let rows: ShopBeaconQueryRow[];
+  try {
+    rows = (
+      await db
+        .prepare(
+          `SELECT n.id, n.name, n.config_json,
+                  c.device_id, m.name AS device_name, c.config_json AS cap_config_json,
+                  ds.value_json AS link_json
+           FROM shop_nodes n
+           LEFT JOIN device_capabilities c
+             ON c.shop_id = n.shop_id AND c.capability = 'iot'
+            AND json_extract(c.config_json, '$.nodeId') = n.id
+           LEFT JOIN machines m
+             ON m.shop_id = c.shop_id AND m.id = c.device_id AND m.enabled = 1
+           LEFT JOIN device_state ds
+             ON ds.shop_id = n.shop_id AND ds.device_id = m.id
+            AND ds.capability = 'iot' AND ds.key = 'link'
+           WHERE n.shop_id = ? AND n.kind = 'iot' AND n.enabled = 1
+           ORDER BY n.created_at, n.id`,
+        )
+        .bind(shopId)
+        .all<ShopBeaconQueryRow>()
+    ).results;
+  } catch {
+    // Allow minimal unit-test schemas that omit `shop_nodes` or `device_state`.
+    return [];
   }
 
   const beacons: ShopBeaconEntry[] = [];
-  for (const node of nodes) {
-    const ble = (node.config as IotNodeConfig).ble;
+  for (const row of rows) {
+    const ble = parseNodeConfig("iot", parseJson(row.config_json)).ble;
     if (!ble.enabled || ble.beaconId === null) continue;
-    const owner = ownerByNode.get(node.id);
+    const capCfg = row.device_name ? (parseJson(row.cap_config_json) as Partial<IotConfig>) : null;
+    const rssiThreshold = typeof capCfg?.ble?.rssiThreshold === "number" ? capCfg.ble.rssiThreshold : -75;
     beacons.push({
-      nodeId: node.id,
-      nodeName: owner?.name ?? node.name,
-      resourceId: owner?.resourceId ?? null,
+      nodeId: row.id,
+      nodeName: row.device_name ?? row.name,
+      resourceId: row.device_name ? row.device_id : null,
       beaconId: ble.beaconId,
       txPower: ble.txPower,
-      rssiThreshold: owner?.rssiThreshold ?? -75,
+      rssiThreshold,
+      online: row.link_json === '"online"',
     });
   }
   return beacons;

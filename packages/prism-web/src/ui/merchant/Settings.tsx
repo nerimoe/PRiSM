@@ -1,13 +1,14 @@
 import { IdlePowerSettings } from "./IdlePowerSettings";
+import { LocationSettings } from "./LocationSettings";
 import { ShopDataTransfer } from "./ShopDataTransfer";
 import { IdentityConverter } from "./IdentityConverter";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Store, Receipt, Users, MapPin, ShieldCheck, Database, BarChart3 } from "lucide-react";
+import { Store, Receipt, Users, MapPin, Cpu, ShieldCheck, Database, BarChart3 } from "lucide-react";
 import { useI18n } from "../../i18n";
 import { BillingSettings, shopApi, type Settings as ShopSettings } from "../BillingPages";
 import { BindingPrompt } from "../SessionContent";
-import { api } from "../../api";
+import { api, type Shop } from "../../api";
 import {
   ActionForm,
   Field,
@@ -58,7 +59,7 @@ const groups = [
   {
     id: "general",
     label: "基本资料",
-    description: "店铺名称、封面、位置与时区。",
+    description: "店铺名称与封面。",
     icon: Store,
   },
   {
@@ -74,10 +75,16 @@ const groups = [
     icon: Users,
   },
   {
-    id: "devices",
-    label: "位置与设备",
-    description: "到店位置校验、投币冷却、闲置自动关机与门锁连接。",
+    id: "location",
+    label: "位置校验",
+    description: "地理围栏、蓝牙信标池，以及入场、离场与资源操作的位置校验。",
     icon: MapPin,
+  },
+  {
+    id: "devices",
+    label: "设备与连接",
+    description: "投币冷却、闲置自动关机与门锁连接。",
+    icon: Cpu,
   },
   {
     id: "reports",
@@ -100,10 +107,14 @@ const groups = [
 ] as const;
 
 export function SettingsPage({
+  shop,
+  onShopSaved,
   shopDetails,
   members,
   guide = false,
 }: {
+  shop: Shop;
+  onShopSaved: () => void | Promise<void>;
   shopDetails: ReactNode;
   members: ReactNode;
   /** Link back to the setup guide once it has left the tab bar. */
@@ -189,13 +200,14 @@ export function SettingsPage({
             shopCode={shopCode}
             embedded
             section={
-              group.id === "billing" ||
-              group.id === "players" ||
-              group.id === "devices"
+              group.id === "billing" || group.id === "players"
                 ? group.id
                 : null
             }
           />
+          <div hidden={group.id !== "location"}>
+            {group.id === "location" && <LocationSettings shop={shop} onShopSaved={onShopSaved} />}
+          </div>
           <div hidden={group.id !== "players"}>
             <div className="grid gap-5">
               <BindingPromptSettings shopCode={shopCode} />
@@ -444,7 +456,7 @@ function BindingPromptSettings({ shopCode }: { shopCode: string }) {
       const current = await api<ShopSettings>(shopApi(shopCode, "settings"));
       const result = await api<ShopSettings>(shopApi(shopCode, "settings"), {
         method: "PUT",
-        body: JSON.stringify({ ...current, botContact: prompt.trim() }),
+        body: JSON.stringify({ ...current, locationEnabled: undefined, botContact: prompt.trim() }),
       });
       setSettings({ ...current, ...result, botContact: prompt.trim() });
       setSaved(true);

@@ -5,7 +5,7 @@ import type { AwaitSpec, Awaited } from "../resources/capabilities/bus.js";
 import type { CabinetSnapshot } from "../hardware/aimeio-relay.js";
 import type { NodeCallReply, NodeKind, NodeRuntimeConfig } from "../hardware/node-protocol.js";
 import { isRelayPath } from "./relay-path.js";
-import { findHinataMachineForNode } from "../resources/nodes.js";
+import { findHinataMachineForNode, findIotMachineForNode } from "../resources/nodes.js";
 import { logger } from "../log.js";
 
 const log = logger("machine-relay");
@@ -78,6 +78,12 @@ export async function relayGateway(
     let machineId: string | undefined;
     if (node.kind === "hinata_io") {
       const bound = await findHinataMachineForNode(env.DB, node.shop_id, node.id, node.channel).catch(() => null);
+      if (bound && !bound.enabled) {
+        return { kind: "rejected", response: rejected("bound machine is disabled") };
+      }
+      machineId = bound?.deviceId;
+    } else if (node.kind === "iot") {
+      const bound = await findIotMachineForNode(env.DB, node.shop_id, node.id).catch(() => null);
       if (bound && !bound.enabled) {
         return { kind: "rejected", response: rejected("bound machine is disabled") };
       }

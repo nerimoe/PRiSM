@@ -4,3 +4,9 @@
 [submodule "packages/koishi-plugin"]
 	path = packages/koishi-plugin
 	url = https://github.com/nerimoe/koishi-plugin-prism.git
+[submodule "clients/hinata_go"]
+	path = clients/hinata_go
+	url = https://github.com/Project-HINATA/hinata_go.git
+[submodule "clients/hinata-io"]
+	path = clients/hinata-io
+	url = https://github.com/nerimoe/hinata-io.git

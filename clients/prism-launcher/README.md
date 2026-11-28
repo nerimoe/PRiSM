@@ -1,6 +1,6 @@
 # PRiSM Launcher (Rust)
 
-Windows 机台无界面原生主机节点客户端（Rust 单文件 EXE，复用了 `hinata-aimeio-rs` 的 WebSocket 鉴权、重连退避、防重放缓存与日志风格）。本地只保存连接地址与独立节点令牌，所有程序列表与默认启动项由 PRiSM 服务端集中配置并在上线时通过 `node.setConfig` 下发。
+Windows 机台无界面原生主机节点客户端（Rust 单文件 EXE，复用了 `hinata-io` 的 WebSocket 鉴权、重连退避、防重放缓存与日志风格）。本地只保存连接地址与独立节点令牌，所有程序列表与默认启动项由 PRiSM 服务端集中配置并在上线时通过 `node.setConfig` 下发。
 
 ## 部署步骤
 

@@ -12,14 +12,14 @@
 | 页面文案与英文翻译、绑定提示渲染 | `packages/server/src/resources/page-text.ts` |
 | 区块构造器 `pageUi`（原有页面也用它构造基础区块） | `packages/server/src/resources/page-ui.ts` |
 | 网页渲染：一类区块一个组件，`BlockView.tsx` 分发 | `packages/prism-web/src/ui/page-blocks/`（`ShopPage.tsx`、`PlayerAccount.tsx`、`PlayerAccountMenu.tsx` 共用） |
-| App Clip：模型 `PrismPage.swift`、表单规则 `PrismPageForm.swift`、一类区块一个视图 | `hinata_go` 仓库 `ios/PrismClip/`（视图在 `Page/`，`ClipPageView.swift` 分发） |
+| App Clip：模型 `PrismPage.swift`、表单规则 `PrismPageForm.swift`、一类区块一个视图 | `clients/hinata_go` 子模块 `ios/PrismClip/`（视图在 `Page/`，`ClipPageView.swift` 分发） |
 
 新增一种区块：在 `page-protocol` 加类型，两端各加一个组件并在分发处加一行，App Clip 的 `PrismPage.swift` 同步模型。只用现有区块拼新页面则只改服务端。
 
-改了页面的结构后，重新生成 App Clip 原生检查用的页面数据，并在 `hinata_go` 跑 `test/native/run-prism-visit-check.sh`：
+改了页面的结构后，重新生成 App Clip 原生检查用的页面数据，并在 `clients/hinata_go` 跑 `test/native/run-prism-visit-check.sh`：
 
 ```sh
-bun scripts/swift-page-fixtures.ts <hinata_go>/test/native/fixtures/prism-page
+bun scripts/swift-page-fixtures.ts clients/hinata_go/test/native/fixtures/prism-page
 ```
 
 数据由服务端真实的 `renderPage` 生成；检查会解码每一页，Swift 模型读不懂任何一个区块就失败。新增场景加在脚本里。
@@ -174,7 +174,7 @@ const blocks = [
 - `bill` 块本地估算失败时，「重试」会重新读取页面以获取新的 `billingInputs`，而不是用同一份输入重算。
 - 动作的 `operationId` 在收到回答前跨刷新保留（网页存 `sessionStorage`，App Clip 存 `UserDefaults`），同一动作无论在哪个视图按下都复用同一个 id，刷新或重开后重试不会重复执行。
 - 账号面板（Sheet）不再渲染「绑定身份」引导：直接访问账号面板视图但尚未完成平台身份绑定时返回 `403 PLATFORM_BINDING_REQUIRED`（`flow: "refresh"`），客户端关闭面板并刷新宿主页面（`/t/:shopCode` 与 `/m` 扫码页都会重读）；打开 `bill` 视图时同步将最新 `billingActive` 状态回写给宿主页面。
-- 有 `needsLocation` 时带上 `location`。入场和门禁看 `checkin_geo`，其他看 `machine_geo`。
+- 客户端完全遵循服务端在各个按钮与区块上下发的 `needsLocation`（为 `true` 时才采集并附带 `location`），不自行读取店铺级位置开关。服务端按操作类型独立判断是否校验（入场与门禁看 `checkin_geo`，离场结账看 `checkout_geo`，其余资源操作看 `machine_geo`，单个资源的覆盖设置优先生效），并按「资源限定在线信标 → 全店在线信标池 → 店铺 GPS 围栏」自动选择定位方式；IoT 信标上下线时自动推送 `shop` 刷新页面。
 - `code` 显示在按钮上方直到过期，它只存在于这次回答里，重读页面不会再给。`againLabel` 在此期间替换按钮文字。
 - 卡片不在页面里：`cards` 块只标明位置并下发卡片区域的全部文案、加载/空态/失败动作（`cards.capture` 与 `cards.reload`）以及读卡窗口文案 `captureUi`；卡片本身在打开页面和添加卡片之后单独读。没有可用卡片时按服务器下发的动作渲染按钮（直连机台下发「添加卡片」与「刷新」，其余只下发「刷新」），绝不跳往 `/cards`。
 - 卡片读取失败时，页面只显示 `loadError` 的标题、错误原因和它的动作（服务端只下发一个主按钮样式的「刷新」）：卡片标题与加号、投币、门禁、空调等其他区块全部不显示，刷新成功后恢复整页。店铺卡片、账户菜单这类页面外的内容不受影响。
