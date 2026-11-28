@@ -53,6 +53,7 @@ export type ActionName =
   | "host.switch"
   | "host.key"
   | "host.text"
+  | "host.update.check"
   | "host.screenshot"
   | "host.reboot"
   | "host.shutdown"
@@ -449,6 +450,7 @@ export const host: CapabilitySpec<HostConfig> = {
     "host.switch": { countsAsPlay: false, staffOnly: true },
     "host.key": { countsAsPlay: false, staffOnly: true },
     "host.text": { countsAsPlay: false, staffOnly: true },
+    "host.update.check": { countsAsPlay: false, staffOnly: true },
     "host.screenshot": { countsAsPlay: false, staffOnly: true, sensitiveResult: true },
     "host.reboot": { countsAsPlay: false, staffOnly: true },
     "host.shutdown": { countsAsPlay: false, staffOnly: true },

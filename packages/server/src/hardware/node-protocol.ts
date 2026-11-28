@@ -156,6 +156,7 @@ export const hostCommandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("switch"), name: programNameSchema }),
   z.object({ action: z.literal("key"), key: z.number().int().min(1).max(65535), count: z.number().int().min(1).max(20).default(1) }),
   z.object({ action: z.literal("text"), text: z.string().min(1).max(2048) }),
+  z.object({ action: z.literal("update.check") }),
   z.object({ action: z.literal("screenshot") }),
   z.object({ action: z.literal("reboot") }),
   z.object({ action: z.literal("shutdown") }),

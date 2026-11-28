@@ -367,6 +367,7 @@ export type HostCommandInput =
   | { action: "switch"; name: string }
   | { action: "key"; key: string | number; count?: number }
   | { action: "text"; text: string }
+  | { action: "update.check" }
   | { action: "screenshot" }
   | { action: "reboot" }
   | { action: "shutdown" }

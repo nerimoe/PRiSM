@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "prism-launcher"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "env_logger",
@@ -699,6 +699,7 @@ dependencies = [
  "log",
  "reqwest",
  "reqwest-websocket",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -905,6 +906,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

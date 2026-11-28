@@ -3306,5 +3306,10 @@
   "未选星期": "No days",
   "输入到点后要发送的文字内容…": "Enter the message to send at the scheduled time…",
   "发送预览": "Preview",
-  "输入播报内容后在此预览": "Enter announcement text to preview it here"
+  "输入播报内容后在此预览": "Enter announcement text to preview it here",
+  "新版已下载，下次启动生效": "Update downloaded; it will apply on next launch",
+  "正在后台检查更新，请稍后再查": "Checking in the background; check again shortly",
+  "已是最新版本": "Already up to date",
+  "检查更新中…": "Checking for updates…",
+  "检查更新": "Check for updates"
 }

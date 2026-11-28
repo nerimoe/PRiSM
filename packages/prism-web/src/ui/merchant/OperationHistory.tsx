@@ -89,6 +89,7 @@ export const actionLabels: Record<string, string> = {
   "host.switch": "切换游戏",
   "host.key": "远程按键",
   "host.text": "文字输入",
+  "host.update.check": "检查更新",
   "host.screenshot": "截取画面",
   "host.reboot": "重启主机",
   "host.shutdown": "关闭主机",

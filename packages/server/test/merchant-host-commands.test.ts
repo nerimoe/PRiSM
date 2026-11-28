@@ -297,3 +297,27 @@ describe("merchant host file management & PowerShell routes", () => {
     expect(oversized.error).toContain("WebSocket");
   });
 });
+
+
+describe("Launcher update checks", () => {
+  it("relays the update check and returns the pending version", async () => {
+    const { app, env, callLogs, setReply } = fixture();
+    setReply({ ok: true, result: { status: "pending", version: "0.3.0" } });
+    const res = await app.fetch(new Request("https://prism.test/api/v1/merchant/machines/pc-1/host/commands", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update.check" }),
+    }), env);
+    expect(res.status).toBe(200);
+    expect(callLogs[0]?.method).toBe("host.update.check");
+    expect(callLogs[0]?.options?.timeoutMs).toBe(95_000);
+    expect(await res.json()).toMatchObject({ ok: true, result: { status: "pending", version: "0.3.0" } });
+  });
+  it("rejects update checks from ordinary clerks", async () => {
+    const { app, env, setUser, callLogs } = fixture();
+    setUser({ id: "clerk-1", role: "user", username: "clerk", displayName: "Clerk", bannedAt: null });
+    const res = await app.fetch(new Request("https://prism.test/api/v1/merchant/machines/pc-1/host/commands", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update.check" }),
+    }), env);
+    expect(res.status).toBe(403);
+    expect(callLogs).toHaveLength(0);
+  });
+});

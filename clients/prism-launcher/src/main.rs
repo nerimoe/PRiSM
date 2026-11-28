@@ -5,6 +5,7 @@ mod host_ops;
 mod log;
 mod protocol;
 mod ws;
+mod updater;
 
 use ::log::{error, info, warn};
 use futures_util::{SinkExt, StreamExt};
@@ -122,6 +123,7 @@ fn execute_action(state: &Arc<Mutex<LauncherState>>, action: HostAction) -> Resu
             desktop::type_text(&text)?;
             Ok(serde_json::json!({}))
         }
+        HostAction::UpdateCheck => unreachable!("async update command"),
         HostAction::Screenshot => desktop::screenshot(),
         HostAction::Reboot => {
             desktop::power(true)?;
@@ -328,6 +330,18 @@ fn handle_inbound(
         }
     };
 
+    if action == HostAction::UpdateCheck {
+        let tx = out_tx.clone();
+        tokio::spawn(async move {
+            let reply = match updater::check().await {
+                Ok(result) => rpc_ok_frame(&id, result),
+                Err(e) => rpc_err_frame(&id, &e),
+            };
+            let _ = tx.send(reply).await;
+        });
+        return;
+    }
+
     // Execute desktop / process work on a blocking thread so WebSocket heartbeats keep flowing.
     let state_clone = state.clone();
     let tx = out_tx.clone();
@@ -378,6 +392,8 @@ async fn main() {
             return;
         }
     };
+
+    updater::start(local_cfg.update_url.clone(), local_cfg.auto_update);
 
     let cache_path = cache_file_for(&dir, &endpoint, &local_cfg.token);
     let state = Arc::new(Mutex::new(LauncherState::new(

@@ -140,7 +140,10 @@ export function HostControls({
         setError(res.error ?? t("指令执行失败"));
         return null;
       }
-      if (command.action === "screenshot") {
+      if (command.action === "update.check") {
+        const updateStatus = res.result?.status;
+        setMessage(t(updateStatus === "pending" ? "新版已下载，下次启动生效" : updateStatus === "checking" ? "正在后台检查更新，请稍后再查" : "已是最新版本"));
+      } else if (command.action === "screenshot") {
         const mime = typeof res.result?.mime === "string" ? res.result.mime : "image/jpeg";
         const data = typeof res.result?.data === "string" ? res.result.data : "";
         if (data) {
@@ -429,6 +432,11 @@ export function HostControls({
         </div>
       </div>
 
+      <button type="button" className={button} disabled={disabled || offline || !!busy}
+        onClick={() => void run("update.check", { action: "update.check" })}>
+        <RefreshCw size={14} aria-hidden="true" />
+        {busy === "update.check" ? t("检查更新中…") : t("检查更新")}
+      </button>
       {/* Screenshot + power actions */}
       <div className="flex flex-wrap items-center gap-2">
         <button

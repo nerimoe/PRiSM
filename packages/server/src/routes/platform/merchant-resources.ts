@@ -613,6 +613,7 @@ merchantResourceRouter.post("/machines/:id/host/commands", async (c) => {
     | "host.switch"
     | "host.key"
     | "host.text"
+    | "host.update.check"
     | "host.screenshot"
     | "host.reboot"
     | "host.shutdown"

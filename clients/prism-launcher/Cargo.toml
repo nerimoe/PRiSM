@@ -1,6 +1,6 @@
 [package]
 name = "prism-launcher"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Headless Windows host node client for PRiSM Next"
 
@@ -26,6 +26,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["native-tl
 reqwest-websocket = "0.6.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+semver = "1.0"
 sha2 = "0.10.9"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time", "sync"] }
 url = "2.5.8"

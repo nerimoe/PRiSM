@@ -15,11 +15,18 @@ pub const MAX_PS_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Deserialize)]
 pub struct LocalConfig {
+    #[serde(default = "default_update_url")]
+    pub update_url: String,
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
     pub url: String,
     pub token: String,
     #[serde(default, alias = "allowedRoots")]
     pub allowed_roots: Vec<String>,
 }
+
+fn default_auto_update() -> bool { true }
+fn default_update_url() -> String { "https://github.com/nerimoe/PRiSM/releases/download/launcher-updates/launcher-update.json".into() }
 
 impl LocalConfig {
     /// Parse `launcher.json`, tolerating an optional UTF-8 BOM written by Notepad.
@@ -91,6 +98,7 @@ pub enum HostAction {
     Switch { name: String },
     Key { key: u16, count: u32 },
     Text { text: String },
+    UpdateCheck,
     Screenshot,
     Reboot,
     Shutdown,
@@ -176,6 +184,7 @@ pub fn parse_host_action(method: &str, params: &Value) -> Result<(u64, HostActio
                 text: text.to_string(),
             }
         }
+        "host.update.check" => HostAction::UpdateCheck,
         "host.screenshot" => HostAction::Screenshot,
         "host.reboot" => HostAction::Reboot,
         "host.shutdown" => HostAction::Shutdown,

@@ -251,6 +251,7 @@ type HostRpcMethod =
   | "host.switch"
   | "key.press"
   | "host.text"
+  | "host.update.check"
   | "host.screenshot"
   | "host.reboot"
   | "host.shutdown"
@@ -358,6 +359,7 @@ export function createRuntimeBus(runtime: DeviceRuntime) {
       typeof p.key === "number" ? { key: p.key, count: countOf(p) } : null),
     "host.text": hostRunner(runtime, "host.text", (p) =>
       typeof p.text === "string" && p.text ? { text: p.text } : null),
+    "host.update.check": hostRunner(runtime, "host.update.check", () => ({}), () => 90_000),
     "host.screenshot": hostRunner(runtime, "host.screenshot", () => ({})),
     "host.reboot": hostRunner(runtime, "host.reboot", () => ({})),
     "host.shutdown": hostRunner(runtime, "host.shutdown", () => ({})),

@@ -187,3 +187,7 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
   - 开始/更新监听：`{ "jsonrpc": "2.0", "method": "ha.watch", "params": { "term": 4, "connections": [{ "id": "ha_1", "urls": ["http://ha.local:8123"], "token": "...", "entities": ["switch.a"] }] } }`
   - 停止监听：`{ "jsonrpc": "2.0", "method": "ha.unwatch", "params": {} }`
 - IoT 节点上报状态变化与快照沿用 `ha.states` / `ha.status`（与 HINATA IO 相同结构）。
+
+### Launcher 更新检查
+
+店家主机命令 `{"action":"update.check"}` 经 DeviceBus 权限校验和审计，转成 `host.update.check`（沿用指令有效期/防重放；等待上限 95 秒）。节点后台下载，返回 `status: current | checking | pending`，pending 带 `version`；错误走普通 RPC 错误。自动检查默认每 6 小时一次，新版下次启动生效，不重启当前游戏。部署与发布清单见 `clients/prism-launcher/README.md`。

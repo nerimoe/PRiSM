@@ -1,0 +1,83 @@
+name: PRiSM Launcher
+on:
+  pull_request:
+    paths: ['clients/prism-launcher/**', '.github/workflows/launcher-release.yml']
+  push:
+    branches: [main]
+    paths: ['clients/prism-launcher/**', '.github/workflows/launcher-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: launcher-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    defaults:
+      run:
+        working-directory: clients/prism-launcher
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/prism-launcher
+      - name: Read Launcher version
+        id: meta
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $version = ($metadata.packages | Where-Object name -eq 'prism-launcher').version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Launcher releases require a stable SemVer' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Test and build
+        run: |
+          cargo test --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force staging | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/prism-launcher.exe staging/prism-launcher.exe
+          $hash = (Get-FileHash staging/prism-launcher.exe -Algorithm SHA256).Hash.ToLower()
+          $version = '${{ steps.meta.outputs.version }}'
+          @{ version = $version; url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/launcher-v$version/prism-launcher.exe"; sha256 = $hash; target = "x86_64-pc-windows-msvc" } | ConvertTo-Json | Set-Content staging/launcher-update.json -Encoding utf8NoBOM
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prism-launcher
+          path: clients/prism-launcher/staging/
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: prism-launcher
+          path: staging
+      - name: Publish new versions to this repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="launcher-v$VERSION"
+          # Only a missing release is considered unpublished; API/auth errors fail the job.
+          releases=$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name')
+          if ! printf '%s\n' "$releases" | grep -Fxq "$tag"; then
+            gh release create "$tag" staging/* --target "$COMMIT" --title "PRiSM Launcher $VERSION" --notes "Windows x64 Launcher $VERSION. Updates apply on next launch." --latest=false
+          fi
+          # Use the published manifest even on reruns with an unchanged version.
+          gh release download "$tag" --pattern launcher-update.json --dir published --clobber
+          if ! printf '%s\n' "$releases" | grep -Fxq launcher-updates; then
+            gh release create launcher-updates --target "$COMMIT" --title "PRiSM Launcher update channel" --notes "Stable update manifest; download the executable from its versioned Launcher release." --prerelease --latest=false
+          fi
+          gh release upload launcher-updates published/launcher-update.json --clobber

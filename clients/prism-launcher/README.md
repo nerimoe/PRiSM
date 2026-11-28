@@ -48,3 +48,15 @@ cargo build --release
 ```
 
 产物位于 `target/release/prism-launcher.exe`。完整节点通信协议见 [`docs/nodes-protocol.md`](../../docs/nodes-protocol.md)。
+
+## 无感自动更新
+
+默认启动后检查更新，每 6 小时复查；店家机台操作页的「检查更新」也可主动检查并下载，返回最新 / 检查中 / 已下载待启动的状态。检查失败展示错误，后台失败只记日志，不影响游戏或连接。旧版 Launcher 不支持该指令，须先手动部署一次支持更新的版本。
+
+`launcher.json` 可配置 `auto_update: false` 关闭定期检查（仍允许店家主动检查），`update_url` 指定 HTTPS 清单地址。默认地址为 `https://github.com/nerimoe/PRiSM/releases/download/launcher-updates/launcher-update.json`。清单包含 `version`（稳定 SemVer）、`url`（HTTPS EXE 地址）、`sha256`（64 位十六进制）、`target`（必须匹配运行架构，当前发布 `x86_64-pc-windows-msvc`）；下载限制 64 MiB，单请求超时 25 秒。SHA-256 校验用于检测文件完整性，发布源须可信。
+
+下载校验成功后将运行中的 EXE 重命名为 `.exe.old`，临时文件改名为原路径；替换失败尝试恢复旧文件。当前进程继续运行，下次开机或维护重启才加载新版，不主动结束游戏、不修改令牌/配置。目录必须允许当前账号写入；替换受杀毒软件/文件锁阻止时保留当前运行版本并报错。备份下次启动清理；不提供新版启动健康检查或自动版本回退。不要在更新完成后运行 `.old` 文件。
+
+发布：修改 `Cargo.toml` 的版本并同步 `Cargo.lock`，推送 main 即可，无需手动创建 tag。`.github/workflows/launcher-release.yml` 在 Launcher / 工作流改动的 PR 和 main 推送时执行 Windows 测试与 x64 构建，并上传 Actions artifact。main 上若 `launcher-v<版本>` Release 尚不存在，自动创建该 tag 和本仓库 Release，附带 `prism-launcher.exe` 与 `launcher-update.json`；版本未变只构建，不重复发布版本。支持手动 workflow_dispatch 重跑。
+
+固定预发布 Release `launcher-updates` 保存稳定版更新清单（指向版本化 Release 的 EXE），每次发布同步更新，不抢占 PRiSM 主产品的 latest。使用本仓库 `GITHUB_TOKEN` 的 contents:write 权限，不需要 HINATA IO 跨仓库发布用的额外令牌；仓库需允许 Actions 写入 Release。PR 仅构建，不发布。
