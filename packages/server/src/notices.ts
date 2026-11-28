@@ -50,8 +50,8 @@ export function noticeCodes(): string[] { return Object.keys(CATALOG); }
 
 const CATALOG: Record<string, Entry> = {
   LOCATION_UNAVAILABLE: { presentation: "toast", body: t("定位获取失败，请重试", "Could not get location. Retry."), level: "error" },
-  CLIENT_NETWORK_ERROR: { presentation: "toast", body: t("网络连接失败，请检查网络后重试", "Network connection failed. Check your connection and try again."), level: "error" },
-  CLIENT_OPERATION_FAILED: { presentation: "toast", body: t("操作失败，请稍后重试", "Something went wrong. Please try again."), level: "error" },
+  CLIENT_NETWORK_ERROR: { presentation: "toast", body: t("网络连接失败", "Network connection failed."), level: "error" },
+  CLIENT_OPERATION_FAILED: { presentation: "toast", body: t("操作失败", "Something went wrong."), level: "error" },
   POWER_WAIT_TIMEOUT: { presentation: "toast", body: t("未检测到开机，请重试", "Power-on was not detected. Please try again."), level: "error" },
   // The page itself moves on; nothing to read.
   TICKET_EXPIRED: { title: t("本次会话已失效", "This session has expired"), body: t("请重新碰一下 NFC 或重新扫描二维码。", "Tap the NFC tag or scan the QR code again."), display: "none", flow: "expired" },
@@ -71,7 +71,7 @@ const CATALOG: Record<string, Entry> = {
   DEVICE_NOT_FOUND: { presentation: "page", body: t("没有找到这个资源", "Not found.") },
   DEVICE_ACTION_UNSUPPORTED: { presentation: "status", body: t("这里不支持此操作", "This cannot be done here.") },
   RESOURCE_NOT_BILLED: { display: "none", flow: "refresh", level: "info", body: t("这里不计费，无需确认", "This is free to use; there is nothing to confirm.") },
-  DEVICE_RESULT_UNKNOWN: { display: "dialog", action: "refresh", title: t("操作结果尚未确认", "Result not confirmed"), body: t("请求结果尚未确认，请先刷新状态，避免重复操作", "The result is not confirmed. Refresh the status before repeating the action.") },
+  DEVICE_RESULT_UNKNOWN: { display: "none", flow: "refresh", body: t("", ""), level: "info" },
   LOCATION_REQUIRED: { display: "dialog", action: "settings", title: t("需要定位", "Location needed"), body: t("此操作需要获取当前位置，请允许定位", "This needs your location. Please allow location access."), level: "error", retry: true },
 
   // Local feedback, input validation, temporary results and rate-limit alerts.
@@ -79,8 +79,8 @@ const CATALOG: Record<string, Entry> = {
   COIN_COOLDOWN: { presentation: "control", body: t("请稍后再投币", "Please wait before adding another coin."), level: "info", display: "inline" },
   COIN_CABINET_FULL: { presentation: "control", body: t("达到机台投币上限", "Coin limit reached"), level: "info", display: "inline" },
   RATE_LIMITED: { display: "dialog", title: t("操作过于频繁", "Too many attempts"), body: t("操作过于频繁，请稍后再试", "Too many attempts. Please wait a moment."), level: "info" },
-  OPERATION_PENDING: { presentation: "status", body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
-  OPERATION_IN_PROGRESS: { presentation: "status", body: t("上一次操作还在处理中", "The last request is still being processed."), level: "info", display: "inline" },
+  OPERATION_PENDING: { display: "none", flow: "none", body: t("", ""), level: "info" },
+  OPERATION_IN_PROGRESS: { display: "none", flow: "none", body: t("", ""), level: "info" },
   CARD_NOT_FOUND: { presentation: "control", body: t("卡片不可用", "Card unavailable."), level: "error", display: "inline" },
   MANUAL_CARD_ADD_DISABLED: { presentation: "status",
     body: t(
@@ -99,7 +99,7 @@ const CATALOG: Record<string, Entry> = {
   REDEEM_CODE_NOT_ACTIVE: { display: "dialog", body: t("兑换码尚未生效", "This code is not active yet."), level: "info" },
   REDEEM_CODE_MAX_USE_REACHED: { display: "dialog", body: t("兑换码已被领完", "This code has reached its redemption limit."), level: "info" },
   REDEEM_CODE_ALREADY_EXISTS: { presentation: "field", body: t("该兑换码已存在，请换一个", "This redeem code already exists."), level: "error", display: "inline" },
-  INVALID_REDEEM_CODE: { presentation: "field", fieldId: "code", body: t("兑换码需为 1–64 个字符且不能包含空格", "Redeem code must be 1–64 characters with no spaces."), level: "error", display: "inline" },
+  INVALID_REDEEM_CODE: { body: t("兑换码无效", "This code is not valid."), level: "error", display: "dialog" },
   INVALID_REDEEM_CODE_PREFIX: { presentation: "field", body: t("前缀最多 24 个字符且不能包含空格", "Prefix must be up to 24 characters with no spaces."), level: "error", display: "inline" },
   INVALID_REDEEM_CODE_WINDOW: { presentation: "field", body: t("到期时间必须晚于生效时间", "Expiry time must be after activation time."), level: "error", display: "inline" },
   INVALID_REDEEM_CODE_MAX_USE_COUNT: { presentation: "field", body: t("可用次数必须是大于 0 的整数", "Max uses must be a positive integer."), level: "error", display: "inline" },
@@ -126,14 +126,14 @@ const CATALOG: Record<string, Entry> = {
   COIN_SENT: { presentation: "control", body: t("已投币", "Coin added"), level: "success", display: "inline" },
   COIN_SKIPPED: { presentation: "control", body: t("投币冷却中", "Coin cooling down"), level: "info", display: "inline" },
   COIN_FAILED: { presentation: "control", body: t("投币失败", "Coin failed"), level: "error", display: "inline" },
-  COIN_UNKNOWN: { presentation: "control", body: t("投币未确认", "Coin not confirmed"), level: "error", display: "inline" },
+  COIN_UNKNOWN: { display: "none", flow: "none", body: t("", ""), level: "info" },
   DOOR_CODE_FAILED: { presentation: "toast", body: t("开门密码获取失败，请重试", "Could not get the door code. Retry."), level: "error", display: "inline" },
   PLAYER_OPTIONS_SAVED: { presentation: "toast", body: t("已保存选项", "Options saved"), level: "success", display: "inline" },
   PLAYER_OPTION_FORBIDDEN: { presentation: "status", body: t("无权修改该玩家选项", "You cannot access or change that player option."), level: "error", display: "inline" },
   PRIVACY_MODE_DISABLED: { presentation: "status", body: t("店铺未启用隐私模式", "Privacy mode is disabled for this shop."), level: "error", display: "inline" },
 };
 
-const GENERIC: Entry = { presentation: "toast", body: t("操作失败，请稍后重试", "Something went wrong. Please try again."), retry: true };
+const GENERIC: Entry = { presentation: "toast", body: t("操作失败", "Something went wrong."), retry: true };
 const DISMISS: Text = t("知道了", "OK");
 const RETRY: Text = t("重试", "Retry");
 const CJK = /[\u3400-\u9fff]/;
@@ -195,6 +195,6 @@ export function errorNotice(input: { code: string; message: string; status: numb
 export function clientNotices(locale: Locale): Record<string, Notice> {
   return Object.fromEntries([
     "TICKET_EXPIRED", "LOCATION_REQUIRED", "LOCATION_UNAVAILABLE", "CLIENT_NETWORK_ERROR", "CLIENT_OPERATION_FAILED",
-    "DEVICE_RESULT_UNKNOWN", "INSUFFICIENT_BALANCE", "RATE_LIMITED", "POWER_WAIT_TIMEOUT",
+    "DEVICE_RESULT_UNKNOWN", "OPERATION_PENDING", "OPERATION_IN_PROGRESS", "INSUFFICIENT_BALANCE", "RATE_LIMITED", "POWER_WAIT_TIMEOUT",
   ].map((code) => [code, notice(code, locale)]));
 }

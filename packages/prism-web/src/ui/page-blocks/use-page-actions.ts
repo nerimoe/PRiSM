@@ -144,7 +144,7 @@ export function useShopPageAct(
         return answer;
       } catch (caught) {
         unanswered.settleOnError(key, caught);
-        if (caught instanceof TypeError) throw new ApiError("网络异常，请先确认操作结果", 0, "DEVICE_RESULT_UNKNOWN");
+        if (caught instanceof TypeError) throw new ApiError("网络连接失败", 0, "DEVICE_RESULT_UNKNOWN");
         throw caught;
       } finally {
         latest.current.options?.onPendingChange?.(false);

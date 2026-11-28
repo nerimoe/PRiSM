@@ -27,8 +27,7 @@ export function ResourcePage() {
 
 function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: (notice?: Notice) => void }) {
   const { t, errorText } = useI18n();
-  const { page, failure, slow, read, act, cardAsks } = usePlayerPage(ticket, onExpired);
-  const slowNote = slow && <p className="session-subtitle text-center" role="status">{t("网络较慢，正在重试")}</p>;
+  const { page, failure, read, act, cardAsks } = usePlayerPage(ticket, onExpired);
   if (!page && failure)
     return (
       <section className="machine-session session-status">
@@ -41,13 +40,11 @@ function ResourceSession({ ticket, onExpired }: { ticket: string; onExpired: (no
     return (
       <section className="machine-session session-status" aria-busy="true" role="status" aria-label={t("正在加载")}>
         <Loader2 size={28} className="animate-spin" aria-hidden="true" />
-        {slowNote}
       </section>
     );
   return (
     <section className="machine-session">
       <ShopHero name={page.shop} heroUrl={page.heroUrl} subtitle={page.resource} />
-      {slowNote}
       <PlayerPageBlocks page={page} ticket={ticket} act={act} read={read} cardAsks={cardAsks} onExpired={onExpired} />
     </section>
   );

@@ -900,7 +900,7 @@ export async function playerOperation<T>(
     : { id: crypto.randomUUID(), fingerprint };
   if (pending.fingerprint !== fingerprint)
     throw new ApiError(
-      "上一笔操作尚未确认，请先查看记录或联系店员",
+      "请稍后再试",
       409,
       "OPERATION_PENDING",
     );

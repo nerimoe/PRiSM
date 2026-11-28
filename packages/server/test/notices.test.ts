@@ -6,9 +6,10 @@ describe("player notices", () => {
   it("keeps diagnostics private and gives feedback an owner and recovery action", () => {
     for (const code of ["PRICING_RELATION_CYCLE", "PRICING_PLAN_NOT_FOUND", "PRICING_RELATION_CONTRADICTION"])
       expect(notice(code, "zh").body).toBe("暂时无法开始计费，请联系店员");
-    expect(notice("INVALID_REDEEM_CODE", "zh").fieldId).toBe("code");
+    expect(notice("INVALID_REDEEM_CODE", "zh")).toMatchObject({ display: "dialog", body: "兑换码无效" });
     expect(notice("CHECKIN_CONSENT_REQUIRED", "zh").fieldId).toBe("consent");
-    expect(notice("DEVICE_RESULT_UNKNOWN", "zh").actions.some(a => a.kind === "refresh")).toBe(true);
+    for (const code of ["DEVICE_RESULT_UNKNOWN", "COIN_UNKNOWN", "OPERATION_PENDING", "OPERATION_IN_PROGRESS"])
+      expect(notice(code, "zh")).toMatchObject({ display: "none", body: "", actions: [] });
     expect(notice("LOCATION_REQUIRED", "zh").actions.some(a => a.kind === "settings")).toBe(true);
     for (const code of ["REDEEM_CODE_EXPIRED", "PRESENT_EXPIRED", "PRESENT_ONCE_PER_PLAYER_REDEEMED"])
       expect(notice(code, "zh").display).toBe("dialog");
@@ -22,7 +23,7 @@ describe("player notices", () => {
 
   it("interrupts only for what went wrong, and keeps normal outcomes inline", () => {
     expect(notice("CARD_NOT_READ", "zh")).toMatchObject({ display: "inline", level: "error", body: "登录失败", actions: [] });
-    for (const code of ["COIN_FAILED", "COIN_UNKNOWN", "COIN_SKIPPED"]) expect(notice(code, "zh").display).toBe("inline");
+    for (const code of ["COIN_FAILED", "COIN_SKIPPED"]) expect(notice(code, "zh").display).toBe("inline");
     expect(errorNotice({ code: "COIN_COOLDOWN", message: "请稍后再投币", status: 429 }, "zh").display).toBe("inline");
     const banned = errorNotice({ code: "ACCOUNT_BANNED", message: "这个账号暂时无法使用", status: 403 }, "zh");
     expect(banned).toMatchObject({ display: "inline", presentation: "page", level: "error", title: "账号已停用" });
@@ -35,7 +36,7 @@ describe("player notices", () => {
     for (const code of ["CARD_SENT", "COIN_SENT", "PLAYER_OPTIONS_SAVED"]) expect(notice(code, "zh").level).toBe("success");
     const failed = ["DOOR_CODE_FAILED", "PLAYER_OPTION_FORBIDDEN", "CARD_NOT_FOUND", "COIN_FAILED", "LOCATION_OUT_OF_RANGE"];
     for (const code of failed) expect(notice(code, "zh")).toMatchObject({ level: "error", display: "inline" });
-    for (const code of ["INSUFFICIENT_BALANCE", "LOCATION_REQUIRED", "DEVICE_RESULT_UNKNOWN", "REDEEM_CODE_NOT_FOUND"]) expect(notice(code, "zh")).toMatchObject({ level: "error", display: "dialog" });
+    for (const code of ["INSUFFICIENT_BALANCE", "LOCATION_REQUIRED", "REDEEM_CODE_NOT_FOUND"]) expect(notice(code, "zh")).toMatchObject({ level: "error", display: "dialog" });
     // A route's own wording for a refusal is an error the player sees in place.
     expect(errorNotice({ code: "SOMETHING", message: "这里不能这样做", status: 400 }, "zh")).toMatchObject({ level: "error", display: "inline" });
   });
@@ -44,9 +45,9 @@ describe("player notices", () => {
     expect(notice("RATE_LIMITED", "zh")).toMatchObject({ display: "dialog", level: "info", actions: [{ kind: "dismiss", label: "知道了" }] });
     const groups = {
       page: ["DEVICE_UNAVAILABLE", "ACCOUNT_BANNED"],
-      status: [ "OPERATION_PENDING", "LOCATION_STILL_INSIDE", "PRICING_RELATION_CYCLE"],
-      field: ["INVALID_REDEEM_CODE", "CHECKIN_CONSENT_REQUIRED"],
-      control: ["COIN_COOLDOWN", "COIN_SENT", "COIN_UNKNOWN", "CARD_SENT"],
+      status: [ "LOCATION_STILL_INSIDE", "PRICING_RELATION_CYCLE"],
+      field: ["CHECKIN_CONSENT_REQUIRED"],
+      control: ["COIN_COOLDOWN", "COIN_SENT", "CARD_SENT"],
       toast: ["DOOR_CODE_FAILED", "LOCATION_LOW_ACCURACY", "PLAYER_OPTIONS_SAVED", "SESSION_NOT_ACTIVE"],
     };
     for (const [presentation, codes] of Object.entries(groups)) {
@@ -93,8 +94,8 @@ describe("player notices", () => {
 
   it("keeps a route's own Chinese wording but never shows developer text or faults", () => {
     expect(errorNotice({ code: "SOMETHING_NEW", message: "请先在后台开通", status: 409 }, "zh")).toMatchObject({ body: "请先在后台开通", display: "inline" });
-    expect(errorNotice({ code: "REDEEM_THING", message: "Redeem code batch exhausted.", status: 400 }, "zh").body).toBe("操作失败，请稍后重试");
-    expect(errorNotice({ code: "INTERNAL_ERROR", message: "数据库超时", status: 500 }, "zh").body).toBe("操作失败，请稍后重试");
+    expect(errorNotice({ code: "REDEEM_THING", message: "Redeem code batch exhausted.", status: 400 }, "zh").body).toBe("操作失败");
+    expect(errorNotice({ code: "INTERNAL_ERROR", message: "数据库超时", status: 500 }, "zh").body).toBe("操作失败");
   });
 
   it("is attached to every wrapped error, with the player text also in message", async () => {

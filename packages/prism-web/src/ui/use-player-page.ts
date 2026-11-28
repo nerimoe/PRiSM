@@ -102,7 +102,7 @@ export function usePlayerPage(ticket: string, onExpired: (notice?: import("../ap
       return answer;
     } catch (caught) {
       unanswered.settleOnError(key, caught);
-      if (caught instanceof TypeError) throw new ApiError("网络异常，请先确认操作结果", 0, "DEVICE_RESULT_UNKNOWN");
+      if (caught instanceof TypeError) throw new ApiError("网络连接失败", 0, "DEVICE_RESULT_UNKNOWN");
       if (caught instanceof ApiError && caught.sessionExpired) onExpired(caught.notice ?? undefined);
       throw caught;
     } finally {
