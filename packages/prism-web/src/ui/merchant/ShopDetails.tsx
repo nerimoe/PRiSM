@@ -1,5 +1,6 @@
 import { useI18n } from "../../i18n";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { resolveLocationTimeZone } from "@prism/core";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { api, Api, type Shop, type ShopMember } from "../../api";
@@ -12,12 +13,15 @@ export function ShopForm({
   onSaved,
   back,
   billingSetup,
+  hideLocation = false,
 }: {
   shop?: Shop | null;
   billingSetup?: Record<string, unknown>;
   onSaved: (shop: Shop, token?: string) => void | Promise<void>;
   /** Shown beside save when the form is the last step of a wizard. */
   back?: () => void;
+  /** Hide map coordinates & geofence radius when edited inside the dedicated Location tab. */
+  hideLocation?: boolean;
 }) {
   const { t, errorText } = useI18n();
   const [name, setName] = useState(shop?.name ?? "");
@@ -135,6 +139,14 @@ export function ShopForm({
           onBusy={setHeroBusy}
         />
 
+        {hideLocation ? (
+          <p className="text-xs leading-relaxed text-ink/55">
+            {t("店铺地理坐标与围栏范围请在")}{" "}
+            <Link className="underline" to="?group=location">{t("位置校验")}</Link>{" "}
+            {t("中调整。")}
+          </p>
+        ) : (
+          <>
         <div>
           <span className="mb-1.5 block text-sm font-medium">
             {t("店铺位置")}
@@ -210,6 +222,8 @@ export function ShopForm({
             )}
           </span>
         </label>
+          </>
+        )}
         <div className="flex flex-wrap justify-between gap-3">
           {back && (
             <button type="button" className={button} onClick={back}>

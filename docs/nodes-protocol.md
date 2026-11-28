@@ -44,9 +44,9 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
     - `mode: "keyboard"`：Windows 键盘 VK 码，执行时**优先走 PRiSM Launcher，离线或未配置时自动回落 HINATA IO**。
     - `mode: "gpio"`：指向本资源或店内任意带 `iot` 能力资源的 GPIO 输出引脚（`0..255`）、脉宽与电平极性，保存时校验跨全店引脚冲突并自动推送至对应控制器。
   - `coin`（投币，依赖 `keys`）：指定 `keys` 中的一个按钮作为投币触发，配置直连 IO 的投币上限与刷卡后自动投币；仅当选中的投币按钮为 `gpio` 模式时支持挂接可选的 GPIO 硬件回报输入（`feedbackNodeId`、`feedbackPin`、`feedbackEdge`、`feedbackDebounceMs`、`feedbackSignal`）。
-  - `locationOverride`（定位设置覆盖）：可选 `inherit`（跟随店铺）、`gps`（仅 GPS）、`ble`（仅蓝牙信标，可限定特定 IoT 控制器及近/标准/远感应距离覆盖）或 `none`（无定位）。
+  - `locationOverride`（位置校验覆盖）：可选 `inherit`（跟随店铺）、`require`（强制校验，可选限定特定 IoT 控制器及近/标准/远感应距离覆盖；旧版 `ble` / `gps` 读取时自动归一化为 `require`）或 `none`（不校验位置）。定位方式按「资源限定在线信标 → 全店在线信标池 → 店铺 GPS 围栏」自动选择，无在线信标时自动回退 GPS。
   - **能力冲突、依赖与二维码链接规则**：`bot` 与所有其它能力冲突；`iot` 与 `table`/`door`/`climate` 冲突；`coin` 依赖 `keys`。`bot` 与 `iot` 声明无需玩家链接——纯 `bot` 或纯 `iot` 资源自动无二维码且不可被玩家扫码，而挂了任意玩家侧能力（例如 `iot + keys + coin`）或无能力的资源保有二维码。
-- 店铺级位置校验（`GET/PUT /api/v1/shops/:code/settings`）：开启位置校验后，支持配置 `locationMode`（`gps` / `ble` / `any`）与蓝牙感应距离档位（`locationRssiThreshold`：近 `-65` / 标准 `-75` / 远 `-85` dBm），与单个资源的 `locationOverride` 协同工作。
+- 店铺级位置校验（`GET/PUT /api/v1/shops/:code/settings`）：入场（`checkinGeo`）、离场（`checkoutGeo`）与资源操作默认（`machineGeo`）独立开关，搭配默认蓝牙感应距离（`locationRssiThreshold`：近 `-65` / 标准 `-75` / 远 `-85` dBm）；IoT 节点在线状态写入 `device_state`（`capability='iot', key='link'`），`GET /api/v1/merchant/beacons` 返回每个信标的 `online` 状态，信标上下线自动刷新玩家页。
 - 主机快捷接口（命令经 `DeviceBus` 审计）：
   - `GET /machines/:id/host`
   - `PUT /machines/:id/host/config`
@@ -54,11 +54,11 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
 
 ### 商户网页端入口（`packages/prism-web/src/ui/merchant/`）
 - **统一资源页（`Resources.tsx` & `ResourceEditor.tsx`）**：所有设备平铺为资源，无独立硬件中心。
-  - 「基本信息」包含「定位设置覆盖」（跟随店铺 / 仅 GPS / 仅蓝牙信标 / 无定位；蓝牙模式提供「跟随店铺 / 近 / 标准 / 远」感应距离档位）。
+  - 「基本信息」包含「位置校验」（跟随店铺并显示当前继承状态 / 强制校验位置，可选限定特定 IoT 控制器与近/标准/远感应距离覆盖 / 不校验位置）。
   - 「添加能力」自动标出冲突项并禁用，添加「投币」时自动一并启用「机台按键」。
   - `HINATA IO`、`启动器` 与 `IoT 控制器` 均在对应能力面板内联签发/轮换令牌，一次性展示配置片段；`IoT 控制器` 面板不暴露 HA 监听/蓝牙信标开关与底层射频参数，仅展示连接状态、自动分配的信标编号与全店 GPIO 引脚占用清单。
 - **操作面板（`Resources.tsx` & `HostControls.tsx`）**：提供独立的「机台按键」分组（同时支持键盘与 GPIO 按键）与「启动器」分组（切游戏、临时按键、中文文字输入、实时截屏、二次确认重启/关机、受控文件管理与 PowerShell 终端）；`HaWatchers.tsx` 同步显示 IoT 控制器监听器。
-- **店铺位置校验（`BillingPages.tsx`）**：在「设置 → 位置与设备」中配置全店默认校验方式（仅 GPS 围栏 / 仅蓝牙信标 / GPS 或蓝牙信标任一通过）与蓝牙感应距离（近 / 标准 / 远）。
+- **独立「设置 → 位置校验」（`LocationSettings.tsx`）**：聚合展示当前生效定位方式（在线蓝牙信标优先 / 无在线信标自动回退 GPS）、入场/离场/资源操作三个独立开关、蓝牙信标池在线状态与默认感应距离、GPS 地图与围栏半径（不展示时区）、以及已单独覆盖定位的资源列表（支持一键恢复跟随店铺）。
 
 ---
 

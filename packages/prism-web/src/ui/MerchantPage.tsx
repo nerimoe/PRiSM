@@ -278,8 +278,10 @@ function Workspace({
             ) : section === "settings" && state.owner ? (
               <div className="mx-auto w-full max-w-5xl">
                 <SettingsPage
+                  shop={shop}
+                  onShopSaved={async () => { await reload(); }}
                   shopDetails={<section className="rounded-xl border border-ink/10 bg-panel p-5">
-                    <ShopForm shop={shop} onSaved={async () => { await reload(); }} />
+                    <ShopForm shop={shop} hideLocation onSaved={async () => { await reload(); }} />
                   </section>}
                   members={<StaffMembers shopId={shop.id} />}
                   guide={!!setup.status}

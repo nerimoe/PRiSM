@@ -16,7 +16,7 @@ const cfg = JSON.parse(fs.readFileSync(".e2e/platform.json", "utf8"));
 const { shop, owner, admin, origin: platform } = cfg;
 const BASE = "http://localhost:8787"; // the platform's APP_ORIGIN
 const output = process.env.PRISM_SCAN_OUTPUT || ".e2e/shots";
-const IO_BIN = process.env.IO_SIM || "/Users/neri/Projects/hinata-aimeio-rs/tools/mac-test/target/debug/io_sim";
+const IO_BIN = process.env.IO_SIM || `${__dirname}/../../clients/hinata-io/tools/mac-test/target/debug/io_sim`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let steps = 0;
 const step = (message) => console.log(`  ok    ${message}`) || (steps += 1);

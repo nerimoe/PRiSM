@@ -1,6 +1,6 @@
 # 端到端：真实 Home Assistant + 真实 IO 固件 + 本地平台
 
-这套脚本不 mock 任何一端：Home Assistant 在 docker 里，平台跑在 `wrangler dev`，HINATA IO 是固件仓库 `hinata-aimeio-rs` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件 `io_sim`（`tools/mac-test`），浏览器是 Playwright 的真实 Chromium，App Clip 是 `hinata_go` 里的 `PrismAPI` + `MachineLoginViewModel` 原样编译的 macOS 检查。断言只看真实组件做了什么：看板 WebSocket 收到的帧、D1 里的行、Home Assistant 自己的访问日志里平台读了哪些实体。
+这套脚本不 mock 任何一端：Home Assistant 在 docker 里，平台跑在 `wrangler dev`，HINATA IO 是子模块 `clients/hinata-io` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件 `io_sim`（`tools/mac-test`），浏览器是 Playwright 的真实 Chromium，App Clip 是 `hinata_go` 里的 `PrismAPI` + `MachineLoginViewModel` 原样编译的 macOS 检查。断言只看真实组件做了什么：看板 WebSocket 收到的帧、D1 里的行、Home Assistant 自己的访问日志里平台读了哪些实体。
 
 `.e2e/` 是本地数据目录（已在 `.gitignore`）。`io_sim` 会真的按投币键，所以**不要**让平台给它发投币。
 
@@ -25,7 +25,7 @@ bunx wrangler dev --config wrangler.jsonc --ip 127.0.0.1 --port 8787 --persist-t
 bun run scripts/e2e-ha/seed.ts
 
 # 4. IO 模拟器
-(cd ../hinata-aimeio-rs/tools/mac-test && cargo build --bin io_sim)
+(cd clients/hinata-io/tools/mac-test && cargo build --bin io_sim)
 ```
 
 数据里的三台设备：
@@ -43,7 +43,7 @@ bun run scripts/e2e-ha/scenarios.ts [baseline live dedupe handover poweroff leas
 PRISM_PLAYWRIGHT_MODULE=/path/to/playwright node scripts/e2e-ha/browser-board.cjs            # 商户看板，桌面 + 手机
 PRISM_PLAYWRIGHT_MODULE=/path/to/playwright node scripts/e2e-ha/browser-player.cjs           # 玩家扫码页
 PRISM_PLAYWRIGHT_MODULE=/path/to/playwright node scripts/e2e-ha/browser-watchers.cjs         # 设备页「HA 监听器」区域：店主只读、管理员可改
-(cd ../hinata_go && test/native/run-prism-real-check.sh)                                      # App Clip 视图模型
+(cd clients/hinata_go && test/native/run-prism-real-check.sh)                                # App Clip 视图模型
 ```
 
 每个场景开始前都会杀掉所有 `io_sim`、把 HA 实体重置成已知值、等平台把连接标成非实时。`scripts/e2e-ha/d1.sh "SQL"` 可以随手查本地 D1。

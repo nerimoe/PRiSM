@@ -52,6 +52,8 @@ PRiSM Next 是一款单店、可自托管的场馆运营核心系统。系统支
 - React 时间显示使用店铺位置识别出的 IANA 时区，通过 `Intl`、`ui/bill-time.ts` 和计费时钟转换处理 UTC 时间戳及规则。报表查询把店铺日期范围转换为 UTC，不依赖浏览器自身时区。
 - Staff Web 的权限门控与后端角色一致：viewer 保留查询、筛选、刷新、复制和审计详情能力，但现场结账、玩家修改、资产/计费配置和设备命令等写入口不可用；manager/owner 可以执行普通业务写入，员工账号与接入密钥管理仅 owner 可用，其他角色不会请求对应 owner-only 接口。退出登录会撤销持久化管理员会话，不只清理浏览器本地 Token。
 - `packages/koishi-plugin`（git 子模块，独立仓库 `koishi-plugin-prism`）：直接调用 Integration HTTP API 的 Koishi 机器人插件。
+- `clients/hinata_go`（git 子模块，独立仓库 `Project-HINATA/hinata_go`）：原生移动端与 iOS PRiSM Link App Clip 客户端（含 `ios/PrismClip` 与 `ios/PrismCore`）。
+- `clients/hinata-io`（git 子模块，独立仓库 `nerimoe/hinata-io`）：机台 HINATA IO 客户端（读卡中继、按键投币、机台状态监控与 Home Assistant 监听）。
 
 ## 接入身份模型
 

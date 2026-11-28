@@ -22,6 +22,7 @@ import { botReplyTemplateError, keyTextFromVk, vkFromKeyText } from "@prism/core
 import {
   Api,
   api,
+  normalizeResourceLocationMode,
   type BotSettings,
   type CoinFeedbackEdge,
   type CoinFeedbackSignal,
@@ -30,6 +31,7 @@ import {
   type ResourceLocationMode,
   type ShopNodeBinding,
 } from "../../api";
+import { shopApi, type Settings as ShopSettings } from "../BillingPages";
 import { useI18n } from "../../i18n";
 import { ActionForm, Field, button, buttonQuiet, input, primary, useMerchant, useResource } from "./shared";
 import { useBillablePlans, useResourceGroups } from "./ResourceGroups";
@@ -135,11 +137,29 @@ export function ResourceEditor({
   const [occupancyMinutes, setOccupancyMinutes] = useState(String(value?.occupancyMinutes ?? 15));
 
   // Resource-level location verification override
-  const [locMode, setLocMode] = useState<ResourceLocationMode>(value?.locationOverride?.mode ?? "inherit");
+  const [locMode, setLocMode] = useState<ResourceLocationMode>(
+    normalizeResourceLocationMode(value?.locationOverride?.mode),
+  );
   const [locBeaconNodeId, setLocBeaconNodeId] = useState<string>(value?.locationOverride?.beaconNodeId ?? "");
   const [locRssiThreshold, setLocRssiThreshold] = useState<number | null>(
     value?.locationOverride?.rssiThreshold ?? null,
   );
+  const [shopLocSummary, setShopLocSummary] = useState<{
+    checkinGeo: boolean;
+    machineGeo: boolean;
+    locationMode: "ble" | "gps";
+  } | null>(null);
+  useEffect(() => {
+    api<ShopSettings>(shopApi(shopCode, "settings"))
+      .then((s) =>
+        setShopLocSummary({
+          checkinGeo: !!s.checkinGeo,
+          machineGeo: !!s.machineGeo,
+          locationMode: s.locationMode === "ble" ? "ble" : "gps",
+        }),
+      )
+      .catch(() => setShopLocSummary(null));
+  }, [shopCode]);
 
   // All resources in this shop (for IoT controller picker and Bot door picker)
   const [shopResources, setShopResources] = useState<Resource[]>([]);
@@ -639,8 +659,8 @@ export function ResourceEditor({
             locationOverride: resourceHasPlayerLink
               ? {
                   mode: locMode,
-                  beaconNodeId: locMode === "ble" ? (locBeaconNodeId || null) : null,
-                  rssiThreshold: locMode === "ble" ? locRssiThreshold : null,
+                  beaconNodeId: locMode === "require" ? (locBeaconNodeId || null) : null,
+                  rssiThreshold: locMode === "require" ? locRssiThreshold : null,
                 }
               : null,
             bot: caps.bot ? bot : null,
@@ -840,21 +860,32 @@ export function ResourceEditor({
           })}
         </div>
         </div>
-        {resourceHasPlayerLink && (
+        {resourceHasPlayerLink && (() => {
+          const inheritedEnabled = shopLocSummary
+            ? (caps.door ? shopLocSummary.checkinGeo : shopLocSummary.machineGeo)
+            : null;
+          const inheritedText =
+            inheritedEnabled === null
+              ? t("跟随店铺")
+              : inheritedEnabled
+                ? t("跟随店铺（当前：开启 · {mode}）", {
+                    mode: t(shopLocSummary?.locationMode === "ble" ? "蓝牙信标" : "GPS 围栏"),
+                  })
+                : t("跟随店铺（当前：未开启）");
+          return (
           <div className="bill-entry !mb-0 grid gap-3">
-            <Field label="定位设置覆盖">
+            <Field label="位置校验">
               <select
                 className={input}
                 value={locMode}
                 onChange={(e) => setLocMode(e.target.value as ResourceLocationMode)}
               >
-                <option value="inherit">{t("跟随店铺")}</option>
-                <option value="gps">{t("仅 GPS")}</option>
-                <option value="ble">{t("仅蓝牙信标")}</option>
-                <option value="none">{t("无定位")}</option>
+                <option value="inherit">{inheritedText}</option>
+                <option value="require">{t("强制校验位置")}</option>
+                <option value="none">{t("不校验位置")}</option>
               </select>
             </Field>
-            {locMode === "ble" && (
+            {locMode === "require" && (
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="限定蓝牙信标">
                   <select
@@ -862,7 +893,7 @@ export function ResourceEditor({
                     value={locBeaconNodeId}
                     onChange={(e) => setLocBeaconNodeId(e.target.value)}
                   >
-                    <option value="">{t("店内任意蓝牙信标")}</option>
+                    <option value="">{t("自动（全店在线信标优先，无信标用 GPS）")}</option>
                     {iotOptions.map((opt) => (
                       <option key={opt.nodeId} value={opt.nodeId}>
                         {opt.beaconId !== null ? `${opt.label} · #${opt.beaconId}` : opt.label}
@@ -917,10 +948,11 @@ export function ResourceEditor({
               </div>
             )}
             <Hint>
-              {t("默认跟随「设置 → 位置与设备」中的店铺位置校验；也可以为此资源单独指定 GPS、蓝牙信标或免定位校验。")}
+              {t("此覆盖作用于该资源上的所有操作。在线蓝牙信标优先，限定信标离线时自动降级到全店在线信标或 GPS 围栏。")}
             </Hint>
           </div>
-        )}
+          );
+        })()}
         <label className="bill-entry !mb-0 flex cursor-pointer items-center justify-between gap-3 px-3.5 py-3 text-sm font-medium">
           <span>{t("启用")}</span>
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />

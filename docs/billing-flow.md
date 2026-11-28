@@ -140,7 +140,7 @@
 
 账单时间轴只有两个来源。未结账单都由结账预览经 `previewBillTimeline()` 得到：玩家店铺页与账户、商家的在店玩家列表与玩家工作台、结账前预览、前台收款，以及服务端兜底预览和实时活动，都是同一个函数。已结收据都读结账时随结算持久化的那份：结账接口当场返回的就是它（`SettlePlayerCheckoutResult.timeline`），之后的玩家历史与商家报表详情读回的也是它。计费模拟器用虚构会话自己构建，不属于账单。显示统一用 `BillTotal` 与 `BillTimeline`；已经有自己合计行的地方（在店玩家）用 `BillLegend` 补上合计下的图例。
 
-Swift 移植以与 TypeScript 逐字段一致为验收标准。改动计费引擎（`pricing-time.ts`、`settlement.ts`、`settlement-service.ts` 的预览路径、`versioned-pricing.ts`、资产效果、`bill-timeline.ts`、日分段）后，用 `bun scripts/swift-core-fixtures.ts <hinata_go>/test/native/fixtures/prism-core` 重新生成对拍用例（全部为合成数据），再在 hinata_go 运行 `sh test/native/run-prism-core-check.sh`，不一致时同步修改 Swift 版本。
+Swift 移植以与 TypeScript 逐字段一致为验收标准。改动计费引擎（`pricing-time.ts`、`settlement.ts`、`settlement-service.ts` 的预览路径、`versioned-pricing.ts`、资产效果、`bill-timeline.ts`、日分段）后，用 `bun scripts/swift-core-fixtures.ts clients/hinata_go/test/native/fixtures/prism-core` 重新生成对拍用例（全部为合成数据），再在 `clients/hinata_go` 运行 `sh test/native/run-prism-core-check.sh`，不一致时同步修改 Swift 版本。
 
 ## 店长计费模拟器
 

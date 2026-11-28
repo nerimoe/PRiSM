@@ -1,4 +1,4 @@
-//! Rotating file + Windows debug output logger, matching `hinata-aimeio-rs`'s logging style.
+//! Rotating file + Windows debug output logger, matching `hinata-io`'s logging style.
 use log::LevelFilter;
 use std::fs::{self, OpenOptions};
 use std::io::Write;

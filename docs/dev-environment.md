@@ -33,7 +33,7 @@ bun run check:platform
 
 ## 真实 Home Assistant 与 HINATA IO 的端到端测试
 
-单元测试里的 Home Assistant、IO 都是模拟的。设备状态相关的改动（实时 / 非实时两种模式、店铺 Hub、看板、玩家页、App Clip）另有一套不模拟任何一端的端到端测试，在 `scripts/e2e-ha/`：Home Assistant 官方镜像跑在 docker，平台跑在 `wrangler dev`，HINATA IO 是固件仓库 `hinata-aimeio-rs` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件（`tools/mac-test` 的 `io_sim`），Bot 是 `packages/koishi-plugin`（独立仓库的子模块）的真实代码（`scripts/e2e-ha/bot-sim.ts`，只把 Koishi 本身换成替身），页面由 Playwright 的真实 Chromium 打开，App Clip 一侧是 `hinata_go` 里的 `PrismAPI` 与 `MachineLoginViewModel` 原样编译的 macOS 检查（`test/native/run-prism-real-check.sh`，真实 `URLSessionWebSocketTask`）。断言只看真实组件做了什么：WebSocket 收到的帧、D1 里的行，以及 Home Assistant 自己的访问日志里平台读了哪些实体。启动、造数据和各脚本的用法见 `scripts/e2e-ha/README.md`。
+单元测试里的 Home Assistant、IO 都是模拟的。设备状态相关的改动（实时 / 非实时两种模式、店铺 Hub、看板、玩家页、App Clip）另有一套不模拟任何一端的端到端测试，在 `scripts/e2e-ha/`：Home Assistant 官方镜像跑在 docker，平台跑在 `wrangler dev`，HINATA IO 是子模块 `clients/hinata-io` 的 `remote.rs` / `ha.rs` 原样编译成 macOS 可执行文件（`tools/mac-test` 的 `io_sim`），Bot 是 `packages/koishi-plugin`（独立仓库的子模块）的真实代码（`scripts/e2e-ha/bot-sim.ts`，只把 Koishi 本身换成替身），页面由 Playwright 的真实 Chromium 打开，App Clip 一侧是子模块 `clients/hinata_go` 里的 `PrismAPI` 与 `MachineLoginViewModel` 原样编译的 macOS 检查（`test/native/run-prism-real-check.sh`，真实 `URLSessionWebSocketTask`）。断言只看真实组件做了什么：WebSocket 收到的帧、D1 里的行，以及 Home Assistant 自己的访问日志里平台读了哪些实体。启动、造数据和各脚本的用法见 `scripts/e2e-ha/README.md`。
 
 这套测试不进 CI（需要 docker、固件仓库和浏览器），改动设备状态、Hub 或看板 / 玩家页读取路径后在本机跑一遍。已用它验证：平台在真实 Home Assistant 上自动建只读账号（管理员令牌 `ready`，非管理员令牌 `needs_admin`）；实时设备在 HA 变化后几十毫秒内推送到看板与玩家页，且平台对它们零读取；非实时设备只在进入页面、刷新、操作后读一次；两个监听器的去重与让位；平台给监听器断电即刻让位；HA 重启与 IO 掉线后的降级与恢复；90 秒租约到期后自动转为非实时；平台自动建的只读令牌在真实 Home Assistant 上能读不能控，功能上线前存下的旧连接在 IO 上线时被自动补建；用插件真实代码跑的 Bot 当监听器（Bot 优先于机台、让位期间看板没有空窗、同一变化只推一次、平台管理员改监听器数量而店主不能）；第一个 HA 地址不可达时靠连接超时转到下一个（10 秒内实时）；空闲自动关机对实时设备和没有任何存储状态的设备都生效。
 
@@ -64,7 +64,8 @@ React 商户工作台的「设置」按六个分类组织，分类写入 URL 的
 | 基本资料（`general`，默认） | 名称、封面、地图位置、定位范围与随位置自动识别的只读时区 |
 | 营业与计费（`billing`） | 没有余额货币时只显示「快速创建计费」向导；之后为说明（哪里设了方案哪里计费）与前台收银，没有整店计费开关。开启前台收银时还要选「前台资源」；各资源组（含默认资源组）的方案在「资源」页的「编辑」里修改 |
 | 玩家与身份（`players`） | 玩家进店身份策略（要求绑定 / 网页账号即可，绑定下有「只允许已有档案」高级项，见[开店指引](merchant-setup-guide.md)）、可自定义并实时预览的绑定提示、新玩家礼物（无礼物时链接到「资产 → 礼物」）；折叠的身份转换工具 |
-| 位置与设备（`devices`） | 位置校验（链接到基本资料调整范围）、投币冷却、闲置自动关机（启用、闲置判定时长、店里有人时的处理）、折叠的 TTLock 账号连接（标题显示是否已连接） |
+| 位置校验（`location`） | 自动生效状态（蓝牙信标优先、无在线信标自动回退 GPS）、入场/离场/资源操作三个独立开关、蓝牙信标池在线状态与默认感应距离、GPS 地图与围栏半径、单独覆盖定位的资源列表 |
+| 设备与连接（`devices`） | 投币冷却、闲置自动关机（启用、闲置判定时长、店里有人时的处理）、折叠的 TTLock 账号连接（标题显示是否已连接） |
 | 数据管理（`data`） | JSON 备份、恢复与 prism-neo 迁移 |
 | 成员与权限（`members`） | 店铺成员与操作权限 |
 
@@ -72,7 +73,7 @@ React 商户工作台的「设置」按六个分类组织，分类写入 URL 的
 
 设置页重组验证：635 项 Bun 测试、TypeScript 检查、React 构建与 Worker dry-run 通过。本地浏览器检查覆盖六组导航、URL／前进后退、独立保存、保留草稿与一次性凭据、390px 手机布局，以及隐藏地图展开和窗口缩放后的居中。
 
-跨客户端时间检查：业务与 SQL 保持 UTC，事件响应输出店铺偏移 ISO 时间。商户／Bot 显示店铺时间，玩家个人时间显示设备时区。Swift 源码克隆于 `/workspace/hinata_go`，Foundation 时间回归可运行 `test/native/run-prism-time-check.sh`；完整 iOS 编译需 macOS／Xcode。详见 [客户端时间约定](client-time-contract.md)。
+跨客户端时间检查：业务与 SQL 保持 UTC，事件响应输出店铺偏移 ISO 时间。商户／Bot 显示店铺时间，玩家个人时间显示设备时区。Swift 源码位于子模块 `clients/hinata_go`，Foundation 时间回归可运行 `test/native/run-prism-time-check.sh`；完整 iOS 编译需 macOS／Xcode。详见 [客户端时间约定](client-time-contract.md)。
 
 测试 MuNET 首次注册流程可使用 React 平台管理员「管理 → 删除账号」入口，无需手改数据库。清理范围、重新注册行为与负责人接管规则见 [删除测试账号](admin-account-deletion.md)。
 

@@ -4,7 +4,7 @@
 
 This is a Bun/TypeScript monorepo for PRiSM Next. Core business rules live in `packages/core`, use-case services in `packages/application`, SQL schema and repositories in `packages/storage-sql`, and database adapters in `packages/adapter-sqlite` and `packages/adapter-d1`. The scanned page's block types and form rules, shared by the server and the web client, are in `packages/page-protocol` (no runtime dependencies). The unified API, multi-tenant routes, hardware drivers, and Worker & Bun entrypoints are in `packages/server`.
 
-The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
+The Koishi plugin lives in the `packages/koishi-plugin` git submodule (standalone repo `koishi-plugin-prism`). The React admin and player client lives in `packages/prism-web`. Native clients live under `clients/`, including the `clients/hinata_go` git submodule (standalone repo `Project-HINATA/hinata_go`, hosting the iOS App Clip and native mobile client), the `clients/hinata-io` git submodule (standalone repo `nerimoe/hinata-io`, HINATA IO machine client), and `clients/prism-launcher`. D1 migrations live in `migrations`, and references belong in `docs`. Most packages keep source in `src/` and tests in `test/`.
 
 ## Build, Test, and Development Commands
 

@@ -350,7 +350,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
   - **共用电源按整组处理**：相同 Home Assistant 连接与电源实体绑定的资源，不论关机命令针对哪一个、是否自带 IO，先一起暂停采信所有在任监听器，再选择备用。同组待命候选先退出候选名单，收到断电后的无任务心跳或新的 hello 后才能再参与，避免把同一电源下另一台机台当成备用；HA 的 `on → off` 事件同样处理整组。不同连接或不同实体不会合并；未配置的物理接线关系无法推断。
   - 平台**不主动断开** IO 连接：断开也拦不住它重连（客户端把 Close 当普通断线，2 秒起、30 秒封顶退避重连），所以在线与否一律由心跳判定，见上一节。
 - 空资源页说明「资源」是店里玩家扫码就能用的东西（机台、门、麻将桌，或没有硬件、只用来开始计费的二维码）；`/merchant/:shop/resources?add=1` 直接打开添加资源弹窗（开店指引使用；旧地址 `/devices` 会跳转过来）。二维码弹窗提供「打印」（新窗口只含二维码和资源名）、带「已复制」反馈的复制链接和测试扫码入口。NFC 入口就是把同一个链接写进标签的 NDEF URI 记录：iPhone 碰一下会唤起 hinata_go 里的 PRiSM Link App Clip（免安装），其它手机用浏览器或 HINATA Go 打开；弹窗下方写明了这一点。
-- 编辑器里开门密码能力会检查店铺 TTLock 账号：未连接时红字提示并链接到「设置 → 位置与设备」；麻将桌没有可选计费规则时链接到「计费」页；麻将桌所在资源没有计费方案时不要求选择对局方案，入座免费；外部中继缺连接密码时说明投币为何不可设置。
+- 编辑器里开门密码能力会检查店铺 TTLock 账号：未连接时红字提示并链接到「设置 → 设备与连接」；麻将桌没有可选计费规则时链接到「计费」页；麻将桌所在资源没有计费方案时不要求选择对局方案，入座免费；外部中继缺连接密码时说明投币为何不可设置。
 - 能力判定集中在前端适配层 `packages/prism-web/src/ui/merchant/resource-capabilities.ts`（`resourceCapabilities`、`canOperateCoin`、`deviceActions`、`deviceSummaryKey`）。卡片徽章、操作记录里的可用动作、编辑器里的开关都读这一处，不再各自从 `ttlockLockId`/`homeAssistant`/`hasHinata` 推导。
 - 提交仍使用商户 API 的扁平字段（`homeAssistant`、`ttlockLockId`、`table`、`hinataUrl`/`hinataPassword`、`relayConnection`、`keys`），投币用 `coin` 对象（`{ method, keyId, cap, afterSwipe }`，`null` 去掉投币）。旧客户端的 `coinKey`、`coinKeyId`、`coinCap`、`coinAfterSwipe` 仍然认：`coinKey` 是键码（0 表示不投币，没有这个键码的按键就加一个叫「投币」的），其余改动已有的投币。响应里的 `coin*` 扁平字段照旧，`coinEnabled` 是服务端判断的能不能投；关闭某项能力时发送 `null`（刷卡为 `relayConnection: "external"` + `hinataUrl: null`）让服务端删除对应能力行。适配层只是视图模型，不改变接口契约。
 
@@ -409,7 +409,7 @@ TTLock 账号是店铺级的，保存在 `app_settings` 的 `devices.ttlock_conn
 
 #### 机台账本与投币上限
 
-机台 IO 开启 `cabinetMonitor=1` 后（协议见 hinata-aimeio-rs 的 `docs/remote-protocol.md`「机台状态」），每当 amdaemon 的 `sysfile.dat` 变化就发 `event.cabinetSnapshot`，心跳 `io.heartbeat` 里的 `cabinet` 也带同一份。内容是解析好的计费设置、两个玩家槽的 `credit`/`remain`、累计计数器（`total_coin`、`coin_credit`、`service_credit`、`emoney_credit`、`total_credit` 等），读失败时只有 `error`。IO 只报事实，含义由平台判断：
+机台 IO 开启 `cabinetMonitor=1` 后（协议见 `clients/hinata-io` 的 `docs/remote-protocol.md`「机台状态」），每当 amdaemon 的 `sysfile.dat` 变化就发 `event.cabinetSnapshot`，心跳 `io.heartbeat` 里的 `cabinet` 也带同一份。内容是解析好的计费设置、两个玩家槽的 `credit`/`remain`、累计计数器（`total_coin`、`coin_credit`、`service_credit`、`emoney_credit`、`total_credit` 等），读失败时只有 `error`。IO 只报事实，含义由平台判断：
 
 - `MachineRelay` 保存最近一份**读成功**的账本，下一份与它比较（`resources/capabilities/cabinet.ts`）：`total_coin` 增加是 `cabinet.coin`（平台不判断投的币有没有变成币，玩家在机台上看得到）；「原有的 + 新给的（投币、服务、电子支付）− 现有的」大于 0 是 `cabinet.consumed`；任一计数器变小是 `cabinet.reset`（清账），这一步不再推别的。计数器是累计的，漏收的快照由下一份补齐，心跳最多晚 60 秒。读失败的那份也存下来给看板看，但不参与比较。
 - 服务币、电子支付币，以及没有伴随投币计数增加的加币，记为 `cabinet.credit`；即使同一采样间隔内加币后又扣币，也分别记录增加和消耗。没有累计计数变化但余额上升时，也记录增加量。首份成功账本只作为基线，重复快照和心跳不重复记账。
@@ -507,7 +507,7 @@ IO 没运行时拔掉的读卡器不会留下“拔出”记录，下次上报�
 
 ### 闲置自动关机
 
-两条规则，**默认都关**，由店长在「设置 → 位置与设备 → 闲置自动关机」打开（`GET/PUT /api/v1/merchant/idle-power?shopId=`，存在 `app_settings` 的 `devices.idle_power`）。
+两条规则，**默认都关**，由店长在「设置 → 设备与连接 → 闲置自动关机」打开（`GET/PUT /api/v1/merchant/idle-power?shopId=`，存在 `app_settings` 的 `devices.idle_power`）。
 
 **模型是计时器，不是定期检查**（`resources/capabilities/idle-power.ts`）。店铺 Hub 为每个开着的开关记一个计时器，只有事件能动它：
 

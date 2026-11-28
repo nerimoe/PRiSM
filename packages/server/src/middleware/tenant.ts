@@ -755,14 +755,14 @@ function originChannel(path: string): FactOrigin["via"]["channel"] {
   return "merchant";
 }
 
-/** A shop row as tenant requests see it: one location check switch for all three. */
+/** Preserve the independent entry, checkout and resource location gates. */
 export function tenantShop(shopRow: TenantShop): TenantShop {
-  const enabled = +(!!(
-    shopRow.checkin_geo ||
-    shopRow.checkout_geo ||
-    shopRow.machine_geo
-  ));
-  return { ...shopRow, checkin_geo: enabled, checkout_geo: enabled, machine_geo: enabled };
+  return {
+    ...shopRow,
+    checkin_geo: +!!shopRow.checkin_geo,
+    checkout_geo: +!!shopRow.checkout_geo,
+    machine_geo: +!!shopRow.machine_geo,
+  };
 }
 
 /** The shop row every tenant request reads, by code or ID. */

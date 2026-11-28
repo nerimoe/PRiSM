@@ -354,7 +354,7 @@ describe("pre-fork merchant machine lifecycle",()=>{
     expect(cabPayload.machine.hasLink).toBe(true);
     expect(cabPayload.machine.hasHostToken).toBe(true);
     expect(cabPayload.machine.locationOverride).toEqual({
-      mode:"ble",
+      mode:"require",
       beaconNodeId:iotPayload.machine.iot.nodeId,
       rssiThreshold:-68,
     });

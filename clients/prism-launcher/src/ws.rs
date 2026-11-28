@@ -1,4 +1,4 @@
-//! WebSocket transport for PRiSM edge nodes, reusing `hinata-aimeio-rs`'s
+//! WebSocket transport for PRiSM edge nodes, reusing `hinata-io`'s
 //! `reqwest` + `reqwest-websocket` Bearer-upgrade pattern and status classification.
 use reqwest::Client;
 use reqwest::header::AUTHORIZATION;

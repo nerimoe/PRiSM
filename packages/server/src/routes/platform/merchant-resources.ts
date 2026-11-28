@@ -951,7 +951,7 @@ async function findExternalIotReferrers(
   }
   const locSettings = await readShopLocationSettings(c.env.DB, shopId);
   const locReferrerIds = Object.entries(locSettings.resources)
-    .filter(([id, ov]) => id !== ownerDeviceId && ov.mode === "ble" && ov.beaconNodeId === iotNodeId)
+    .filter(([id, ov]) => id !== ownerDeviceId && ov.mode === "require" && ov.beaconNodeId === iotNodeId)
     .map(([id]) => id);
   if (locReferrerIds.length) {
     const rows = (await c.env.DB.prepare(
@@ -1557,7 +1557,7 @@ async function changeResource(c: C, machineId?: string) {
   if (body.locationOverride !== undefined) {
     const existingLoc = await readShopLocationSettings(c.env.DB, shopId);
     let override = body.locationOverride;
-    if (override && override.mode === "ble" && override.beaconNodeId) {
+    if (override && override.mode === "require" && override.beaconNodeId) {
       const resolvedBeacon = override.beaconNodeId === SELF_IOT_REF ? selfIotNodeId : override.beaconNodeId;
       if (!resolvedBeacon) jsonError(422, "请先启用本资源的 IoT 控制器能力", "NODE_NOT_FOUND");
       if (resolvedBeacon !== selfIotNodeId) {

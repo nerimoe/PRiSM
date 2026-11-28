@@ -838,7 +838,7 @@ function IdentityStep({
       const current = await api<Settings>(shopApi(shopCode, "settings"));
       await api(shopApi(shopCode, "settings"), {
         method: "PUT",
-        body: JSON.stringify({ ...current, ...identityPolicySettings(policy) }),
+        body: JSON.stringify({ ...current, locationEnabled: undefined, ...identityPolicySettings(policy) }),
       });
       setSaved(true);
       window.dispatchEvent(new Event("prism-shop-settings"));
@@ -1024,9 +1024,9 @@ function Optional({
     {
       icon: MapPin,
       title: "到店位置校验",
-      description: "校验 GPS 或蓝牙信标，确保玩家在店内才可入场或操控设备。",
+      description: "配置入场、离场与资源操作的位置校验；在线蓝牙信标优先，无信标时自动回退 GPS 围栏。",
       state: status.locationEnabled ? "已开启" : undefined,
-      to: `${base}/settings?group=devices`,
+      to: `${base}/settings?group=location`,
     },
     {
       icon: Database,

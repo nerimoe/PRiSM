@@ -319,14 +319,25 @@ export class MachineRelay extends BaseDurableObject<Env> {
 
   private async setLink(online: boolean) {
     const channel = await this.channel();
-    if (!channel?.machineId || channelKind(channel) !== "hinata_io") return;
-    await this.record("link", (bus, bound) =>
-      bus.setOwned({ device: { id: bound.machineId }, capability: "hinata_io", key: "link", value: online ? "online" : "offline" }),
-    );
-    // Without a link the books no longer count, so the coin button is no longer held by them.
-    await this.judgeCoinLimit();
-    // A page shows the IO's actions only while it is connected.
-    await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "link");
+    if (!channel?.machineId) return;
+    const kind = channelKind(channel);
+    if (kind === "hinata_io") {
+      await this.record("link", (bus, bound) =>
+        bus.setOwned({ device: { id: bound.machineId }, capability: "hinata_io", key: "link", value: online ? "online" : "offline" }),
+      );
+      // Without a link the books no longer count, so the coin button is no longer held by them.
+      await this.judgeCoinLimit();
+      // A page shows the IO's actions only while it is connected.
+      await pagesChanged(this.env, channel.shopId, { device: channel.machineId }, "link");
+      return;
+    }
+    if (kind === "iot") {
+      await this.record("link", (bus, bound) =>
+        bus.setOwned({ device: { id: bound.machineId }, capability: "iot", key: "link", value: online ? "online" : "offline" }),
+      );
+      // Beacon availability can switch shop location checks between BLE and GPS fallback.
+      await pagesChanged(this.env, channel.shopId, { shop: true }, "shop");
+    }
   }
 
   /** Open pages hear when the cabinet reaches or leaves its limit, and only then. Never gets in the way of the machine. */
@@ -405,7 +416,7 @@ export class MachineRelay extends BaseDurableObject<Env> {
 
     if (capabilities.role === "agent") {
       await this.ctx.storage.put(ONLINE_KEY, true);
-      if (kind === "hinata_io") await this.setLink(true);
+      if (kind === "hinata_io" || kind === "iot") await this.setLink(true);
       await this.syncPresence();
     }
 

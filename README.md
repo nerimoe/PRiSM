@@ -34,6 +34,9 @@ packages/server          Unified server API, multi-tenant & legacy routes, hardw
 packages/prism-web       React admin and player UI, built with Vite.
 packages/koishi-plugin   Koishi plugin (git submodule, standalone repo koishi-plugin-prism)
 packages/migration       prism-neo conversion plan and importer.
+clients/hinata_go        HINATA Go mobile & iOS App Clip client (git submodule, standalone repo Project-HINATA/hinata_go).
+clients/hinata-io        HINATA IO machine client (git submodule, standalone repo nerimoe/hinata-io).
+clients/prism-launcher   Desktop/machine launcher client.
 migrations               D1 migration SQL.
 docs                     Architecture, deployment, API, integration, and migration docs.
 ```
