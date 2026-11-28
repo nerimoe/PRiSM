@@ -415,6 +415,25 @@ async fn main() {
         }
     }
 
+    // Independent of the network loop: keep supervising while offline or unauthorized.
+    let supervisor_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let state = supervisor_state.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(mut guard) = state.lock() {
+                    let programs = guard.programs.clone();
+                    match guard.games.maintain(Instant::now(), &programs) {
+                        Ok(Some(name)) => warn!("游戏进程树已退出，自动重新启动: {name}"),
+                        Err(e) => error!("游戏守护失败: {e}"),
+                        _ => {}
+                    }
+                }
+            }).await;
+            sleep(Duration::from_secs(1)).await;
+        }
+    });
+
     let booted_at = Instant::now();
     let mut delay = Duration::from_secs(2);
     let max_delay = Duration::from_secs(60);

@@ -60,3 +60,9 @@ cargo build --release
 发布：修改 `Cargo.toml` 的版本并同步 `Cargo.lock`，推送 main 即可，无需手动创建 tag。`.github/workflows/launcher-release.yml` 在 Launcher / 工作流改动的 PR 和 main 推送时执行 Windows 测试与 x64 构建，并上传 Actions artifact。main 上若 `launcher-v<版本>` Release 尚不存在，自动创建该 tag 和本仓库 Release，附带 `prism-launcher.exe` 与 `launcher-update.json`；版本未变只构建，不重复发布版本。支持手动 workflow_dispatch 重跑。
 
 固定预发布 Release `launcher-updates` 保存稳定版更新清单（指向版本化 Release 的 EXE），每次发布同步更新，不抢占 PRiSM 主产品的 latest。使用本仓库 `GITHUB_TOKEN` 的 contents:write 权限，不需要 HINATA IO 跨仓库发布用的额外令牌；仓库需允许 Actions 写入 Release。PR 仅构建，不发布。
+
+## 游戏退出自动拉起
+
+Launcher 每秒检查一次最后成功启动的游戏进程树，整棵树退出后约 2 秒重新启动同一程序；连续退出或启动失败按 4、8、16、32、60 秒退避，持续稳定运行 60 秒后恢复初始延迟。监控独立于平台连接，断网或令牌失效仍工作；没有启动过游戏时不会凭空启动。主动切游戏与监控共用锁，只守护切换成功后的程序；配置移除该程序时暂停拉起，不会改为启动默认程序。
+
+判断依据为 Windows Job Object 的全部活动进程，而不是 BAT/CMD 包装进程：包装脚本退出、子游戏仍运行时不会重复启动。正常关闭或崩溃导致整棵树退出都会重新拉起；不检测卡死，也不会在仍有残留子进程时强制重启。需要维护退出游戏时应先退出 Launcher。新版守护逻辑随 Launcher 下次启动生效。

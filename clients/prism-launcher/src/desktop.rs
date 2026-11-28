@@ -6,6 +6,30 @@ use jpeg_encoder::{ColorType, Encoder};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
+/// Retry quickly once, then back off to avoid a crash loop hammering the machine.
+struct RestartBackoff {
+    next: Option<std::time::Instant>,
+    healthy_since: Option<std::time::Instant>,
+    delay: u64,
+}
+impl RestartBackoff {
+    fn new() -> Self { Self { next: None, healthy_since: None, delay: 2 } }
+    fn due(&mut self, now: std::time::Instant, running: bool) -> bool {
+        if running {
+            let since = *self.healthy_since.get_or_insert(now);
+            if now.duration_since(since).as_secs() >= 60 { self.delay = 2; }
+            self.next = None;
+            return false;
+        }
+        self.healthy_since = None;
+        let next = *self.next.get_or_insert(now + std::time::Duration::from_secs(self.delay));
+        if now < next { return false; }
+        self.delay = (self.delay * 2).min(60);
+        self.next = Some(now + std::time::Duration::from_secs(self.delay));
+        true
+    }
+}
+
 /// Keep base64 payload comfortably under Cloudflare Durable Object's 1 MiB WebSocket limit.
 pub const MAX_SCREENSHOT_BYTES: usize = 700 * 1024;
 
@@ -183,6 +207,7 @@ mod win {
     pub struct Games {
         job: Option<HANDLE>,
         name: Option<String>,
+        restart: RestartBackoff,
     }
 
     // `HANDLE` is a kernel handle safe to send between threads when protected by a Mutex.
@@ -190,10 +215,10 @@ mod win {
 
     impl Games {
         pub fn new() -> Self {
-            Self { job: None, name: None }
+            Self { job: None, name: None, restart: RestartBackoff::new() }
         }
 
-        fn active_processes(job: HANDLE) -> u32 {
+        fn active_processes(job: HANDLE) -> Result<u32, String> {
             let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
             let ok = unsafe {
                 QueryInformationJobObject(
@@ -205,15 +230,15 @@ mod win {
                 )
             };
             if ok.is_ok() {
-                info.ActiveProcesses
+                Ok(info.ActiveProcesses)
             } else {
-                0
+                Err("读取游戏进程树失败".into())
             }
         }
 
         pub fn current(&self) -> Option<String> {
             let job = self.job?;
-            if Self::active_processes(job) > 0 {
+            if Self::active_processes(job).ok()? > 0 {
                 self.name.clone()
             } else {
                 None
@@ -221,6 +246,22 @@ mod win {
         }
 
         pub fn switch(&mut self, name: &str, programs: &HashMap<String, String>) -> Result<(), String> {
+            self.launch(name, programs)?;
+            self.restart = RestartBackoff::new();
+            Ok(())
+        }
+
+        /// Watch the entire job, so a batch wrapper exiting does not duplicate its child game.
+        pub fn maintain(&mut self, now: Instant, programs: &HashMap<String, String>) -> Result<Option<String>, String> {
+            let Some(name) = self.name.clone() else { return Ok(None) };
+            if !programs.contains_key(&name) { return Ok(None); }
+            let running = match self.job { Some(job) => Self::active_processes(job)? > 0, None => false };
+            if !self.restart.due(now, running) { return Ok(None); }
+            self.launch(&name, programs)?;
+            Ok(Some(name))
+        }
+
+        fn launch(&mut self, name: &str, programs: &HashMap<String, String>) -> Result<(), String> {
             let raw_path = programs
                 .get(name)
                 .ok_or_else(|| "目标程序不在配置列表中".to_string())?;
@@ -284,7 +325,7 @@ mod win {
                     unsafe { TerminateJobObject(old_job, 1) }
                         .map_err(|e| format!("结束旧程序失败: {e}"))?;
                     let deadline = Instant::now() + Duration::from_secs(5);
-                    while Self::active_processes(old_job) > 0 {
+                    while Self::active_processes(old_job)? > 0 {
                         if Instant::now() >= deadline {
                             return Err("旧程序尚未退出".to_string());
                         }
@@ -466,6 +507,76 @@ pub use win::{Games, SingleInstance, power, press_key, screenshot, type_text};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_backoff_delays_retries_caps_and_resets_after_healthy_run() {
+        use std::time::{Instant, Duration};
+        let start = Instant::now();
+        let mut retry = RestartBackoff::new();
+        assert!(!retry.due(start, false));
+        assert!(!retry.due(start + Duration::from_secs(1), false));
+        assert!(retry.due(start + Duration::from_secs(2), false));
+        assert!(!retry.due(start + Duration::from_secs(5), false));
+        assert!(retry.due(start + Duration::from_secs(6), false));
+        for seconds in [14, 30, 62, 122, 182] {
+            assert!(retry.due(start + Duration::from_secs(seconds), false));
+        }
+        assert_eq!(retry.delay, 60);
+        assert!(!retry.due(start + Duration::from_secs(183), true));
+        assert!(!retry.due(start + Duration::from_secs(243), true));
+        assert_eq!(retry.delay, 2);
+        assert!(!retry.due(start + Duration::from_secs(244), false));
+        assert!(retry.due(start + Duration::from_secs(246), false));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn supervises_exited_game_without_duplicating_batch_children_or_old_game() {
+        use std::{fs, time::{Duration, Instant}};
+        let dir = std::env::temp_dir().join(format!("prism-supervisor-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let crash = dir.join("crash.cmd");
+        let running = dir.join("running.cmd");
+        fs::write(&crash, "@exit /b 1\r\n").unwrap();
+        fs::write(&running, "@start \"\" /b ping.exe -n 30 127.0.0.1 >nul\r\n@exit /b 0\r\n").unwrap();
+        let mut programs = HashMap::from([
+            ("game".into(), crash.to_string_lossy().into_owned()),
+            ("other".into(), running.to_string_lossy().into_owned()),
+        ]);
+        let mut games = Games::new();
+        let now = Instant::now();
+        assert_eq!(games.maintain(now, &programs).unwrap(), None);
+        games.switch("game", &programs).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while games.current().is_some() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(games.current(), None);
+        assert_eq!(games.maintain(now, &programs).unwrap(), None);
+        // Use a persistent child for the relaunched game.
+        programs.insert("game".into(), running.to_string_lossy().into_owned());
+        assert_eq!(games.maintain(now + Duration::from_secs(2), &programs).unwrap(), Some("game".into()));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(games.current(), Some("game".into()));
+        assert_eq!(games.maintain(now + Duration::from_secs(10), &programs).unwrap(), None);
+        games.switch("other", &programs).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(games.current(), Some("other".into()));
+        assert_eq!(games.maintain(now + Duration::from_secs(100), &programs).unwrap(), None);
+        // Removing configuration must not restore the previous game.
+        programs.clear();
+        assert_eq!(games.maintain(now + Duration::from_secs(200), &programs).unwrap(), None);
+        drop(games);
+        // Closing the Job kills its children asynchronously; wait for script handles to close.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match fs::remove_dir_all(&dir) {
+                Ok(()) => break,
+                Err(e) if Instant::now() < deadline => { let _ = e; std::thread::sleep(Duration::from_millis(20)); }
+                Err(e) => panic!("cleanup failed: {e}"),
+            }
+        }
+    }
 
     #[test]
     fn rejects_unc_and_unsafe_batch_paths() {

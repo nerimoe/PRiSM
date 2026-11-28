@@ -191,3 +191,7 @@ PRiSM 将所有直连现场软硬件统一抽象为**店铺级边缘节点（`sh
 ### Launcher 更新检查
 
 店家主机命令 `{"action":"update.check"}` 经 DeviceBus 权限校验和审计，转成 `host.update.check`（沿用指令有效期/防重放；等待上限 95 秒）。节点后台下载，返回 `status: current | checking | pending`，pending 带 `version`；错误走普通 RPC 错误。自动检查默认每 6 小时一次，新版下次启动生效，不重启当前游戏。部署与发布清单见 `clients/prism-launcher/README.md`。
+
+### Launcher 游戏守护
+
+Launcher 本地每秒检查最后成功启动的游戏 Job Object；全部进程退出后延迟拉起，连续退出采用 2–60 秒退避，稳定运行 60 秒后重置。离线仍守护，主动切换后守护新程序，被配置移除的程序不再拉起。仅处理进程树退出（含正常关闭），不检测卡死，具体行为见 Launcher README。
