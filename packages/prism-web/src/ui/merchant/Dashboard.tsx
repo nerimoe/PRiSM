@@ -51,8 +51,8 @@ import {
 } from "./dashboard-metrics";
 import { PlayerWorkspace, type LiveSummary } from "./PlayerWorkspace";
 import { resourceCapabilities } from "./resource-capabilities";
-import { ResourceActions } from "./Resources";
-import { Modal, button, money, segment, useMerchant, useResource } from "./shared";
+import { ResourceActionsModal } from "./ResourceActionsPanel";
+import { button, money, segment, useMerchant, useResource } from "./shared";
 import { useBoardLive } from "./use-board-live";
 
 type DeviceFilter = "all" | "running" | "occupied" | "alert";
@@ -561,19 +561,21 @@ export function DashboardPage() {
         />
       </section>
 
-      {acting && (
-        <Modal title={`${acting.name} · ${t("操作")}`} close={() => setActing(null)}>
-          <ResourceActions
-            device={acting}
-            state={states?.[acting.id] ?? null}
-            onState={(next, askedAt) => setDeviceState(acting.id, next, askedAt)}
+      {acting && (() => {
+        const activeActing = devices?.find((device) => device.id === acting.id) ?? acting;
+        return (
+          <ResourceActionsModal
+            device={activeActing}
+            state={states?.[activeActing.id] ?? null}
+            onState={(next, askedAt) => setDeviceState(activeActing.id, next, askedAt)}
             onChanged={() => {
               void loadDevices();
               void readOccupancy();
             }}
+            close={() => setActing(null)}
           />
-        </Modal>
-      )}
+        );
+      })()}
     </div>
   );
 }

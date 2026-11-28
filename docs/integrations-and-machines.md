@@ -364,7 +364,7 @@ Home Assistant 的地址和令牌是**店铺级**的：一个 Home Assistant 一
 
 ### 「操作」面板
 
-- `GET /api/v1/merchant/machines` 的每台设备带 `actions`：能力目录里当前可用的动作，形如 `{ name: "power.on", capability: "power" }`。后台「操作」面板按 `capability` 分组渲染（电源控制 / 刷卡·HINATA IO / 开门密码 / 麻将桌），**新增能力不需要改前端**；前端只在接口没有 `actions` 时退回本地推导。
+- `GET /api/v1/merchant/machines` 的每台设备带 `actions`：能力目录里当前可用的动作，形如 `{ name: "power.on", capability: "power" }`。后台「操作」面板（`merchant/ResourceActionsPanel.tsx`，由资源页与仪表板共用）按 `capability` 分组并自适应分栏渲染：1–2 项非启动器能力使用紧凑单列，3 项及以上非启动器能力按权重平衡拆为两列，含 `host`（PRiSM Launcher）时左侧展示「机台控制」、右侧嵌入带「控制与画面 / 文件管理 / PowerShell」三页签的启动器工作台；**新增能力不需要改前端**，前端只在接口没有 `actions` 时退回本地推导。
 - 空调分组（`ClimateControls`，与玩家扫码页共用）：开/关空调，以及按实体上报的模式、温度加减（按步长、限制在最低/最高温度之间）和风速，单击即下发；标题右侧显示「模式 · 设定温度 · 室温」。
 - 每个分组标题右侧显示与该组操作相关的状态：电源为实时 `power`（已开机/已关机/未知），直连刷卡为链路在线状态（外部中继则显示连接方式），门锁显示 `lockId`，麻将桌显示 `已入座 / 容量`。
 - 麻将上桌的候选人来自 `staff/live-players`（已入场在店玩家），已入座的人不重复出现；上桌要求该玩家有进行中的入场，所以全量玩家列表里大多数人本来就会失败。

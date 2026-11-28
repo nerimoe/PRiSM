@@ -3356,5 +3356,19 @@
   "GPS 围栏": "GPS geofence",
   "强制校验位置": "Always require location",
   "自动（全店在线信标优先，无信标用 GPS）": "Auto (online shop beacons first, GPS fallback)",
-  "此覆盖作用于该资源上的所有操作。在线蓝牙信标优先，限定信标离线时自动降级到全店在线信标或 GPS 围栏。": "Applies to all actions on this resource. Online BLE beacons take priority; if a pinned beacon goes offline, falls back to other online shop beacons or GPS."
+  "此覆盖作用于该资源上的所有操作。在线蓝牙信标优先，限定信标离线时自动降级到全店在线信标或 GPS 围栏。": "Applies to all actions on this resource. Online BLE beacons take priority; if a pinned beacon goes offline, falls back to other online shop beacons or GPS.",
+  "启动器功能": "Launcher sections",
+  "控制与画面": "Control & screen",
+  "PowerShell": "PowerShell",
+  "远程画面": "Remote screen",
+  "查看原图": "Open full size",
+  "点击「截取画面」获取当前机台桌面画面": "Click Screenshot to capture the current cabinet desktop.",
+  "主机电源": "Host power",
+  "单文件上限 512 KB": "512 KB max per file",
+  "浏览目录": "Browse directory",
+  "目录为空": "Directory is empty",
+  "Ctrl+Enter 执行 · 超时自动终止进程树": "Ctrl+Enter to run · Kills process tree on timeout",
+  "清空输出": "Clear output",
+  "机台控制": "Device controls",
+  "{count} 项": "{count} items"
 }
